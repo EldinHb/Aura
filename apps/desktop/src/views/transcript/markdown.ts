@@ -1,7 +1,7 @@
 /**
  * Markdown-lite parser producing a safe block tree (no HTML passthrough).
  * Supports fenced code blocks, headings, bullet/numbered lists, paragraphs,
- * and inline `code`, **bold**, *italic*, and [text](url) rendered as text.
+ * and inline `code`, **bold**, *italic*, and [text](url) links.
  */
 export type Inline =
   | { t: "text"; v: string }

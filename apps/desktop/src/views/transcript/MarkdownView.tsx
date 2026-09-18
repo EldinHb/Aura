@@ -1,5 +1,16 @@
 import { memo, useMemo } from "react";
+import { open } from "@tauri-apps/plugin-shell";
+import { isTauri } from "../../lib/connection";
+import { useStore } from "../../state/store";
 import { parseMarkdown, type Block, type Inline } from "./markdown";
+
+function isExternalUrl(url: string): boolean {
+  try {
+    return ["https:", "http:", "mailto:", "tel:"].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
 
 function InlineNodes({ nodes }: { nodes: Inline[] }) {
   return (
@@ -15,6 +26,21 @@ function InlineNodes({ nodes }: { nodes: Inline[] }) {
           case "em":
             return <em key={i}><InlineNodes nodes={n.v} /></em>;
           case "link":
+            if (isExternalUrl(n.url)) {
+              return (
+                <a key={i} className="md-link" href={n.url} title={n.url} data-hint
+                  target="_blank" rel="noopener noreferrer"
+                  onClick={(event) => {
+                    if (!isTauri()) return;
+                    event.preventDefault();
+                    void open(n.url).catch((error: unknown) => {
+                      useStore.getState().toast(`Could not open link: ${String(error)}`, "error");
+                    });
+                  }}>
+                  {n.text}
+                </a>
+              );
+            }
             return (
               <span key={i} className="md-link" title={n.url}>
                 {n.text} <span className="dim">({n.url})</span>
