@@ -1,0 +1,11 @@
+[package]
+name = "aura-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aura-core = { workspace = true }
+aura-pty = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }

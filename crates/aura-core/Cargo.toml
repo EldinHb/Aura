@@ -1,0 +1,24 @@
+[package]
+name = "aura-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dirs = { workspace = true }
+aura-pty = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+ts-rs = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "aura-pty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+portable-pty = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }

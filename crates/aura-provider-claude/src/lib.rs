@@ -1,0 +1,290 @@
+//! Claude Code provider: drives `claude -p --input-format stream-json` and maps
+//! its protocol onto the unified `aura_core` model.
+//!
+//! Protocol notes and a real traffic capture live in `docs/protocol/claude/`.
+
+pub mod driver;
+pub mod native;
+pub mod parser;
+pub mod provider;
+
+pub use driver::ClaudeDriver;
+pub use parser::Parser;
+pub use provider::ClaudeProvider;
+
+use std::sync::Arc;
+
+/// Convenience constructor returning the provider as a trait object.
+pub fn provider() -> Arc<dyn aura_core::Provider> {
+    Arc::new(ClaudeProvider::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aura_core::*;
+    use serde_json::Value;
+
+    fn fixture_lines() -> Vec<(String, Value)> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/protocol/claude/traffic.jsonl");
+        let text = std::fs::read_to_string(path).expect("fixture traffic.jsonl");
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let v: Value = serde_json::from_str(l).unwrap();
+                (v["dir"].as_str().unwrap().to_string(), v["msg"].clone())
+            })
+            .collect()
+    }
+
+    /// Replays the capture: `out` user messages call start_turn (as the driver
+    /// does), `out` control requests are noted, `in` lines go to handle_line.
+    fn replay() -> Vec<Event> {
+        let mut p = Parser::new("sess-1");
+        let mut events = vec![];
+        for (dir, msg) in fixture_lines() {
+            match dir.as_str() {
+                "out" => match msg.get("type").and_then(Value::as_str) {
+                    Some("user") => {
+                        let text = msg.pointer("/message/content/0/text").and_then(Value::as_str).unwrap_or("");
+                        events.extend(p.start_turn(text));
+                    }
+                    Some("control_request") => {
+                        let id = msg["request_id"].as_str().unwrap();
+                        let kind = match msg.pointer("/request/subtype").and_then(Value::as_str) {
+                            Some("interrupt") => parser::OutboundControl::Interrupt,
+                            Some("set_permission_mode") => parser::OutboundControl::SetPermissionMode(
+                                msg.pointer("/request/mode").and_then(Value::as_str).unwrap_or("").into(),
+                            ),
+                            _ => parser::OutboundControl::Other,
+                        };
+                        p.note_outbound(id, kind);
+                    }
+                    Some("control_response") => {
+                        // The driver would have built this via approval_response / input_response.
+                        let rid = msg.pointer("/response/request_id").and_then(Value::as_str).unwrap();
+                        let pending = p.pending_approvals.get(rid).cloned().expect("pending approval");
+                        if pending.is_question {
+                            let mut answers = std::collections::HashMap::new();
+                            answers.insert("Do you prefer red or blue?".to_string(), vec!["Red".to_string()]);
+                            let resp = p.input_response(&UserInputResponse { request_id: rid.into(), answers }).unwrap();
+                            assert_eq!(resp.pointer("/response/response/updatedInput/answers/Do you prefer red or blue?"), Some(&Value::String("Red".into())));
+                        } else {
+                            let resp = p
+                                .approval_response(
+                                    rid,
+                                    &ApprovalDecision { option: ApprovalOption::Accept, updated_input: None, message: None },
+                                )
+                                .unwrap();
+                            assert_eq!(resp.pointer("/response/response/behavior"), Some(&Value::String("allow".into())));
+                        }
+                    }
+                    _ => {}
+                },
+                "in"
+                    if msg.is_object() => {
+                        events.extend(p.handle_line(&msg));
+                    }
+                _ => {}
+            }
+        }
+        assert!(p.pending_approvals.is_empty(), "all approvals answered");
+        events
+    }
+
+    #[test]
+    fn replay_capture_produces_expected_events() {
+        let events = replay();
+
+        let approvals: Vec<&Approval> = events
+            .iter()
+            .filter_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval) } else { None })
+            .collect();
+        assert_eq!(approvals.len(), 1, "exactly one approval");
+        assert_eq!(approvals[0].kind, ApprovalKind::Command);
+        assert!(approvals[0].payload["command"].as_str().unwrap().contains("hello.txt"));
+        assert!(approvals[0].options.contains(&ApprovalOption::AcceptForSession), "addRules suggestion present");
+
+        let inputs: Vec<&UserInputRequest> = events
+            .iter()
+            .filter_map(|e| if let Event::UserInputRequested { request, .. } = e { Some(request) } else { None })
+            .collect();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].questions.len(), 1);
+        let labels: Vec<&str> = inputs[0].questions[0].options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, vec!["Red", "Blue"]);
+
+        let turns: Vec<&Turn> = events
+            .iter()
+            .filter_map(|e| if let Event::TurnCompleted { turn, .. } = e { Some(turn) } else { None })
+            .collect();
+        assert!(turns.len() >= 4, "got {} turns", turns.len());
+        assert!(turns[0].usage.as_ref().unwrap().total_cost_usd.unwrap() > 0.0);
+        assert_eq!(turns[0].status, TurnStatus::Completed);
+        assert_eq!(turns[2].status, TurnStatus::Interrupted, "third turn was interrupted");
+        assert!(turns[0].usage.as_ref().unwrap().context_window.unwrap() > 0);
+
+        let native: Vec<&str> = events
+            .iter()
+            .filter_map(|e| if let Event::NativeId { native_id, .. } = e { Some(native_id.as_str()) } else { None })
+            .collect();
+        assert_eq!(native, vec!["6bd613c3-559c-4cb9-b53c-5b1196062f48"]);
+
+        let completed: Vec<&Item> = events
+            .iter()
+            .filter_map(|e| if let Event::ItemCompleted { item, .. } = e { Some(item) } else { None })
+            .collect();
+        assert!(completed.iter().any(|i| i.kind == ItemKind::Reasoning), "reasoning item");
+        let cmd = completed
+            .iter()
+            .find(|i| i.kind == ItemKind::CommandExec)
+            .expect("command exec item");
+        assert_eq!(cmd.status, ItemStatus::Completed);
+        assert_eq!(cmd.data["is_error"], Value::Bool(false));
+        assert!(cmd.data["command"].as_str().unwrap().contains("hello.txt"));
+        assert_eq!(cmd.data["exit_code"], Value::from(0));
+
+        // Streamed agent text ends up complete.
+        let done = completed
+            .iter()
+            .find(|i| i.kind == ItemKind::AgentMessage && i.text == "done.")
+            .expect("agent message 'done.'");
+        assert_eq!(done.status, ItemStatus::Completed);
+        // Text deltas were streamed for it before completion.
+        assert!(events.iter().any(|e| matches!(e, Event::ItemDelta { item_id, delta: ItemDelta::Text { .. }, .. } if item_id == &done.id)));
+
+        // Synthetic /model response arrives without stream events and is still an item.
+        assert!(completed.iter().any(|i| i.kind == ItemKind::AgentMessage && i.text.starts_with("Current model:")));
+
+        // User messages: 4 sent, none duplicated by the replay echo.
+        let users = completed.iter().filter(|i| i.kind == ItemKind::UserMessage).count();
+        assert_eq!(users, 4);
+
+        // Settings observed.
+        assert!(events.iter().any(|e| matches!(e, Event::SettingChanged { setting: Setting::Model(m), .. } if m == "claude-fable-5-1")));
+        assert!(events.iter().any(|e| matches!(e, Event::SettingChanged { setting: Setting::PermissionMode(m), .. } if m == "acceptEdits")));
+
+        // No item left open after the last result.
+        assert!(events.iter().any(|e| matches!(e, Event::Usage { .. })));
+    }
+
+    #[test]
+    fn approval_decline_and_edit_payloads() {
+        let mut p = Parser::new("s");
+        let req = serde_json::json!({
+            "type": "control_request", "request_id": "r1",
+            "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "rm -rf x"}}
+        });
+        let evs = p.handle_line(&req);
+        assert!(matches!(evs[0], Event::ApprovalRequested { .. }));
+        let deny = p
+            .approval_response("r1", &ApprovalDecision { option: ApprovalOption::Decline, updated_input: None, message: Some("no".into()) })
+            .unwrap();
+        assert_eq!(deny.pointer("/response/response/behavior").unwrap(), "deny");
+        assert_eq!(deny.pointer("/response/response/message").unwrap(), "no");
+        assert!(p.approval_response("r1", &ApprovalDecision { option: ApprovalOption::Accept, updated_input: None, message: None }).is_none());
+
+        p.handle_line(&serde_json::json!({
+            "type": "control_request", "request_id": "r2",
+            "request": {"subtype": "can_use_tool", "tool_name": "Write", "input": {"file_path": "/tmp/aura-nope/a.txt", "content": "hi"}}
+        }));
+        let edit = p
+            .approval_response(
+                "r2",
+                &ApprovalDecision {
+                    option: ApprovalOption::EditInput,
+                    updated_input: Some(serde_json::json!({"file_path": "/tmp/aura-nope/b.txt", "content": "hi"})),
+                    message: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(edit.pointer("/response/response/updatedInput/file_path").unwrap(), "/tmp/aura-nope/b.txt");
+    }
+
+    #[test]
+    fn file_change_classification_builds_diff() {
+        let (kind, _title, data) = parser::classify_tool(
+            "Edit",
+            &serde_json::json!({"file_path": "src/a.rs", "old_string": "let a = 1;", "new_string": "let a = 2;"}),
+        );
+        assert_eq!(kind, ItemKind::FileChange);
+        let diff = data["changes"][0]["diff"].as_str().unwrap();
+        assert!(diff.contains("-let a = 1;"));
+        assert!(diff.contains("+let a = 2;"));
+        let (kind, _, data) = parser::classify_tool("mcp__github__list_prs", &serde_json::json!({"repo": "x"}));
+        assert_eq!(kind, ItemKind::McpCall);
+        assert_eq!(data["server"], "github");
+        assert_eq!(data["tool"], "list_prs");
+    }
+
+    #[test]
+    fn typed_slash_settings_update_session_state() {
+        let mut p = Parser::new("s1");
+        let ev = p.start_turn("/effort medium");
+        assert!(ev.iter().any(|e| matches!(e, Event::SettingChanged { setting: Setting::Effort(v), .. } if v == "medium")));
+        // Same value again is a no-op.
+        assert!(!p.start_turn("/effort medium").iter().any(|e| matches!(e, Event::SettingChanged { .. })));
+        let ev = p.start_turn("/model claude-opus-5");
+        assert!(ev.iter().any(|e| matches!(e, Event::SettingChanged { setting: Setting::Model(v), .. } if v == "claude-opus-5")));
+        // Ordinary text and bare or multi-word commands do not.
+        for t in ["hello /effort low", "/effort", "/compact keep the summary short"] {
+            assert!(!p.start_turn(t).iter().any(|e| matches!(e, Event::SettingChanged { .. })), "{t}");
+        }
+    }
+
+    #[test]
+    fn unknown_messages_are_ignored() {
+        let mut p = Parser::new("s");
+        assert!(p.handle_line(&serde_json::json!({"type": "something_new", "x": 1})).is_empty());
+        assert!(p.handle_line(&serde_json::json!({"nope": true})).is_empty());
+        assert!(p.handle_line(&serde_json::json!({"type": "system", "subtype": "brand_new"})).is_empty());
+    }
+
+    #[test]
+    fn provider_info_reports_binary() {
+        let p = ClaudeProvider::new();
+        let info = p.info();
+        assert_eq!(info.kind, ProviderKind::Claude);
+        assert!(info.capabilities.structured);
+        if info.available {
+            assert!(info.version.is_some(), "version parsed when binary present");
+        }
+    }
+
+    /// Live test against the real CLI. Run with:
+    /// `AURA_LIVE_TESTS=1 cargo test -p aura-provider-claude -- --ignored live_`
+    #[tokio::test]
+    #[ignore]
+    async fn live_roundtrip_pong() {
+        if std::env::var("AURA_LIVE_TESTS").is_err() {
+            eprintln!("AURA_LIVE_TESTS not set; skipping");
+            return;
+        }
+        let provider = ClaudeProvider::new();
+        assert!(provider.binary().is_some(), "claude binary required");
+        let tmp = tempfile::tempdir().unwrap();
+        let opts = CreateSessionOpts { provider: ProviderKind::Claude, cwd: tmp.path().to_string_lossy().to_string(), ..Default::default() };
+        let session = Session::new(&opts);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let driver = provider.start(&session, false, tx).await.unwrap();
+        driver.send(Input { text: "Reply with exactly: pong".into(), ..Default::default() }).await.unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        let mut completed = None;
+        let mut native = None;
+        while tokio::time::Instant::now() < deadline {
+            let Ok(Some(ev)) = tokio::time::timeout_at(deadline, rx.recv()).await else { break };
+            match ev {
+                Event::TurnCompleted { turn, .. } => {
+                    completed = Some(turn);
+                    break;
+                }
+                Event::NativeId { native_id, .. } => native = Some(native_id),
+                _ => {}
+            }
+        }
+        let turn = completed.expect("turn completed");
+        assert_eq!(turn.status, TurnStatus::Completed);
+        assert!(native.is_some());
+        driver.stop().await.unwrap();
+    }
+}

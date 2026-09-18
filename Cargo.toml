@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/aura-core",
+  "crates/aura-store",
+  "crates/aura-pty",
+  "crates/aura-provider-claude",
+  "crates/aura-provider-codex",
+  "crates/aura-rpc",
+  "crates/aura-git",
+  "crates/aura-terminal",
+  "crates/aurad",
+  "crates/aura-cli",
+  "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/EldinHb/Aura"
+
+[workspace.dependencies]
+aura-core = { path = "crates/aura-core" }
+aura-store = { path = "crates/aura-store" }
+aura-pty = { path = "crates/aura-pty" }
+aura-provider-claude = { path = "crates/aura-provider-claude" }
+aura-provider-codex = { path = "crates/aura-provider-codex" }
+aura-rpc = { path = "crates/aura-rpc" }
+aura-git = { path = "crates/aura-git" }
+aura-terminal = { path = "crates/aura-terminal" }
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+futures = "0.3"
+ts-rs = { version = "10", features = ["serde-json-impl", "chrono-impl", "uuid-impl", "no-serde-warnings"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+portable-pty = "0.8"
+axum = { version = "0.7", features = ["ws"] }
+tokio-tungstenite = "0.24"
+rand = "0.8"
+dirs = "5"
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+parking_lot = "0.12"
+regex = "1"
+tempfile = "3"
+bytes = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

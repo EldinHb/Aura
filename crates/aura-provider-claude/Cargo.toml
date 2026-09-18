@@ -1,0 +1,25 @@
+[package]
+name = "aura-provider-claude"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aura-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+dirs = { workspace = true }
+futures = { workspace = true }
+base64 = "0.22"
+similar = "2"
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

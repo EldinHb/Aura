@@ -1,0 +1,32 @@
+[package]
+name = "aura-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aura-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+bytes = { workspace = true }
+ts-rs = { workspace = true }
+dirs = { workspace = true }
+
+tokio-tungstenite = { workspace = true }
+uuid = { workspace = true }
+base64 = "0.22"
+thiserror = { workspace = true }
+ignore = "0.4"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+aura-pty = { workspace = true }
