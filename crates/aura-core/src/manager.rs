@@ -211,6 +211,9 @@ impl Manager {
             bail!("cwd does not exist: {}", opts.cwd);
         }
         let provider = self.provider(opts.provider)?;
+        if opts.provider == ProviderKind::Acp && opts.agent.as_deref().unwrap_or("").is_empty() {
+            bail!("ACP sessions need an agent (e.g. `gemini`)");
+        }
         let mut session = Session::new(&opts);
         if let Some(wt) = &opts.worktree {
             let backend = self.inner.worktrees.clone().ok_or_else(|| anyhow!("git worktrees not available"))?;
@@ -218,14 +221,18 @@ impl Manager {
             session.cwd = info.path.clone();
             session.worktree = Some(info);
             if opts.title.is_none() {
-                session.title = format!("{} · {}", opts.provider.as_str(), wt.branch);
+                session.title = format!("{} · {}", opts.label(), wt.branch);
             }
         }
         if session.mode == SessionMode::Terminal && session.command.is_none() {
-            session.command = Some(match opts.provider {
+            let argv = match opts.provider {
                 ProviderKind::Terminal => aura_pty::default_shell(),
                 _ => provider.terminal_command(&session),
-            });
+            };
+            if argv.is_empty() {
+                bail!("{} sessions have no terminal mode", opts.label());
+            }
+            session.command = Some(argv);
         }
         self.inner.store.upsert_session(&session)?;
         self.inner.sessions.lock().insert(session.id.clone(), session.clone());
@@ -258,6 +265,7 @@ impl Manager {
         }
         self.create_session(CreateSessionOpts {
             provider: s.provider,
+            agent: s.agent.clone(),
             cwd: s.cwd.clone(),
             title: Some(format!("{} (fork)", s.title)),
             group: s.group.clone(),

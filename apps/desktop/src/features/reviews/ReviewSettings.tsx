@@ -5,7 +5,8 @@ import { useStore } from "../../state/store";
 import { openPull, rpc, useReviews } from "./state";
 
 export function ReviewSettings({ pull, config: previous }: { pull: PullRequest; config?: ReviewConfig }) {
-  const providers = useStore((s) => s.providers).filter((p) => p.available && p.kind !== "terminal");
+  // Pre-reviews run through the review service, which drives Claude Code and Codex only.
+  const providers = useStore((s) => s.providers).filter((p) => p.available && (p.kind === "claude" || p.kind === "codex"));
   const client = useStore((s) => s.client);
   const [config, setConfig] = useState<ReviewConfig>(() => previous ?? useReviews.getState().inbox?.defaults ?? { provider: providers[0]?.kind ?? "codex", model: null, effort: null, prompt_mode: "default", prompt: "" });
   const [models, setModels] = useState<ModelInfo[]>([]);

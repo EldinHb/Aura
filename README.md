@@ -32,6 +32,10 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
 - **One transcript for every agent.** Claude Code and Codex sessions are shown in the
   same structured view: messages, reasoning, tool calls, command output, file changes,
   approvals, questions and token usage.
+- **Other agents through ACP.** Gemini CLI, GitHub Copilot, OpenCode, goose, Cursor,
+  Qwen Code and any other agent that speaks the
+  [Agent Client Protocol](https://agentclientprotocol.com) get the same structured view.
+  See [ACP agents](#acp-agents).
 - **Any CLI works.** Anything else runs in a real terminal with saved scrollback. A
   Claude Code or Codex session can also switch to the agent's own TUI and back.
 - **An inbox for approvals.** See every session waiting on you, and approve or decline
@@ -94,7 +98,7 @@ your system will warn you the first time.
    [Codex](https://github.com/openai/codex) (`codex`). Aura looks for them on your
    `PATH` and in the usual install locations (Homebrew, `~/.local/bin`, npm, volta and
    bun globals). If yours is elsewhere, set `AURA_CLAUDE_BIN` or `AURA_CODEX_BIN` to
-   the full path.
+   the full path. Any [ACP agent](#acp-agents) you have installed works too.
 2. **Open Aura.** It starts the daemon for you.
 3. **Press `⌘N`** (`Ctrl+N` on Windows and Linux) to start a session, pick a provider
    and a folder, and type a prompt. `⌘⇧N` does the same in a new git worktree.
@@ -107,6 +111,61 @@ with `aura daemon stop`.
 
 For PR reviews, also install the [GitHub CLI](https://cli.github.com) and run
 `gh auth login`.
+
+## ACP agents
+
+Besides Claude Code and Codex, Aura runs any agent that speaks the
+[Agent Client Protocol](https://agentclientprotocol.com) (ACP, version 1) in the
+structured view. Install one of these, sign in to it once in a terminal, and it shows
+up in the new-session dialog:
+
+| Agent | Started as |
+|---|---|
+| Gemini CLI | `gemini --acp` |
+| GitHub Copilot | `copilot --acp` |
+| OpenCode | `opencode acp` |
+| goose | `goose acp` |
+| Cursor | `cursor-agent acp` |
+| Qwen Code | `qwen --acp` |
+| Kimi CLI | `kimi acp` |
+| Mistral Vibe | `vibe-acp` |
+| Cline | `cline --acp` |
+| Auggie | `auggie --acp` |
+
+Settings → Providers shows which of them Aura found. From the command line:
+`aura new --agent gemini --prompt "…"`.
+
+**Other agents** go in `acp-agents.json` in Aura's data directory (`~/.aura`, or
+`$AURA_DATA_DIR`). An entry with the id of a built-in agent replaces it, for example to
+use a different path. Aura re-reads the file whenever its window regains focus, and
+on Settings → Providers → Re-detect; no restart is needed.
+
+```json
+{
+  "agents": [
+    { "id": "my-agent", "name": "My Agent", "command": ["/opt/my-agent/bin/agent", "--acp"] },
+    { "id": "gemini", "name": "Gemini CLI", "command": ["gemini", "--acp"], "env": { "GEMINI_API_KEY": "…" } }
+  ]
+}
+```
+
+**What works:** streamed messages and reasoning, tool calls (commands, file edits with
+diffs, other tools), plans, approvals, interrupting, images (for agents that accept
+them), context usage, and the agent's slash commands. Models, effort and modes can be
+changed with `⌘K` → Model / Effort / Permission mode once the session has started, for
+agents that offer them. Sessions resume after a restart when the agent supports it;
+otherwise Aura says so and starts a new conversation.
+
+**What does not:** ACP sessions have no terminal mode, cannot be forked, and cannot
+run PR pre-reviews (those use Claude Code or Codex). Aura does not give agents access
+to its own file system or terminals; they read files and run commands themselves and
+ask for approval through ACP.
+
+**Claude Code and Codex over ACP.** The native adapters are the default because they
+expose more than ACP does (Codex rate limits and reviews, forking, the native TUI).
+Their ACP bridges also work as custom agents, for example
+`{ "id": "claude-acp", "name": "Claude (ACP)", "command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"] }`
+or `@agentclientprotocol/codex-acp`.
 
 ## Keyboard basics
 
@@ -138,7 +197,7 @@ show up in the other.
 ```bash
 aura daemon start|stop|status
 aura ls [--all]
-aura new --provider claude|codex|terminal [--cwd DIR] [--title T] [--group G] [--prompt TEXT] [--branch B] [--resume NATIVE_ID] [-- cmd args...]
+aura new --provider claude|codex|terminal|acp [--agent ID] [--cwd DIR] [--title T] [--group G] [--prompt TEXT] [--branch B] [--resume NATIVE_ID] [-- cmd args...]
 aura attach <id>         # raw terminal passthrough; Ctrl+\ detaches
 aura send <id> <text>
 aura interrupt <id>
@@ -170,9 +229,9 @@ Set `AURA_DATA_DIR` to use a different data directory (useful for tests).
                               aurad (daemon, survives the app)
                               sessions · event log (SQLite) · git · GitHub
                                                    │
-                         ┌─────────────────────────┼──────────────────┐
-                         ▼                         ▼                  ▼
-                   claude (stream-json)   codex (app-server)   any CLI in a PTY
+             ┌─────────────────────┬─────┴───────────────┬──────────────────┐
+             ▼                     ▼                     ▼                  ▼
+     claude (stream-json)  codex (app-server)   ACP agents (JSON-RPC)  any CLI in a PTY
 ```
 
 The app starts `aurad` when needed and connects to it over a loopback WebSocket
@@ -288,6 +347,7 @@ The frontend talks to the daemon directly, so it also runs in a plain browser: s
 cargo test --workspace                         # unit + integration tests (no network)
 AURA_LIVE_TESTS=1 cargo test -p aura-provider-claude -- --ignored   # real Claude Code round trip
 AURA_LIVE_TESTS=1 cargo test -p aura-provider-codex  -- --ignored   # real Codex round trip
+AURA_LIVE_TESTS=1 AURA_ACP_LIVE_AGENT='["gemini","--acp"]' cargo test -p aura-provider-acp -- --ignored   # real ACP agent
 cd apps/desktop && pnpm test && pnpm lint      # vitest + eslint (incl. the keyboard-reachability rule)
 cd apps/desktop && pnpm e2e                    # Playwright, needs a running daemon + dev server
 ```
@@ -310,6 +370,7 @@ crates/aura-pty             PTY spawning (portable-pty) + scrollback ring buffer
 crates/aura-terminal        plain terminal provider
 crates/aura-provider-claude Claude Code adapter (stream-json)
 crates/aura-provider-codex  Codex adapter (app-server JSON-RPC)
+crates/aura-provider-acp    Agent Client Protocol adapter (any ACP agent)
 crates/aura-rpc             loopback WebSocket JSON-RPC server + client
 crates/aura-git             worktrees, status, diff, commit, push (shells out to git)
 crates/aura-github          GitHub access through the gh CLI

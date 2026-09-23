@@ -3,6 +3,7 @@ import { Modal, KeyList, useListNav } from "../Modal";
 import { useStore } from "../../state/store";
 import type { ModelInfo, Setting } from "../../gen";
 import { filterItems } from "../palette";
+import { acpChoices, acpModes, acpSessionInfo } from "../../lib/acp";
 
 export type PickerKind = "models" | "effort" | "permission" | "sandbox";
 
@@ -30,6 +31,7 @@ const PERMISSION_HELP: Record<string, string> = {
 export function PickerDialog({ kind, sessionId }: { kind: PickerKind; sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const providers = useStore((s) => s.providers);
+  const acpInfo = useStore((s) => acpSessionInfo(s.transcripts[sessionId]?.providerInfo));
   const client = useStore((s) => s.client);
   const closeDialog = useStore((s) => s.closeDialog);
   const toast = useStore((s) => s.toast);
@@ -38,7 +40,8 @@ export function PickerDialog({ kind, sessionId }: { kind: PickerKind; sessionId:
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!client || !session || (kind !== "models" && kind !== "effort")) return;
+    // ACP agents publish their choices per session (see lib/acp.ts).
+    if (!client || !session || session.provider === "acp" || (kind !== "models" && kind !== "effort")) return;
     client
       .models(session.provider)
       .then(setModels)
@@ -47,6 +50,11 @@ export function PickerDialog({ kind, sessionId }: { kind: PickerKind; sessionId:
 
   const options = useMemo<Option[]>(() => {
     if (!session) return [];
+    if (session.provider === "acp") {
+      const current = { models: session.model, effort: session.effort, permission: session.permission_mode, sandbox: null }[kind];
+      const values = kind === "models" ? acpChoices(acpInfo, "model") : kind === "effort" ? acpChoices(acpInfo, "thought_level") : kind === "permission" ? acpModes(acpInfo) : [];
+      return values.map((v) => ({ value: v.value, label: v.name || v.value, description: v.description, current: current === v.value }));
+    }
     const caps = providers.find((p) => p.kind === session.provider)?.capabilities;
     switch (kind) {
       case "models":
@@ -62,7 +70,7 @@ export function PickerDialog({ kind, sessionId }: { kind: PickerKind; sessionId:
       case "sandbox":
         return (caps?.sandbox_modes ?? []).map((p) => ({ value: p, label: p, description: PERMISSION_HELP[p], current: session.sandbox_mode === p }));
     }
-  }, [kind, models, providers, session]);
+  }, [kind, models, providers, session, acpInfo]);
 
   const filtered = useMemo(() => filterItems(options, q, (o) => `${o.label} ${o.description ?? ""}`), [options, q]);
 
@@ -83,7 +91,7 @@ export function PickerDialog({ kind, sessionId }: { kind: PickerKind; sessionId:
     if (cur >= 0) nav.setIndex(cur);
   }, [filtered.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loading = (kind === "models" || kind === "effort") && models === null && !error;
+  const loading = session?.provider !== "acp" && (kind === "models" || kind === "effort") && models === null && !error;
   return (
     <Modal title={`${TITLES[kind]} · ${session?.title ?? ""}`} width={560} onKeyDown={(e) => nav.onKeyDown(e)}>
       <input type="text" data-autofocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter…" />

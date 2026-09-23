@@ -215,6 +215,8 @@ Status detection for unknown CLIs mirrors Agent of Empires: output-activity heur
 
 Gemini CLI, OpenCode, Copilot CLI and others start in terminal mode on day one. Structured adapters follow the same trait when their protocols justify it (OpenCode has an HTTP server, Gemini has ACP).
 
+Update: `aura-provider-acp` now covers every agent that speaks the Agent Client Protocol (Gemini CLI, Copilot, OpenCode, goose, Cursor, Qwen Code and others) with one adapter. Claude Code and Codex keep their native adapters, which expose more than ACP does.
+
 ---
 
 ## 6. Persistence

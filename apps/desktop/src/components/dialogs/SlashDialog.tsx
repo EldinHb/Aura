@@ -4,10 +4,12 @@ import { useStore } from "../../state/store";
 import type { SlashCommand } from "../../gen";
 import { filterItems } from "../palette";
 import { setFocus } from "../../commands/core";
+import { acpSessionInfo, acpSlashCommands } from "../../lib/acp";
 
 export function SlashDialog({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
   const client = useStore((s) => s.client);
+  const acpInfo = useStore((s) => acpSessionInfo(s.transcripts[sessionId]?.providerInfo));
   const closeDialog = useStore((s) => s.closeDialog);
   const toast = useStore((s) => s.toast);
   const [q, setQ] = useState("");
@@ -16,8 +18,12 @@ export function SlashDialog({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!client || !session) return;
+    if (session.provider === "acp") {
+      setCmds(acpSlashCommands(acpInfo));
+      return;
+    }
     client.commands(session.provider, session.cwd).then(setCmds).catch(() => setCmds([]));
-  }, [client, session]);
+  }, [client, session, acpInfo]);
 
   const filtered = useMemo(() => filterItems(cmds ?? [], q, (c) => `${c.name} ${c.description ?? ""}`), [cmds, q]);
   const run = async (i: number) => {

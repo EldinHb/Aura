@@ -205,10 +205,10 @@ export const coreCommands: Command[] = [
       setFocus("main");
     },
   },
-  { id: "session.mode-terminal", title: "Switch to terminal mode", group: "Session", when: "hasSelection,mode:structured", run: async () => { await client().switchMode(selected().id, "terminal"); setFocus("main"); } },
+  { id: "session.mode-terminal", title: "Switch to terminal mode", group: "Session", when: "hasSelection,mode:structured,provider:claude|codex", run: async () => { await client().switchMode(selected().id, "terminal"); setFocus("main"); } },
   { id: "session.mode-structured", title: "Switch to structured mode", group: "Session", when: "hasSelection,mode:terminal,provider:claude|codex", run: async () => { await client().switchMode(selected().id, "structured"); setFocus("main"); } },
   { id: "session.interrupt", title: "Interrupt running turn", group: "Session", when: "hasSelection", run: async () => { await client().interrupt(selected().id); } },
-  { id: "session.compact", title: "Compact context", group: "Session", when: "hasSelection,mode:structured", run: async () => { await client().action(selected().id, "compact"); st().toast("Compaction requested"); } },
+  { id: "session.compact", title: "Compact context", group: "Session", when: "hasSelection,mode:structured,provider:claude|codex", run: async () => { await client().action(selected().id, "compact"); st().toast("Compaction requested"); } },
   { id: "session.review", title: "Start code review (Codex)", group: "Session", when: "hasSelection,provider:codex", run: async () => { await client().action(selected().id, "review"); } },
   { id: "session.pick-model", title: "Change model…", group: "Session", when: "hasSelection,mode:structured", run: () => st().openDialog({ kind: "models", sessionId: selected().id }) },
   { id: "session.pick-effort", title: "Change effort…", group: "Session", when: "hasSelection,mode:structured", run: () => st().openDialog({ kind: "effort", sessionId: selected().id }) },

@@ -384,6 +384,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aura-provider-acp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aura-core",
+ "base64 0.22.1",
+ "chrono",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aura-provider-claude"
 version = "0.1.0"
 dependencies = [
@@ -515,6 +533,7 @@ dependencies = [
  "aura-core",
  "aura-git",
  "aura-github",
+ "aura-provider-acp",
  "aura-provider-claude",
  "aura-provider-codex",
  "aura-review",

@@ -20,6 +20,7 @@ impl Provider for TerminalOnly {
             version: None,
             binary: None,
             capabilities: CapabilitySet { terminal_mode: true, ..Default::default() },
+            agents: vec![],
         }
     }
     async fn list_native(&self) -> anyhow::Result<Vec<NativeSession>> {

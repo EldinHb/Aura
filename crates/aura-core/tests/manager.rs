@@ -89,6 +89,7 @@ impl Provider for FakeProvider {
             version: None,
             binary: None,
             capabilities: CapabilitySet { structured: true, fork: true, terminal_mode: true, ..Default::default() },
+            agents: vec![],
         }
     }
     async fn list_native(&self) -> anyhow::Result<Vec<NativeSession>> {
@@ -260,4 +261,55 @@ async fn bad_inputs_are_rejected() {
     assert!(m.create_session(CreateSessionOpts { provider: ProviderKind::Codex, cwd: "/tmp".into(), ..Default::default() }).await.is_err());
     assert!(m.get_session("nope").is_err());
     assert!(m.send("nope", Input::default()).await.is_err());
+}
+
+/// Stands in for the ACP provider: structured only, no terminal command.
+struct AcpLike;
+
+#[async_trait::async_trait]
+impl Provider for AcpLike {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Acp
+    }
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            kind: ProviderKind::Acp,
+            display_name: "ACP".into(),
+            available: true,
+            version: None,
+            binary: None,
+            capabilities: CapabilitySet { structured: true, ..Default::default() },
+            agents: vec![],
+        }
+    }
+    async fn list_native(&self) -> anyhow::Result<Vec<NativeSession>> {
+        Ok(vec![])
+    }
+    async fn start(&self, session: &Session, _fork: bool, sink: EventSink) -> anyhow::Result<Box<dyn Driver>> {
+        Ok(Box::new(FakeDriver { sink, session_id: session.id.clone(), calls: Default::default() }))
+    }
+    fn terminal_command(&self, _session: &Session) -> Vec<String> {
+        vec![]
+    }
+}
+
+#[tokio::test]
+async fn acp_sessions_need_an_agent_and_have_no_terminal_mode() {
+    let m = Manager::new(Arc::new(MemoryStore::default()), vec![Arc::new(AcpLike)], None);
+    let cwd = std::env::temp_dir().to_string_lossy().to_string();
+    let opts = |agent: Option<&str>, mode: Option<SessionMode>| CreateSessionOpts {
+        provider: ProviderKind::Acp,
+        agent: agent.map(str::to_string),
+        cwd: cwd.clone(),
+        mode,
+        ..Default::default()
+    };
+    let err = m.create_session(opts(None, None)).await.unwrap_err().to_string();
+    assert!(err.contains("need an agent"), "{err}");
+    let err = m.create_session(opts(Some("gemini"), Some(SessionMode::Terminal))).await.unwrap_err().to_string();
+    assert!(err.contains("gemini sessions have no terminal mode"), "{err}");
+
+    let s = m.create_session(opts(Some("gemini"), None)).await.unwrap();
+    assert_eq!(s.agent.as_deref(), Some("gemini"));
+    assert!(s.title.starts_with("gemini · "), "{}", s.title);
 }

@@ -7,6 +7,7 @@ import { fmtTokens, fmtUsd, relTime, truncate } from "./transcript/format";
 import { SessionLinks } from "./SessionLinks";
 import { useSessionLinkPreferences } from "../state/sessionLinkPreferences";
 import { PlanSection } from "./PlanSection";
+import { acpSessionInfo } from "../lib/acp";
 
 function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boolean; title?: string }) {
   return (
@@ -45,7 +46,26 @@ type RateLimits = {
   rateLimits?: { primary?: { usedPercent?: number; resetsAt?: number; windowDurationMins?: number }; secondary?: { usedPercent?: number; resetsAt?: number } | null };
 };
 
+function AcpSection({ s, info }: { s: Session; info: Record<string, unknown> }) {
+  const acp = acpSessionInfo(info);
+  if (!acp) return null;
+  const mode = acp.modes?.find((m) => m.id === acp.current_mode)?.name ?? acp.current_mode;
+  return (
+    <div className="inspector-section">
+      <h4>{acp.agent?.name ?? s.agent ?? "ACP agent"}</h4>
+      <div className="kv">
+        {acp.agent?.info?.version && <KV k="version" v={acp.agent.info.version} />}
+        <KV k="protocol" v="ACP" />
+        {mode && <KV k="mode" v={mode} />}
+        {!!acp.commands?.length && <KV k="commands" v={acp.commands.length} />}
+        {acp.title && <KV k="agent title" v={acp.title} title={acp.title} />}
+      </div>
+    </div>
+  );
+}
+
 function ProviderSection({ s, info }: { s: Session; info: Record<string, unknown> }) {
+  if (s.provider === "acp") return <AcpSection s={s} info={info} />;
   const init = (info.init ?? {}) as Init;
   const rl = (info.rate_limit ?? info.rate_limits ?? null) as RateLimits | null;
   const bars: { label: string; pct: number; resets?: number }[] = [];
@@ -129,7 +149,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
             <h4>Session</h4>
             <div className="kv">
               <KV k="title" v={s.title} title={s.title} />
-              <KV k="provider" v={<span className={clsx("chip", s.provider)}>{s.provider}</span>} />
+              <KV k="provider" v={<span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>} />
               <KV k="status" v={<><span className={clsx("dot", s.status === "running" ? "info pulse" : s.status.startsWith("waiting") ? "warn pulse" : s.status === "error" ? "err" : s.status === "exited" ? "" : "ok")} /> {s.status}{s.pending_count ? ` (${s.pending_count} pending)` : ""}</>} />
               <KV k="mode" v={s.mode} />
               <KV k="cwd" v={s.cwd} mono title={s.cwd} />
@@ -219,7 +239,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
             <div className="actions">
               {caps?.fork && s.native_id && <Action cmd="session.fork" label="Fork" />}
               <Action cmd="session.rename" label="Rename" />
-              {(caps?.terminal_mode || caps?.structured) && s.provider !== "terminal" && <Action cmd="session.toggle-mode" label={s.mode === "terminal" ? "Structured" : "Terminal"} />}
+              {caps?.terminal_mode && s.provider !== "terminal" && <Action cmd="session.toggle-mode" label={s.mode === "terminal" ? "Structured" : "Terminal"} />}
               {s.mode === "terminal" && s.status === "exited" && <Action cmd="session.restart" label="Restart" />}
               <Action cmd="git.diff" label="Diff" />
               <Action cmd="session.open-window" label="Window" />

@@ -137,7 +137,7 @@ export function Sidebar() {
                   </div>
                   <div className="meta">
                     {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
-                    <span className={clsx("chip", s.provider)}>{s.provider}</span>
+                    <span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>
                     {idx < 9 && <kbd>{idx + 1}</kbd>}
                     <span>{relTime(s.last_activity)}</span>
                   </div>

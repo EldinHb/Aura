@@ -20,7 +20,7 @@ export function StatusBar() {
       )}
       {s && (
         <span>
-          {s.provider} · {s.mode} · {s.status}
+          {s.agent ?? s.provider} · {s.mode} · {s.status}
           {s.model ? ` · ${s.model}` : ""}
           {s.effort ? ` · ${s.effort}` : ""}
           {s.permission_mode ? ` · ${s.permission_mode}` : ""}

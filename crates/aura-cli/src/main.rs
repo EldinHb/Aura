@@ -29,9 +29,12 @@ enum Cmd {
     },
     /// Create a session
     New {
-        /// claude | codex | terminal
+        /// claude | codex | acp | terminal
         #[arg(short, long, default_value = "terminal")]
         provider: String,
+        /// ACP agent id (gemini, opencode, goose, ... or one from acp-agents.json). Implies --provider acp
+        #[arg(long)]
+        agent: Option<String>,
         #[arg(short, long)]
         cwd: Option<String>,
         #[arg(short, long)]
@@ -119,7 +122,7 @@ async fn main() -> Result<()> {
                     println!(
                         "{:<10} {:<9} {:<17} {:<11} {:<30} {}",
                         &s.id[..8],
-                        s.provider.as_str(),
+                        s.agent.as_deref().unwrap_or(s.provider.as_str()),
                         format!("{:?}{}", s.status, if s.pending_count > 0 { format!("({})", s.pending_count) } else { String::new() }),
                         format!("{:?}", s.mode),
                         truncate(&s.title, 30),
@@ -128,11 +131,18 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::New { provider, cwd, title, group, prompt, branch, resume, attach, command } => {
-            let provider = ProviderKind::parse(&provider).ok_or_else(|| anyhow!("unknown provider {provider}"))?;
+        Cmd::New { provider, agent, cwd, title, group, prompt, branch, resume, attach, command } => {
+            let mut provider = ProviderKind::parse(&provider).ok_or_else(|| anyhow!("unknown provider {provider}"))?;
+            if agent.is_some() {
+                if !matches!(provider, ProviderKind::Acp | ProviderKind::Terminal) {
+                    anyhow::bail!("--agent selects an ACP agent; it cannot be combined with --provider {}", provider.as_str());
+                }
+                provider = ProviderKind::Acp;
+            }
             let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap().to_string_lossy().to_string());
             let opts = CreateSessionOpts {
                 provider,
+                agent,
                 cwd,
                 title,
                 group,

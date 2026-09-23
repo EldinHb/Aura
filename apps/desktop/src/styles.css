@@ -105,6 +105,7 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .chip.claude { border-color: #d98b5a55; color: #e8a878; }
 .chip.codex { border-color: #6fbf9a55; color: #8fd9b5; }
 .chip.terminal { border-color: #7f8cff55; color: #a8b1ff; }
+.chip.acp { border-color: #c79bf055; color: #d8b7f5; }
 .group-title { display: flex; align-items: center; gap: 6px; }
 
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--fg-dim); gap: 8px; }
@@ -392,6 +393,9 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .provider-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .provider-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 4px 12px; font-size: 12px; color: var(--fg-muted); }
+.acp-agents { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; font-size: 12px; }
+.acp-agent { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.acp-agent .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cap { display: flex; align-items: center; gap: 6px; }
 .cap.wide { grid-column: 1 / -1; }
 

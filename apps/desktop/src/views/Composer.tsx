@@ -7,6 +7,7 @@ import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
 import { filterSlashCommands, mergeSlashCommands, mentionQuery, slashQuery, type SlashEntry } from "./transcript/slash";
 import { fmtTokens, fmtUsd } from "./transcript/format";
+import { acpSessionInfo, acpSlashCommands } from "../lib/acp";
 import { emptyDraft, updateDraft, useComposerDrafts } from "../state/composerDrafts";
 
 /** Sent-message history per session (survives remounts, not reloads). */
@@ -30,6 +31,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const client = useStore((s) => s.client);
   const session = useStore((s) => s.sessions[sessionId]);
   const provider = useStore((s) => s.providers.find((p) => p.kind === session?.provider));
+  const acpInfo = useStore((s) => acpSessionInfo(s.transcripts[sessionId]?.providerInfo));
   const toast = useStore((s) => s.toast);
   const openDialog = useStore((s) => s.openDialog);
   const { text, images, sending } = useComposerDrafts((s) => s.drafts[sessionId] ?? emptyDraft);
@@ -66,6 +68,11 @@ export function Composer({ sessionId }: { sessionId: string }) {
     if (pop.kind !== "slash" || !client || !session) return;
     const cached = slashCache.get(sessionId);
     const apply = (list: SlashCommand[]) => setSlashEntries(mergeSlashCommands(session.provider, list));
+    // ACP agents announce their commands in the session itself.
+    if (session.provider === "acp") {
+      apply(acpSlashCommands(acpInfo));
+      return;
+    }
     if (cached && Date.now() - cached.at < 60_000) {
       apply(cached.entries);
       return;
@@ -78,7 +85,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
         apply(list);
       })
       .catch(() => {});
-  }, [pop.kind, client, session, sessionId]);
+  }, [pop.kind, client, session, sessionId, acpInfo]);
 
   const slashResults = useMemo(() => (pop.kind === "slash" ? filterSlashCommands(slashEntries, pop.query, 12) : []), [pop, slashEntries]);
 
@@ -284,7 +291,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
         ref={taRef}
         data-autofocus
         value={text}
-        placeholder={running ? (canSteer ? "Steer the running turn…" : "Queue a message…") : `Message ${session.provider}…  / commands · @ files`}
+        placeholder={running ? (canSteer ? "Steer the running turn…" : "Queue a message…") : `Message ${session.agent ?? session.provider}…  / commands · @ files`}
         disabled={sending}
         rows={1}
         onChange={(e) => {

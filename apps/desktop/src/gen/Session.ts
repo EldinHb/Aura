@@ -7,6 +7,10 @@ import type { WorktreeInfo } from "./WorktreeInfo";
 
 export type Session = { id: string, provider: ProviderKind, 
 /**
+ * For `ProviderKind::Acp`: the id of the ACP agent (see [`AgentInfo`]).
+ */
+agent: string | null, 
+/**
  * The provider's own identifier (Claude session id, Codex thread id). None until known.
  */
 native_id: string | null, cwd: string, worktree: WorktreeInfo | null, title: string, group: string | null, status: SessionStatus, mode: SessionMode, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 

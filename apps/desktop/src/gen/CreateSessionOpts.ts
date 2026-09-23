@@ -3,7 +3,11 @@ import type { ProviderKind } from "./ProviderKind";
 import type { SessionMode } from "./SessionMode";
 import type { WorktreeOpts } from "./WorktreeOpts";
 
-export type CreateSessionOpts = { provider: ProviderKind, cwd: string, title: string | null, group: string | null, 
+export type CreateSessionOpts = { provider: ProviderKind, 
+/**
+ * ACP agent id, required when `provider` is `Acp`.
+ */
+agent: string | null, cwd: string, title: string | null, group: string | null, 
 /**
  * Structured (default for AI providers) or Terminal.
  */

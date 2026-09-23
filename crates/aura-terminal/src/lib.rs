@@ -17,6 +17,7 @@ impl Provider for TerminalProvider {
             version: None,
             binary: aura_pty::default_shell().first().cloned(),
             capabilities: CapabilitySet { terminal_mode: true, interrupt: true, rename: true, ..Default::default() },
+            agents: vec![],
         }
     }
     async fn list_native(&self) -> anyhow::Result<Vec<NativeSession>> {

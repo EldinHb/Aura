@@ -11,6 +11,8 @@ pub type SessionId = String;
 pub enum ProviderKind {
     Claude,
     Codex,
+    /// Any agent speaking the Agent Client Protocol. Which one is in `Session::agent`.
+    Acp,
     #[default]
     Terminal,
 }
@@ -20,6 +22,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Claude => "claude",
             ProviderKind::Codex => "codex",
+            ProviderKind::Acp => "acp",
             ProviderKind::Terminal => "terminal",
         }
     }
@@ -27,6 +30,7 @@ impl ProviderKind {
         match s {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
+            "acp" => Some(Self::Acp),
             "terminal" => Some(Self::Terminal),
             _ => None,
         }
@@ -77,6 +81,9 @@ pub struct WorktreeInfo {
 pub struct Session {
     pub id: SessionId,
     pub provider: ProviderKind,
+    /// For `ProviderKind::Acp`: the id of the ACP agent (see [`AgentInfo`]).
+    #[serde(default)]
+    pub agent: Option<String>,
     /// The provider's own identifier (Claude session id, Codex thread id). None until known.
     pub native_id: Option<String>,
     pub cwd: String,
@@ -366,6 +373,26 @@ pub struct ProviderInfo {
     pub version: Option<String>,
     pub binary: Option<String>,
     pub capabilities: CapabilitySet,
+    /// Agents reachable through this provider. Only the ACP provider has any.
+    #[serde(default)]
+    pub agents: Vec<AgentInfo>,
+}
+
+/// An agent launched through the Agent Client Protocol.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentInfo {
+    /// Stable id stored in `Session::agent` (e.g. `gemini`).
+    pub id: String,
+    pub display_name: String,
+    /// argv that starts the agent in ACP mode.
+    pub command: Vec<String>,
+    /// Whether the agent's binary was found.
+    pub available: bool,
+    /// Resolved path of `command[0]` when found.
+    pub binary: Option<String>,
+    /// `builtin` for agents Aura knows about, `custom` for ones from `acp-agents.json`.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -427,6 +454,8 @@ pub struct WorktreeOpts {
 #[ts(export)]
 pub struct CreateSessionOpts {
     pub provider: ProviderKind,
+    /// ACP agent id, required when `provider` is `Acp`.
+    pub agent: Option<String>,
     pub cwd: String,
     pub title: Option<String>,
     pub group: Option<String>,
@@ -459,11 +488,12 @@ impl Session {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| opts.cwd.clone());
-            format!("{} · {}", opts.provider.as_str(), base)
+            format!("{} · {}", opts.label(), base)
         });
         Self {
             id: crate::new_id(),
             provider: opts.provider,
+            agent: opts.agent.clone(),
             // When forking this is the source session; the provider replaces it with the new id.
             native_id: opts.resume_native_id.clone(),
             cwd: opts.cwd.clone(),
@@ -485,6 +515,16 @@ impl Session {
             last_error: None,
             pending_count: 0,
             exit_code: None,
+        }
+    }
+}
+
+impl CreateSessionOpts {
+    /// Short name used in default titles: the ACP agent id, else the provider.
+    pub fn label(&self) -> &str {
+        match (&self.provider, &self.agent) {
+            (ProviderKind::Acp, Some(agent)) => agent,
+            (p, _) => p.as_str(),
         }
     }
 }

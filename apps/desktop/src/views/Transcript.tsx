@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import clsx from "clsx";
 import type { Item, Turn } from "../gen";
 import { useStore } from "../state/store";
+import { sessionProviderLabel } from "../lib/acp";
 import { setFocus } from "../commands/core";
 import { registerTranscriptCommands, setTranscriptHandle } from "../commands/transcript";
 import { ItemRow } from "./transcript/ItemRow";
@@ -40,6 +41,7 @@ function TurnDivider({ turn }: { turn: Turn }) {
 export function Transcript({ sessionId }: { sessionId: string }) {
   const t = useStore((s) => s.transcripts[sessionId]);
   const session = useStore((s) => s.sessions[sessionId]);
+  const providers = useStore((s) => s.providers);
   const cursorItemId = useStore((s) => s.cursorItemId);
   const setCursorItem = useStore((s) => s.setCursorItem);
   const showReasoning = useStore((s) => s.settings.showReasoning);
@@ -190,12 +192,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         {t?.loading && <div className="dim transcript-loading">Loading history…</div>}
         {!t?.loading && rows.length === 0 && session && (
           <div className="empty">
-            <h2>{session.provider === "claude" ? "Claude Code" : session.provider === "codex" ? "Codex" : session.provider}</h2>
+            <h2>{sessionProviderLabel(session, providers)}</h2>
             <span className="mono">{session.cwd}</span>
             {session.status === "error" && session.last_error && <code className="err-text">{session.last_error}</code>}
             <div className="hint">
               <span><kbd>i</kbd> type a message</span>
-              <span><kbd>⌘T</kbd> terminal mode</span>
+              {session.provider !== "acp" && <span><kbd>⌘T</kbd> terminal mode</span>}
               <span><kbd>⌘K</kbd> commands</span>
             </div>
           </div>

@@ -21,7 +21,7 @@ struct Args {
     /// Use an in-memory store (tests)
     #[arg(long)]
     ephemeral: bool,
-    /// Providers to enable (default: all detected). Comma separated: claude,codex,terminal
+    /// Providers to enable (default: all detected). Comma separated: claude,codex,acp,terminal
     #[arg(long)]
     providers: Option<String>,
 }
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
     let enabled: Vec<String> = args
         .providers
         .as_deref()
-        .unwrap_or("claude,codex,terminal")
+        .unwrap_or("claude,codex,acp,terminal")
         .split(',')
         .map(|s| s.trim().to_lowercase())
         .collect();
@@ -78,6 +78,9 @@ async fn main() -> Result<()> {
     }
     if enabled.iter().any(|p| p == "codex") {
         providers.push(Arc::new(aura_provider_codex::CodexProvider::new()));
+    }
+    if enabled.iter().any(|p| p == "acp") {
+        providers.push(Arc::new(aura_provider_acp::AcpProvider::new(&data_dir)));
     }
 
     let manager = Manager::new(store.clone(), providers, Some(Arc::new(aura_git::Git)));
@@ -163,7 +166,7 @@ async fn wait_for_signal() {
 }
 
 fn init_logging(data_dir: &std::path::Path, foreground: bool) -> Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,aura_core=debug,aura_provider_claude=debug,aura_provider_codex=debug"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,aura_core=debug,aura_provider_claude=debug,aura_provider_codex=debug,aura_provider_acp=debug"));
     if foreground {
         tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
     } else {

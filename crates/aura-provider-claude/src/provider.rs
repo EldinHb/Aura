@@ -90,6 +90,7 @@ impl Provider for ClaudeProvider {
             version: d.version,
             binary: d.binary,
             capabilities: Self::capabilities_static(),
+            agents: vec![],
         }
     }
 

@@ -8,6 +8,7 @@ import { isMac } from "../../lib/platform";
 import { findConflicts, isConflicting } from "./keymapUtils";
 import type { CapabilitySet } from "../../gen";
 import clsx from "clsx";
+import { providerChoices } from "../../lib/acp";
 
 type Tab = "general" | "keymap" | "providers";
 const TABS: Tab[] = ["general", "keymap", "providers"];
@@ -101,10 +102,11 @@ function GeneralTab() {
       <div className="field">
         <label>Default provider</label>
         <select value={settings.defaultProvider} onChange={(e) => set("defaultProvider", e.target.value)}>
-          {providers.length === 0 && <option value={settings.defaultProvider}>{settings.defaultProvider}</option>}
-          {providers.map((p) => (
-            <option key={p.kind} value={p.kind}>
-              {p.display_name}
+          {!providerChoices(providers).some((c) => c.key === settings.defaultProvider) && <option value={settings.defaultProvider}>{settings.defaultProvider}</option>}
+          {providerChoices(providers).map((c) => (
+            <option key={c.key} value={c.key}>
+              {c.label}
+              {c.kind === "acp" ? " (ACP)" : ""}
             </option>
           ))}
         </select>
@@ -331,7 +333,7 @@ function ProvidersTab() {
             <span className={clsx("dot", p.available ? "ok" : "err")} />
             <span className={clsx("chip", p.kind)}>{p.kind}</span>
             <strong>{p.display_name}</strong>
-            <span className="dim">{p.version ?? "not found"}</span>
+            <span className="dim">{p.kind === "acp" ? `${p.agents.filter((a) => a.available).length} of ${p.agents.length} found` : p.version ?? "not found"}</span>
             <span className="dim mono" style={{ marginLeft: "auto" }}>{p.binary ?? ""}</span>
           </div>
           <div className="cap-grid">
@@ -351,6 +353,22 @@ function ProvidersTab() {
               </span>
             )}
           </div>
+          {p.kind === "acp" && (
+            <div className="acp-agents">
+              {p.agents.map((a) => (
+                <div key={a.id} className="acp-agent">
+                  <span className={clsx("dot", a.available ? "ok" : "")} />
+                  <span>{a.display_name}</span>
+                  {a.source === "custom" && <span className="chip">custom</span>}
+                  <span className="dim mono grow" title={a.binary ?? undefined}>{a.command.join(" ")}</span>
+                  <span className="dim">{a.available ? "found" : "not installed"}</span>
+                </div>
+              ))}
+              <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
+                Add other agents, or ACP bridges for CLIs that do not speak ACP themselves, in <span className="mono">acp-agents.json</span> in Aura's data directory (<span className="mono">~/.aura</span>). See the README.
+              </div>
+            </div>
+          )}
         </div>
       ))}
       {providers.length === 0 && <div className="empty" style={{ height: "auto", padding: 20 }}>No providers reported by the daemon.</div>}

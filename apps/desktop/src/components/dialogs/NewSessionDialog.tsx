@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
-import type { DirEntry, ModelInfo, ProviderKind, SessionMode } from "../../gen";
+import type { DirEntry, ModelInfo, SessionMode } from "../../gen";
 import { setFocus } from "../../commands/core";
 import { basename } from "../../lib/platform";
 import { physicalKey } from "../../lib/keymap";
 import clsx from "clsx";
+import { providerChoices } from "../../lib/acp";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
 
@@ -38,8 +39,6 @@ function parentDir(p: string): string {
   return i <= 0 ? "/" : t.slice(0, i);
 }
 
-const PROVIDER_ORDER: ProviderKind[] = ["claude", "codex", "terminal"];
-
 export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; cwd?: string }) {
   const client = useStore((s) => s.client);
   const providers = useStore((s) => s.providers);
@@ -50,11 +49,17 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const toast = useStore((s) => s.toast);
   const select = useStore((s) => s.select);
 
-  const available = useMemo(() => PROVIDER_ORDER.map((k) => providers.find((p) => p.kind === k)).filter((p): p is NonNullable<typeof p> => !!p && p.available), [providers]);
-  const [provider, setProvider] = useState<ProviderKind>(() => {
-    const want = (preset === "worktree" ? settings.defaultProvider : preset ?? settings.defaultProvider) as ProviderKind;
-    return available.some((p) => p.kind === want) ? want : available[0]?.kind ?? "terminal";
+  const available = useMemo(() => providerChoices(providers), [providers]);
+  // A choice key: a provider kind, or `acp:<agent>` for an ACP agent.
+  const [choiceKey, setChoiceKey] = useState<string>(() => {
+    const want = preset === "worktree" ? settings.defaultProvider : preset ?? settings.defaultProvider;
+    return available.some((c) => c.key === want) ? want : available[0]?.key ?? "terminal";
   });
+  const choice = available.find((c) => c.key === choiceKey) ?? { key: "terminal", kind: "terminal" as const, agent: null, label: "Terminal", version: null };
+  const provider = choice.kind;
+  // ACP agents only report their models and modes once a session exists, and
+  // have no terminal mode Aura could switch to.
+  const isAcp = provider === "acp";
   const [dir, setDir] = useState(presetCwd ?? selected?.cwd ?? settings.defaultCwd ?? "");
   const [home, setHome] = useState<string>("");
   const [entries, setEntries] = useState<DirEntry[]>([]);
@@ -91,9 +96,9 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     setModel("");
     setPermission("");
     setSandbox("");
-    if (client && provider !== "terminal") client.models(provider).then(setModels).catch(() => setModels([]));
+    if (client && provider !== "terminal" && provider !== "acp") client.models(provider).then(setModels).catch(() => setModels([]));
     else setModels([]);
-  }, [provider, client]);
+  }, [provider, choiceKey, client]);
 
   // Directory browser
   const expandedDir = useMemo(() => (dir === "~" ? home : dir.startsWith("~/") ? home + dir.slice(1) : dir), [dir, home]);
@@ -160,6 +165,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       const argv = command.trim() ? command.trim().split(/\s+/) : null;
       const s = await client.createSession({
         provider,
+        agent: choice.agent,
         cwd,
         title: title.trim() || null,
         group: group.trim() || null,
@@ -180,7 +186,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, command, provider, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -219,10 +225,10 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
           e.preventDefault();
           void submit();
         } else if (e.altKey && /^[1-9]$/.test(physicalKey(e))) {
-          const p = available[Number(physicalKey(e)) - 1];
-          if (p) {
+          const c = available[Number(physicalKey(e)) - 1];
+          if (c) {
             e.preventDefault();
-            setProvider(p.kind);
+            setChoiceKey(c.key);
           }
         }
       }}
@@ -236,12 +242,13 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       }
     >
       <div className="field">
-        <label>Provider <span className="dim">(⌥1–3)</span></label>
+        <label>Provider {available.length > 1 && <span className="dim">(⌥1–{Math.min(9, available.length)})</span>}</label>
         <div className="radio-row" role="radiogroup">
-          {available.map((p, i) => (
-            <button key={p.kind} type="button" role="radio" aria-checked={provider === p.kind} className={clsx("btn", provider === p.kind && "primary")} data-command="new-session.provider" data-autofocus={i === 0 ? true : undefined} onClick={() => setProvider(p.kind)}>
-              {p.display_name} <kbd>{i + 1}</kbd>
-              {p.version && <span className="dim">{p.version}</span>}
+          {available.map((c, i) => (
+            <button key={c.key} type="button" role="radio" aria-checked={choiceKey === c.key} className={clsx("btn", choiceKey === c.key && "primary")} data-command="new-session.provider" data-autofocus={i === 0 ? true : undefined} onClick={() => setChoiceKey(c.key)}>
+              {c.label} {i < 9 && <kbd>{i + 1}</kbd>}
+              {c.version && <span className="dim">{c.version}</span>}
+              {c.kind === "acp" && <span className="dim">ACP</span>}
             </button>
           ))}
           {available.length === 0 && <span className="dim">No providers detected.</span>}
@@ -269,7 +276,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       <div className="two-col">
         <div className="field">
           <label>Title (optional)</label>
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`${provider} · ${basename(expandedDir || "")}`} />
+          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`${choice.agent ?? provider} · ${basename(expandedDir || "")}`} />
         </div>
         <div className="field">
           <label>Group (optional)</label>
@@ -282,7 +289,11 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       </div>
 
-      {provider !== "terminal" ? (
+      {isAcp ? (
+        <div className="field">
+          <span className="dim">Model and mode can be changed once the session has started, if the agent offers them (⌘K → Model, Permission mode).</span>
+        </div>
+      ) : provider !== "terminal" ? (
         <>
           <div className="field">
             <label>Mode</label>

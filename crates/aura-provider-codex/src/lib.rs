@@ -163,6 +163,7 @@ impl Provider for CodexProvider {
                 rename: true,
                 terminal_mode: true,
             },
+            agents: vec![],
         }
     }
 
