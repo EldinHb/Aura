@@ -7,7 +7,9 @@
 
 pub mod event;
 pub mod manager;
+pub mod process;
 pub mod provider;
+pub mod review;
 pub mod store;
 pub mod types;
 pub mod which;
@@ -15,6 +17,7 @@ pub mod which;
 pub use event::*;
 pub use manager::*;
 pub use provider::*;
+pub use review::*;
 pub use store::*;
 pub use types::*;
 

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+libc = "0.2"
 dirs = { workspace = true }
 aura-pty = { workspace = true }
 tokio = { workspace = true }

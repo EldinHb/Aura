@@ -30,6 +30,7 @@ pub struct AppState {
     pub token: String,
     pub info: Arc<DaemonInfo>,
     pub ext: Option<ExtHandler>,
+    pub notifications: Option<broadcast::Sender<Value>>,
     pub shutdown: broadcast::Sender<()>,
 }
 
@@ -46,6 +47,10 @@ impl RpcServer {
         data_dir: &std::path::Path,
         ext: Option<ExtHandler>,
     ) -> Result<RpcServer> {
+        Self::start_with_notifications(manager, data_dir, ext, None).await
+    }
+
+    pub async fn start_with_notifications(manager: Manager, data_dir: &std::path::Path, ext: Option<ExtHandler>, notifications: Option<broadcast::Sender<Value>>) -> Result<RpcServer> {
         std::fs::create_dir_all(data_dir)?;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let port = listener.local_addr()?.port();
@@ -65,6 +70,7 @@ impl RpcServer {
             token,
             info: Arc::new(info.clone()),
             ext,
+            notifications,
             shutdown: shutdown.clone(),
         };
         let app = Router::new()
@@ -162,6 +168,21 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     });
 
+    let extra_task = state.notifications.as_ref().map(|sender| {
+        let mut rx = sender.subscribe();
+        let tx = out_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                let notification = match rx.recv().await {
+                    Ok(value) => value,
+                    Err(broadcast::error::RecvError::Lagged(_)) => json!({"method":"reviews.changed","params":{}}),
+                    Err(_) => break,
+                };
+                if tx.send(Message::Text(notification.to_string())).await.is_err() { break; }
+            }
+        })
+    });
+
     // PTY output fan-out (only attached sessions).
     let mut pty = state.manager.subscribe_pty();
     let pty_tx = out_tx.clone();
@@ -229,6 +250,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             _ => {}
         }
     }
+    if let Some(task) = extra_task { task.abort(); }
     ev_task.abort();
     pty_task.abort();
     drop(out_tx);

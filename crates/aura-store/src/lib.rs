@@ -48,6 +48,11 @@ const MIGRATIONS: &[&str] = &[
         updated_at TEXT NOT NULL
     );
     "#,
+    // v2: independent records prevent inbox retirement from deleting review history.
+    r#"CREATE TABLE IF NOT EXISTS feature_records (
+        namespace TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL,
+        PRIMARY KEY(namespace, id)
+    );"#,
 ];
 
 pub struct SqliteStore {
@@ -118,6 +123,16 @@ fn parse_ts(s: &str) -> DateTime<Utc> {
 }
 
 impl Store for SqliteStore {
+    fn feature_records(&self, namespace: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, json FROM feature_records WHERE namespace = ? ORDER BY id")?;
+        let rows = stmt.query_map([namespace], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+    fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> Result<()> {
+        self.conn.lock().execute("INSERT INTO feature_records(namespace,id,json) VALUES (?1,?2,?3) ON CONFLICT(namespace,id) DO UPDATE SET json=excluded.json", params![namespace,id,value])?;
+        Ok(())
+    }
     fn upsert_session(&self, session: &Session) -> Result<()> {
         let json = serde_json::to_string(session)?;
         self.conn.lock().execute(

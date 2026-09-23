@@ -1,0 +1,376 @@
+use super::*;
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+const DIFF: &str =
+    "diff --git a/test.rs b/test.rs\n--- a/test.rs\n+++ b/test.rs\n@@ -1 +1 @@\n-before\n+after\n";
+fn draft() -> PreReview {
+    PreReview {
+        id: "review-1".into(),
+        pull: PullRequest {
+            id: "o/r#1".into(),
+            repo: "o/r".into(),
+            number: 1,
+            account: "github.com:alice".into(),
+            head_sha: "a".repeat(40),
+            base_sha: "b".repeat(40),
+            state: "open".into(),
+            ..Default::default()
+        },
+        config: ReviewConfig {
+            provider: "codex".into(),
+            prompt_mode: "default".into(),
+            ..Default::default()
+        },
+        instructions: "Review".into(),
+        status: "ready".into(),
+        phase: "done".into(),
+        error: None,
+        created_at: now().to_rfc3339(),
+        updated_at: now().to_rfc3339(),
+        revision: 0,
+        reviewed_sha: "a".repeat(40),
+        merge_base: "b".repeat(40),
+        context_mode: "worktree".into(),
+        context_note: None,
+        diff: DIFF.into(),
+        log_tail: vec![],
+        result: ReviewResult {
+            summary: "A useful summary".into(),
+            verdict: "comment".into(),
+            risk: "low".into(),
+            confidence: Some(0.8),
+            comments: vec![ReviewComment {
+                id: "c1".into(),
+                path: "test.rs".into(),
+                line: 1,
+                side: "RIGHT".into(),
+                body: "Fix this".into(),
+                severity: "major".into(),
+                rationale: Some("Private thought".into()),
+                ..Default::default()
+            }],
+        },
+        submitted_url: None,
+        submission: None,
+    }
+}
+struct MockGithub {
+    account: Mutex<String>,
+    head: Mutex<String>,
+    posts: AtomicUsize,
+    uncertain: AtomicBool,
+    reject: AtomicBool,
+    posted: Mutex<Vec<Value>>,
+}
+impl Default for MockGithub {
+    fn default() -> Self {
+        Self {
+            account: Mutex::new("alice".into()),
+            head: Mutex::new("a".repeat(40)),
+            posts: AtomicUsize::new(0),
+            uncertain: AtomicBool::new(false),
+            reject: AtomicBool::new(false),
+            posted: Mutex::new(vec![]),
+        }
+    }
+}
+#[async_trait]
+impl Github for MockGithub {
+    fn host(&self) -> &str {
+        "github.com"
+    }
+    async fn diff(&self, _: &str, _: &str, _: &str) -> Result<String> {
+        Ok(DIFF.into())
+    }
+    async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        if path == "user" {
+            return Ok(json!({"login":*self.account.lock()}));
+        }
+        if path.starts_with("search/") {
+            return Ok(json!({"total_count":0,"incomplete_results":false,"items":[]}));
+        }
+        if path.contains("/compare/") {
+            return Ok(json!({"merge_base_commit":{"sha":"b".repeat(40)}}));
+        }
+        if path == "graphql" {
+            return Ok(
+                json!({"data":{"repository":{"pullRequest":{"viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","commits":{"nodes":[]}}}}}),
+            );
+        }
+        if path == "repos/o/r/pulls/1" {
+            return Ok(
+                json!({"title":"PR","state":"open","head":{"sha":*self.head.lock(),"ref":"feature"},"base":{"sha":"b".repeat(40),"ref":"main"},"user":{"login":"bob"}}),
+            );
+        }
+        if method == "POST" && path.ends_with("/reviews") {
+            self.posts.fetch_add(1, Ordering::SeqCst);
+            if self.reject.load(Ordering::SeqCst) {
+                return Err(aura_github::RejectedRequest("HTTP 422 invalid comment".into()).into());
+            }
+            let mut v = body.unwrap();
+            v["html_url"] = json!("https://github.com/o/r/pull/1#review-1");
+            self.posted.lock().push(v.clone());
+            if self.uncertain.load(Ordering::SeqCst) {
+                bail!("network timeout");
+            }
+            return Ok(v);
+        }
+        if path.contains("/reviews?") {
+            return Ok(json!(self.posted.lock().clone()));
+        }
+        bail!("Unexpected request {method} {path}")
+    }
+}
+struct MockRunner;
+#[async_trait]
+impl ReviewRunner for MockRunner {
+    async fn run(
+        &self,
+        _: &PreReview,
+        _: &std::path::Path,
+        progress: Progress,
+    ) -> Result<ReviewResult> {
+        progress("Reading changed file".into());
+        Ok(draft().result)
+    }
+}
+struct MockWorkspace;
+#[async_trait]
+impl ReviewWorkspace for MockWorkspace {
+    async fn prepare(&self, _: &PullRequest, cwd: &std::path::Path) -> Result<(String, String)> {
+        tokio::fs::create_dir_all(cwd).await?;
+        Ok((DIFF.into(), "b".repeat(40)))
+    }
+}
+fn service(gh: Arc<MockGithub>, r: PreReview) -> Arc<ReviewService> {
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    store
+        .save_feature_record("reviews", &r.id, &serde_json::to_string(&r).unwrap())
+        .unwrap();
+    let manager = Manager::new(store.clone(), vec![], None);
+    let mut svc = ReviewService::new(
+        store,
+        gh,
+        Arc::new(MockRunner),
+        manager,
+        std::env::temp_dir().join(format!("aura-test-{}", new_id())),
+    )
+    .unwrap();
+    Arc::get_mut(&mut svc).unwrap().workspace = Arc::new(MockWorkspace);
+    svc.state.lock().account = Some(r.pull.account.clone());
+    svc
+}
+#[test]
+fn submission_has_exact_positions_and_no_private_or_deleted_data() {
+    let mut r = draft();
+    let mut deleted = r.result.comments[0].clone();
+    deleted.id = "deleted".into();
+    deleted.body = "secret deleted".into();
+    deleted.deleted = true;
+    r.result.comments.push(deleted);
+    let mut orphan = r.result.comments[0].clone();
+    orphan.path = "missing.rs".into();
+    orphan.body = "Kept unanchored".into();
+    r.result.comments.push(orphan);
+    let preview = build_preview(&r, &"c".repeat(40)).unwrap();
+    assert!(preview.stale);
+    assert_eq!(preview.comments.len(), 1);
+    let body = payload(&preview).to_string();
+    assert!(!body.contains("Private thought"));
+    assert!(!body.contains("secret deleted"));
+    assert!(body.contains("Kept unanchored"));
+    assert_eq!(payload(&preview)["commit_id"], "a".repeat(40));
+}
+#[tokio::test]
+async fn requires_preview_and_rechecks_head() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    assert!(svc.submit("review-1", "absent").await.is_err());
+    let p = svc.preview("review-1").await.unwrap();
+    *gh.head.lock() = "c".repeat(40);
+    assert!(svc.submit("review-1", &p.token).await.is_err());
+    assert_eq!(gh.posts.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn concurrent_submit_is_serialized_and_sent_once() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    let p = svc.preview("review-1").await.unwrap();
+    let input = json!({"id":"review-1","token":p.token});
+    let (a, b) = tokio::join!(
+        svc.handle("reviews.submit", input.clone()),
+        svc.handle("reviews.submit", input)
+    );
+    assert!(a.is_ok() && b.is_ok());
+    assert_eq!(gh.posts.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn uncertain_success_is_reconciled_without_reposting() {
+    let gh = Arc::new(MockGithub::default());
+    gh.uncertain.store(true, Ordering::SeqCst);
+    let svc = service(gh.clone(), draft());
+    let p = svc.preview("review-1").await.unwrap();
+    assert!(svc.submit("review-1", &p.token).await.is_err());
+    assert_eq!(svc.get("review-1").unwrap().status, "uncertain");
+    assert!(svc.submit("review-1", &p.token).await.is_err());
+    assert_eq!(svc.reconcile("review-1").await.unwrap().status, "submitted");
+    assert_eq!(gh.posts.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn definite_rejection_preserves_editable_draft() {
+    let gh = Arc::new(MockGithub::default());
+    gh.reject.store(true, Ordering::SeqCst);
+    let svc = service(gh, draft());
+    let p = svc.preview("review-1").await.unwrap();
+    assert!(svc.submit("review-1", &p.token).await.is_err());
+    assert_eq!(svc.get("review-1").unwrap().status, "ready");
+}
+#[tokio::test]
+async fn account_switch_cannot_post_old_draft() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    let p = svc.preview("review-1").await.unwrap();
+    *gh.account.lock() = "someone-else".into();
+    assert!(svc.submit("review-1", &p.token).await.is_err());
+    assert_eq!(gh.posts.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn save_revision_conflict_keeps_original() {
+    let svc = service(Arc::new(MockGithub::default()), draft());
+    let input = json!({"id":"review-1","revision":0,"result":draft().result});
+    assert!(svc.handle("reviews.save", input.clone()).await.is_ok());
+    assert!(svc.handle("reviews.save", input).await.is_err());
+    assert_eq!(svc.get("review-1").unwrap().revision, 1);
+}
+#[tokio::test]
+async fn inbox_retirement_preserves_history_and_hidden_preferences() {
+    let svc = service(Arc::new(MockGithub::default()), draft());
+    svc.handle(
+        "pulls.hide",
+        json!({"id":"o/r#1","account":"github.com:alice"}),
+    )
+    .await
+    .unwrap();
+    svc.refresh().await.unwrap();
+    assert_eq!(svc.snapshot().reviews.len(), 1);
+    assert_eq!(
+        svc.store
+            .feature_records("hidden:github.com:alice")
+            .unwrap(),
+        vec![("o/r#1".into(), "true".into())]
+    );
+}
+#[tokio::test]
+async fn mocked_runner_produces_frozen_diff_and_cleans_workspace() {
+    let svc = service(Arc::new(MockGithub::default()), draft());
+    svc.change("review-1", |r| {
+        r.status = "running".into();
+        Ok(())
+    })
+    .unwrap();
+    svc.execute("review-1").await.unwrap();
+    let r = svc.get("review-1").unwrap();
+    assert_eq!(r.status, "ready");
+    assert_eq!(r.diff, DIFF);
+    assert_eq!(r.reviewed_sha, r.pull.head_sha);
+    assert!(r.result.comments[0].valid);
+    assert_eq!(std::fs::read_dir(&svc.root).unwrap().count(), 0);
+    std::fs::remove_dir(&svc.root).unwrap();
+}
+#[tokio::test]
+async fn restart_marks_interrupted_and_uncertain_jobs() {
+    let mut r = draft();
+    r.status = "running".into();
+    assert_eq!(
+        service(Arc::new(MockGithub::default()), r)
+            .get("review-1")
+            .unwrap()
+            .status,
+        "failed"
+    );
+    let mut r = draft();
+    r.status = "submitting".into();
+    assert_eq!(
+        service(Arc::new(MockGithub::default()), r)
+            .get("review-1")
+            .unwrap()
+            .status,
+        "uncertain"
+    );
+}
+
+struct BlockingRunner {
+    started: Arc<tokio::sync::Notify>,
+    finish: Arc<tokio::sync::Notify>,
+}
+#[async_trait]
+impl ReviewRunner for BlockingRunner {
+    async fn run(&self, _: &PreReview, _: &std::path::Path, _: Progress) -> Result<ReviewResult> {
+        self.started.notify_one();
+        self.finish.notified().await;
+        Ok(draft().result)
+    }
+}
+#[tokio::test]
+async fn cancelled_review_cannot_become_ready_after_late_completion() {
+    let mut svc = service(Arc::new(MockGithub::default()), draft());
+    let started = Arc::new(tokio::sync::Notify::new());
+    let finish = Arc::new(tokio::sync::Notify::new());
+    Arc::get_mut(&mut svc).unwrap().runner = Arc::new(BlockingRunner {
+        started: started.clone(),
+        finish: finish.clone(),
+    });
+    svc.change("review-1", |r| {
+        r.status = "running".into();
+        Ok(())
+    })
+    .unwrap();
+    let running = svc.clone();
+    let task = tokio::spawn(async move { running.execute("review-1").await });
+    started.notified().await;
+    svc.handle("reviews.cancel", json!({"id":"review-1"}))
+        .await
+        .unwrap();
+    finish.notify_one();
+    assert!(task.await.unwrap().is_err());
+    assert_eq!(svc.get("review-1").unwrap().status, "cancelled");
+    assert_eq!(std::fs::read_dir(&svc.root).unwrap().count(), 0);
+    std::fs::remove_dir(&svc.root).unwrap();
+}
+struct MissingWorkspace;
+#[async_trait]
+impl ReviewWorkspace for MissingWorkspace {
+    async fn prepare(&self, _: &PullRequest, _: &std::path::Path) -> Result<(String, String)> {
+        bail!("Clone permission denied")
+    }
+}
+#[tokio::test]
+async fn checkout_failure_uses_explicit_diff_only_context() {
+    let mut svc = service(Arc::new(MockGithub::default()), draft());
+    Arc::get_mut(&mut svc).unwrap().workspace = Arc::new(MissingWorkspace);
+    svc.change("review-1", |r| {
+        r.status = "running".into();
+        Ok(())
+    })
+    .unwrap();
+    svc.execute("review-1").await.unwrap();
+    let r = svc.get("review-1").unwrap();
+    assert_eq!(r.context_mode, "diff-only");
+    assert!(r.context_note.unwrap().contains("Clone permission denied"));
+    std::fs::remove_dir(&svc.root).unwrap();
+}
+#[tokio::test]
+async fn missing_review_diff_does_not_fetch_new_head_under_old_findings() {
+    let mut r = draft();
+    r.diff.clear();
+    let svc = service(Arc::new(MockGithub::default()), r);
+    let returned = svc
+        .handle("reviews.diff", json!({"id":"review-1"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(returned["diff"], "");
+    let preview = svc.preview("review-1").await.unwrap();
+    assert!(preview.comments.is_empty());
+    assert!(preview.body.contains("Additional notes"));
+}

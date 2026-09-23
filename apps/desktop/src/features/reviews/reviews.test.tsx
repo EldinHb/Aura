@@ -1,0 +1,84 @@
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { RpcClient } from "../../lib/rpc";
+import type { ProviderInfo, Session } from "../../gen";
+import { selectSelected, useStore } from "../../state/store";
+import { ReviewSettings } from "./ReviewSettings";
+import { ReviewSubmit } from "./ReviewEditor";
+import { ReviewSidebar } from "./ReviewSidebar";
+import { editDraft, ensureDraft, flushDraft, openPull, useReviewDrafts, useReviews } from "./state";
+import { inboxFixture, pullFixture, reviewFixture } from "./fixtures";
+vi.hoisted(() => {
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => values.set(k, v), removeItem: (k: string) => values.delete(k), clear: () => values.clear() } });
+});
+const call = vi.fn();
+const models = vi.fn().mockResolvedValue([{ id: "review-model", display_name: "Review model", is_default: true, efforts: ["low", "high"], default_effort: "high" }]);
+beforeEach(() => {
+  localStorage.clear(); call.mockReset();
+  call.mockImplementation(async (method: string) => method === "reviews.defaults" ? { instructions: "Default instructions" } : method === "reviews.start" ? { ...reviewFixture, status: "queued" } : inboxFixture);
+  useReviews.setState({ inbox: inboxFixture, error: null, hidden: false, collapsed: false, showHidden: false, busy: false, reviewId: null });
+  useReviewDrafts.setState({ drafts: {} });
+  useStore.setState({ prSelection: null, reviewHistoryOpen: false, dialog: { kind: "none" }, providers: [{ kind: "codex", display_name: "Codex", available: true }] as ProviderInfo[], client: { call, models, onNotification: () => () => {}, onState: () => () => {} } as unknown as RpcClient });
+});
+afterEach(() => { cleanup(); vi.useRealTimers(); });
+it("opening and cancelling settings never starts a review", async () => {
+  render(<ReviewSettings pull={pullFixture} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start pre-review" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(call.mock.calls.some(([method]) => method === "reviews.start")).toBe(false);
+});
+it("sends the confirmed replacement prompt, model and effort", async () => {
+  render(<ReviewSettings pull={pullFixture} />);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Start pre-review" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.change(screen.getByLabelText("Review instructions"), { target: { value: "replace" } });
+  expect(screen.getByRole("button", { name: "Start pre-review" }).hasAttribute("disabled")).toBe(true);
+  fireEvent.change(screen.getByLabelText("Replacement instructions"), { target: { value: "Check edge cases" } });
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "review-model" } });
+  fireEvent.change(screen.getByLabelText("Effort"), { target: { value: "high" } });
+  fireEvent.click(screen.getByRole("button", { name: "Start pre-review" }));
+  await waitFor(() => expect(call).toHaveBeenCalledWith("reviews.start", expect.objectContaining({ config: expect.objectContaining({ prompt_mode: "replace", prompt: "Check edge cases", model: "review-model", effort: "high" }) })));
+});
+it("PR selection guards session commands and session selection restores the session", () => {
+  const session = { id: "s" } as Session;
+  useStore.setState({ selectedId: "s", sessions: { s: session } });
+  openPull(pullFixture);
+  expect(selectSelected(useStore.getState())).toBe(null);
+  expect(useStore.getState().selectedId).toBe("s");
+  useStore.getState().select("s");
+  expect(selectSelected(useStore.getState())).toBe(session);
+  expect(useStore.getState().prSelection).toBe(null);
+});
+it("hides and restores PRs through the persisted account-scoped preference", async () => {
+  render(<ReviewSidebar />);
+  fireEvent.click(screen.getByTitle("Hide PR"));
+  await waitFor(() => expect(call).toHaveBeenCalledWith("pulls.hide", { id: pullFixture.id, account: pullFixture.account }));
+  act(() => useReviews.setState({ inbox: { ...inboxFixture, pulls: [{ ...pullFixture, hidden: true }] }, showHidden: true }));
+  fireEvent.click(screen.getByTitle("Restore PR"));
+  await waitFor(() => expect(call).toHaveBeenCalledWith("pulls.restore", { id: pullFixture.id, account: pullFixture.account }));
+});
+it("flush waits for text typed during an in-flight save", async () => {
+  let resolve!: (value: unknown) => void;
+  call.mockImplementationOnce(() => new Promise((r) => { resolve = r; })).mockImplementationOnce(async (_method, p) => ({ ...reviewFixture, revision: 2, result: p.result }));
+  ensureDraft(reviewFixture);
+  editDraft(reviewFixture.id, { ...reviewFixture.result, summary: "first" });
+  const pending = flushDraft(reviewFixture.id);
+  editDraft(reviewFixture.id, { ...reviewFixture.result, summary: "second" });
+  resolve({ ...reviewFixture, revision: 1, result: { ...reviewFixture.result, summary: "first" } });
+  await pending;
+  expect(call).toHaveBeenLastCalledWith("reviews.save", expect.objectContaining({ revision: 1, result: expect.objectContaining({ summary: "second" }) }));
+  expect(useReviewDrafts.getState().drafts[reviewFixture.id].saving).toBe(false);
+});
+it("save failure retains recoverable local edits", async () => {
+  call.mockRejectedValue(new Error("offline")); ensureDraft(reviewFixture);
+  editDraft(reviewFixture.id, { ...reviewFixture.result, summary: "keep this" });
+  await expect(flushDraft(reviewFixture.id)).rejects.toThrow("offline");
+  expect(localStorage.getItem(`aura.review-draft.${reviewFixture.id}`)).toContain("keep this");
+});
+it("preview is inert until its explicit Post button is clicked", async () => {
+  const preview = { token: "token", review_id: reviewFixture.id, revision: 0, account: pullFixture.account, head_sha: pullFixture.head_sha, reviewed_sha: pullFixture.head_sha, event: "COMMENT", body: "Preview body", comments: [], stale: false };
+  render(<ReviewSubmit preview={preview} />);
+  expect(call).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Post comment" }));
+  await waitFor(() => expect(call).toHaveBeenCalledWith("reviews.submit", { id: reviewFixture.id, token: "token" }));
+});

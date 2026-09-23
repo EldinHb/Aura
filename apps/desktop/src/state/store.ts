@@ -4,6 +4,9 @@
  */
 import { create } from "zustand";
 import type {
+  PullRequest,
+  ReviewConfig,
+  SubmissionPreview,
   Approval,
   ApprovalDecision,
   Event,
@@ -16,10 +19,12 @@ import type {
   UserInputRequest,
 } from "../gen";
 import type { RpcClient, ConnectionState } from "../lib/rpc";
+import { planContent, type SessionPlan } from "../views/sessionPlans";
 
 export type Notice = { id: string; level: "info" | "warn" | "error"; message: string; ts: number };
 
 export type Transcript = {
+  planSnapshots?: Record<string, SessionPlan>;
   loaded: boolean;
   loading: boolean;
   lastSeq: number;
@@ -38,6 +43,8 @@ export type Transcript = {
 export type FocusRegion = "sidebar" | "main" | "composer" | "inspector";
 
 export type Dialog =
+  | { kind: "review-settings"; pull: PullRequest; config?: ReviewConfig }
+  | { kind: "review-submit"; preview: SubmissionPreview }
   | { kind: "none" }
   | { kind: "new-session"; provider?: string; cwd?: string }
   | { kind: "import" }
@@ -46,6 +53,7 @@ export type Dialog =
   | { kind: "inbox" }
   | { kind: "diff"; sessionId: string; path?: string }
   | { kind: "rename"; sessionId: string }
+  | { kind: "session-links"; sessionId: string }
   | { kind: "group"; sessionId: string }
   | { kind: "models"; sessionId: string }
   | { kind: "effort"; sessionId: string }
@@ -68,6 +76,8 @@ export type AppState = {
   sessions: Record<string, Session>;
   sessionOrder: string[];
   selectedId: string | null;
+  prSelection: PullRequest | null;
+  reviewHistoryOpen: boolean;
   transcripts: Record<string, Transcript>;
   // ui
   focus: FocusRegion;
@@ -172,6 +182,14 @@ function applyDelta(item: Item, delta: ItemDelta): Item {
 }
 
 function applyToTranscript(t: Transcript, ev: Event): Transcript {
+  // Retain plans delivered outside regular items, including resolved approvals.
+  const source = ev.type === "provider_info" && ev.info.kind === "plan" ? ev.info
+    : ev.type === "approval_requested" ? ev.approval.payload : null;
+  const content = source ? planContent(source) : null;
+  if (content) {
+    const id = ev.type === "approval_requested" ? `approval:${ev.approval.id}` : `plan:${String(source?.turn_id ?? "current")}`;
+    t = { ...t, planSnapshots: { ...t.planSnapshots, [id]: { id, title: "Agent plan", ...content, position: t.order.length * 2 + 1 } } };
+  }
   switch (ev.type) {
     case "turn_started": {
       const turns = t.turns.filter((x) => x.id !== ev.turn.id).concat(ev.turn);
@@ -246,6 +264,8 @@ export const useStore = create<AppState>((set, get) => ({
   sessions: {},
   sessionOrder: [],
   selectedId: null,
+  prSelection: null,
+  reviewHistoryOpen: false,
   transcripts: {},
   focus: "sidebar",
   paletteOpen: false,
@@ -282,7 +302,7 @@ export const useStore = create<AppState>((set, get) => ({
     const selectedId = get().selectedId === id ? null : get().selectedId;
     set({ sessions, transcripts, selectedId, sessionOrder: sortSessions(Object.values(sessions)) });
   },
-  select: (id) => set({ selectedId: id, cursorItemId: null, sidebarCursor: id }),
+  select: (id) => set({ prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id }),
   ensureTranscript: (id) => {
     if (!get().transcripts[id]) set({ transcripts: { ...get().transcripts, [id]: emptyTranscript() } });
   },
@@ -396,7 +416,7 @@ export function selectPendingCount(st: AppState): number {
 }
 
 export function selectSelected(st: AppState): Session | null {
-  return st.selectedId ? st.sessions[st.selectedId] ?? null : null;
+  return st.prSelection || st.reviewHistoryOpen ? null : st.selectedId ? st.sessions[st.selectedId] ?? null : null;
 }
 
 export function selectTranscript(st: AppState, id: string | null): Transcript | null {

@@ -3,6 +3,7 @@ import { registerCommands, type Command } from "../lib/commands";
 import { useStore, selectVisibleSessions, selectSelected } from "../state/store";
 import type { ApprovalOption, SessionMode } from "../gen";
 import { isTauri } from "../lib/connection";
+import { setPlanView, usePlanViews } from "../state/planView";
 
 function st() {
   return useStore.getState();
@@ -155,6 +156,13 @@ export const coreCommands: Command[] = [
   },
   { id: "session.fork", title: "Fork session", group: "Session", when: "hasSelection", run: async () => { const s = await client().fork(selected().id); st().select(s.id); } },
   { id: "session.rename", title: "Rename session…", group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "rename", sessionId: selected().id }) },
+  { id: "session.links", title: "Edit issue & PR…", keywords: ["GitHub", "pull request", "links"], group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "session-links", sessionId: selected().id }) },
+  { id: "session.plan.toggle", title: "Show / hide session plan", group: "Session", when: "hasSelection", run: () => {
+    const id = selected().id;
+    const open = !st().inspectorOpen || !(usePlanViews.getState().views[id]?.open ?? true);
+    setPlanView(id, { open });
+    st().setInspectorOpen(true);
+  } },
   { id: "session.group", title: "Set session group…", group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "group", sessionId: selected().id }) },
   { id: "session.pin", title: "Pin / unpin session", group: "Session", when: "hasSelection", run: async () => { const s = selected(); await client().setPinned(s.id, !s.pinned); } },
   {

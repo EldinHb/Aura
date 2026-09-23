@@ -1,8 +1,7 @@
 import { memo, useMemo } from "react";
-import { open } from "@tauri-apps/plugin-shell";
-import { isTauri } from "../../lib/connection";
-import { useStore } from "../../state/store";
+import { ExternalLink } from "../../components/ExternalLink";
 import { parseMarkdown, type Block, type Inline } from "./markdown";
+import { CodeBlock } from "./CodeBlock";
 
 function isExternalUrl(url: string): boolean {
   try {
@@ -28,17 +27,9 @@ function InlineNodes({ nodes }: { nodes: Inline[] }) {
           case "link":
             if (isExternalUrl(n.url)) {
               return (
-                <a key={i} className="md-link" href={n.url} title={n.url} data-hint
-                  target="_blank" rel="noopener noreferrer"
-                  onClick={(event) => {
-                    if (!isTauri()) return;
-                    event.preventDefault();
-                    void open(n.url).catch((error: unknown) => {
-                      useStore.getState().toast(`Could not open link: ${String(error)}`, "error");
-                    });
-                  }}>
+                <ExternalLink key={i} className="md-link" href={n.url} title={n.url}>
                   {n.text}
-                </a>
+                </ExternalLink>
               );
             }
             return (
@@ -55,12 +46,7 @@ function InlineNodes({ nodes }: { nodes: Inline[] }) {
 function BlockNode({ b }: { b: Block }) {
   switch (b.t) {
     case "code":
-      return (
-        <pre className="md-pre" data-lang={b.lang || undefined}>
-          {b.lang && <span className="md-lang">{b.lang}</span>}
-          {b.v}
-        </pre>
-      );
+      return <CodeBlock code={b.v} language={b.lang} />;
     case "heading": {
       const cls = `md-h md-h${Math.min(b.level, 4)}`;
       return <div className={cls}><InlineNodes nodes={b.v} /></div>;

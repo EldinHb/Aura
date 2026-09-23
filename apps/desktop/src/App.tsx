@@ -1,3 +1,6 @@
+import { PullWorkspace } from "./features/reviews/PullWorkspace";
+import { registerReviewCommands } from "./features/reviews/state";
+import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected } from "./state/store";
 import { connectDaemon, isTauri } from "./lib/connection";
@@ -25,8 +28,10 @@ export default function App() {
   const connection = useStore((s) => s.connection);
   const connectionError = useStore((s) => s.connectionError);
   const selected = useStore(selectSelected);
+  const session = useStore((s) => s.selectedId ? s.sessions[s.selectedId] : null);
+  const prMode = useStore((s) => !!s.prSelection || s.reviewHistoryOpen);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
-  const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session";
+  const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !prMode;
   const focus = useStore((s) => s.focus);
   const theme = useStore((s) => s.settings.theme);
   const fontSize = useStore((s) => s.settings.fontSize);
@@ -39,7 +44,9 @@ export default function App() {
   useEffect(() => {
     setCommandErrorHandler((msg) => useStore.getState().toast(msg, "error"));
     registerGitCommands();
-    return registerCoreCommands();
+    const offCore = registerCoreCommands();
+    const offReviews = registerReviewCommands();
+    return () => { offCore(); offReviews(); };
   }, []);
 
   // Connect + subscribe.
@@ -62,7 +69,7 @@ export default function App() {
           st().setSessions(sessions);
           useStore.setState({ daemonVersion: info.version });
           if (initialSession && sessions.some((s) => s.id === initialSession)) st().select(initialSession);
-          else if (!st().selectedId && sessions.length > 0 && windowMode !== "session") st().select(st().sessionOrder[0]);
+          else if (!st().selectedId && !st().prSelection && !st().reviewHistoryOpen && sessions.length > 0 && windowMode !== "session") st().select(st().sessionOrder[0]);
         };
         await refresh();
         offEvent = client.onEvent((ev: Event) => {
@@ -153,13 +160,15 @@ export default function App() {
       <div className={clsx("body", sidebarCollapsed && "no-sidebar", !inspectorOpen && "no-inspector")}>
         {!sidebarCollapsed && <Sidebar />}
         <div className={clsx("region main", (focus === "main" || focus === "composer") && "focused")} data-region="main" tabIndex={-1}>
-          {connection !== "open" && !selected ? (
+          {prMode && <PullWorkspace />}
+          <div className="session-workspace" hidden={prMode}>
+          {connection !== "open" && !session ? (
             <div className="empty">
               <h2>{connection === "connecting" ? "Connecting to the Aura daemon…" : "Not connected"}</h2>
               {connectionError && <code>{connectionError}</code>}
               {connection === "closed" && <span>Start it with <code>aura daemon start</code>, then reload with <kbd>⌘R</kbd>.</span>}
             </div>
-          ) : !selected ? (
+          ) : !session ? (
             <div className="empty">
               <h2>Aura</h2>
               <div className="hint">
@@ -169,14 +178,15 @@ export default function App() {
                 <span><kbd>?</kbd> help</span>
               </div>
             </div>
-          ) : selected.mode === "terminal" ? (
-            <TerminalView key={selected.id} sessionId={selected.id} />
+          ) : session.mode === "terminal" ? (
+            <TerminalView key={session.id} sessionId={session.id} />
           ) : (
             <>
-              <Transcript key={selected.id} sessionId={selected.id} />
-              <Composer key={`c-${selected.id}`} sessionId={selected.id} />
+              <Transcript key={session.id} sessionId={session.id} />
+              <Composer key={`c-${session.id}`} sessionId={session.id} />
             </>
           )}
+          </div>
         </div>
         {inspectorOpen && <Inspector sessionId={selectedId} />}
       </div>

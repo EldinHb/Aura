@@ -3,6 +3,8 @@ import clsx from "clsx";
 import type { Item } from "../../gen";
 import { Markdown } from "./MarkdownView";
 import { DiffText } from "./Diff";
+import { useStore } from "../../state/store";
+import { setPlanView } from "../../state/planView";
 import { durationMs, firstLine, fmtDuration, isCardKind, itemChanges, itemLabel, kindIcon, prettyJson, truncate } from "./format";
 
 const JSON_LIMIT = 4000;
@@ -142,6 +144,11 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
     return (
       <div className={clsx("item agent_message", cursor && "cursor", nested && "nested")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
         <Markdown text={item.text} />
+        {item.status !== "in_progress" && <button className="btn small keep-plan" data-hint onClick={(event) => {
+          event.stopPropagation();
+          setPlanView(item.session_id, { selectedId: item.id, open: true });
+          useStore.getState().setInspectorOpen(true);
+        }}>Keep as plan</button>}
         {item.status === "in_progress" && <span className="caret" />}
       </div>
     );

@@ -9,6 +9,8 @@ name = "aurad"
 path = "src/main.rs"
 
 [dependencies]
+aura-github = { workspace = true }
+aura-review = { workspace = true }
 aura-core = { workspace = true }
 aura-store = { workspace = true }
 aura-rpc = { workspace = true }

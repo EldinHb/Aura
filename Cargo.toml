@@ -8,6 +8,8 @@ members = [
   "crates/aura-provider-codex",
   "crates/aura-rpc",
   "crates/aura-git",
+  "crates/aura-github",
+  "crates/aura-review",
   "crates/aura-terminal",
   "crates/aurad",
   "crates/aura-cli",
@@ -27,6 +29,8 @@ aura-pty = { path = "crates/aura-pty" }
 aura-provider-claude = { path = "crates/aura-provider-claude" }
 aura-provider-codex = { path = "crates/aura-provider-codex" }
 aura-rpc = { path = "crates/aura-rpc" }
+aura-github = { path = "crates/aura-github" }
+aura-review = { path = "crates/aura-review" }
 aura-git = { path = "crates/aura-git" }
 aura-terminal = { path = "crates/aura-terminal" }
 

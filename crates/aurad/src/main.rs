@@ -80,12 +80,21 @@ async fn main() -> Result<()> {
         providers.push(Arc::new(aura_provider_codex::CodexProvider::new()));
     }
 
-    let manager = Manager::new(store, providers, Some(Arc::new(aura_git::Git)));
+    let manager = Manager::new(store.clone(), providers, Some(Arc::new(aura_git::Git)));
     let restored = manager.restore()?;
     tracing::info!(restored, "sessions restored");
 
-    let ext: ExtHandler = Arc::new(|method: String, params: Value| Box::pin(async move { git_methods(&method, params).await }));
-    let server = RpcServer::start(manager.clone(), &data_dir, Some(ext)).await?;
+    let reviews = aura_review::ReviewService::new(store, Arc::new(aura_github::GhCli::default()), Arc::new(aura_review::runner::CliRunner), manager.clone(), data_dir.join("review-workspaces"))?;
+    reviews.launch();
+    let service = reviews.clone();
+    let ext: ExtHandler = Arc::new(move |method: String, params: Value| {
+        let service = service.clone();
+        Box::pin(async move {
+            if let Some(result) = service.handle(&method, params.clone()).await? { return Ok(Some(result)); }
+            git_methods(&method, params).await
+        })
+    });
+    let server = RpcServer::start_with_notifications(manager.clone(), &data_dir, Some(ext), Some(reviews.events.clone())).await?;
     tracing::info!(port = server.info.port, pid = server.info.pid, "aurad listening");
     if args.foreground {
         eprintln!("aurad listening on 127.0.0.1:{} (data dir {})", server.info.port, data_dir.display());
@@ -100,6 +109,7 @@ async fn main() -> Result<()> {
 
     let mut rx = server.shutdown.subscribe();
     let _ = rx.recv().await;
+    reviews.shutdown();
     manager.shutdown().await;
     // Only remove daemon.json if it is still ours. A newer daemon may have
     // taken over the file while this one was being shut down; deleting it then

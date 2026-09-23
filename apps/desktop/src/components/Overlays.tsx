@@ -1,3 +1,5 @@
+import { ReviewSettings } from "../features/reviews/ReviewSettings";
+import { ReviewSubmit } from "../features/reviews/ReviewEditor";
 import { useEffect, useState } from "react";
 import { useStore } from "../state/store";
 import { Toasts } from "./Toasts";
@@ -7,6 +9,7 @@ import { CommandPalette } from "./CommandPalette";
 import { HelpOverlay } from "./HelpOverlay";
 import { ConfirmDialog } from "./dialogs/ConfirmDialog";
 import { RenameDialog } from "./dialogs/RenameDialog";
+import { SessionLinksDialog } from "./dialogs/SessionLinksDialog";
 import { GroupDialog } from "./dialogs/GroupDialog";
 import { PickerDialog } from "./dialogs/PickerDialog";
 import { NewSessionDialog } from "./dialogs/NewSessionDialog";
@@ -23,6 +26,8 @@ function CurrentDialog() {
   const [, setTick] = useState(0);
   useEffect(() => onDialogsChanged(() => setTick((t) => t + 1)), []);
   switch (dialog.kind) {
+    case "review-settings": return <ReviewSettings pull={dialog.pull} config={dialog.config} />;
+    case "review-submit": return <ReviewSubmit preview={dialog.preview} />;
     case "none":
       return null;
     case "help":
@@ -31,6 +36,8 @@ function CurrentDialog() {
       return <ConfirmDialog title={dialog.title} message={dialog.message} onConfirm={dialog.onConfirm} danger={dialog.danger} />;
     case "rename":
       return <RenameDialog sessionId={dialog.sessionId} />;
+    case "session-links":
+      return <SessionLinksDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "group":
       return <GroupDialog sessionId={dialog.sessionId} />;
     case "models":

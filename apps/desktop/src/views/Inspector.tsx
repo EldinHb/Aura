@@ -4,6 +4,9 @@ import { useStore } from "../state/store";
 import { setFocus } from "../commands/core";
 import { runCommand } from "../lib/commands";
 import { fmtTokens, fmtUsd, relTime, truncate } from "./transcript/format";
+import { SessionLinks } from "./SessionLinks";
+import { useSessionLinkPreferences } from "../state/sessionLinkPreferences";
+import { PlanSection } from "./PlanSection";
 
 function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boolean; title?: string }) {
   return (
@@ -100,6 +103,7 @@ function ProviderSection({ s, info }: { s: Session; info: Record<string, unknown
 }
 
 export function Inspector({ sessionId }: { sessionId: string | null }) {
+  const linkPreferences = useSessionLinkPreferences(sessionId);
   const s = useStore((st) => (sessionId ? st.sessions[sessionId] : null));
   const t = useStore((st) => (sessionId ? st.transcripts[sessionId] : null));
   const focus = useStore((st) => st.focus);
@@ -117,6 +121,10 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
       {!s && <div className="empty" style={{ padding: 20 }}><span className="dim">No session selected</span></div>}
       {s && (
         <>
+          <SessionLinks items={t?.items ?? {}} title={s.title} preferences={linkPreferences?.preferences}
+            loading={!linkPreferences} error={linkPreferences?.error}
+            onEdit={() => openDialog({ kind: "session-links", sessionId: s.id })} />
+          <PlanSection sessionId={s.id} />
           <div className="inspector-section">
             <h4>Session</h4>
             <div className="kv">

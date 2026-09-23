@@ -47,6 +47,12 @@ export class RpcClient {
   private ws: WebSocket | null = null;
   private nextId = 1;
   private inflight = new Map<number, Pending>();
+  private notificationListeners = new Set<(method: string, params: unknown) => void>();
+  onNotification(listener: (method: string, params: unknown) => void) {
+    this.notificationListeners.add(listener);
+    return () => { this.notificationListeners.delete(listener); };
+  }
+
   private eventListeners = new Set<(ev: Event) => void>();
   private ptyListeners = new Map<string, Set<(data: Uint8Array) => void>>();
   private stateListeners = new Set<(s: ConnectionState) => void>();
@@ -141,6 +147,7 @@ export class RpcClient {
         return;
       }
       if (v.method) {
+        for (const listener of this.notificationListeners) listener(v.method, v.params);
         if (v.method === "event") for (const l of this.eventListeners) l(v.params as Event);
         return;
       }

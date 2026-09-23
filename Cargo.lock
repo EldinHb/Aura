@@ -319,6 +319,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dirs 5.0.1",
+ "libc",
  "parking_lot",
  "serde",
  "serde_json",
@@ -372,6 +373,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aura-github"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aura-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "aura-provider-claude"
 version = "0.1.0"
 dependencies = [
@@ -421,6 +433,23 @@ dependencies = [
  "portable-pty",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "aura-review"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aura-core",
+ "aura-git",
+ "aura-github",
+ "parking_lot",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -485,8 +514,10 @@ dependencies = [
  "anyhow",
  "aura-core",
  "aura-git",
+ "aura-github",
  "aura-provider-claude",
  "aura-provider-codex",
+ "aura-review",
  "aura-rpc",
  "aura-store",
  "aura-terminal",

@@ -83,14 +83,15 @@ export function parseMarkdown(src: string): Block[] {
   };
   while (i < lines.length) {
     const line = lines[i];
-    const fence = /^\s*(```+|~~~+)\s*(\S*)\s*$/.exec(line);
+    const fence = /^\s*(```+|~~~+)\s*(\S*)[^\n]*$/.exec(line);
     if (fence) {
       flushPara();
       const marker = fence[1];
       const lang = fence[2];
       const body: string[] = [];
       i++;
-      while (i < lines.length && !lines[i].trim().startsWith(marker)) body.push(lines[i++]);
+      const closing = new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`);
+      while (i < lines.length && !closing.test(lines[i])) body.push(lines[i++]);
       i++; // closing fence (or EOF)
       blocks.push({ t: "code", lang, v: body.join("\n") });
       continue;
@@ -120,7 +121,7 @@ export function parseMarkdown(src: string): Block[] {
         let text = m[2];
         i++;
         // continuation lines (indented, non-list)
-        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) text += "\n" + lines[i++].trim();
+        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i]) && !/^\s*(```+|~~~+)/.test(lines[i])) text += "\n" + lines[i++].trim();
         items.push(parseInline(text));
       }
       blocks.push({ t: "list", ordered, items });

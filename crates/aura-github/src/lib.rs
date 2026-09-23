@@ -1,0 +1,439 @@
+//! GitHub transport. Only the daemon invokes gh; credentials never reach the webview.
+use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
+use aura_core::PullRequest;
+use serde_json::{json, Value};
+use std::{process::Stdio, time::Duration};
+use tokio::{io::AsyncWriteExt, process::Command};
+
+#[async_trait]
+pub trait Github: Send + Sync {
+    async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;
+    async fn request_for(
+        &self,
+        account: &str,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        if self.account().await? != account {
+            return Err(RejectedRequest("GitHub account changed".into()).into());
+        }
+        self.request(method, path, body).await
+    }
+    async fn diff(&self, repo: &str, base: &str, head: &str) -> Result<String>;
+    fn host(&self) -> &str;
+    async fn account(&self) -> Result<String> {
+        let user = self.request("GET", "user", None).await?;
+        let login = user["login"]
+            .as_str()
+            .context("GitHub did not return an account")?;
+        Ok(format!("{}:{login}", self.host()))
+    }
+}
+#[derive(Debug)]
+pub struct RejectedRequest(pub String);
+impl std::fmt::Display for RejectedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for RejectedRequest {}
+pub struct GhCli {
+    host: String,
+}
+impl Default for GhCli {
+    fn default() -> Self {
+        Self {
+            host: "github.com".into(),
+        }
+    }
+}
+impl GhCli {
+    async fn invoke(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        diff: bool,
+        token: Option<&str>,
+    ) -> Result<String> {
+        let bin = aura_core::which::find_binary("gh", "AURA_GH_BIN", &[])
+            .context("Install GitHub CLI and run gh auth login to connect pull requests.")?;
+        let mut cmd = Command::new(bin);
+        if let Some(token) = token {
+            cmd.env("GH_TOKEN", token).env_remove("GITHUB_TOKEN");
+        }
+        cmd.args(["api", "--hostname", &self.host, "--method", method, path]);
+        if diff {
+            cmd.args(["-H", "Accept: application/vnd.github.diff"]);
+        }
+        if body.is_some() {
+            cmd.args(["--input", "-"]);
+        }
+        cmd.env("GH_PROMPT_DISABLED", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let (mut child, _process_group) =
+            aura_core::process::spawn_job(&mut cmd).context("Start GitHub CLI")?;
+        if let Some(body) = body {
+            let mut stdin = child.stdin.take().context("GitHub input")?;
+            stdin.write_all(&serde_json::to_vec(&body)?).await?;
+        } else {
+            drop(child.stdin.take());
+        }
+        let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+            .await
+            .context("GitHub request timed out")??;
+        if !output.status.success() {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if [
+                "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 405", "HTTP 422", "HTTP 429",
+            ]
+            .iter()
+            .any(|status| message.contains(status))
+            {
+                return Err(RejectedRequest(message).into());
+            }
+            bail!("{message}");
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    }
+}
+#[async_trait]
+impl Github for GhCli {
+    fn host(&self) -> &str {
+        &self.host
+    }
+    async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        let raw = self.invoke(method, path, body, false, None).await?;
+        if raw.trim().is_empty() {
+            Ok(Value::Null)
+        } else {
+            Ok(serde_json::from_str(&raw)?)
+        }
+    }
+    async fn request_for(
+        &self,
+        account: &str,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        // Resolve and validate a token for the reviewed identity, then pin it to
+        // the actual mutation. Switching gh accounts between requests cannot
+        // cause a review to be posted as a different person.
+        let token = async {
+            let (host, login) = account.split_once(':').context("Invalid GitHub account")?;
+            if host != self.host {
+                bail!("Wrong GitHub host");
+            }
+            let bin = aura_core::which::find_binary("gh", "AURA_GH_BIN", &[])
+                .context("GitHub CLI unavailable")?;
+            let mut cmd = Command::new(bin);
+            cmd.args(["auth", "token", "--hostname", host, "--user", login])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let (child, _group) = aura_core::process::spawn_job(&mut cmd)?;
+            let output =
+                tokio::time::timeout(Duration::from_secs(15), child.wait_with_output()).await??;
+            if !output.status.success() {
+                bail!("Sign in to the review's GitHub account again");
+            }
+            let token = String::from_utf8(output.stdout)?.trim().to_string();
+            let user: Value = serde_json::from_str(
+                &self
+                    .invoke("GET", "user", None, false, Some(&token))
+                    .await?,
+            )?;
+            if user["login"].as_str() != Some(login) {
+                bail!("GitHub credentials do not match the reviewed account");
+            }
+            Ok::<_, anyhow::Error>(token)
+        }
+        .await
+        .map_err(|e| RejectedRequest(e.to_string()))?;
+        let raw = self.invoke(method, path, body, false, Some(&token)).await?;
+        Ok(if raw.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&raw)?
+        })
+    }
+    async fn diff(&self, repo: &str, base: &str, head: &str) -> Result<String> {
+        validate_repo(repo)?;
+        validate_sha(base)?;
+        validate_sha(head)?;
+        self.invoke(
+            "GET",
+            &format!("repos/{repo}/compare/{base}...{head}"),
+            None,
+            true,
+            None,
+        )
+        .await
+    }
+}
+pub fn validate_repo(repo: &str) -> Result<()> {
+    let parts: Vec<_> = repo.split('/').collect();
+    if parts.len() != 2
+        || parts.iter().any(|p| {
+            p.is_empty()
+                || *p == "."
+                || *p == ".."
+                || !p
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        })
+    {
+        bail!("Invalid repository");
+    }
+    Ok(())
+}
+pub fn validate_sha(sha: &str) -> Result<()> {
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("Invalid commit SHA");
+    }
+    Ok(())
+}
+pub async fn pages(gh: &dyn Github, path: &str) -> Result<Vec<Value>> {
+    let mut all = vec![];
+    for page in 1..=1000 {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let data = gh
+            .request("GET", &format!("{path}{sep}per_page=100&page={page}"), None)
+            .await?;
+        let rows = data.as_array().context("Expected a GitHub list")?;
+        all.extend(rows.iter().cloned());
+        if rows.len() < 100 {
+            return Ok(all);
+        }
+    }
+    bail!("GitHub pagination limit exceeded; previous cache retained")
+}
+pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Result<PullRequest> {
+    validate_repo(repo)?;
+    let v = gh
+        .request("GET", &format!("repos/{repo}/pulls/{number}"), None)
+        .await?;
+    let strings = |key: &str, field: &str| {
+        v[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a[field].as_str().map(String::from))
+            .collect()
+    };
+    let mut p = PullRequest {
+        id: format!("{repo}#{number}"),
+        account: account.into(),
+        repo: repo.into(),
+        number,
+        title: s(&v, "title"),
+        body: s(&v, "body"),
+        url: s(&v, "html_url"),
+        author: s(&v["user"], "login"),
+        state: if v["merged"] == true {
+            "merged".into()
+        } else {
+            s(&v, "state")
+        },
+        draft: v["draft"].as_bool().unwrap_or(false),
+        base_ref: s(&v["base"], "ref"),
+        head_ref: s(&v["head"], "ref"),
+        base_sha: s(&v["base"], "sha"),
+        head_sha: s(&v["head"], "sha"),
+        created_at: s(&v, "created_at"),
+        updated_at: s(&v, "updated_at"),
+        additions: v["additions"].as_u64().unwrap_or(0) as u32,
+        deletions: v["deletions"].as_u64().unwrap_or(0) as u32,
+        changed_files: v["changed_files"].as_u64().unwrap_or(0) as u32,
+        assignees: strings("assignees", "login"),
+        labels: strings("labels", "name"),
+        milestone: v["milestone"]["number"].as_u64().map(|n| n as u32),
+        ..Default::default()
+    };
+    let (owner, name) = repo.split_once('/').unwrap();
+    let q=gh.request("POST","graphql",Some(json!({"query":"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){viewerCanUpdate reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}","variables":{"owner":owner,"name":name,"number":number}}))).await?;
+    if q.get("errors").is_some() {
+        bail!("Unable to read PR capabilities: {}", q["errors"]);
+    }
+    let d = &q["data"]["repository"]["pullRequest"];
+    p.can_edit = d["viewerCanUpdate"].as_bool().unwrap_or(false);
+    p.review_decision = s(d, "reviewDecision");
+    p.checks = s(
+        &d["commits"]["nodes"][0]["commit"]["statusCheckRollup"],
+        "state",
+    );
+    Ok(p)
+}
+pub fn s(v: &Value, key: &str) -> String {
+    v[key].as_str().unwrap_or_default().to_string()
+}
+
+pub async fn inbox(gh: &dyn Github, account: &str) -> Result<Vec<PullRequest>> {
+    let mut items = vec![];
+    for page in 1..=10 {
+        let response=gh.request("GET",&format!("search/issues?q=is%3Apr%20is%3Aopen%20archived%3Afalse%20review-requested%3A%40me&per_page=100&page={page}"),None).await?;
+        if response["incomplete_results"] == true
+            || response["total_count"].as_u64().unwrap_or(0) > 1000
+        {
+            bail!("GitHub returned an incomplete inbox; cached inbox retained");
+        }
+        let rows = response["items"]
+            .as_array()
+            .context("Invalid search response")?;
+        for row in rows {
+            let url = s(row, "repository_url");
+            let repo = url
+                .split("/repos/")
+                .nth(1)
+                .context("Invalid repository URL")?;
+            items.push(
+                pull(
+                    gh,
+                    account,
+                    repo,
+                    row["number"].as_u64().context("Missing PR number")? as u32,
+                )
+                .await?,
+            );
+        }
+        if rows.len() < 100 {
+            break;
+        }
+    }
+    Ok(items)
+}
+
+/// Project associations and fields are cursor-paginated separately from REST conversation lists.
+pub async fn projects(gh: &dyn Github, p: &PullRequest) -> Result<Vec<Value>> {
+    let (owner, name) = p.repo.split_once('/').context("Invalid repository")?;
+    let mut cursor = Value::Null;
+    let mut result = vec![];
+    loop {
+        let data=gh.request("POST","graphql",Some(json!({"query": PROJECTS, "variables":{"owner":owner,"name":name,"number":p.number,"cursor":cursor}}))).await?;
+        if data.get("errors").is_some() {
+            bail!("Project fields unavailable: {}", data["errors"]);
+        }
+        let conn = &data["data"]["repository"]["pullRequest"]["projectItems"];
+        for item in conn["nodes"].as_array().into_iter().flatten() {
+            let mut item = item.clone();
+            let mut fields = item["fieldValues"]["nodes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let mut page = item["fieldValues"]["pageInfo"].clone();
+            while page["hasNextPage"] == true {
+                let r=gh.request("POST","graphql",Some(json!({"query":FIELD_PAGE,"variables":{"id":item["id"],"cursor":page["endCursor"]}}))).await?;
+                if r.get("errors").is_some() {
+                    bail!("Project field pagination failed: {}", r["errors"]);
+                }
+                let c = &r["data"]["node"]["fieldValues"];
+                fields.extend(c["nodes"].as_array().cloned().unwrap_or_default());
+                page = c["pageInfo"].clone();
+            }
+            let mut definition_cursor = Value::Null;
+            loop {
+                let definitions = gh.request("POST", "graphql", Some(json!({"query": PROJECT_FIELDS, "variables": {"id": item["project"]["id"], "cursor": definition_cursor}}))).await?;
+                if definitions.get("errors").is_some() {
+                    bail!("Project fields unavailable: {}", definitions["errors"]);
+                }
+                let connection = &definitions["data"]["node"]["fields"];
+                for field in connection["nodes"].as_array().into_iter().flatten() {
+                    if field.get("id").is_some()
+                        && !fields
+                            .iter()
+                            .any(|value| value["field"]["id"] == field["id"])
+                    {
+                        fields.push(json!({"field":field}));
+                    }
+                }
+                if connection["pageInfo"]["hasNextPage"] != true {
+                    break;
+                }
+                definition_cursor = connection["pageInfo"]["endCursor"].clone();
+            }
+            item["fieldValues"] = json!(fields);
+            result.push(item);
+        }
+        if conn["pageInfo"]["hasNextPage"] != true {
+            break;
+        }
+        cursor = conn["pageInfo"]["endCursor"].clone();
+    }
+    Ok(result)
+}
+const PROJECTS: &str = r#"query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){projectItems(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id project{id title viewerCanUpdate} fieldValues(first:100){pageInfo{hasNextPage endCursor} nodes{...F}}}}}}}
+fragment F on ProjectV2ItemFieldValue { ... on ProjectV2ItemFieldTextValue {text field{... on ProjectV2FieldCommon{id name dataType}}} ... on ProjectV2ItemFieldNumberValue{number field{... on ProjectV2FieldCommon{id name dataType}}} ... on ProjectV2ItemFieldDateValue{date field{... on ProjectV2FieldCommon{id name dataType}}} ... on ProjectV2ItemFieldSingleSelectValue{name optionId field{... on ProjectV2SingleSelectField{id name dataType options{id name}}}} ... on ProjectV2ItemFieldIterationValue{title iterationId field{... on ProjectV2IterationField{id name dataType configuration{iterations{id title} completedIterations{id title}}}}}}"#;
+const FIELD_PAGE: &str = r#"query($id:ID!,$cursor:String){node(id:$id){... on ProjectV2Item{fieldValues(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{... on ProjectV2ItemFieldTextValue{text field{... on ProjectV2FieldCommon{id name dataType}}} ... on ProjectV2ItemFieldNumberValue{number field{... on ProjectV2FieldCommon{id name dataType}}} ... on ProjectV2ItemFieldDateValue{date field{... on ProjectV2FieldCommon{id name dataType}}} ... on ProjectV2ItemFieldSingleSelectValue{name optionId field{... on ProjectV2SingleSelectField{id name dataType options{id name}}}} ... on ProjectV2ItemFieldIterationValue{title iterationId field{... on ProjectV2IterationField{id name dataType configuration{iterations{id title} completedIterations{id title}}}}}}}}}}"#;
+
+const PROJECT_FIELDS: &str = r#"query($id:ID!,$cursor:String){node(id:$id){... on ProjectV2{fields(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{... on ProjectV2Field{id name dataType} ... on ProjectV2SingleSelectField{id name dataType options{id name}} ... on ProjectV2IterationField{id name dataType configuration{iterations{id title} completedIterations{id title}}}}}}}}"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Paginated {
+        count: AtomicUsize,
+        fail_second: bool,
+    }
+    #[async_trait]
+    impl Github for Paginated {
+        fn host(&self) -> &str {
+            "github.com"
+        }
+        async fn diff(&self, _: &str, _: &str, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        async fn request(&self, _: &str, _: &str, _: Option<Value>) -> Result<Value> {
+            let page = self.count.fetch_add(1, Ordering::SeqCst);
+            if page == 1 && self.fail_second {
+                bail!("rate limited");
+            }
+            Ok(json!(if page == 0 {
+                vec![json!({"id":1}); 100]
+            } else {
+                vec![json!({"id":2})]
+            }))
+        }
+    }
+    #[tokio::test]
+    async fn reads_all_pages() {
+        let gh = Paginated {
+            count: AtomicUsize::new(0),
+            fail_second: false,
+        };
+        assert_eq!(
+            pages(&gh, "repos/o/r/issues/1/comments")
+                .await
+                .unwrap()
+                .len(),
+            101
+        );
+        assert_eq!(gh.count.load(Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn partial_pages_are_not_reported_as_complete() {
+        let gh = Paginated {
+            count: AtomicUsize::new(0),
+            fail_second: true,
+        };
+        assert!(pages(&gh, "repos/o/r/issues/1/comments").await.is_err());
+    }
+    #[test]
+    fn rejects_unsafe_repository_paths() {
+        for repo in [
+            "../repo",
+            "owner/../repo",
+            "owner/repo?token=x",
+            "-owner/repo/extra",
+        ] {
+            assert!(validate_repo(repo).is_err());
+        }
+        assert!(validate_repo("owner/repo.name").is_ok());
+    }
+}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { ImageInput, SlashCommand } from "../gen";
 import { useStore } from "../state/store";
@@ -7,6 +7,7 @@ import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
 import { filterSlashCommands, mergeSlashCommands, mentionQuery, slashQuery, type SlashEntry } from "./transcript/slash";
 import { fmtTokens, fmtUsd } from "./transcript/format";
+import { emptyDraft, updateDraft, useComposerDrafts } from "../state/composerDrafts";
 
 /** Sent-message history per session (survives remounts, not reloads). */
 const history = new Map<string, string[]>();
@@ -31,18 +32,25 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const provider = useStore((s) => s.providers.find((p) => p.kind === session?.provider));
   const toast = useStore((s) => s.toast);
   const openDialog = useStore((s) => s.openDialog);
-  const [text, setText] = useState("");
-  const [images, setImages] = useState<ImageInput[]>([]);
+  const { text, images, sending } = useComposerDrafts((s) => s.drafts[sessionId] ?? emptyDraft);
+  const setText = (value: string) => updateDraft(sessionId, () => ({ text: value, start: value.length, end: value.length }));
+  const setImages = (value: ImageInput[] | ((images: ImageInput[]) => ImageInput[])) => updateDraft(sessionId, (draft) => ({ images: typeof value === "function" ? value(draft.images) : value }));
   const [pop, setPop] = useState<Popover>({ kind: "none" });
   const [slashEntries, setSlashEntries] = useState<SlashEntry[]>([]);
   const [histIdx, setHistIdx] = useState<number | null>(null);
-  const [sending, setSending] = useState(false);
+  const historyDraft = useRef("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const mentionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const caps = provider?.capabilities;
   const running = session?.status === "running";
   const errored = session?.status === "error";
   const canSteer = !!caps?.steer && running;
+
+  useLayoutEffect(() => {
+    const draft = useComposerDrafts.getState().drafts[sessionId] ?? emptyDraft;
+    taRef.current?.setSelectionRange(draft.start, draft.end);
+  }, [sessionId]);
+  useEffect(() => () => { if (mentionTimer.current) clearTimeout(mentionTimer.current); }, []);
 
   // auto-grow
   useEffect(() => {
@@ -99,23 +107,25 @@ export function Composer({ sessionId }: { sessionId: string }) {
   );
 
   const send = async (steer: boolean) => {
-    if (!client || !session) return;
+    if (!client || !session || useComposerDrafts.getState().drafts[sessionId]?.sending) return;
     const body = text.trim();
     if (!body && images.length === 0) return;
-    setSending(true);
+    updateDraft(sessionId, () => ({ sending: true }));
     try {
       await client.send(sessionId, { text: body, images, steer: steer && canSteer });
       const h = history.get(sessionId) ?? [];
       if (body && h[h.length - 1] !== body) h.push(body);
       history.set(sessionId, h.slice(-100));
-      setText("");
-      setImages([]);
+      updateDraft(sessionId, (draft) => ({
+        ...(draft.text === text ? { text: "", start: 0, end: 0 } : {}),
+        images: draft.images.filter((image) => !images.includes(image)),
+      }));
       setHistIdx(null);
       setPop({ kind: "none" });
     } catch (e) {
       toast(`send: ${e instanceof Error ? e.message : String(e)}`, "error");
     } finally {
-      setSending(false);
+      updateDraft(sessionId, () => ({ sending: false }));
     }
   };
 
@@ -190,6 +200,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
       const firstLine = !text.slice(0, ta.selectionStart).includes("\n");
       if (firstLine) {
         e.preventDefault();
+        if (histIdx === null) historyDraft.current = text;
         const idx = histIdx === null ? h.length - 1 : Math.max(0, histIdx - 1);
         setHistIdx(idx);
         setText(h[idx]);
@@ -203,7 +214,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
         const idx = histIdx + 1;
         if (idx >= h.length) {
           setHistIdx(null);
-          setText("");
+          setText(historyDraft.current);
         } else {
           setHistIdx(idx);
           setText(h[idx]);
@@ -283,6 +294,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
         }}
         onSelect={(e) => {
           const ta = e.currentTarget;
+          updateDraft(sessionId, () => ({ start: ta.selectionStart, end: ta.selectionEnd }));
           if (pop.kind === "mention") updatePopover(ta.value, ta.selectionStart);
         }}
         onFocus={() => useStore.getState().setFocus("composer")}

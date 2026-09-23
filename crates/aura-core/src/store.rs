@@ -24,6 +24,16 @@ pub struct StoredEvent {
 /// Persistence boundary. Implemented by `aura-store` with SQLite; an in-memory
 /// implementation lives here for tests.
 pub trait Store: Send + Sync {
+    /// Namespaced persistent feature documents. Default implementation supports in-memory stores.
+    fn feature_records(&self, namespace: &str) -> Result<Vec<(String, String)>> {
+        Ok(serde_json::from_str(&self.get_setting(&format!("feature:{namespace}"))?.unwrap_or_else(|| "[]".into()))?)
+    }
+    fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> Result<()> {
+        let mut records = self.feature_records(namespace)?;
+        records.retain(|(key, _)| key != id);
+        records.push((id.into(), value.into()));
+        self.set_setting(&format!("feature:{namespace}"), &serde_json::to_string(&records)?)
+    }
     fn upsert_session(&self, session: &Session) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;
     fn list_sessions(&self) -> Result<Vec<Session>>;
@@ -47,10 +57,18 @@ struct MemInner {
     sessions: std::collections::BTreeMap<String, Session>,
     events: std::collections::HashMap<String, Vec<StoredEvent>>,
     settings: std::collections::HashMap<String, String>,
+    features: std::collections::HashMap<String, std::collections::BTreeMap<String, String>>,
     scrollback: std::collections::HashMap<String, Vec<u8>>,
 }
 
 impl Store for MemoryStore {
+    fn feature_records(&self, namespace: &str) -> Result<Vec<(String, String)>> {
+        Ok(self.inner.lock().features.get(namespace).map(|records| records.iter().map(|(key, value)| (key.clone(), value.clone())).collect()).unwrap_or_default())
+    }
+    fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> Result<()> {
+        self.inner.lock().features.entry(namespace.into()).or_default().insert(id.into(), value.into());
+        Ok(())
+    }
     fn upsert_session(&self, session: &Session) -> Result<()> {
         self.inner.lock().sessions.insert(session.id.clone(), session.clone());
         Ok(())

@@ -1,3 +1,5 @@
+import { openPull, useReviews } from "../features/reviews/state";
+import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
 import { useEffect, useMemo, useRef } from "react";
 import { useStore, selectVisibleSessions } from "../state/store";
 import type { Session } from "../gen";
@@ -25,7 +27,7 @@ function statusClass(s: Session): string {
 
 export function Sidebar() {
   const sessions = useStore(useShallow(selectVisibleSessions));
-  const selectedId = useStore((s) => s.selectedId);
+  const selectedId = useStore((s) => s.prSelection || s.reviewHistoryOpen ? null : s.selectedId);
   const cursor = useStore((s) => s.sidebarCursor);
   const filter = useStore((s) => s.sidebarFilter);
   const setFilter = useStore((s) => s.setSidebarFilter);
@@ -50,12 +52,15 @@ export function Sidebar() {
     const move = (delta: number) => {
       const st = useStore.getState();
       if (st.focus !== "sidebar") return false;
-      const list = selectVisibleSessions(st);
-      if (list.length === 0) return true;
-      const cur = list.findIndex((s) => s.id === (st.sidebarCursor ?? st.selectedId));
-      const next = Math.max(0, Math.min(list.length - 1, cur < 0 ? 0 : cur + delta));
-      setCursor(list[next].id);
-      select(list[next].id);
+      const sessions = selectVisibleSessions(st);
+      const prs = useReviews.getState();
+      const pulls = prs.hidden || prs.collapsed ? [] : (prs.inbox?.pulls ?? []).filter((p) => prs.showHidden || !p.hidden);
+      const count = sessions.length + pulls.length;
+      if (!count) return true;
+      const cur = st.prSelection ? sessions.length + pulls.findIndex((p) => p.id === st.prSelection?.id) : sessions.findIndex((s) => s.id === (st.sidebarCursor ?? st.selectedId));
+      const next = Math.max(0, Math.min(count - 1, cur < 0 ? 0 : cur + delta));
+      if (next < sessions.length) { setCursor(sessions[next].id); select(sessions[next].id); }
+      else { openPull(pulls[next - sessions.length]); useStore.getState().setFocus("sidebar"); }
       return true;
     };
     return registerCommands([
@@ -143,6 +148,7 @@ export function Sidebar() {
         ))}
         {showArchived && <div className="section-title">showing archived</div>}
       </div>
+      <ReviewSidebar />
     </div>
   );
 }
