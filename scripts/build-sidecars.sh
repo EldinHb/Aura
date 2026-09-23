@@ -8,13 +8,21 @@ cd "$(dirname "$0")/.."
 # app. cargo clean removes the marker, so re-create it on every build.
 mkdir -p target && touch target/.metadata_never_index
 PROFILE="${1:-debug}"
+# TARGET_TRIPLE cross-compiles (e.g. x86_64-apple-darwin on an Apple Silicon
+# host); cargo then writes to target/<triple>/<profile> instead.
 TRIPLE="${TARGET_TRIPLE:-$(rustc -vV | sed -n 's/^host: //p')}"
+FLAGS=()
+SRC=target
+if [ -n "${TARGET_TRIPLE:-}" ]; then
+  FLAGS+=(--target "$TARGET_TRIPLE")
+  SRC="target/$TARGET_TRIPLE"
+fi
 if [ "$PROFILE" = "release" ]; then
-  cargo build --release -p aurad -p aura-cli
-  SRC=target/release
+  cargo build --release -p aurad -p aura-cli ${FLAGS[@]+"${FLAGS[@]}"}
+  SRC="$SRC/release"
 else
-  cargo build -p aurad -p aura-cli
-  SRC=target/debug
+  cargo build -p aurad -p aura-cli ${FLAGS[@]+"${FLAGS[@]}"}
+  SRC="$SRC/debug"
 fi
 DEST=apps/desktop/src-tauri/binaries
 mkdir -p "$DEST"
