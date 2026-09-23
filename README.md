@@ -17,6 +17,8 @@
   <a href="#building-from-source">Build from source</a>
 </p>
 
+<p align="center"><strong>🚧 Work in progress: very early stage 🚧</strong></p>
+
 ---
 
 ## What is Aura?
@@ -45,8 +47,11 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
 Aura is not an agent and never calls a model API. Logins, billing and model access
 stay with each CLI. Everything runs on your machine; there is no cloud service.
 
-> **Status:** early (0.x). Things change quickly and may break between releases.
-> Bug reports are welcome in [Issues](https://github.com/EldinHb/Aura/issues).
+> [!WARNING]
+> **Aura is a work in progress at a very early stage.** Expect missing features,
+> rough edges and bugs. Behaviour, keybindings and stored data may change between
+> releases without a migration path. Bug reports are welcome in
+> [Issues](https://github.com/EldinHb/Aura/issues).
 
 ## Install
 
