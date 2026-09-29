@@ -12,6 +12,8 @@ export * from './DiffStat';
 export * from './DirEntry';
 export * from './Event';
 export * from './FileStatus';
+export * from './Group';
+export * from './GroupRepo';
 export * from './ImageInput';
 export * from './Input';
 export * from './Item';

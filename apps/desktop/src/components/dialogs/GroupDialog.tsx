@@ -1,15 +1,15 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
+import { useGroups } from "../../state/groups";
 
 export function GroupDialog({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
-  const sessions = useStore((s) => s.sessions);
   const client = useStore((s) => s.client);
   const closeDialog = useStore((s) => s.closeDialog);
   const toast = useStore((s) => s.toast);
   const [value, setValue] = useState(session?.group ?? "");
-  const groups = useMemo(() => [...new Set(Object.values(sessions).map((s) => s.group).filter((g): g is string => !!g))].sort(), [sessions]);
+  const { names: groups } = useGroups();
   const save = async () => {
     if (!client) return;
     try {

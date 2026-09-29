@@ -27,6 +27,7 @@ import type {
   Approval,
   UserInputRequest,
   DaemonInfo,
+  Group,
 } from "../gen";
 
 export const FRAME_PTY_OUTPUT = 1;
@@ -247,6 +248,17 @@ export class RpcClient {
   }
   setGroup(id: string, group: string | null) {
     return this.call<Session>("session.set_group", { id, group });
+  }
+  groups() {
+    return this.call<Group[]>("group.list");
+  }
+  /** The group last used in the repository containing `cwd`, if any. */
+  groupForDir(cwd: string) {
+    return this.call<string | null>("group.for_dir", { cwd });
+  }
+  /** Forget a group and take its sessions out of it. */
+  deleteGroup(name: string) {
+    return this.call<boolean>("group.delete", { name });
   }
   setPinned(id: string, pinned: boolean) {
     return this.call<Session>("session.set_pinned", { id, pinned });

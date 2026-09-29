@@ -339,3 +339,86 @@ async fn clearing_notices_is_recorded_without_touching_the_sessions() {
     assert_eq!(before, (m.get_session(&a.id).unwrap().last_activity, m.get_session(&b.id).unwrap().last_activity));
     assert!(m.clear_notices(Some("missing")).is_err());
 }
+
+/// Every directory is its own repository, except `not-a-repo` directories.
+struct DirRepos;
+
+impl WorktreeBackend for DirRepos {
+    fn create(&self, _cwd: &str, _opts: &WorktreeOpts) -> anyhow::Result<WorktreeInfo> {
+        anyhow::bail!("unused")
+    }
+    fn remove(&self, _info: &WorktreeInfo) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn repo_root(&self, cwd: &str) -> Option<String> {
+        (!cwd.ends_with("not-a-repo")).then(|| cwd.to_string())
+    }
+}
+
+#[tokio::test]
+async fn groups_are_remembered_with_their_repositories() {
+    let store = Arc::new(MemoryStore::default());
+    let provider = Arc::new(FakeProvider { calls: Default::default(), starts: Default::default() });
+    let m = Manager::new(store.clone(), vec![provider], Some(Arc::new(DirRepos)));
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let plain = tempfile::tempdir().unwrap();
+    let plain_dir = plain.path().join("not-a-repo");
+    std::fs::create_dir(&plain_dir).unwrap();
+    let (a, b, plain) = (a.path().to_string_lossy().to_string(), b.path().to_string_lossy().to_string(), plain_dir.to_string_lossy().to_string());
+    let create = |cwd: &str, group: Option<&str>| {
+        let m = m.clone();
+        let opts = CreateSessionOpts { provider: ProviderKind::Claude, cwd: cwd.into(), group: group.map(Into::into), ..Default::default() };
+        async move { m.create_session(opts).await.unwrap() }
+    };
+
+    let s1 = create(&a, Some("backend")).await;
+    create(&plain, Some("backend")).await;
+    let groups = m.list_groups().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].name, "backend");
+    assert_eq!(groups[0].repos.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(), vec![a.as_str()], "only repositories are linked");
+    assert_eq!(m.group_for_dir(&a).unwrap().as_deref(), Some("backend"));
+    assert_eq!(m.group_for_dir(&b).unwrap(), None);
+    assert_eq!(m.group_for_dir(&plain).unwrap(), None);
+
+    // The group outlives its sessions.
+    for s in m.list_sessions() {
+        m.delete(&s.id, false).await.unwrap();
+    }
+    assert_eq!(m.list_groups().unwrap().len(), 1);
+    assert_eq!(m.group_for_dir(&a).unwrap().as_deref(), Some("backend"));
+
+    // The repository's most recent group wins.
+    let s2 = create(&a, None).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    m.set_group(&s2.id, Some("frontend".into())).unwrap();
+    assert_eq!(m.group_for_dir(&a).unwrap().as_deref(), Some("frontend"));
+    assert_ne!(s1.id, s2.id);
+
+    // Deleting a group forgets it and ungroups its sessions.
+    m.delete_group("frontend").unwrap();
+    assert_eq!(m.get_session(&s2.id).unwrap().group, None);
+    assert_eq!(m.list_groups().unwrap().iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), vec!["backend"]);
+    assert_eq!(m.group_for_dir(&a).unwrap().as_deref(), Some("backend"));
+
+    // Blank names are not groups.
+    m.set_group(&s2.id, Some("  ".into())).unwrap();
+    assert_eq!(m.list_groups().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn restore_registers_groups_of_existing_sessions() {
+    let store = Arc::new(MemoryStore::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let mut s = Session::new(&CreateSessionOpts { provider: ProviderKind::Terminal, cwd: cwd.clone(), group: Some("legacy".into()), ..Default::default() });
+    s.status = SessionStatus::Exited;
+    store.upsert_session(&s).unwrap();
+    let m = Manager::new(store.clone(), vec![], Some(Arc::new(DirRepos)));
+    m.restore().unwrap();
+    let groups = m.list_groups().unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].repos[0].path, cwd);
+    assert_eq!(groups[0].repos[0].last_used, s.last_activity);
+}

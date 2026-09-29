@@ -75,6 +75,7 @@ export const coreCommands: Command[] = [
   { id: "palette.open", title: "Command palette", group: "Aura", run: () => st().setPalette(true) },
   { id: "help.open", title: "Keyboard shortcuts help", group: "Aura", run: () => st().openDialog({ kind: "help" }) },
   { id: "settings.open", title: "Settings", group: "Aura", run: () => st().openDialog({ kind: "settings" }) },
+  { id: "settings.groups", title: "Manage groups…", group: "Aura", keywords: ["delete group"], run: () => st().openDialog({ kind: "settings", tab: "groups" }) },
   { id: "search.open", title: "Search across sessions", group: "Aura", run: () => st().openDialog({ kind: "search" }) },
   { id: "inbox.open", title: "Approvals inbox", group: "Aura", run: () => st().openDialog({ kind: "inbox" }) },
   { id: "import.open", title: "Import existing CLI sessions", group: "Session", run: () => st().openDialog({ kind: "import" }) },

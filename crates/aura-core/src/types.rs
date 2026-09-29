@@ -112,6 +112,26 @@ pub struct Session {
     pub exit_code: Option<i32>,
 }
 
+/// A session group the user created. Kept after its last session is deleted,
+/// until the user deletes it in settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Group {
+    pub name: String,
+    /// Repositories that sessions in this group ran in.
+    pub repos: Vec<GroupRepo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GroupRepo {
+    /// Root of the main working tree; sessions in a linked worktree count as its repository.
+    pub path: String,
+    /// When a session in this repository last joined the group. With several
+    /// groups linked to one repository, the most recent one is suggested.
+    pub last_used: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]

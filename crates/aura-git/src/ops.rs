@@ -53,6 +53,19 @@ pub struct Worktree {
     pub head: Option<String>,
 }
 
+/// Canonical root of the main working tree, also when `cwd` is inside a linked
+/// worktree. None when `cwd` is not inside a repository.
+pub fn main_repo_root(cwd: &str) -> Result<Option<String>> {
+    let Some(root) = repo_root(cwd)? else { return Ok(None) };
+    let common = std::path::PathBuf::from(git(&root, &["rev-parse", "--git-common-dir"])?.trim());
+    let common = if common.is_absolute() { common } else { Path::new(&root).join(common) };
+    // A non-bare repository keeps its common dir at `<main worktree>/.git`.
+    match (common.file_name(), common.parent()) {
+        (Some(name), Some(main)) if name == ".git" => Ok(Some(canonical(main))),
+        _ => Ok(Some(root)),
+    }
+}
+
 /// Canonical repository root, or None when `cwd` is not inside a repository.
 pub fn repo_root(cwd: &str) -> Result<Option<String>> {
     if !Path::new(cwd).is_dir() {

@@ -48,7 +48,7 @@ export type Dialog =
   | { kind: "none" }
   | { kind: "new-session"; provider?: string; cwd?: string }
   | { kind: "import" }
-  | { kind: "settings"; tab?: "general" | "keymap" | "providers" }
+  | { kind: "settings"; tab?: "general" | "keymap" | "providers" | "groups" }
   | { kind: "search" }
   | { kind: "inbox" }
   | { kind: "diff"; sessionId: string; path?: string }

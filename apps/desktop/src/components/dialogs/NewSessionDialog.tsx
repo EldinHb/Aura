@@ -7,6 +7,7 @@ import { basename } from "../../lib/platform";
 import { physicalKey } from "../../lib/keymap";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
+import { useGroups } from "../../state/groups";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
 /** Rows the directory browser renders; the arrow keys stay within them. */
@@ -47,7 +48,6 @@ function parentDir(p: string): string {
 export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; cwd?: string }) {
   const client = useStore((s) => s.client);
   const providers = useStore((s) => s.providers);
-  const sessions = useStore((s) => s.sessions);
   const settings = useStore((s) => s.settings);
   const selected = useStore((s) => (s.selectedId ? s.sessions[s.selectedId] : null));
   const closeDialog = useStore((s) => s.closeDialog);
@@ -70,7 +70,10 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [dirIndex, setDirIndex] = useState(0);
   const [title, setTitle] = useState("");
-  const [group, setGroup] = useState(selected?.group ?? "");
+  const [group, setGroup] = useState("");
+  // Until the user edits the group, it follows the group linked to the directory's repository.
+  const [groupTouched, setGroupTouched] = useState(false);
+  const [groupFromRepo, setGroupFromRepo] = useState(false);
   const [mode, setMode] = useState<SessionMode>(provider === "terminal" ? "terminal" : "structured");
   const [command, setCommand] = useState("");
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -86,7 +89,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const dirBrowser = useRef<HTMLDivElement>(null);
 
   const caps = providers.find((p) => p.kind === provider)?.capabilities;
-  const groups = useMemo(() => [...new Set(Object.values(sessions).map((s) => s.group).filter((g): g is string => !!g))].sort(), [sessions]);
+  const { names: groups } = useGroups();
 
   useEffect(() => {
     client?.home().then((h) => {
@@ -145,6 +148,31 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       cancelled = true;
     };
   }, [client, expandedDir]);
+
+  useEffect(() => {
+    if (!client || groupTouched) return;
+    if (!expandedDir) {
+      setGroup("");
+      setGroupFromRepo(false);
+      return;
+    }
+    let cancelled = false;
+    client
+      .groupForDir(expandedDir)
+      .then((g) => {
+        if (cancelled) return;
+        setGroup(g ?? "");
+        setGroupFromRepo(!!g);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setGroup("");
+        setGroupFromRepo(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, expandedDir, groupTouched]);
 
   const recentDirs = useMemo(() => loadRecentDirs(), []);
   const showRecent = !partial && recentDirs.length > 0 && (dir === "" || dir === home || dir === home + "/");
@@ -292,8 +320,16 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
           <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`${choice.agent ?? provider} · ${basename(expandedDir || "")}`} />
         </div>
         <div className="field">
-          <label>Group (optional)</label>
-          <input type="text" list="aura-groups-new" value={group} onChange={(e) => setGroup(e.target.value)} />
+          <label>Group (optional) {groupFromRepo && !groupTouched && <span className="dim">· from this repository</span>}</label>
+          <input
+            type="text"
+            list="aura-groups-new"
+            value={group}
+            onChange={(e) => {
+              setGroupTouched(true);
+              setGroup(e.target.value);
+            }}
+          />
           <datalist id="aura-groups-new">
             {groups.map((g) => (
               <option key={g} value={g} />

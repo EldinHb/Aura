@@ -123,6 +123,13 @@ impl WorktreeBackend for Git {
             }
         }
     }
+
+    fn repo_root(&self, cwd: &str) -> Option<String> {
+        ops::main_repo_root(cwd).unwrap_or_else(|e| {
+            tracing::debug!("repo root of {cwd}: {e}");
+            None
+        })
+    }
 }
 
 #[cfg(test)]
@@ -235,8 +242,14 @@ mod tests {
         b.sort();
         assert_eq!(b, vec!["main".to_string(), "other".to_string()]);
         assert_eq!(ops::repo_root(&cwd).unwrap().unwrap(), canonical(dir.path()));
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        assert_eq!(ops::main_repo_root(&dir.path().join("sub").to_string_lossy()).unwrap().unwrap(), canonical(dir.path()));
+        let wt = Git.create(&cwd, &WorktreeOpts { branch: "wt".into(), base: None, path: None }).unwrap();
+        assert_eq!(ops::main_repo_root(&wt.path).unwrap().unwrap(), canonical(dir.path()), "a linked worktree belongs to its main repository");
+        assert_eq!(Git.repo_root(&wt.path), Some(canonical(dir.path())));
         let none = tempfile::tempdir().unwrap();
         assert_eq!(ops::repo_root(&none.path().to_string_lossy()).unwrap(), None);
+        assert_eq!(Git.repo_root(&none.path().to_string_lossy()), None);
         // diff with no HEAD (fresh repo) falls back
         let fresh = tempfile::tempdir().unwrap();
         let fcwd = fresh.path().to_string_lossy().to_string();

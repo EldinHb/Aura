@@ -421,6 +421,25 @@ async fn dispatch(
             let P { id, group } = params(p)?;
             ok(m.set_group(&id, group)?)
         }
+        "group.list" => ok(m.list_groups()?),
+        "group.for_dir" => {
+            #[derive(Deserialize)]
+            struct P {
+                cwd: String,
+            }
+            let P { cwd } = params(p)?;
+            let m = m.clone();
+            ok(tokio::task::spawn_blocking(move || m.group_for_dir(&cwd)).await.map_err(|e| anyhow!(e))??)
+        }
+        "group.delete" => {
+            #[derive(Deserialize)]
+            struct P {
+                name: String,
+            }
+            let P { name } = params(p)?;
+            m.delete_group(&name)?;
+            ok(true)
+        }
         "session.set_pinned" => {
             #[derive(Deserialize)]
             struct P {

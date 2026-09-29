@@ -13,7 +13,15 @@ use tokio::sync::{broadcast, mpsc};
 pub trait WorktreeBackend: Send + Sync {
     fn create(&self, cwd: &str, opts: &WorktreeOpts) -> Result<WorktreeInfo>;
     fn remove(&self, info: &WorktreeInfo) -> Result<()>;
+    /// Root of the main working tree of the repository containing `cwd`, also
+    /// from inside a linked worktree. None when `cwd` is not in a repository.
+    fn repo_root(&self, _cwd: &str) -> Option<String> {
+        None
+    }
 }
+
+/// Feature-record namespace of the group registry, keyed by group name.
+const GROUPS: &str = "groups";
 
 #[derive(Default)]
 struct Runtime {
@@ -38,6 +46,8 @@ struct Inner {
     events: broadcast::Sender<Event>,
     pty_out: broadcast::Sender<PtyChunk>,
     sink: mpsc::UnboundedSender<Event>,
+    /// Serialises read-modify-write updates of the group registry.
+    groups: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -63,6 +73,7 @@ impl Manager {
             events,
             pty_out,
             sink,
+            groups: Mutex::new(()),
         });
         let m = Self { inner };
         m.spawn_event_loop(sink_rx);
@@ -192,6 +203,14 @@ impl Manager {
             self.inner.runtimes.lock().entry(s.id.clone()).or_default();
             sessions.insert(s.id.clone(), s);
         }
+        drop(sessions);
+        // Sessions grouped before the registry existed: register their groups once.
+        let known: std::collections::HashSet<String> = self.list_groups()?.into_iter().map(|g| g.name).collect();
+        for s in self.list_sessions() {
+            if s.group.as_ref().is_some_and(|g| !known.contains(g)) {
+                self.remember_group(&s);
+            }
+        }
         Ok(n)
     }
 
@@ -238,6 +257,7 @@ impl Manager {
         self.inner.sessions.lock().insert(session.id.clone(), session.clone());
         self.inner.runtimes.lock().insert(session.id.clone(), Runtime::default());
         self.broadcast(Event::SessionCreated { session: session.clone() });
+        self.remember_group(&session);
 
         match session.mode {
             SessionMode::Terminal => {
@@ -379,7 +399,89 @@ impl Manager {
     }
 
     pub fn set_group(&self, id: &str, group: Option<String>) -> Result<Session> {
-        self.update_session(id, |s| s.group = group.clone())
+        let session = self.update_session(id, |s| s.group = group.clone())?;
+        self.remember_group(&session);
+        Ok(session)
+    }
+
+    // ----------------------------------------------------------------- groups
+
+    /// Every remembered group, by name.
+    pub fn list_groups(&self) -> Result<Vec<Group>> {
+        let mut groups: Vec<Group> = self
+            .inner
+            .store
+            .feature_records(GROUPS)?
+            .into_iter()
+            .filter_map(|(id, json)| match serde_json::from_str(&json) {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    tracing::warn!("skipping unreadable group {id}: {e}");
+                    None
+                }
+            })
+            .collect();
+        groups.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(groups)
+    }
+
+    /// The group to suggest for a new session in `cwd`: of the groups linked to
+    /// its repository, the one a session there joined last.
+    pub fn group_for_dir(&self, cwd: &str) -> Result<Option<String>> {
+        let Some(repo) = self.repo_root(cwd) else { return Ok(None) };
+        Ok(self
+            .list_groups()?
+            .into_iter()
+            .filter_map(|g| g.repos.iter().find(|r| r.path == repo).map(|r| (r.last_used, g.name.clone())))
+            .max()
+            .map(|(_, name)| name))
+    }
+
+    /// Forget a group and take every session out of it.
+    pub fn delete_group(&self, name: &str) -> Result<()> {
+        {
+            let _guard = self.inner.groups.lock();
+            self.inner.store.delete_feature_record(GROUPS, name)?;
+        }
+        let members: Vec<String> = self
+            .inner
+            .sessions
+            .lock()
+            .values()
+            .filter(|s| s.group.as_deref() == Some(name))
+            .map(|s| s.id.clone())
+            .collect();
+        for id in members {
+            self.update_session(&id, |s| s.group = None)?;
+        }
+        Ok(())
+    }
+
+    fn repo_root(&self, cwd: &str) -> Option<String> {
+        self.inner.worktrees.as_ref()?.repo_root(cwd)
+    }
+
+    /// Register the session's group, linked to the session's repository. A
+    /// failure is logged: it must not fail the change that triggered it.
+    fn remember_group(&self, session: &Session) {
+        let Some(name) = session.group.clone().filter(|g| !g.trim().is_empty()) else { return };
+        let repo = self.repo_root(&session.cwd);
+        let _guard = self.inner.groups.lock();
+        let result = (|| -> Result<()> {
+            let mut group = match self.inner.store.feature_records(GROUPS)?.into_iter().find(|(id, _)| *id == name) {
+                Some((_, json)) => serde_json::from_str(&json)?,
+                None => Group { name: name.clone(), repos: vec![] },
+            };
+            if let Some(path) = repo {
+                group.repos.retain(|r| r.path != path);
+                group.repos.push(GroupRepo { path, last_used: session.last_activity });
+                group.repos.sort_by(|a, b| a.path.cmp(&b.path));
+            }
+            self.inner.store.save_feature_record(GROUPS, &name, &serde_json::to_string(&group)?)
+        })();
+        if let Err(e) = result {
+            tracing::warn!("remember group {name}: {e}");
+        }
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<Session> {

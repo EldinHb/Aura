@@ -34,6 +34,11 @@ pub trait Store: Send + Sync {
         records.push((id.into(), value.into()));
         self.set_setting(&format!("feature:{namespace}"), &serde_json::to_string(&records)?)
     }
+    fn delete_feature_record(&self, namespace: &str, id: &str) -> Result<()> {
+        let mut records = self.feature_records(namespace)?;
+        records.retain(|(key, _)| key != id);
+        self.set_setting(&format!("feature:{namespace}"), &serde_json::to_string(&records)?)
+    }
     fn upsert_session(&self, session: &Session) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;
     fn list_sessions(&self) -> Result<Vec<Session>>;
@@ -67,6 +72,12 @@ impl Store for MemoryStore {
     }
     fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> Result<()> {
         self.inner.lock().features.entry(namespace.into()).or_default().insert(id.into(), value.into());
+        Ok(())
+    }
+    fn delete_feature_record(&self, namespace: &str, id: &str) -> Result<()> {
+        if let Some(records) = self.inner.lock().features.get_mut(namespace) {
+            records.remove(id);
+        }
         Ok(())
     }
     fn upsert_session(&self, session: &Session) -> Result<()> {

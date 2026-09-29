@@ -9,9 +9,10 @@ import { findConflicts, isConflicting } from "./keymapUtils";
 import type { CapabilitySet } from "../../gen";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
+import { useGroups } from "../../state/groups";
 
-type Tab = "general" | "keymap" | "providers";
-const TABS: Tab[] = ["general", "keymap", "providers"];
+type Tab = "general" | "keymap" | "providers" | "groups";
+const TABS: Tab[] = ["general", "keymap", "providers", "groups"];
 
 export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initial ?? "general");
@@ -19,9 +20,9 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
     const t = (e.target as HTMLElement).tagName;
     const inField = t === "INPUT" || t === "TEXTAREA" || t === "SELECT";
     if ((e.target as HTMLElement).dataset.recording) return;
-    if (e.key === "ArrowLeft" && !inField) setTab(TABS[(TABS.indexOf(tab) + 2) % 3]);
-    else if (e.key === "ArrowRight" && !inField) setTab(TABS[(TABS.indexOf(tab) + 1) % 3]);
-    else if (!inField && (e.key === "1" || e.key === "2" || e.key === "3")) setTab(TABS[Number(e.key) - 1]);
+    if (e.key === "ArrowLeft" && !inField) setTab(TABS[(TABS.indexOf(tab) + TABS.length - 1) % TABS.length]);
+    else if (e.key === "ArrowRight" && !inField) setTab(TABS[(TABS.indexOf(tab) + 1) % TABS.length]);
+    else if (!inField && /^[1-9]$/.test(e.key) && Number(e.key) <= TABS.length) setTab(TABS[Number(e.key) - 1]);
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -33,7 +34,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
           <span>Settings</span>
           <span style={{ flex: 1 }} />
           <span className="dim" style={{ fontWeight: 400, color: "var(--fg-dim)", fontSize: 11 }}>
-            <kbd>←</kbd> <kbd>→</kbd> or <kbd>1-3</kbd> switch tab
+            <kbd>←</kbd> <kbd>→</kbd> or <kbd>1-{TABS.length}</kbd> switch tab
           </span>
         </>
       }
@@ -53,6 +54,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
         {tab === "general" && <GeneralTab />}
         {tab === "keymap" && <KeymapTab />}
         {tab === "providers" && <ProvidersTab />}
+        {tab === "groups" && <GroupsTab />}
       </div>
     </ModalC>
   );
@@ -372,6 +374,69 @@ function ProvidersTab() {
         </div>
       ))}
       {providers.length === 0 && <div className="empty" style={{ height: "auto", padding: 20 }}>No providers reported by the daemon.</div>}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------- groups
+
+function GroupsTab() {
+  const client = useStore((s) => s.client);
+  const sessions = useStore((s) => s.sessions);
+  const toast = useStore((s) => s.toast);
+  const { groups, reload } = useGroups();
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const members = (name: string) => Object.values(sessions).filter((s) => s.group === name).length;
+  const remove = async (name: string) => {
+    if (!client) return;
+    try {
+      await client.deleteGroup(name);
+      setConfirming(null);
+      await reload();
+      toast(`Deleted group ${name}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+  if (groups.length === 0) {
+    return <div className="empty" style={{ height: "auto", padding: 20 }}>No groups yet. Give a session a group when creating it, or with Set session group… in the command palette.</div>;
+  }
+  return (
+    <div>
+      <div className="dim" style={{ fontSize: 11, marginBottom: 8 }}>
+        Groups are kept after their last session is deleted. A new session in a linked repository gets the group used there last.
+      </div>
+      {groups.map((g, i) => {
+        const n = members(g.name);
+        return (
+          <div key={g.name} className="provider-card">
+            <div className="provider-head">
+              <strong>{g.name}</strong>
+              <span className="dim">{n === 0 ? "no sessions" : `${n} session${n === 1 ? "" : "s"}`}</span>
+              <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                {confirming === g.name ? (
+                  <>
+                    <span className="dim">{n > 0 ? `Delete and ungroup ${n} session${n === 1 ? "" : "s"}?` : "Delete?"}</span>
+                    <button type="button" className="btn small danger" data-hint data-autofocus onClick={() => void remove(g.name)}>Delete</button>
+                    <button type="button" className="btn small" data-hint onClick={() => setConfirming(null)}>Cancel</button>
+                  </>
+                ) : (
+                  <button type="button" className="btn small" data-hint data-autofocus={i === 0 ? true : undefined} onClick={() => setConfirming(g.name)}>Delete…</button>
+                )}
+              </span>
+            </div>
+            <div className="acp-agents">
+              {g.repos.length === 0 && <div className="dim">No repository linked</div>}
+              {g.repos.map((r) => (
+                <div key={r.path} className="acp-agent">
+                  <span className="dim mono grow" title={r.path}>{r.path}</span>
+                  <span className="dim">last used {new Date(r.last_used).toLocaleDateString()}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -133,6 +133,10 @@ impl Store for SqliteStore {
         self.conn.lock().execute("INSERT INTO feature_records(namespace,id,json) VALUES (?1,?2,?3) ON CONFLICT(namespace,id) DO UPDATE SET json=excluded.json", params![namespace,id,value])?;
         Ok(())
     }
+    fn delete_feature_record(&self, namespace: &str, id: &str) -> Result<()> {
+        self.conn.lock().execute("DELETE FROM feature_records WHERE namespace = ?1 AND id = ?2", params![namespace, id])?;
+        Ok(())
+    }
     fn upsert_session(&self, session: &Session) -> Result<()> {
         let json = serde_json::to_string(session)?;
         self.conn.lock().execute(
@@ -398,6 +402,17 @@ mod tests {
         assert_eq!(s.load_scrollback("x").unwrap(), Some(b"abcdef".to_vec()));
         s.delete_session("x").unwrap();
         assert_eq!(s.load_scrollback("x").unwrap(), None);
+    }
+
+    #[test]
+    fn feature_records_can_be_deleted() {
+        let s = SqliteStore::open_in_memory().unwrap();
+        s.save_feature_record("groups", "a", "1").unwrap();
+        s.save_feature_record("groups", "b", "2").unwrap();
+        s.save_feature_record("other", "a", "3").unwrap();
+        s.delete_feature_record("groups", "a").unwrap();
+        assert_eq!(s.feature_records("groups").unwrap(), vec![("b".to_string(), "2".to_string())]);
+        assert_eq!(s.feature_records("other").unwrap().len(), 1);
     }
 
     #[test]
