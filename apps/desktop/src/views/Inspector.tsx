@@ -8,6 +8,9 @@ import { SessionLinks } from "./SessionLinks";
 import { useSessionLinkPreferences } from "../state/sessionLinkPreferences";
 import { PlanSection } from "./PlanSection";
 import { acpSessionInfo } from "../lib/acp";
+import { WatchSection } from "../features/watches/WatchSection";
+import { selectedSessionLinks, sessionLinks } from "./issueLinks";
+import { useMemo } from "react";
 
 function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boolean; title?: string }) {
   return (
@@ -131,6 +134,12 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
   const openDialog = useStore((st) => st.openDialog);
   const setCursorItem = useStore((st) => st.setCursorItem);
 
+  const pr = useMemo(() => {
+    if (!s || !linkPreferences) return null;
+    const link = selectedSessionLinks(sessionLinks(t?.items ?? {}, s.title), linkPreferences.preferences).find((l) => l.kind === "PR");
+    return link ? { repo: link.repo, number: Number(link.number) } : null;
+  }, [s, t?.items, linkPreferences]);
+
   const jump = (key: string) => {
     setCursorItem(key);
     setFocus("main");
@@ -144,6 +153,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
           <SessionLinks items={t?.items ?? {}} title={s.title} preferences={linkPreferences?.preferences}
             loading={!linkPreferences} error={linkPreferences?.error}
             onEdit={() => openDialog({ kind: "session-links", sessionId: s.id })} />
+          {pr && <WatchSection target={pr} />}
           <PlanSection sessionId={s.id} />
           <div className="inspector-section">
             <h4>Session</h4>

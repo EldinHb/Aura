@@ -291,6 +291,24 @@ findings and private agent rationale are excluded. A hidden receipt marker lets
 Aura reconcile a request whose response was lost. If a submission outcome is
 uncertain, use **Reconcile with GitHub**; Aura will not blindly repeat the POST.
 
+### Watching your own PRs for reviews
+
+When a session is linked to a PR (see **Issues & PRs** in the inspector), the
+inspector's **Review watch** section and the palette command **Watch PR for
+reviews…** start a watch. Pick the reviewers to wait for: requested reviewers are
+preselected, and choosing anyone else requests their review as your GitHub
+account. The daemon then checks the PR's reviews every minute with plain GitHub
+API reads, without an agent, and reports each approval, change request and
+comment-only review as a toast, plus a desktop notification when Aura is in the
+background. Reviews that existed before the watch started are not reported.
+
+A watch ends when every chosen reviewer has responded or the PR closes. With no
+reviewer chosen, it ends at the first review by anyone except the author and
+you; automatic bot reviews such as Copilot's do not count unless you pick the bot.
+Watches keep running in the daemon while the window is closed, and their results
+are waiting in the inspector when you come back. **Check watched PRs for reviews
+now** and **Stop watching PR for reviews** are in the palette too.
+
 ---
 
 ## Building from source

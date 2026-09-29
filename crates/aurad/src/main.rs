@@ -87,13 +87,17 @@ async fn main() -> Result<()> {
     let restored = manager.restore()?;
     tracing::info!(restored, "sessions restored");
 
-    let reviews = aura_review::ReviewService::new(store, Arc::new(aura_github::GhCli::default()), Arc::new(aura_review::runner::CliRunner), manager.clone(), data_dir.join("review-workspaces"))?;
+    let reviews = aura_review::ReviewService::new(store.clone(), Arc::new(aura_github::GhCli::default()), Arc::new(aura_review::runner::CliRunner), manager.clone(), data_dir.join("review-workspaces"))?;
     reviews.launch();
+    let watches = aura_review::watch::WatchService::new(store, Arc::new(aura_github::GhCli::default()), reviews.events.clone())?;
+    watches.launch();
     let service = reviews.clone();
     let ext: ExtHandler = Arc::new(move |method: String, params: Value| {
         let service = service.clone();
+        let watches = watches.clone();
         Box::pin(async move {
             if let Some(result) = service.handle(&method, params.clone()).await? { return Ok(Some(result)); }
+            if let Some(result) = watches.handle(&method, params.clone()).await? { return Ok(Some(result)); }
             git_methods(&method, params).await
         })
     });

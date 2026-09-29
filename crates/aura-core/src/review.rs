@@ -121,3 +121,37 @@ pub struct ReviewInbox {
     pub error: Option<String>,
     pub defaults: ReviewConfig,
 }
+/// A daemon-side poll of one pull request's reviews. Keyed by lowercase `owner/repo#number`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PrWatch {
+    pub id: String,
+    pub account: String,
+    pub repo: String,
+    pub number: u32,
+    pub url: String,
+    pub title: String,
+    pub author: String,
+    /// Logins to wait for. Empty waits for the first review by anyone except the author.
+    pub reviewers: Vec<String>,
+    /// watching | done | closed
+    pub status: String,
+    /// Highest GitHub review id already looked at; older reviews never notify.
+    pub seen: u64,
+    pub reviews: Vec<WatchedReview>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_checked: Option<String>,
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WatchedReview {
+    pub id: u64,
+    pub reviewer: String,
+    /// APPROVED | CHANGES_REQUESTED | COMMENTED
+    pub state: String,
+    pub body: String,
+    pub url: String,
+    pub submitted_at: String,
+}

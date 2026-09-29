@@ -1,5 +1,6 @@
 import { ReviewSettings } from "../features/reviews/ReviewSettings";
 import { ReviewSubmit } from "../features/reviews/ReviewEditor";
+import { WatchDialog } from "../features/watches/WatchDialog";
 import { useEffect, useState } from "react";
 import { useStore } from "../state/store";
 import { Toasts } from "./Toasts";
@@ -36,6 +37,8 @@ function CurrentDialog() {
       return <ConfirmDialog title={dialog.title} message={dialog.message} onConfirm={dialog.onConfirm} danger={dialog.danger} />;
     case "rename":
       return <RenameDialog sessionId={dialog.sessionId} />;
+    case "pr-watch":
+      return <WatchDialog key={`${dialog.repo}#${dialog.number}`} target={{ repo: dialog.repo, number: dialog.number }} />;
     case "session-links":
       return <SessionLinksDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "group":

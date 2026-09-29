@@ -1,5 +1,6 @@
 import { PullWorkspace } from "./features/reviews/PullWorkspace";
 import { registerReviewCommands } from "./features/reviews/state";
+import { registerWatchCommands, useWatchSync } from "./features/watches/state";
 import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected } from "./state/store";
@@ -16,6 +17,7 @@ import { Composer } from "./views/Composer";
 import { Inspector } from "./views/Inspector";
 import { Overlays } from "./components/Overlays";
 import { isMac } from "./lib/platform";
+import { desktopNotify } from "./lib/notify";
 import clsx from "clsx";
 import type { Event } from "./gen";
 
@@ -25,6 +27,8 @@ const initialSession = params.get("session");
 
 export default function App() {
   useKeyboard();
+  // Detached session windows would announce every review a second time.
+  useWatchSync(windowMode !== "session");
   const connection = useStore((s) => s.connection);
   const connectionError = useStore((s) => s.connectionError);
   const selected = useStore(selectSelected);
@@ -46,7 +50,8 @@ export default function App() {
     registerGitCommands();
     const offCore = registerCoreCommands();
     const offReviews = registerReviewCommands();
-    return () => { offCore(); offReviews(); };
+    const offWatches = registerWatchCommands();
+    return () => { offCore(); offReviews(); offWatches(); };
   }, []);
 
   // Connect + subscribe.
@@ -210,16 +215,5 @@ async function notifyIfNeeded(ev: Event) {
   const s = st.sessions[ev.session_id];
   const title = s?.title ?? "Aura";
   const body = ev.type === "approval_requested" ? `Approval needed: ${ev.approval.title}` : ev.type === "user_input_requested" ? "Question from the agent" : "Turn finished";
-  if (isTauri()) {
-    try {
-      const n = await import("@tauri-apps/plugin-notification");
-      let ok = await n.isPermissionGranted();
-      if (!ok) ok = (await n.requestPermission()) === "granted";
-      if (ok) n.sendNotification({ title, body });
-    } catch {
-      /* ignore */
-    }
-  } else if ("Notification" in window && Notification.permission === "granted") {
-    new Notification(title, { body });
-  }
+  await desktopNotify(title, body);
 }

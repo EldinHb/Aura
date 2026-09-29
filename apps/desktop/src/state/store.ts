@@ -54,6 +54,7 @@ export type Dialog =
   | { kind: "diff"; sessionId: string; path?: string }
   | { kind: "rename"; sessionId: string }
   | { kind: "session-links"; sessionId: string }
+  | { kind: "pr-watch"; repo: string; number: number }
   | { kind: "group"; sessionId: string }
   | { kind: "models"; sessionId: string }
   | { kind: "effort"; sessionId: string }
