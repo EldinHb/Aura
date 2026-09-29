@@ -18,7 +18,8 @@ type Row =
   | { kind: "item"; item: Item; key: string; nested: boolean }
   | { kind: "approval"; id: string; key: string }
   | { kind: "input"; id: string; key: string }
-  | { kind: "notice"; key: string; level: string; message: string };
+  | { kind: "notice"; key: string; level: string; message: string }
+  | { kind: "notices-clear"; key: string };
 
 function TurnDivider({ turn }: { turn: Turn }) {
   const running = turn.status === "running";
@@ -46,6 +47,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const setCursorItem = useStore((s) => s.setCursorItem);
   const showReasoning = useStore((s) => s.settings.showReasoning);
   const toast = useStore((s) => s.toast);
+  const client = useStore((s) => s.client);
+  const clearNotices = useCallback(async () => {
+    try {
+      await client?.clearNotices(sessionId);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  }, [client, sessionId, toast]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [atBottom, setAtBottom] = useState(true);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -115,6 +124,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const running = t.turns.find((x) => x.status === "running");
     if (running) out.push({ kind: "turn", turn: running, key: `turn:${running.id}` });
     for (const n of t.notices.slice(-5)) out.push({ kind: "notice", key: `notice:${n.id}`, level: n.level, message: n.message });
+    if (t.notices.length > 0) out.push({ kind: "notices-clear", key: "notices-clear" });
     return out;
   }, [t, showReasoning]);
 
@@ -231,6 +241,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               return (
                 <div key={r.key} className={clsx("notice", r.level)}>
                   <span className={clsx("dot", r.level === "error" ? "err" : r.level === "warn" ? "warn" : "info")} /> {r.message}
+                </div>
+              );
+            case "notices-clear":
+              return (
+                <div key={r.key} className="notice-actions">
+                  <button type="button" className="btn small" data-command="session.clear-notices" onClick={() => void clearNotices()}>Clear warnings</button>
                 </div>
               );
           }

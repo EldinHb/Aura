@@ -226,6 +226,10 @@ export class RpcClient {
   interrupt(id: string) {
     return this.call<boolean>("session.interrupt", { id });
   }
+  /** Dismiss the notices of one session, or of all sessions without an id. */
+  clearNotices(id?: string) {
+    return this.call<boolean>("session.clear_notices", id ? { id } : {});
+  }
   respondApproval(id: string, approval_id: string, decision: ApprovalDecision) {
     return this.call<boolean>("session.respond_approval", { id, approval_id, decision });
   }

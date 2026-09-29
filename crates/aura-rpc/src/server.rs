@@ -394,6 +394,15 @@ async fn dispatch(
             let P { id, name, params: ap } = params(p)?;
             ok(m.action(&id, &name, ap).await?)
         }
+        "session.clear_notices" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: Option<String>,
+            }
+            let P { id } = params(p)?;
+            m.clear_notices(id.as_deref())?;
+            ok(true)
+        }
         "session.rename" => {
             #[derive(Deserialize)]
             struct P {

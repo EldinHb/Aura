@@ -181,6 +181,11 @@ function applyDelta(item: Item, delta: ItemDelta): Item {
   return { ...item, data: { ...item.data, ...delta.data } };
 }
 
+/** Claude Code's "API retry n/m: …" warnings (see aura-provider-claude). */
+export function isRetryNotice(n: Notice): boolean {
+  return n.message.startsWith("API retry ");
+}
+
 function applyToTranscript(t: Transcript, ev: Event): Transcript {
   // Retain plans delivered outside regular items, including resolved approvals.
   const source = ev.type === "provider_info" && ev.info.kind === "plan" ? ev.info
@@ -198,6 +203,8 @@ function applyToTranscript(t: Transcript, ev: Event): Transcript {
     case "turn_completed": {
       const turns = t.turns.map((x) => (x.id === ev.turn.id ? ev.turn : x));
       if (!turns.some((x) => x.id === ev.turn.id)) turns.push(ev.turn);
+      // An API retry that was followed by a completed turn succeeded; the warning is stale.
+      if (ev.turn.status === "completed" && t.notices.some(isRetryNotice)) t = { ...t, notices: t.notices.filter((n) => !isRetryNotice(n)) };
       return { ...t, turns };
     }
     case "item_started": {
@@ -230,6 +237,8 @@ function applyToTranscript(t: Transcript, ev: Event): Transcript {
       void _gone;
       return { ...t, inputs: rest };
     }
+    case "notices_cleared":
+      return { ...t, notices: [] };
     case "notice": {
       const n: Notice = { id: String(noticeId++), level: ev.level, message: ev.message, ts: Date.now() };
       return { ...t, notices: [...t.notices.slice(-49), n] };

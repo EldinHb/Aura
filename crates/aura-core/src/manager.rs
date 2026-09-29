@@ -362,6 +362,18 @@ impl Manager {
         driver.action(name, params).await
     }
 
+    /// Dismiss the notices of one session, or of every session when `id` is None.
+    pub fn clear_notices(&self, id: Option<&str>) -> Result<()> {
+        let ids: Vec<String> = match id {
+            Some(id) => vec![self.get_session(id)?.id],
+            None => self.inner.sessions.lock().keys().cloned().collect(),
+        };
+        for session_id in ids {
+            self.publish(Event::NoticesCleared { session_id });
+        }
+        Ok(())
+    }
+
     pub fn rename(&self, id: &str, title: &str) -> Result<Session> {
         self.update_session(id, |s| s.title = title.to_string())
     }
@@ -644,6 +656,15 @@ impl Manager {
 
     fn handle_event(&self, ev: Event) {
         let sid = ev.session_id().to_string();
+        // Bookkeeping only: it must not touch the session row, which would
+        // bump `last_activity` and reorder the sidebar.
+        if matches!(ev, Event::NoticesCleared { .. }) {
+            if let Err(e) = self.inner.store.append_event(&sid, &ev) {
+                tracing::warn!("persist event failed: {e}");
+            }
+            self.broadcast(ev);
+            return;
+        }
         let replaying = {
             let mut rts = self.inner.runtimes.lock();
             let rt = rts.entry(sid.clone()).or_default();

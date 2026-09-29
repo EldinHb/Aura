@@ -226,7 +226,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
           {t && <ProviderSection s={s} info={t.providerInfo} />}
           {t && t.notices.length > 0 && (
             <div className="inspector-section">
-              <h4>Notices</h4>
+              <h4 className="section-head">Notices <Action cmd="session.clear-notices" label="Clear" /></h4>
               {t.notices.slice(-5).reverse().map((n) => (
                 <div key={n.id} className={clsx("notice", n.level)}>
                   <span className={clsx("dot", n.level === "error" ? "err" : n.level === "warn" ? "warn" : "info")} /> {n.message}

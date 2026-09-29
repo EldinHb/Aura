@@ -154,6 +154,8 @@ export const coreCommands: Command[] = [
       if (list[idx]) st().select(list[idx].id);
     },
   },
+  { id: "session.clear-notices", title: "Clear warnings in this session", group: "Session", when: "hasSelection", run: async () => { await client().clearNotices(selected().id); } },
+  { id: "session.clear-all-notices", title: "Clear warnings in all sessions", group: "Session", run: async () => { await client().clearNotices(); st().toast("Cleared warnings in all sessions"); } },
   { id: "session.fork", title: "Fork session", group: "Session", when: "hasSelection", run: async () => { const s = await client().fork(selected().id); st().select(s.id); } },
   { id: "session.rename", title: "Rename session…", group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "rename", sessionId: selected().id }) },
   { id: "session.links", title: "Edit issue & PR…", keywords: ["GitHub", "pull request", "links"], group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "session-links", sessionId: selected().id }) },

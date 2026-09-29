@@ -313,3 +313,29 @@ async fn acp_sessions_need_an_agent_and_have_no_terminal_mode() {
     assert_eq!(s.agent.as_deref(), Some("gemini"));
     assert!(s.title.starts_with("gemini · "), "{}", s.title);
 }
+
+#[tokio::test]
+async fn clearing_notices_is_recorded_without_touching_the_sessions() {
+    let (m, _calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let opts = |title: &str| CreateSessionOpts { provider: ProviderKind::Claude, cwd: cwd.clone(), title: Some(title.into()), ..Default::default() };
+    let mut rx = m.subscribe();
+    let a = m.create_session(opts("a")).await.unwrap();
+    let b = m.create_session(opts("b")).await.unwrap();
+    // Let the sessions' own start-up updates settle first.
+    drain(&mut rx).await;
+    let before = (m.get_session(&a.id).unwrap().last_activity, m.get_session(&b.id).unwrap().last_activity);
+
+    m.clear_notices(Some(&a.id)).unwrap();
+    let evs = drain(&mut rx).await;
+    assert!(evs.iter().any(|e| matches!(e, Event::NoticesCleared { session_id } if session_id == &a.id)));
+    assert!(!evs.iter().any(|e| matches!(e, Event::SessionUpdated { .. })), "clearing must not reorder the sidebar");
+    assert!(m.history(&a.id, 0, 100).unwrap().iter().any(|e| matches!(e.event, Event::NoticesCleared { .. })));
+
+    m.clear_notices(None).unwrap();
+    drain(&mut rx).await;
+    assert!(m.history(&b.id, 0, 100).unwrap().iter().any(|e| matches!(e.event, Event::NoticesCleared { .. })));
+    assert_eq!(before, (m.get_session(&a.id).unwrap().last_activity, m.get_session(&b.id).unwrap().last_activity));
+    assert!(m.clear_notices(Some("missing")).is_err());
+}

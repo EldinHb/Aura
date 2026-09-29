@@ -59,6 +59,9 @@ pub enum Event {
     ProcessExited { session_id: SessionId, exit_code: Option<i32>, message: Option<String> },
     /// Settings acknowledged by the provider.
     SettingChanged { session_id: SessionId, setting: Setting },
+    /// The user dismissed the session's notices. Stored in the history like
+    /// any other event, so a replay drops the notices that came before it.
+    NoticesCleared { session_id: SessionId },
 }
 
 impl Event {
@@ -80,7 +83,8 @@ impl Event {
             | Event::NativeId { session_id, .. }
             | Event::Usage { session_id, .. }
             | Event::ProcessExited { session_id, .. }
-            | Event::SettingChanged { session_id, .. } => session_id,
+            | Event::SettingChanged { session_id, .. }
+            | Event::NoticesCleared { session_id } => session_id,
         }
     }
 
