@@ -261,11 +261,9 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       }
       width={720}
       className="new-session"
+      onSubmit={() => void submit()}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-          e.preventDefault();
-          void submit();
-        } else if (e.altKey && /^[1-9]$/.test(physicalKey(e))) {
+        if (e.altKey && /^[1-9]$/.test(physicalKey(e))) {
           const c = available[Number(physicalKey(e)) - 1];
           if (c) {
             e.preventDefault();

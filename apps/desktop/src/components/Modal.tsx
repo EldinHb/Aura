@@ -12,20 +12,36 @@ export type ModalProps = {
   /** Called on Escape / backdrop click. Defaults to closeDialog. */
   onClose?: () => void;
   onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
+  /** Cmd/Ctrl+Enter, wherever focus is while the modal is open. */
+  onSubmit?: () => void;
   className?: string;
 };
 
 /** Shared modal shell: backdrop, focus trap, Escape to close, autofocus. */
-export function Modal({ title, children, footer, width, onClose, onKeyDown, className }: ModalProps) {
+export function Modal({ title, children, footer, width, onClose, onKeyDown, onSubmit, className }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
   const closeDialog = useStore((s) => s.closeDialog);
   const close = onClose ?? closeDialog;
+  const submitRef = useRef(onSubmit);
+  submitRef.current = onSubmit;
 
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
     const first = root.querySelector<HTMLElement>("[data-autofocus]") ?? root.querySelector<HTMLElement>("input, textarea, select") ?? root.querySelector<HTMLElement>(FOCUSABLE);
     first?.focus();
+  }, []);
+
+  // On the window rather than the modal: clicking the modal's padding or a label
+  // leaves focus on <body>, where a key event never passes through the modal.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.key !== "Enter" || !(e.metaKey || e.ctrlKey) || !submitRef.current) return;
+      e.preventDefault();
+      submitRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   const handleKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
