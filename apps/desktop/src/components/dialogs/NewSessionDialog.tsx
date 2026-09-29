@@ -36,6 +36,16 @@ function slug(s: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 }
+// Branch names cannot contain spaces: turn each into a hyphen in place, keeping the caret where it was.
+function hyphenateSpaces(input: HTMLInputElement): string {
+  const { selectionStart, selectionEnd } = input;
+  const value = input.value.replace(/\s/g, "-");
+  if (value !== input.value) {
+    input.value = value;
+    input.setSelectionRange(selectionStart, selectionEnd);
+  }
+  return value;
+}
 function caretAtEnd(input: HTMLInputElement): boolean {
   return input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
 }
@@ -397,7 +407,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
             <input type="checkbox" checked={worktree} onChange={(e) => setWorktree(e.target.checked)} style={{ marginRight: 6 }} />
             Create a git worktree for this session
           </label>
-          {worktree && <input type="text" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="branch name" spellCheck={false} />}
+          {worktree && <input type="text" value={branch} onChange={(e) => setBranch(hyphenateSpaces(e.target))} placeholder="branch name" spellCheck={false} />}
           {worktree && <span className="dim" style={{ fontSize: 11 }}>Worktree under {repoRoot}/.aura-worktrees/</span>}
         </div>
       )}

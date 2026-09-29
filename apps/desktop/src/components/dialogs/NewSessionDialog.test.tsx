@@ -93,3 +93,12 @@ it("keeps a group the user typed when the directory changes", async () => {
   await waitFor(() => expect(groupForDir).toHaveBeenCalledTimes(1));
   expect(groupInput().value).toBe("docs");
 });
+
+it("turns spaces in the worktree branch name into hyphens", async () => {
+  useStore.setState({ client: { ...useStore.getState().client, gitRepoRoot: () => Promise.resolve("/repo") } as unknown as RpcClient });
+  await openAt("/repo/");
+  fireEvent.click(await screen.findByLabelText("Create a git worktree for this session"));
+  const branch = screen.getByPlaceholderText("branch name") as HTMLInputElement;
+  fireEvent.change(branch, { target: { value: "aura/fix login  bug" } });
+  expect(branch.value).toBe("aura/fix-login--bug");
+});
