@@ -36,7 +36,7 @@ export function Modal({ title, children, footer, width, onClose, onKeyDown, clas
       return;
     }
     if (e.key === "Tab" && ref.current) {
-      const items = [...ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
+      const items = [...ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.tabIndex >= 0 && (el.offsetParent !== null || el === document.activeElement));
       if (items.length === 0) return;
       const idx = items.indexOf(document.activeElement as HTMLElement);
       let next = e.shiftKey ? idx - 1 : idx + 1;

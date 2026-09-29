@@ -42,7 +42,7 @@ export function ModalC({
       return;
     }
     if (e.key === "Tab" && ref.current) {
-      const focusables = [...ref.current.querySelectorAll<HTMLElement>('button, input, textarea, select, [tabindex]:not([tabindex="-1"])')].filter((x) => !x.hasAttribute("disabled"));
+      const focusables = [...ref.current.querySelectorAll<HTMLElement>('button, input, textarea, select, [tabindex]:not([tabindex="-1"])')].filter((x) => !x.hasAttribute("disabled") && x.tabIndex >= 0);
       if (focusables.length === 0) return;
       const idx = focusables.indexOf(document.activeElement as HTMLElement);
       let next = idx + (e.shiftKey ? -1 : 1);

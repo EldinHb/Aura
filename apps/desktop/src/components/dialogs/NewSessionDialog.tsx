@@ -9,6 +9,8 @@ import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
+/** Rows the directory browser renders; the arrow keys stay within them. */
+const MAX_DIR_ROWS = 12;
 
 function loadRecentDirs(): string[] {
   try {
@@ -32,6 +34,9 @@ function slug(s: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
+}
+function caretAtEnd(input: HTMLInputElement): boolean {
+  return input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
 }
 function parentDir(p: string): string {
   const t = p.replace(/\/+$/, "");
@@ -78,6 +83,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const dirInput = useRef<HTMLInputElement>(null);
+  const dirBrowser = useRef<HTMLDivElement>(null);
 
   const caps = providers.find((p) => p.kind === provider)?.capabilities;
   const groups = useMemo(() => [...new Set(Object.values(sessions).map((s) => s.group).filter((g): g is string => !!g))].sort(), [sessions]);
@@ -145,8 +151,12 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   type BrowserRow = { path: string; label: string; git: boolean; recent?: boolean };
   const browserRows = useMemo<BrowserRow[]>(() => {
     const rows: BrowserRow[] = showRecent ? recentDirs.map((p) => ({ path: p, label: home ? p.replace(home, "~") : p, git: false, recent: true })) : [];
-    return rows.concat(entries.map((e) => ({ path: e.path, label: e.name, git: e.is_git_repo })));
+    return rows.concat(entries.map((e) => ({ path: e.path, label: e.name, git: e.is_git_repo }))).slice(0, MAX_DIR_ROWS);
   }, [showRecent, recentDirs, entries, home]);
+
+  useEffect(() => {
+    dirBrowser.current?.querySelector<HTMLElement>(".list-item.active")?.scrollIntoView({ block: "nearest" });
+  }, [dirIndex, browserRows]);
 
   useEffect(() => {
     if (!branch && (title || worktree)) setBranch(`aura/${slug(title) || new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`);
@@ -200,6 +210,9 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       const row = browserRows[dirIndex];
       if (row) descend(row.path);
     } else if (e.key === "Tab" && !e.shiftKey && browserRows[dirIndex] && partial) {
+      e.preventDefault();
+      descend(browserRows[dirIndex].path);
+    } else if (e.key === "ArrowRight" && browserRows[dirIndex] && caretAtEnd(e.currentTarget)) {
       e.preventDefault();
       descend(browserRows[dirIndex].path);
     } else if (e.key === "Backspace" && !partial && expandedDir && expandedDir !== "/") {
@@ -259,15 +272,15 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         <label>Directory {repoRoot && <span className="chip">⎇ git repo</span>}</label>
         <input ref={dirInput} type="text" value={dir} onChange={(e) => setDir(e.target.value)} onKeyDown={onDirKey} placeholder="~/projects/…" spellCheck={false} autoComplete="off" />
         {browserRows.length > 0 && (
-          <div className="dir-browser">
-            {browserRows.slice(0, 12).map((row, i) => (
+          <div className="dir-browser" ref={dirBrowser}>
+            {browserRows.map((row, i) => (
               <button key={row.path} type="button" className={clsx("list-item", i === dirIndex && "active")} data-hint data-command="new-session.dir" tabIndex={-1} onMouseEnter={() => setDirIndex(i)} onClick={() => descend(row.path)}>
                 <span className="grow">{row.recent ? "⟲ " : ""}{row.label}/</span>
                 {row.git && <span className="dim">⎇</span>}
               </button>
             ))}
             <div className="dim" style={{ padding: "4px 10px", fontSize: 11 }}>
-              <kbd>↑↓</kbd> pick <kbd>↩</kbd>/<kbd>⇥</kbd> descend <kbd>⌫</kbd> up
+              <kbd>↑↓</kbd> pick <kbd>↩</kbd>/<kbd>⇥</kbd>/<kbd>→</kbd> descend <kbd>⌫</kbd> up
             </div>
           </div>
         )}
