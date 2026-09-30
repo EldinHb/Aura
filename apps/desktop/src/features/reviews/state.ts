@@ -20,13 +20,13 @@ export function startReview(pull: PullRequest, previous?: PreReview) {
 const pref = (key: string) => { try { return localStorage.getItem(`aura.reviews.${key}`) === "true"; } catch { return false; } };
 type ReviewState = {
   inbox: ReviewInbox | null; error: string | null; busy: boolean; reviewId: string | null;
-  collapsed: boolean; hidden: boolean; showHidden: boolean;
-  setPreference: (key: "collapsed" | "hidden" | "showHidden", value: boolean) => void;
+  collapsed: boolean; mineCollapsed: boolean; hidden: boolean; showHidden: boolean;
+  setPreference: (key: "collapsed" | "mineCollapsed" | "hidden" | "showHidden", value: boolean) => void;
   refresh: (remote?: boolean) => Promise<void>;
 };
 export const useReviews = create<ReviewState>((set) => ({
   inbox: null, error: null, busy: false, reviewId: null,
-  collapsed: pref("collapsed"), hidden: pref("hidden"), showHidden: pref("showHidden"),
+  collapsed: pref("collapsed"), mineCollapsed: pref("mineCollapsed"), hidden: pref("hidden"), showHidden: pref("showHidden"),
   setPreference: (key, value) => { localStorage.setItem(`aura.reviews.${key}`, String(value)); set({ [key]: value }); },
   refresh: async (remote = false) => {
     if (remote) set({ busy: true });
@@ -44,6 +44,17 @@ export const useReviews = create<ReviewState>((set) => ({
     finally { if (remote) set({ busy: false }); }
   },
 }));
+/** PRs listed in the sidebar, in display order: review requests, then your own. */
+export function visiblePulls(s: ReviewState) {
+  const shown = (pulls: PullRequest[] | undefined, collapsed: boolean) => s.hidden || collapsed ? [] : (pulls ?? []).filter((p) => s.showHidden || !p.hidden);
+  return { review: shown(s.inbox?.pulls, s.collapsed), mine: shown(s.inbox?.mine, s.mineCollapsed) };
+}
+/** Draft, check and review state as short labels; `tone` marks the ones that need attention or are done. */
+export function pullStatus(pull: PullRequest): { label: string; tone?: "ok" | "err" }[] {
+  const checks = ({ SUCCESS: { label: "checks pass", tone: "ok" }, FAILURE: { label: "checks fail", tone: "err" }, ERROR: { label: "checks fail", tone: "err" }, PENDING: { label: "checks running" }, EXPECTED: { label: "checks running" } } as const)[pull.checks as "SUCCESS"];
+  const review = ({ APPROVED: { label: "approved", tone: "ok" }, CHANGES_REQUESTED: { label: "changes requested", tone: "err" }, REVIEW_REQUIRED: { label: "review required" } } as const)[pull.review_decision as "APPROVED"];
+  return [...(pull.draft ? [{ label: "draft" }] : []), checks ?? { label: "no checks" }, ...(review ? [review] : [])];
+}
 export async function hidePull(pull: PullRequest, hidden: boolean) {
   await rpc(hidden ? "pulls.hide" : "pulls.restore", { id: pull.id, account: pull.account });
   await useReviews.getState().refresh();
@@ -52,10 +63,10 @@ export function registerReviewCommands() {
   return registerCommands([
     { id: "reviews.refresh", title: "Refresh pull requests", group: "Pull requests", run: () => useReviews.getState().refresh(true) },
     { id: "reviews.toggle", title: "Show / hide pull requests section", group: "Pull requests", run: () => { const s = useReviews.getState(); s.setPreference("hidden", !s.hidden); } },
-    { id: "reviews.hidden", title: "Show / hide hidden pull requests", group: "Pull requests", run: () => { const s = useReviews.getState(); s.setPreference("showHidden", !s.showHidden); s.setPreference("hidden", false); s.setPreference("collapsed", false); } },
+    { id: "reviews.hidden", title: "Show / hide hidden pull requests", group: "Pull requests", run: () => { const s = useReviews.getState(); s.setPreference("showHidden", !s.showHidden); s.setPreference("hidden", false); s.setPreference("collapsed", false); s.setPreference("mineCollapsed", false); } },
     { id: "reviews.history", title: "Open review history", group: "Pull requests", run: openHistory },
     { id: "reviews.start", title: "Pre-review selected pull request…", group: "Pull requests", run: () => { const p = useStore.getState().prSelection; if (p) startReview(p); } },
-    { id: "reviews.hide", title: "Hide / restore selected pull request", group: "Pull requests", run: async () => { const p = useStore.getState().prSelection; if (p) await hidePull(p, !useReviews.getState().inbox?.pulls.find((x) => x.id === p.id)?.hidden); } },
+    { id: "reviews.hide", title: "Hide / restore selected pull request", group: "Pull requests", run: async () => { const p = useStore.getState().prSelection; if (p) { const inbox = useReviews.getState().inbox; await hidePull(p, ![...(inbox?.pulls ?? []), ...(inbox?.mine ?? [])].find((x) => x.id === p.id)?.hidden); } } },
   ]);
 }
 

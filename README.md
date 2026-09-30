@@ -42,7 +42,8 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
   with a single key.
 - **Git worktrees built in.** Start a session in its own worktree so parallel agents do
   not step on each other. Review the diff, commit and push from Aura.
-- **Pull request reviews.** See PRs that request your review, run an agent pre-review,
+- **Pull request reviews.** See PRs that request your review and your own open PRs
+  with their check and review status, run an agent pre-review,
   edit its findings, and post the review to GitHub yourself.
   See [Pull requests and pre-reviews](#pull-requests-and-pre-reviews).
 - **Keyboard only.** Command palette, a leader key with a which-key menu, vim-style
@@ -248,6 +249,11 @@ The **Needs your review** section below sessions lists open GitHub PRs requestin
 run `gh auth login` for github.com, then refresh the section. Aura uses that
 account through the daemon; it does not import Gitbuddy's credentials. Optional
 `AURA_GH_BIN` selects a GitHub CLI executable outside the usual search paths.
+
+Below it, **Your pull requests** lists the open PRs you authored. Each PR in both
+groups shows whether it is a draft, its checks (pass, fail, running or none) and
+GitHub's review decision (approved, changes requested or review required). Both
+groups refresh together once a minute and collapse independently.
 
 Click a PR to open its description, conversation, existing reviews, metadata and
 current diff in the main workspace. Applicable metadata and project fields can

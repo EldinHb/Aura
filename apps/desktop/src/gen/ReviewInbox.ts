@@ -3,4 +3,8 @@ import type { PreReview } from "./PreReview";
 import type { PullRequest } from "./PullRequest";
 import type { ReviewConfig } from "./ReviewConfig";
 
-export type ReviewInbox = { account: string | null, pulls: Array<PullRequest>, reviews: Array<PreReview>, last_synced: string | null, error: string | null, defaults: ReviewConfig, };
+export type ReviewInbox = { account: string | null, pulls: Array<PullRequest>, 
+/**
+ * Open PRs the user authored.
+ */
+mine: Array<PullRequest>, reviews: Array<PreReview>, last_synced: string | null, error: string | null, defaults: ReviewConfig, };

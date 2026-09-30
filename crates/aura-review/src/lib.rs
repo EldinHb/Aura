@@ -179,19 +179,25 @@ impl ReviewService {
                 let mut s = self.state.lock();
                 if s.account.as_ref() != Some(&account) {
                     s.pulls.clear();
+                    s.mine.clear();
                     s.last_synced = None;
                     s.account = Some(account.clone());
                 }
             }
-            let mut pulls = aura_github::inbox(&*self.gh, &account).await?;
+            let (pulls, mine) = tokio::join!(
+                aura_github::inbox(&*self.gh, &account),
+                aura_github::authored(&*self.gh, &account)
+            );
+            let (mut pulls, mut mine) = (pulls?, mine?);
             self.ensure_account(&account).await?;
             let hidden = self.store.feature_records(&format!("hidden:{account}"))?;
-            for p in &mut pulls {
+            for p in pulls.iter_mut().chain(&mut mine) {
                 p.hidden = hidden.iter().any(|(id, v)| id == &p.id && v == "true");
             }
             {
                 let mut s = self.state.lock();
                 s.pulls = pulls;
+                s.mine = mine;
                 s.last_synced = Some(now().to_rfc3339());
                 s.error = None;
             }
@@ -252,9 +258,13 @@ impl ReviewService {
                     id,
                     if hidden { "true" } else { "false" },
                 )?;
-                for pull in &mut self.state.lock().pulls {
-                    if pull.id == id && pull.account == account {
-                        pull.hidden = hidden;
+                {
+                    let mut state = self.state.lock();
+                    let state = &mut *state;
+                    for pull in state.pulls.iter_mut().chain(&mut state.mine) {
+                        if pull.id == id && pull.account == account {
+                            pull.hidden = hidden;
+                        }
                     }
                 }
                 self.persist_inbox()?;

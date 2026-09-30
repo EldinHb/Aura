@@ -16,6 +16,10 @@
 .pr-sidebar-heading,.pr-sidebar-actions,.pr-toolbar,.pr-finding-head,.pr-submit-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .pr-sidebar-heading { padding:8px; flex-wrap:nowrap; }.pr-sidebar-heading>:first-child { flex:1; text-align:left; }.pr-sidebar-actions { padding:0 8px 6px; }
 .pr-sidebar-list { overflow:auto; min-height:0; }.pr-sidebar-row { display:flex; align-items:center; border-left:2px solid transparent; padding:6px 8px; gap:4px; }
+.pr-sidebar .pr-group-toggle { width:100%; justify-content:flex-start; gap:6px; }
+.pr-status { display:flex; flex-wrap:wrap; gap:4px; margin-top:3px; }
+.pr-sidebar .chip.ok { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 40%, transparent); }
+.pr-sidebar .chip.err { color:var(--err); border-color:color-mix(in srgb, var(--err) 40%, transparent); }
 .pr-sidebar-row.selected { background:var(--bg-hover); border-left-color:var(--accent); }
 .pr-row-main { flex:1; text-align:left; min-width:0; padding:4px 2px; background:transparent; border:0; color:inherit; cursor:pointer; }
 .pr-row-main .title,.pr-row-main .sub { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.pr-row-main .sub,.pr-sync { font-size:11px; color:var(--fg-dim); }.pr-sync { padding:6px 10px; }

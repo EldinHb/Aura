@@ -1,4 +1,4 @@
-import { openPull, useReviews } from "../features/reviews/state";
+import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
 import { useEffect, useMemo, useRef } from "react";
 import { useStore, selectVisibleSessions } from "../state/store";
@@ -53,8 +53,8 @@ export function Sidebar() {
       const st = useStore.getState();
       if (st.focus !== "sidebar") return false;
       const sessions = selectVisibleSessions(st);
-      const prs = useReviews.getState();
-      const pulls = prs.hidden || prs.collapsed ? [] : (prs.inbox?.pulls ?? []).filter((p) => prs.showHidden || !p.hidden);
+      const { review, mine } = visiblePulls(useReviews.getState());
+      const pulls = [...review, ...mine];
       const count = sessions.length + pulls.length;
       if (!count) return true;
       const cur = st.prSelection ? sessions.length + pulls.findIndex((p) => p.id === st.prSelection?.id) : sessions.findIndex((s) => s.id === (st.sidebarCursor ?? st.selectedId));

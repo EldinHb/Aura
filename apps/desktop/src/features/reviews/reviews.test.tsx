@@ -17,7 +17,7 @@ const models = vi.fn().mockResolvedValue([{ id: "review-model", display_name: "R
 beforeEach(() => {
   localStorage.clear(); call.mockReset();
   call.mockImplementation(async (method: string) => method === "reviews.defaults" ? { instructions: "Default instructions" } : method === "reviews.start" ? { ...reviewFixture, status: "queued" } : inboxFixture);
-  useReviews.setState({ inbox: inboxFixture, error: null, hidden: false, collapsed: false, showHidden: false, busy: false, reviewId: null });
+  useReviews.setState({ inbox: inboxFixture, error: null, hidden: false, collapsed: false, mineCollapsed: false, showHidden: false, busy: false, reviewId: null });
   useReviewDrafts.setState({ drafts: {} });
   useStore.setState({ prSelection: null, reviewHistoryOpen: false, dialog: { kind: "none" }, providers: [{ kind: "codex", display_name: "Codex", available: true }] as ProviderInfo[], client: { call, models, onNotification: () => () => {}, onState: () => () => {} } as unknown as RpcClient });
 });
@@ -56,6 +56,19 @@ it("hides and restores PRs through the persisted account-scoped preference", asy
   act(() => useReviews.setState({ inbox: { ...inboxFixture, pulls: [{ ...pullFixture, hidden: true }] }, showHidden: true }));
   fireEvent.click(screen.getByTitle("Restore PR"));
   await waitFor(() => expect(call).toHaveBeenCalledWith("pulls.restore", { id: pullFixture.id, account: pullFixture.account }));
+});
+it("lists your own pull requests with their status, separately from review requests", () => {
+  const mine = { ...pullFixture, id: "acme/widget#7", number: 7, title: "Add retries", author: "reviewer", draft: true, checks: "FAILURE", review_decision: "APPROVED" };
+  useReviews.setState({ inbox: { ...inboxFixture, mine: [mine] } });
+  render(<ReviewSidebar />);
+  expect(screen.getByRole("button", { name: /Your pull requests/ }).textContent).toContain("1");
+  const row = screen.getByTitle("Add retries");
+  expect(row.textContent).toContain("acme/widget#7");
+  expect(row.textContent).not.toContain("reviewer");
+  expect([...row.querySelectorAll(".chip")].map((c) => [c.textContent, c.className.trim()])).toEqual([["draft", "chip"], ["checks fail", "chip err"], ["approved", "chip ok"]]);
+  fireEvent.click(screen.getByRole("button", { name: /Your pull requests/ }));
+  expect(screen.queryByTitle("Add retries")).toBe(null);
+  expect(screen.getByTitle(pullFixture.title)).toBeTruthy();
 });
 it("flush waits for text typed during an in-flight save", async () => {
   let resolve!: (value: unknown) => void;

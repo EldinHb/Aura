@@ -116,6 +116,9 @@ pub struct SubmissionPreview {
 pub struct ReviewInbox {
     pub account: Option<String>,
     pub pulls: Vec<PullRequest>,
+    /// Open PRs the user authored.
+    #[serde(default)]
+    pub mine: Vec<PullRequest>,
     pub reviews: Vec<PreReview>,
     pub last_synced: Option<String>,
     pub error: Option<String>,

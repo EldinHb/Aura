@@ -274,14 +274,29 @@ pub fn s(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().to_string()
 }
 
+/// Open PRs that request the user's review.
 pub async fn inbox(gh: &dyn Github, account: &str) -> Result<Vec<PullRequest>> {
+    search(gh, account, "review-requested%3A%40me", "inbox").await
+}
+
+/// Open PRs the user authored.
+pub async fn authored(gh: &dyn Github, account: &str) -> Result<Vec<PullRequest>> {
+    search(gh, account, "author%3A%40me", "list of your pull requests").await
+}
+
+async fn search(
+    gh: &dyn Github,
+    account: &str,
+    filter: &str,
+    what: &str,
+) -> Result<Vec<PullRequest>> {
     let mut items = vec![];
     for page in 1..=10 {
-        let response=gh.request("GET",&format!("search/issues?q=is%3Apr%20is%3Aopen%20archived%3Afalse%20review-requested%3A%40me&per_page=100&page={page}"),None).await?;
+        let response=gh.request("GET",&format!("search/issues?q=is%3Apr%20is%3Aopen%20archived%3Afalse%20{filter}&per_page=100&page={page}"),None).await?;
         if response["incomplete_results"] == true
             || response["total_count"].as_u64().unwrap_or(0) > 1000
         {
-            bail!("GitHub returned an incomplete inbox; cached inbox retained");
+            bail!("GitHub returned an incomplete {what}; cached {what} retained");
         }
         let rows = response["items"]
             .as_array()

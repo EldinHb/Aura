@@ -86,6 +86,11 @@ impl Github for MockGithub {
         if path == "user" {
             return Ok(json!({"login":*self.account.lock()}));
         }
+        if path.starts_with("search/") && path.contains("author%3A%40me") {
+            return Ok(
+                json!({"total_count":1,"incomplete_results":false,"items":[{"repository_url":"https://api.github.com/repos/o/r","number":1}]}),
+            );
+        }
         if path.starts_with("search/") {
             return Ok(json!({"total_count":0,"incomplete_results":false,"items":[]}));
         }
@@ -259,6 +264,25 @@ async fn inbox_retirement_preserves_history_and_hidden_preferences() {
             .unwrap(),
         vec![("o/r#1".into(), "true".into())]
     );
+}
+#[tokio::test]
+async fn refresh_lists_authored_pulls_separately_and_hides_them() {
+    let svc = service(Arc::new(MockGithub::default()), draft());
+    svc.refresh().await.unwrap();
+    let inbox = svc.snapshot();
+    assert!(inbox.pulls.is_empty());
+    assert_eq!(inbox.mine.len(), 1);
+    assert_eq!(inbox.mine[0].id, "o/r#1");
+    assert_eq!(inbox.mine[0].review_decision, "REVIEW_REQUIRED");
+    svc.handle(
+        "pulls.hide",
+        json!({"id":"o/r#1","account":"github.com:alice"}),
+    )
+    .await
+    .unwrap();
+    assert!(svc.snapshot().mine[0].hidden);
+    svc.refresh().await.unwrap();
+    assert!(svc.snapshot().mine[0].hidden);
 }
 #[tokio::test]
 async fn mocked_runner_produces_frozen_diff_and_cleans_workspace() {
