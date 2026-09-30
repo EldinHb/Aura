@@ -4,6 +4,8 @@ export * from './Approval';
 export * from './ApprovalDecision';
 export * from './ApprovalKind';
 export * from './ApprovalOption';
+export * from './BranchPull';
+export * from './BranchStatus';
 export * from './CapabilitySet';
 export * from './CreateSessionOpts';
 export * from './DaemonInfo';

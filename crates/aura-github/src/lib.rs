@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command};
 
+pub mod branch;
 pub mod issues;
 
 #[async_trait]

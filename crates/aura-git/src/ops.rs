@@ -53,6 +53,27 @@ pub struct Worktree {
     pub head: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BranchStatus {
+    /// Checked-out branch; None on a detached HEAD.
+    pub branch: Option<String>,
+    /// Commit HEAD points at; None before the first commit.
+    pub head: Option<String>,
+    /// Tracked branch as git shows it, e.g. `origin/feature`.
+    pub upstream: Option<String>,
+    /// Name of the tracked branch on its remote, e.g. `feature`.
+    pub upstream_branch: Option<String>,
+    /// `owner/repo` of the GitHub remote the tracked branch lives on.
+    pub upstream_repo: Option<String>,
+    /// Commits not yet pushed to the tracked branch.
+    pub ahead: u32,
+    /// Commits on the tracked branch not yet pulled.
+    pub behind: u32,
+    /// Files with uncommitted changes, untracked ones included.
+    pub changed: u32,
+}
+
 /// Canonical root of the main working tree, also when `cwd` is inside a linked
 /// worktree. None when `cwd` is not inside a repository.
 pub fn main_repo_root(cwd: &str) -> Result<Option<String>> {
@@ -176,6 +197,48 @@ pub fn current_branch(cwd: &str) -> Result<String> {
     Ok(git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
 }
 
+/// Branch, tracking and working tree state of `cwd`. None when `cwd` is not
+/// inside a repository.
+pub fn branch_status(cwd: &str) -> Result<Option<BranchStatus>> {
+    if repo_root(cwd)?.is_none() {
+        return Ok(None);
+    }
+    let mut status = parse_branch_status(&git(cwd, &["status", "--porcelain=v2", "--branch", "--untracked-files=normal"])?);
+    if let (Some(branch), Some(_)) = (&status.branch, &status.upstream) {
+        let config = |key: &str| -> Result<Option<String>> {
+            let out = git_allow(cwd, &["config", "--get", &format!("branch.{branch}.{key}")], &[1])?;
+            Ok(Some(out.trim().to_string()).filter(|v| !v.is_empty()))
+        };
+        status.upstream_branch = config("merge")?.map(|r| r.strip_prefix("refs/heads/").unwrap_or(&r).to_string());
+        if let Some(remote) = config("remote")? {
+            let url = git_allow(cwd, &["remote", "get-url", &remote], &[2])?;
+            status.upstream_repo = parse_github_remote(url.trim());
+        }
+    }
+    Ok(Some(status))
+}
+
+/// Parse `git status --porcelain=v2 --branch` output.
+fn parse_branch_status(out: &str) -> BranchStatus {
+    let mut status = BranchStatus::default();
+    for line in out.lines() {
+        if let Some(oid) = line.strip_prefix("# branch.oid ") {
+            status.head = (oid != "(initial)").then(|| oid.to_string());
+        } else if let Some(head) = line.strip_prefix("# branch.head ") {
+            status.branch = (head != "(detached)").then(|| head.to_string());
+        } else if let Some(upstream) = line.strip_prefix("# branch.upstream ") {
+            status.upstream = Some(upstream.to_string());
+        } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
+            let mut it = ab.split_whitespace();
+            status.ahead = it.next().and_then(|a| a.strip_prefix('+')?.parse().ok()).unwrap_or(0);
+            status.behind = it.next().and_then(|b| b.strip_prefix('-')?.parse().ok()).unwrap_or(0);
+        } else if ["1 ", "2 ", "u ", "? "].iter().any(|p| line.starts_with(p)) {
+            status.changed += 1;
+        }
+    }
+    status
+}
+
 pub fn branches(cwd: &str) -> Result<Vec<String>> {
     let out = git(cwd, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"])?;
     Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
@@ -286,7 +349,27 @@ fn parse_github_remote(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_github_remote;
+    use super::{parse_branch_status, parse_github_remote, BranchStatus};
+
+    #[test]
+    fn parses_branch_status() {
+        let out = "# branch.oid 1234567890abcdef1234567890abcdef12345678\n# branch.head feature/x\n# branch.upstream origin/feature/x\n# branch.ab +2 -1\n1 .M N... 100644 100644 100644 a b src/a.rs\n2 R. N... 100644 100644 100644 a b R100 new.rs\told.rs\n? notes.md\n";
+        assert_eq!(parse_branch_status(out), BranchStatus {
+            branch: Some("feature/x".into()),
+            head: Some("1234567890abcdef1234567890abcdef12345678".into()),
+            upstream: Some("origin/feature/x".into()),
+            ahead: 2,
+            behind: 1,
+            changed: 3,
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn parses_detached_and_unborn_heads() {
+        let status = parse_branch_status("# branch.oid (initial)\n# branch.head (detached)\n");
+        assert_eq!((status.branch, status.head, status.upstream), (None, None, None));
+    }
 
     #[test]
     fn parses_github_remote_forms() {

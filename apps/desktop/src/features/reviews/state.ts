@@ -84,7 +84,7 @@ export function visiblePulls(s: ReviewState, rules = useStore.getState().setting
   return { review: shown(s.inbox?.pulls, s.collapsed), mine: shown(s.inbox?.mine, s.mineCollapsed) };
 }
 /** Draft, check and review state as short labels; `tone` marks the ones that need attention or are done. */
-export function pullStatus(pull: PullRequest): { label: string; tone?: "ok" | "err" }[] {
+export function pullStatus(pull: Pick<PullRequest, "draft" | "checks" | "review_decision">): { label: string; tone?: "ok" | "err" }[] {
   const checks = ({ SUCCESS: { label: "checks pass", tone: "ok" }, FAILURE: { label: "checks fail", tone: "err" }, ERROR: { label: "checks fail", tone: "err" }, PENDING: { label: "checks running" }, EXPECTED: { label: "checks running" } } as const)[pull.checks as "SUCCESS"];
   const review = ({ APPROVED: { label: "approved", tone: "ok" }, CHANGES_REQUESTED: { label: "changes requested", tone: "err" }, REVIEW_REQUIRED: { label: "review required" } } as const)[pull.review_decision as "APPROVED"];
   return [...(pull.draft ? [{ label: "draft" }] : []), checks ?? { label: "no checks" }, ...(review ? [review] : [])];

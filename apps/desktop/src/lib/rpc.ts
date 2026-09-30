@@ -29,6 +29,8 @@ import type {
   DaemonInfo,
   Group,
   RepoIssue,
+  BranchStatus,
+  BranchPull,
 } from "../gen";
 
 export const FRAME_PTY_OUTPUT = 1;
@@ -317,6 +319,12 @@ export class RpcClient {
   }
   githubIssues(repo: string, query = "") {
     return this.call<RepoIssue[]>("github.issues", { repo, query });
+  }
+  githubBranchPull(repo: string, head_repo: string, branch: string) {
+    return this.call<BranchPull | null>("github.branch_pull", { repo, head_repo, branch });
+  }
+  gitBranchStatus(cwd: string) {
+    return this.call<BranchStatus | null>("git.branch_status", { cwd });
   }
   gitGithubRepo(cwd: string) {
     return this.call<string | null>("git.github_repo", { cwd });

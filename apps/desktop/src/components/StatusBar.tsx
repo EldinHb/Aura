@@ -1,6 +1,7 @@
 import { useStore, selectPendingCount, selectSelected } from "../state/store";
 import { formatKeys } from "../lib/keymap";
 import { isMac, fmtTokens } from "../lib/platform";
+import { StatusBarBranch } from "./BranchStatus";
 
 export function StatusBar() {
   const connection = useStore((s) => s.connection);
@@ -28,6 +29,7 @@ export function StatusBar() {
           {s.usage.total_cost_usd ? ` · $${s.usage.total_cost_usd.toFixed(2)}` : ""}
         </span>
       )}
+      {s && <StatusBarBranch session={s} />}
       <span className="spacer" />
       <span>focus: {focus}</span>
       <span>

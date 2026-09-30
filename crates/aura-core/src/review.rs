@@ -171,3 +171,21 @@ pub struct RepoIssue {
     pub sprint: Option<String>,
     pub updated_at: String,
 }
+
+/// The pull request opened from a session's branch.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BranchPull {
+    pub repo: String,
+    pub number: u32,
+    pub title: String,
+    pub url: String,
+    /// open | merged | closed
+    pub state: String,
+    pub draft: bool,
+    /// Check rollup of the head commit (SUCCESS, FAILURE, PENDING, …); empty without checks.
+    pub checks: String,
+    /// APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED; empty when no review is required.
+    pub review_decision: String,
+    pub head_sha: String,
+}

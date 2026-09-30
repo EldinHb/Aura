@@ -183,7 +183,7 @@ fn init_logging(data_dir: &std::path::Path, foreground: bool) -> Result<()> {
     Ok(())
 }
 
-/// GitHub reads for the new-session dialog.
+/// GitHub reads for the new-session dialog and a session's branch status.
 async fn github_methods(gh: &dyn aura_github::Github, method: &str, params: &Value) -> Result<Option<Value>> {
     Ok(match method {
         "github.issues" => {
@@ -191,6 +191,11 @@ async fn github_methods(gh: &dyn aura_github::Github, method: &str, params: &Val
             let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let today = chrono::Local::now().date_naive();
             Some(serde_json::to_value(aura_github::issues::open_issues(gh, repo, query, today).await?)?)
+        }
+        "github.branch_pull" => {
+            let str_param = |key: &str| params.get(key).and_then(|v| v.as_str()).with_context(|| format!("{key} is required"));
+            let (repo, head_repo, branch) = (str_param("repo")?, str_param("head_repo")?, str_param("branch")?);
+            Some(serde_json::to_value(aura_github::branch::branch_pull(gh, repo, head_repo, branch).await?)?)
         }
         _ => None,
     })
@@ -219,6 +224,7 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
                 let base = p.get("base").and_then(|v| v.as_str()).map(|s| s.to_string());
                 Some(serde_json::to_value(ops::diff_stat(&cwd, base.as_deref())?)?)
             }
+            "git.branch_status" => Some(serde_json::to_value(ops::branch_status(&cwd)?)?),
             "git.current_branch" => Some(json!(ops::current_branch(&cwd)?)),
             "git.branches" => Some(json!(ops::branches(&cwd)?)),
             "git.commit" => {

@@ -99,6 +99,14 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .session-row .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-row .sub { font-size: 11px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-row .links { display: flex; gap: 6px; margin-top: 2px; font-size: 11px; color: var(--accent-2); white-space: nowrap; overflow: hidden; }
+.session-row .git-count, .statusbar .git-count { color: var(--fg-muted); }
+.session-row .git-count.warn, .statusbar .git-count.warn { color: var(--warn); }
+.pull-label.ok { color: var(--ok); }
+.pull-label.err { color: var(--err); }
+.pull-label.merged { color: #c79bf0; }
+.statusbar-branch { display: inline-flex; gap: 6px; align-items: baseline; min-width: 0; white-space: nowrap; }
+.statusbar-pull { color: var(--accent-2); text-decoration: none; }
+.statusbar-pull:hover { text-decoration: underline; }
 .session-row .meta { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--fg-dim); }
 .session-list.dragging { user-select: none; cursor: grabbing; }
 .session-row.drag-source { opacity: 0.5; }

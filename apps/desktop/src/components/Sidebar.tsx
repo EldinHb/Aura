@@ -2,7 +2,7 @@ import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore, selectVisibleSessions, canReorder } from "../state/store";
-import type { Session } from "../gen";
+import type { BranchPull, Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
 import { registerCommands } from "../lib/commands";
 import { setFocus } from "../commands/core";
@@ -11,6 +11,8 @@ import { useShallow } from "zustand/react/shallow";
 import { useDetectedLinksStore, useLinkPreferencesStore, useSidebarLinks } from "../state/sessionLinkPreferences";
 import { selectedSessionLinks, sessionLinks } from "../views/issueLinks";
 import { useGithubRepo } from "../state/githubRepos";
+import { useSessionBranch } from "../state/branchStatus";
+import { BranchPullChip, GitCounts, branchName } from "./BranchStatus";
 
 function statusClass(s: Session): string {
   switch (s.status) {
@@ -28,8 +30,29 @@ function statusClass(s: Session): string {
   }
 }
 
-/** The issue and PR numbers linked to a session, as the Inspector shows them. */
-function SessionRowLinks({ session }: { session: Session }) {
+/** Folder or worktree, branch state, agent mode and model, then the session's issues and PRs. */
+function SessionRowDetails({ session: s, selected }: { session: Session; selected: boolean }) {
+  const { git, pull } = useSessionBranch(s, selected);
+  const branch = (git && branchName(git)) ?? s.worktree?.branch;
+  return (
+    <>
+      <div className="sub">
+        {!s.worktree && basename(s.cwd)}
+        {branch && `${s.worktree ? "" : " · "}⎇ ${branch}`}
+        {git && <GitCounts git={git} />}
+        {s.mode === "terminal" && s.provider !== "terminal" ? " · tui" : ""}
+        {s.model ? ` · ${s.model}` : ""}
+      </div>
+      <SessionRowLinks session={s} branchPull={pull} />
+    </>
+  );
+}
+
+/**
+ * The issue and PR numbers linked to a session, as the Inspector shows them,
+ * and the pull request of its branch with its status.
+ */
+function SessionRowLinks({ session, branchPull }: { session: Session; branchPull: BranchPull | null }) {
   const transcript = useStore((s) => s.transcripts[session.id]);
   const preferences = useLinkPreferencesStore((s) => s.entries[session.id]?.preferences);
   const detected = useDetectedLinksStore((s) => s.links[session.id]);
@@ -38,12 +61,15 @@ function SessionRowLinks({ session }: { session: Session }) {
     const automatic = transcript?.loaded ? sessionLinks(transcript.items, session.title, repo) : detected ?? sessionLinks({}, session.title, repo);
     return selectedSessionLinks(automatic, preferences);
   }, [transcript?.loaded, transcript?.items, session.title, repo, detected, preferences]);
-  if (links.length === 0) return null;
+  // The branch's pull request replaces the same PR linked from the transcript.
+  const shown = branchPull ? links.filter((l) => !(l.kind === "PR" && Number(l.number) === branchPull.number && l.repo.toLowerCase() === branchPull.repo.toLowerCase())) : links;
+  if (shown.length === 0 && !branchPull) return null;
   return (
     <div className="links">
-      {links.map((link) => (
+      {shown.map((link) => (
         <span key={link.url} className="session-row-link" title={link.url}>{link.kind} #{link.number}</span>
       ))}
+      {branchPull && <BranchPullChip pull={branchPull} />}
     </div>
   );
 }
@@ -214,12 +240,7 @@ export function Sidebar() {
                       {s.title}
                       {s.archived && <span className="chip" style={{ marginLeft: 6 }}>archived</span>}
                     </div>
-                    <div className="sub">
-                      {s.worktree ? `⎇ ${s.worktree.branch}` : basename(s.cwd)}
-                      {s.mode === "terminal" && s.provider !== "terminal" ? " · tui" : ""}
-                      {s.model ? ` · ${s.model}` : ""}
-                    </div>
-                    <SessionRowLinks session={s} />
+                    <SessionRowDetails session={s} selected={s.id === selectedId} />
                   </div>
                   <div className="meta">
                     {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}

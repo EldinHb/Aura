@@ -41,7 +41,9 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
 - **An inbox for approvals.** See every session waiting on you, and approve or decline
   with a single key.
 - **Git worktrees built in.** Start a session in its own worktree so parallel agents do
-  not step on each other. Review the diff, commit and push from Aura.
+  not step on each other. Review the diff, commit and push from Aura. Each session
+  shows its branch (unpushed, unpulled and uncommitted counts) and the status of
+  the branch's pull request in the sidebar and status bar.
 - **Pull request reviews.** See PRs that request your review and your own open PRs
   with their check and review status, run an agent pre-review,
   edit its findings, and post the review to GitHub yourself.
