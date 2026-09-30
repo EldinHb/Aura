@@ -23,6 +23,7 @@ beforeEach(() => {
       home: () => Promise.resolve("/home/me"),
       listDir,
       gitRepoRoot: () => Promise.resolve(null),
+      gitGithubRepo: () => Promise.resolve(null),
       groups: () => Promise.resolve([{ name: "backend", repos: [] }, { name: "docs", repos: [] }]),
       groupForDir,
       models: () => Promise.resolve([]),

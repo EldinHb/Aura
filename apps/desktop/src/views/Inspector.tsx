@@ -6,6 +6,7 @@ import { runCommand } from "../lib/commands";
 import { fmtTokens, fmtUsd, relTime, truncate } from "./transcript/format";
 import { SessionLinks } from "./SessionLinks";
 import { useSessionLinkPreferences } from "../state/sessionLinkPreferences";
+import { useGithubRepo } from "../state/githubRepos";
 import { PlanSection } from "./PlanSection";
 import { acpSessionInfo } from "../lib/acp";
 import { WatchSection } from "../features/watches/WatchSection";
@@ -129,6 +130,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
   const linkPreferences = useSessionLinkPreferences(sessionId);
   const s = useStore((st) => (sessionId ? st.sessions[sessionId] : null));
   const t = useStore((st) => (sessionId ? st.transcripts[sessionId] : null));
+  const repo = useGithubRepo(s?.cwd);
   const focus = useStore((st) => st.focus);
   const caps = useStore((st) => st.providers.find((p) => p.kind === s?.provider)?.capabilities);
   const openDialog = useStore((st) => st.openDialog);
@@ -136,9 +138,9 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
 
   const pr = useMemo(() => {
     if (!s || !linkPreferences) return null;
-    const link = selectedSessionLinks(sessionLinks(t?.items ?? {}, s.title), linkPreferences.preferences).find((l) => l.kind === "PR");
+    const link = selectedSessionLinks(sessionLinks(t?.items ?? {}, s.title, repo), linkPreferences.preferences).find((l) => l.kind === "PR");
     return link ? { repo: link.repo, number: Number(link.number) } : null;
-  }, [s, t?.items, linkPreferences]);
+  }, [s, t?.items, repo, linkPreferences]);
 
   const jump = (key: string) => {
     setCursorItem(key);
@@ -150,7 +152,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
       {!s && <div className="empty" style={{ padding: 20 }}><span className="dim">No session selected</span></div>}
       {s && (
         <>
-          <SessionLinks items={t?.items ?? {}} title={s.title} preferences={linkPreferences?.preferences}
+          <SessionLinks items={t?.items ?? {}} title={s.title} repo={repo} preferences={linkPreferences?.preferences}
             loading={!linkPreferences} error={linkPreferences?.error}
             onEdit={() => openDialog({ kind: "session-links", sessionId: s.id })} />
           {pr && <WatchSection target={pr} />}

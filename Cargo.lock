@@ -379,6 +379,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aura-core",
+ "chrono",
  "serde_json",
  "tokio",
 ]
@@ -541,6 +542,7 @@ dependencies = [
  "aura-rpc",
  "aura-store",
  "aura-terminal",
+ "chrono",
  "clap",
  "dirs 5.0.1",
  "serde",

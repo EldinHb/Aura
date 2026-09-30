@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 aura-github = { workspace = true }
+chrono = { workspace = true }
 aura-review = { workspace = true }
 aura-core = { workspace = true }
 aura-store = { workspace = true }

@@ -92,12 +92,15 @@ async fn main() -> Result<()> {
     let watches = aura_review::watch::WatchService::new(store, Arc::new(aura_github::GhCli::default()), reviews.events.clone())?;
     watches.launch();
     let service = reviews.clone();
+    let github: Arc<dyn aura_github::Github> = Arc::new(aura_github::GhCli::default());
     let ext: ExtHandler = Arc::new(move |method: String, params: Value| {
         let service = service.clone();
         let watches = watches.clone();
+        let github = github.clone();
         Box::pin(async move {
             if let Some(result) = service.handle(&method, params.clone()).await? { return Ok(Some(result)); }
             if let Some(result) = watches.handle(&method, params.clone()).await? { return Ok(Some(result)); }
+            if let Some(result) = github_methods(github.as_ref(), &method, &params).await? { return Ok(Some(result)); }
             git_methods(&method, params).await
         })
     });
@@ -180,6 +183,19 @@ fn init_logging(data_dir: &std::path::Path, foreground: bool) -> Result<()> {
     Ok(())
 }
 
+/// GitHub reads for the new-session dialog.
+async fn github_methods(gh: &dyn aura_github::Github, method: &str, params: &Value) -> Result<Option<Value>> {
+    Ok(match method {
+        "github.issues" => {
+            let repo = params.get("repo").and_then(|v| v.as_str()).context("repo is required")?;
+            let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let today = chrono::Local::now().date_naive();
+            Some(serde_json::to_value(aura_github::issues::open_issues(gh, repo, query, today).await?)?)
+        }
+        _ => None,
+    })
+}
+
 /// Git methods exposed to clients. All take `cwd`.
 async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     use aura_git::ops;
@@ -189,6 +205,7 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     let res = tokio::task::spawn_blocking(move || -> Result<Option<Value>> {
         Ok(match m.as_str() {
             "git.repo_root" => Some(json!(ops::repo_root(&cwd)?)),
+            "git.github_repo" => Some(json!(ops::github_repo(&cwd)?)),
             "git.status" => Some(serde_json::to_value(ops::status(&cwd)?)?),
             "git.diff" => {
                 let opts = ops::DiffOpts {

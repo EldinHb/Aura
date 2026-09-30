@@ -28,6 +28,7 @@ import type {
   UserInputRequest,
   DaemonInfo,
   Group,
+  RepoIssue,
 } from "../gen";
 
 export const FRAME_PTY_OUTPUT = 1;
@@ -313,6 +314,12 @@ export class RpcClient {
   }
   gitRepoRoot(cwd: string) {
     return this.call<string | null>("git.repo_root", { cwd });
+  }
+  githubIssues(repo: string, query = "") {
+    return this.call<RepoIssue[]>("github.issues", { repo, query });
+  }
+  gitGithubRepo(cwd: string) {
+    return this.call<string | null>("git.github_repo", { cwd });
   }
   gitStatus(cwd: string) {
     return this.call<FileStatus[]>("git.status", { cwd });

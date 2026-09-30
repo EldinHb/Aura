@@ -8,6 +8,8 @@ import { physicalKey } from "../../lib/keymap";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
+import { saveLinkPreferences } from "../../state/sessionLinkPreferences";
+import { IssuePicker, type PickedIssue } from "./IssuePicker";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
 /** Rows the directory browser renders; the arrow keys stay within them. */
@@ -94,6 +96,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [worktree, setWorktree] = useState(preset === "worktree");
   const [branch, setBranch] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [issue, setIssue] = useState<PickedIssue | null>(null);
   const [busy, setBusy] = useState(false);
   const dirInput = useRef<HTMLInputElement>(null);
   const dirBrowser = useRef<HTMLDivElement>(null);
@@ -226,6 +229,10 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         initial_prompt: mode === "structured" && prompt.trim() ? prompt.trim() : null,
       });
       pushRecentDir(cwd);
+      if (issue) {
+        await saveLinkPreferences(client, s.id, { issue: issue.url }).catch((e) =>
+          toast(`Session created, but linking ${issue.repo} #${issue.number} failed: ${e instanceof Error ? e.message : e}`, "error"));
+      }
       select(s.id);
       closeDialog();
       setFocus("main");
@@ -234,7 +241,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, issue, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -345,6 +352,8 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
           </datalist>
         </div>
       </div>
+
+      <IssuePicker cwd={expandedDir.replace(/\/+$/, "")} value={issue} onChange={setIssue} />
 
       {isAcp ? (
         <div className="field">

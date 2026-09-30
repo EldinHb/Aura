@@ -245,3 +245,74 @@ pub fn worktrees(cwd: &str) -> Result<Vec<Worktree>> {
     }
     Ok(list)
 }
+
+/// `owner/repo` of the GitHub repository whose issues and PRs `cwd` works
+/// against, choosing remotes in the order `gh` does: `upstream`, `github`, then
+/// `origin`. None when `cwd` is not a repository or has no GitHub remote.
+pub fn github_repo(cwd: &str) -> Result<Option<String>> {
+    if repo_root(cwd)?.is_none() {
+        return Ok(None);
+    }
+    let remotes = git(cwd, &["remote"])?;
+    let names: Vec<&str> = remotes.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    for name in ["upstream", "github", "origin"] {
+        if !names.contains(&name) {
+            continue;
+        }
+        if let Some(repo) = parse_github_remote(git(cwd, &["remote", "get-url", name])?.trim()) {
+            return Ok(Some(repo));
+        }
+    }
+    Ok(None)
+}
+
+/// `owner/repo` from a github.com remote URL in HTTPS, SSH or scp-like form.
+fn parse_github_remote(url: &str) -> Option<String> {
+    let path = ["https://github.com/", "http://github.com/", "ssh://git@github.com/", "git://github.com/", "git@github.com:"]
+        .iter()
+        .find_map(|prefix| url.strip_prefix(prefix))
+        .or_else(|| {
+            // https://user@github.com/owner/repo
+            let rest = url.strip_prefix("https://")?;
+            let (user, rest) = rest.split_once('@')?;
+            (!user.contains('/')).then_some(rest)?.strip_prefix("github.com/")
+        })?;
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repo) = path.split_once('/')?;
+    let valid = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    (valid(owner) && valid(repo)).then(|| format!("{owner}/{repo}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_github_remote;
+
+    #[test]
+    fn parses_github_remote_forms() {
+        for url in [
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo/",
+            "https://token@github.com/owner/repo.git",
+            "git@github.com:owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+        ] {
+            assert_eq!(parse_github_remote(url).as_deref(), Some("owner/repo"), "{url}");
+        }
+        assert_eq!(parse_github_remote("git@github.com:my.org/my-repo_2.git").as_deref(), Some("my.org/my-repo_2"));
+    }
+
+    #[test]
+    fn rejects_other_hosts_and_paths() {
+        for url in [
+            "https://gitlab.com/owner/repo.git",
+            "git@example.com:owner/repo.git",
+            "https://github.com/owner",
+            "https://github.com/owner/repo/extra",
+            "/local/path/repo",
+        ] {
+            assert_eq!(parse_github_remote(url), None, "{url}");
+        }
+    }
+}

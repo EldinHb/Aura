@@ -8,6 +8,9 @@ import { registerCommands } from "../lib/commands";
 import { setFocus } from "../commands/core";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
+import { useDetectedLinksStore, useLinkPreferencesStore, useSidebarLinks } from "../state/sessionLinkPreferences";
+import { selectedSessionLinks, sessionLinks } from "../views/issueLinks";
+import { useGithubRepo } from "../state/githubRepos";
 
 function statusClass(s: Session): string {
   switch (s.status) {
@@ -25,6 +28,26 @@ function statusClass(s: Session): string {
   }
 }
 
+/** The issue and PR numbers linked to a session, as the Inspector shows them. */
+function SessionRowLinks({ session }: { session: Session }) {
+  const transcript = useStore((s) => s.transcripts[session.id]);
+  const preferences = useLinkPreferencesStore((s) => s.entries[session.id]?.preferences);
+  const detected = useDetectedLinksStore((s) => s.links[session.id]);
+  const repo = useGithubRepo(session.cwd);
+  const links = useMemo(() => {
+    const automatic = transcript?.loaded ? sessionLinks(transcript.items, session.title, repo) : detected ?? sessionLinks({}, session.title, repo);
+    return selectedSessionLinks(automatic, preferences);
+  }, [transcript?.loaded, transcript?.items, session.title, repo, detected, preferences]);
+  if (links.length === 0) return null;
+  return (
+    <div className="links">
+      {links.map((link) => (
+        <span key={link.url} className="session-row-link" title={link.url}>{link.kind} #{link.number}</span>
+      ))}
+    </div>
+  );
+}
+
 export function Sidebar() {
   const sessions = useStore(useShallow(selectVisibleSessions));
   const selectedId = useStore((s) => s.prSelection || s.reviewHistoryOpen ? null : s.selectedId);
@@ -36,6 +59,7 @@ export function Sidebar() {
   const setCursor = useStore((s) => s.setSidebarCursor);
   const focus = useStore((s) => s.focus);
   const listRef = useRef<HTMLDivElement>(null);
+  useSidebarLinks(useMemo(() => sessions.map((s) => s.id), [sessions]));
 
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
@@ -134,6 +158,7 @@ export function Sidebar() {
                       {s.mode === "terminal" && s.provider !== "terminal" ? " · tui" : ""}
                       {s.model ? ` · ${s.model}` : ""}
                     </div>
+                    <SessionRowLinks session={s} />
                   </div>
                   <div className="meta">
                     {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}

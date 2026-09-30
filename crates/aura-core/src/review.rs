@@ -158,3 +158,16 @@ pub struct WatchedReview {
     pub url: String,
     pub submitted_at: String,
 }
+
+/// An open issue offered when linking one to a new session.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepoIssue {
+    pub number: u32,
+    pub title: String,
+    pub url: String,
+    pub assignees: Vec<String>,
+    /// Title of the project iteration the issue is in today, e.g. "Sprint 12".
+    pub sprint: Option<String>,
+    pub updated_at: String,
+}

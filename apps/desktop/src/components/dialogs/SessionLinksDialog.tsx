@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
+import { useGithubRepo } from "../../state/githubRepos";
 import { loadLinkPreferences, saveLinkPreferences, useSessionLinkPreferences } from "../../state/sessionLinkPreferences";
 import { mentionedSessionLinks, parseSessionLink, sessionLinks, type LinkPreferences, type SessionLink } from "../../views/issueLinks";
 
@@ -35,20 +36,21 @@ function Editor({ sessionId, preferences }: { sessionId: string; preferences: Li
   const session = useStore((state) => state.sessions[sessionId]);
   const transcript = useStore((state) => state.transcripts[sessionId]);
   const client = useStore((state) => state.client);
+  const repo = useGithubRepo(session?.cwd);
   const close = useStore((state) => state.closeDialog);
   const [issue, setIssue] = useState(preferences.issue === undefined ? AUTO : preferences.issue ?? NONE);
   const [pr, setPr] = useState(preferences.pr === undefined ? AUTO : preferences.pr ?? NONE);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const candidates = useMemo(() => {
-    const all = mentionedSessionLinks(transcript?.items ?? {}, session?.title);
+    const all = mentionedSessionLinks(transcript?.items ?? {}, session?.title, repo);
     for (const [kind, value] of [["Issue", preferences.issue], ["PR", preferences.pr]] as const) {
       const link = value ? parseSessionLink(value, kind) : undefined;
       if (link && !all.some((other) => other.url.toLowerCase() === link.url.toLowerCase())) all.push(link);
     }
     return all;
-  }, [transcript?.items, session?.title, preferences]);
-  const automatic = useMemo(() => sessionLinks(transcript?.items ?? {}, session?.title), [transcript?.items, session?.title]);
+  }, [transcript?.items, session?.title, repo, preferences]);
+  const automatic = useMemo(() => sessionLinks(transcript?.items ?? {}, session?.title, repo), [transcript?.items, session?.title, repo]);
   const save = async () => {
     if (!client || saving) return;
     const next: LinkPreferences = {};

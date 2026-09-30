@@ -167,6 +167,48 @@ describe("session issue and PR links", () => {
     })).toEqual([]);
   });
 
+  const issue12 = "https://github.com/owner/repo/issues/12";
+  it.each([
+    `Can you work on the following issue: ${issue12}`,
+    `I want you to tackle ${issue12}`,
+    `Please take a look at ${issue12}`,
+    `investigate ${issue12}`,
+    `Implement the feature described in ${issue12}`,
+    `Here is the issue: ${issue12}`,
+    `Issue: ${issue12}`,
+    "work on owner/repo#12",
+    "Work on issue #12",
+    "fix issue 12 please",
+    "Please work on #12.",
+  ])("links the issue the user asks the agent to work on: %s", (text) => {
+    expect(sessionLinks({ a: item(text, {}, "user_message") }, "", "owner/repo").map((link) => link.url)).toEqual([issue12]);
+  });
+
+  it("links a requested PR number as a pull request", () => {
+    expect(sessionLinks({ a: item("Review #7", {}, "user_message") }, "", "owner/repo").map((link) => link.url)).toEqual(["https://github.com/owner/repo/pull/7"]);
+    expect(sessionLinks({ a: item("work on PR #7", {}, "user_message") }, "", "owner/repo").map((link) => link.url)).toEqual(["https://github.com/owner/repo/pull/7"]);
+  });
+
+  it("links a requested number in the session title", () => {
+    expect(sessionLinks({}, "Work on issue #12", "owner/repo").map((link) => link.url)).toEqual([issue12]);
+  });
+
+  it.each([
+    `Fix the login like ${issue12}`,
+    `Handle errors the same way as ${issue12}`,
+    `Look at ${issue12} for inspiration`,
+    `I fixed ${issue12}`,
+    `Fix the typo in the README and then update all the docs from ${issue12}`,
+    "fix #12 and #13",
+    "fix 3 bugs",
+  ])("does not link background, past or ambiguous references: %s", (text) => {
+    expect(sessionLinks({ a: item(text, {}, "user_message") }, "", "owner/repo")).toEqual([]);
+  });
+
+  it("needs the session repository to link a bare number", () => {
+    expect(sessionLinks({ a: item("Work on issue #12", {}, "user_message") })).toEqual([]);
+  });
+
   it("updates when a streamed link completes and opens it in the system browser", () => {
     useStore.setState({ transcripts: { session: emptyTranscript() } });
     useStore.getState().applyEvent({ type: "item_started", session_id: "session", item: item("Created PR: https://github.com/owner/repo/pull/") });

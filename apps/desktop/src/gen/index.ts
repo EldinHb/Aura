@@ -31,6 +31,7 @@ export * from './ProviderKind';
 export * from './PullRequest';
 export * from './Question';
 export * from './QuestionOption';
+export * from './RepoIssue';
 export * from './ReviewComment';
 export * from './ReviewConfig';
 export * from './ReviewInbox';

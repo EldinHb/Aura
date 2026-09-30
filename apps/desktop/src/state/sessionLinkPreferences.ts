@@ -1,8 +1,9 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import type { RpcClient } from "../lib/rpc";
-import { parseSessionLink, type LinkPreferences } from "../views/issueLinks";
+import { parseSessionLink, sessionLinks, type LinkPreferences, type SessionLink } from "../views/issueLinks";
 import { useStore } from "./store";
+import { loadGithubRepo, useGithubRepos } from "./githubRepos";
 
 type Entry = { preferences: LinkPreferences; error?: string };
 export const useLinkPreferencesStore = create<{ entries: Record<string, Entry> }>(() => ({ entries: {} }));
@@ -66,4 +67,105 @@ export function useSessionLinkPreferences(id: string | null) {
     return () => window.removeEventListener("focus", refresh);
   }, [id, client, connection]);
   return entry;
+}
+
+/**
+ * Automatic links need the whole transcript, which loads only when a session
+ * is opened. The last detected links are saved so the sidebar can show them
+ * for sessions that have not been opened in this window.
+ */
+export const detectedLinksKey = (id: string) => `session.links.detected.v1.${id}`;
+export const useDetectedLinksStore = create<{ links: Record<string, SessionLink[]> }>(() => ({ links: {} }));
+const detectedRevisions = new Map<string, number>();
+
+function decodeDetected(raw: string | null): SessionLink[] {
+  if (!raw) return [];
+  const value: unknown = JSON.parse(raw);
+  if (!Array.isArray(value)) throw new Error("Invalid saved detected links");
+  return value.flatMap((url) => {
+    const link = typeof url === "string" ? parseSessionLink(url, "Issue") ?? parseSessionLink(url, "PR") : undefined;
+    if (!link) throw new Error("Invalid saved detected link");
+    return [link];
+  });
+}
+
+const sameLinks = (a: SessionLink[] | undefined, b: SessionLink[]) =>
+  !!a && a.length === b.length && a.every((link, i) => link.url === b[i].url);
+
+export async function loadDetectedLinks(client: RpcClient, id: string) {
+  const revision = (detectedRevisions.get(id) ?? 0) + 1;
+  detectedRevisions.set(id, revision);
+  try {
+    const links = decodeDetected(await client.getSetting(detectedLinksKey(id)));
+    if (detectedRevisions.get(id) === revision) {
+      useDetectedLinksStore.setState((state) => ({ links: { ...state.links, [id]: links } }));
+    }
+  } catch (error) {
+    // The cache is only a hint for the sidebar; the Inspector recomputes it.
+    console.warn(`Could not load detected links for session ${id}:`, error);
+  }
+}
+
+export async function saveDetectedLinks(client: RpcClient, id: string, links: SessionLink[]) {
+  if (sameLinks(useDetectedLinksStore.getState().links[id], links)) return;
+  detectedRevisions.set(id, (detectedRevisions.get(id) ?? 0) + 1);
+  useDetectedLinksStore.setState((state) => ({ links: { ...state.links, [id]: links } }));
+  try {
+    if (!await client.setSetting(detectedLinksKey(id), JSON.stringify(links.map((link) => link.url)))) throw new Error("The daemon did not save the links");
+  } catch (error) {
+    console.warn(`Could not save detected links for session ${id}:`, error);
+  }
+}
+
+/** Load saved and detected links for every listed session, and refresh on focus. */
+export function useSidebarLinks(ids: string[]) {
+  const client = useStore((state) => state.client);
+  const connection = useStore((state) => state.connection);
+  const key = ids.join("\n");
+  useEffect(() => {
+    if (!client) return;
+    const list = key ? key.split("\n") : [];
+    const { entries } = useLinkPreferencesStore.getState();
+    const { links } = useDetectedLinksStore.getState();
+    for (const id of list) {
+      if (!entries[id]) void loadLinkPreferences(client, id);
+      if (!links[id]) void loadDetectedLinks(client, id);
+    }
+    const refresh = () => {
+      for (const id of list) {
+        void loadLinkPreferences(client, id);
+        void loadDetectedLinks(client, id);
+      }
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [key, client, connection]);
+}
+
+/** Save the automatic links of every fully loaded transcript as it changes. */
+export function useDetectedLinksSync() {
+  const client = useStore((state) => state.client);
+  useEffect(() => {
+    if (!client) return;
+    const seen = new Map<string, { items: unknown; title: string; repo?: string }>();
+    const sync = () => {
+      const { transcripts, sessions } = useStore.getState();
+      const { repos } = useGithubRepos.getState();
+      for (const [id, transcript] of Object.entries(transcripts)) {
+        const session = sessions[id];
+        // A partial transcript (live events only) can pick the wrong target.
+        if (!session || !transcript.loaded) continue;
+        if (!(session.cwd in repos)) void loadGithubRepo(client, session.cwd);
+        const repo = repos[session.cwd] ?? undefined;
+        const last = seen.get(id);
+        if (last?.items === transcript.items && last.title === session.title && last.repo === repo) continue;
+        seen.set(id, { items: transcript.items, title: session.title, repo });
+        void saveDetectedLinks(client, id, sessionLinks(transcript.items, session.title, repo));
+      }
+    };
+    sync();
+    const offRepos = useGithubRepos.subscribe(sync);
+    const offStore = useStore.subscribe(sync);
+    return () => { offRepos(); offStore(); };
+  }, [client]);
 }

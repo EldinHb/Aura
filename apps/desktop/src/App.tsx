@@ -4,6 +4,7 @@ import { registerWatchCommands, useWatchSync } from "./features/watches/state";
 import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected } from "./state/store";
+import { useDetectedLinksSync } from "./state/sessionLinkPreferences";
 import { connectDaemon, isTauri } from "./lib/connection";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
@@ -29,6 +30,7 @@ export default function App() {
   useKeyboard();
   // Detached session windows would announce every review a second time.
   useWatchSync(windowMode !== "session");
+  useDetectedLinksSync();
   const connection = useStore((s) => s.connection);
   const connectionError = useStore((s) => s.connectionError);
   const selected = useStore(selectSelected);

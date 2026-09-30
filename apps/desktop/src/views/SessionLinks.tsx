@@ -3,11 +3,11 @@ import type { Item } from "../gen";
 import { ExternalLink } from "../components/ExternalLink";
 import { selectedSessionLinks, sessionLinks, type LinkPreferences } from "./issueLinks";
 
-export function SessionLinks({ items, title, preferences, onEdit, loading, error }: {
-  items: Record<string, Item>; title: string; preferences?: LinkPreferences;
+export function SessionLinks({ items, title, repo, preferences, onEdit, loading, error }: {
+  items: Record<string, Item>; title: string; repo?: string; preferences?: LinkPreferences;
   onEdit?: () => void; loading?: boolean; error?: string;
 }) {
-  const automatic = useMemo(() => sessionLinks(items, title), [items, title]);
+  const automatic = useMemo(() => sessionLinks(items, title, repo), [items, title, repo]);
   const links = selectedSessionLinks(automatic, preferences);
   if (links.length === 0 && !onEdit) return null;
   return (

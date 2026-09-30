@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command};
 
+pub mod issues;
+
 #[async_trait]
 pub trait Github: Send + Sync {
     async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;

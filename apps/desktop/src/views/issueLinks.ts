@@ -94,7 +94,7 @@ export function parseSessionLink(value: string, kind: SessionLink["kind"]): Sess
 }
 
 /** Broad collection is for the picker only, never automatic selection. */
-export function mentionedSessionLinks(items: Record<string, Item>, title = ""): SessionLink[] {
+export function mentionedSessionLinks(items: Record<string, Item>, title = "", repo?: string): SessionLink[] {
   const links = new Map<string, SessionLink>();
   const add = (link: SessionLink) => links.set(link.url.toLowerCase(), link);
   function scan(value: unknown) {
@@ -103,8 +103,10 @@ export function mentionedSessionLinks(items: Record<string, Item>, title = ""): 
     else if (value && typeof value === "object") Object.values(value).forEach(scan);
   }
   scan(title);
+  requestedLinks(title, repo).forEach(add);
   for (const item of Object.values(items)) {
     scan(item.text);
+    if (item.kind === "user_message") requestedLinks(item.text, repo).forEach(add);
     scan(item.data);
     if (typeof item.data.command === "string") commandLinks(item.data.command, "", true).forEach(add);
   }
@@ -120,8 +122,68 @@ export function selectedSessionLinks(automatic: SessionLink[], preferences: Link
   });
 }
 
+// Asking an agent to act on an issue or PR. Past tense and reading verbs
+// ("fixed", "look at") are deliberately absent.
+const WORK_VERB = /\b(?:work(?:ing)? on|start(?:ing)? (?:work(?:ing)? )?on|fix|implement|address|resolve|review|continue (?:with|on)|switch to|pick up|tackle|handle|solve|investigate|look into|take a look at|finish)\b/i;
+// A link after one of these is background for the task, not the task.
+const REFERENCE = /\b(?:like|similar|same|compare[ds]?|comparing|see|unlike|than|related|vs|versus|based|inspired|mentioned|context|except)\b/i;
+// "Issue: <url>" and "Here is the issue: <url>" name the task without a verb.
+const LABEL = /^\s*(?:here(?:'s| is)\s+)?(?:the\s+|my\s+)?(?:issue|task|ticket|pr|pull request)\s*[:：]/i;
+const MAX_WORDS_BEFORE_TARGET = 6;
+const REF = /https?:\/\/github\.com\/[^\s)\]]+|\b([\w.-]+\/[\w.-]+)#([1-9]\d*)\b|\b(issues?|prs?|pull requests?)\s*#?([1-9]\d*)\b|(?<![\w/&])#([1-9]\d*)\b/gi;
+
+function uniqueLinks(links: SessionLink[]): SessionLink[] {
+  return [...new Map(links.map((link) => [link.url.toLowerCase(), link])).values()];
+}
+
+function issueOrPr(repo: string, kind: SessionLink["kind"], number: string): SessionLink[] {
+  return linksIn(`https://github.com/${repo}/${kind === "PR" ? "pull" : "issues"}/${number}`);
+}
+
+/** Issue and PR references in text: URLs, owner/repo#12, "issue 12", and #12 in `repo`. */
+function refsIn(text: string, kind: SessionLink["kind"], repo?: string): { index: number; links: SessionLink[] }[] {
+  const refs: { index: number; links: SessionLink[] }[] = [];
+  for (const match of text.matchAll(REF)) {
+    const [whole, fullRepo, fullNumber, word, wordNumber, number] = match;
+    let links: SessionLink[] = [];
+    if (fullRepo) links = issueOrPr(fullRepo, kind, fullNumber);
+    else if (word) links = repo ? issueOrPr(repo, /^p/i.test(word) ? "PR" : "Issue", wordNumber) : [];
+    else if (number) links = repo ? issueOrPr(repo, kind, number) : [];
+    else links = linksIn(whole);
+    if (links.length) refs.push({ index: match.index, links });
+  }
+  return refs;
+}
+
+/**
+ * Issues and PRs the user asks the agent to work on: a work verb followed
+ * closely by the reference, a "Issue:" label, or a link alone on its line.
+ * `repo` resolves bare numbers such as "#12".
+ */
+function requestedLinks(text: string, repo?: string): SessionLink[] {
+  const targets: SessionLink[] = [];
+  for (const line of text.split(/\n/)) {
+    if (/^\s*https?:\/\/\S+\s*$/.test(line)) { targets.push(...linksIn(line)); continue; }
+    for (const sentence of line.split(/(?<=[.!?;])\s+/)) {
+      const verb = sentence.match(WORK_VERB);
+      const label = verb ? undefined : sentence.match(LABEL);
+      if (!verb && !label) continue;
+      const start = verb ? verb.index! + verb[0].length : label![0].length;
+      let span = sentence.slice(start);
+      const cut = span.search(REFERENCE);
+      if (cut >= 0) span = span.slice(0, cut);
+      const kind = (verb && /^review$/i.test(verb[0])) || /\b(?:pr|pull request)\b/i.test(span) ? "PR" : "Issue";
+      const refs = refsIn(span, kind, repo);
+      if (!refs.length) continue;
+      if (span.slice(0, refs[0].index).split(/\s+/).filter(Boolean).length > MAX_WORDS_BEFORE_TARGET) continue;
+      for (const ref of refs) targets.push(...ref.links);
+    }
+  }
+  return uniqueLinks(targets);
+}
+
 /** Only explicit task context establishes a link; incidental mentions do not. */
-export function sessionLinks(items: Record<string, Item>, title = ""): SessionLink[] {
+export function sessionLinks(items: Record<string, Item>, title = "", repo?: string): SessionLink[] {
   const selected = new Map<SessionLink["kind"], SessionLink>();
   let requestedLink: SessionLink["kind"] | undefined;
   function select(links: SessionLink[], switchTask = false) {
@@ -133,22 +195,14 @@ export function sessionLinks(items: Record<string, Item>, title = ""): SessionLi
     })) selected.clear();
     for (const link of targets) selected.set(link.kind, link);
   }
-  select(linksIn(title));
+  select(uniqueLinks([...linksIn(title), ...requestedLinks(title, repo)]));
   for (const item of Object.values(items)) {
     if (item.parent_id) continue;
     if (item.kind === "user_message") {
       requestedLink = /\b(?:where|link|url)\b/i.test(item.text)
         ? /\b(?:PR|pull request)\b/i.test(item.text) ? "PR" : /\bissue\b/i.test(item.text) ? "Issue" : undefined
         : undefined;
-      const targets = item.text.split(/\n/).flatMap((line) => {
-        const links = linksIn(line);
-        // A bare link is a direct user target. Otherwise require an action
-        // immediately before the link, so "compare with" references stay out.
-        if (/^\s*https?:\/\/\S+\s*$/.test(line)) return links;
-        const target = line.match(/\b(?:work on|working on|fix|implement|address|resolve|review|continue with|switch to|pick up)\s+(?:(?:this|the)\s+)?(?:(?:issue|pr|pull request)\s*)?(?:for\s+(?:me|us)\s*)?(?:please\s*)?[:：]?\s*(\[[^\]]*\]\()?https?:\/\/github\.com\/\S+/i);
-        return target ? linksIn(target[0]) : [];
-      });
-      select(targets, true);
+      select(requestedLinks(item.text, repo), true);
     } else if (item.kind === "agent_message") {
       const targets: SessionLink[] = [];
       for (const line of item.text.split(/\n/)) {
