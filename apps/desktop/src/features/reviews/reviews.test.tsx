@@ -2,11 +2,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RpcClient } from "../../lib/rpc";
 import type { ProviderInfo, Session } from "../../gen";
-import { selectSelected, useStore } from "../../state/store";
+import { defaultSettings, selectSelected, useStore } from "../../state/store";
 import { ReviewSettings } from "./ReviewSettings";
 import { ReviewSubmit } from "./ReviewEditor";
 import { ReviewSidebar } from "./ReviewSidebar";
-import { editDraft, ensureDraft, flushDraft, openPull, useReviewDrafts, useReviews } from "./state";
+import { editDraft, ensureDraft, flushDraft, openPull, pullFilter, pullFilterError, useReviewDrafts, useReviews } from "./state";
 import { inboxFixture, pullFixture, reviewFixture } from "./fixtures";
 vi.hoisted(() => {
   const values = new Map<string, string>();
@@ -69,6 +69,35 @@ it("lists your own pull requests with their status, separately from review reque
   fireEvent.click(screen.getByRole("button", { name: /Your pull requests/ }));
   expect(screen.queryByTitle("Add retries")).toBe(null);
   expect(screen.getByTitle(pullFixture.title)).toBeTruthy();
+});
+it("matches pull filter rules by author, label, repo, title and draft", () => {
+  const bot = { ...pullFixture, author: "dependabot[bot]" };
+  expect(pullFilter(bot, ["author:dependabot"])).toBe("author:dependabot");
+  expect(pullFilter(bot, ["author:Dependabot[bot]"])).toBe("author:Dependabot[bot]");
+  expect(pullFilter(pullFixture, ["author:dependabot"])).toBe(undefined);
+  expect(pullFilter(pullFixture, ["label:BUG"])).toBe("label:BUG");
+  expect(pullFilter(pullFixture, ["repo:acme/*"])).toBe("repo:acme/*");
+  expect(pullFilter(pullFixture, ["title:*empty*"])).toBe("title:*empty*");
+  expect(pullFilter(pullFixture, ["title:empty"])).toBe(undefined);
+  expect(pullFilter({ ...pullFixture, draft: true }, ["", "# note", "draft"])).toBe("draft");
+  expect(pullFilter(pullFixture, ["nonsense:x", "author:", "draft"])).toBe(undefined);
+  expect(pullFilterError("nonsense:x")).toMatch(/Unknown rule/);
+  expect(pullFilterError("author:")).toMatch(/needs a value/);
+  expect(pullFilterError("repo:a/b:c")).toBe(undefined);
+});
+it("hides Dependabot PRs by default and lists them with Show hidden", () => {
+  const bot = { ...pullFixture, id: "acme/widget#9", number: 9, title: "Bump lodash", author: "dependabot[bot]" };
+  useStore.setState({ settings: defaultSettings });
+  useReviews.setState({ inbox: { ...inboxFixture, pulls: [pullFixture, bot] } });
+  render(<ReviewSidebar />);
+  expect(screen.queryByTitle("Bump lodash")).toBe(null);
+  expect(screen.getByRole("button", { name: /Needs your review/ }).textContent).toContain("1");
+  fireEvent.click(screen.getByRole("button", { name: "Show hidden" }));
+  expect(screen.getByTitle("Bump lodash").textContent).toContain("hidden by author:dependabot");
+  act(() => useStore.setState({ settings: { ...defaultSettings, pullFilters: [] } }));
+  fireEvent.click(screen.getByRole("button", { name: "Hide hidden" }));
+  expect(screen.getByTitle("Bump lodash")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Needs your review/ }).textContent).toContain("2");
 });
 it("flush waits for text typed during an in-flight save", async () => {
   let resolve!: (value: unknown) => void;

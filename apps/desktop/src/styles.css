@@ -393,7 +393,7 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 .settings-modal .modal-body { display: flex; flex-direction: column; padding: 0; }
 .settings-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
-.settings-grid .check-row { grid-column: 1 / -1; }
+.settings-grid .check-row, .settings-grid .field.wide { grid-column: 1 / -1; }
 .settings-grid input.recording { border-color: var(--warn); }
 .keymap-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .keymap-head { display: flex; gap: 8px; align-items: center; }

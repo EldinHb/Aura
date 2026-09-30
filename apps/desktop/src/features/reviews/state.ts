@@ -44,9 +44,43 @@ export const useReviews = create<ReviewState>((set) => ({
     finally { if (remote) set({ busy: false }); }
   },
 }));
+export const PULL_FILTER_KINDS = ["author", "label", "repo", "title", "draft"] as const;
+/** Why a rule line cannot be used, or undefined when it is valid. Blank lines and `#` comments are valid. */
+export function pullFilterError(rule: string): string | undefined {
+  const r = rule.trim();
+  if (!r || r.startsWith("#") || r.toLowerCase() === "draft") return undefined;
+  const [kind, ...rest] = r.split(":");
+  if (!(PULL_FILTER_KINDS as readonly string[]).includes(kind.trim().toLowerCase())) return `Unknown rule "${kind.trim()}"; use ${PULL_FILTER_KINDS.map((k) => k === "draft" ? k : `${k}:`).join(", ")}`;
+  if (!rest.join(":").trim()) return `"${kind.trim()}:" needs a value`;
+  return undefined;
+}
+/** `*` matches any run of characters; everything else literally, ignoring case. */
+const glob = (pattern: string, value: string) =>
+  new RegExp(`^${pattern.split("*").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "i").test(value);
+/**
+ * The first rule that hides `pull`, or undefined. Rules: `author:<login>` (a bot's
+ * `[bot]` suffix is optional), `label:<name>`, `repo:<owner/name>`, `title:<text>`, and
+ * `draft`. Values may use `*` wildcards, e.g. `repo:acme/*` or `title:*chore*`.
+ */
+export function pullFilter(pull: PullRequest, rules: string[]): string | undefined {
+  const bare = (login: string) => login.replace(/\[bot\]$/i, "");
+  return rules.find((rule) => {
+    const r = rule.trim();
+    if (pullFilterError(r) || !r || r.startsWith("#")) return false;
+    if (r.toLowerCase() === "draft") return pull.draft;
+    const i = r.indexOf(":");
+    const kind = r.slice(0, i).trim().toLowerCase(), value = r.slice(i + 1).trim();
+    if (kind === "author") return glob(bare(value), bare(pull.author));
+    if (kind === "label") return pull.labels.some((l) => glob(value, l));
+    if (kind === "repo") return glob(value, pull.repo);
+    return glob(value, pull.title);
+  })?.trim();
+}
+/** Hidden by hand or by a rule; such PRs are listed only with "Show hidden". */
+export const isPullHidden = (pull: PullRequest, rules: string[]) => pull.hidden || !!pullFilter(pull, rules);
 /** PRs listed in the sidebar, in display order: review requests, then your own. */
-export function visiblePulls(s: ReviewState) {
-  const shown = (pulls: PullRequest[] | undefined, collapsed: boolean) => s.hidden || collapsed ? [] : (pulls ?? []).filter((p) => s.showHidden || !p.hidden);
+export function visiblePulls(s: ReviewState, rules = useStore.getState().settings.pullFilters) {
+  const shown = (pulls: PullRequest[] | undefined, collapsed: boolean) => s.hidden || collapsed ? [] : (pulls ?? []).filter((p) => s.showHidden || !isPullHidden(p, rules));
   return { review: shown(s.inbox?.pulls, s.collapsed), mine: shown(s.inbox?.mine, s.mineCollapsed) };
 }
 /** Draft, check and review state as short labels; `tone` marks the ones that need attention or are done. */

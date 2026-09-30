@@ -10,6 +10,7 @@ import type { CapabilitySet } from "../../gen";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
+import { pullFilterError } from "../../features/reviews/state";
 
 type Tab = "general" | "keymap" | "providers" | "groups";
 const TABS: Tab[] = ["general", "keymap", "providers", "groups"];
@@ -120,6 +121,14 @@ function GeneralTab() {
       <div className="field">
         <label>Summon shortcut (global, restart required)</label>
         <input type="text" value={settings.summonShortcut} onChange={(e) => set("summonShortcut", e.target.value)} />
+      </div>
+      <div className="field wide">
+        <label htmlFor="pull-filters">Hide pull requests matching (one rule per line)</label>
+        <textarea id="pull-filters" rows={4} spellCheck={false} className="mono" value={settings.pullFilters.join("\n")} placeholder="author:dependabot" onChange={(e) => set("pullFilters", e.target.value.split("\n"))} />
+        {settings.pullFilters.map(pullFilterError).filter(Boolean).map((error) => <div key={error} className="dim" style={{ fontSize: 11, color: "var(--warn)" }}>{error}</div>)}
+        <div className="dim" style={{ fontSize: 11 }}>
+          <span className="mono">author:</span>, <span className="mono">label:</span>, <span className="mono">repo:</span>, <span className="mono">title:</span> or <span className="mono">draft</span>; <span className="mono">*</span> matches anything, e.g. <span className="mono">repo:acme/*</span>. Matching PRs are listed with Show hidden.
+        </div>
       </div>
       <div>
         <button type="button" className="btn" data-hint onClick={() => setSettings(defaultSettings)}>

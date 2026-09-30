@@ -1,11 +1,12 @@
 import { useEffect } from "react";
 import type { PullRequest } from "../../gen";
 import { useStore } from "../../state/store";
-import { hidePull, openHistory, openPull, pullStatus, report, useReviews, visiblePulls } from "./state";
+import { hidePull, isPullHidden, openHistory, openPull, pullFilter, pullStatus, report, useReviews, visiblePulls } from "./state";
 
 export function ReviewSidebar() {
   const state = useReviews();
   const client = useStore((s) => s.client);
+  const rules = useStore((s) => s.settings.pullFilters);
   useEffect(() => {
     if (!client) return;
     void useReviews.getState().refresh();
@@ -18,7 +19,7 @@ export function ReviewSidebar() {
     return () => { off(); offState(); clearTimeout(timer); };
   }, [client]);
   if (state.hidden) return <button className="btn small pr-restore-section" data-command="reviews.toggle" onClick={() => state.setPreference("hidden", false)}>Show pull requests</button>;
-  const shown = visiblePulls(state);
+  const shown = visiblePulls(state, rules);
   const connected = !!state.inbox?.account;
   return <section className="pr-sidebar" aria-label="Pull requests">
     <div className="pr-sidebar-heading">
@@ -39,14 +40,16 @@ export function ReviewSidebar() {
 function PullGroup({ title, all, shown, collapsed, onToggle, empty, mine = false }: { title: string; all: PullRequest[]; shown: PullRequest[]; collapsed: boolean; onToggle: () => void; empty: string; mine?: boolean }) {
   const selected = useStore((s) => s.prSelection);
   const reviews = useReviews((s) => s.inbox?.reviews);
+  const rules = useStore((s) => s.settings.pullFilters);
   return <>
-    <button className="btn small pr-group-toggle" data-hint aria-expanded={!collapsed} onClick={onToggle}>{collapsed ? "▸" : "▾"} {title} <span className="badge">{all.filter((p) => !p.hidden).length}</span></button>
+    <button className="btn small pr-group-toggle" data-hint aria-expanded={!collapsed} onClick={onToggle}>{collapsed ? "▸" : "▾"} {title} <span className="badge">{all.filter((p) => !isPullHidden(p, rules)).length}</span></button>
     {!collapsed && shown.map((pull) => {
       const review = reviews?.find((r) => r.pull.id === pull.id && r.status !== "discarded");
-      return <div key={pull.id} className={`pr-sidebar-row ${selected?.id === pull.id ? "selected" : ""} ${pull.hidden ? "muted" : ""}`}>
+      const rule = pullFilter(pull, rules);
+      return <div key={pull.id} className={`pr-sidebar-row ${selected?.id === pull.id ? "selected" : ""} ${isPullHidden(pull, rules) ? "muted" : ""}`}>
         <button className="pr-row-main" data-hint onClick={() => openPull(pull)} title={pull.title}>
           <span className="title">{pull.draft ? "◌" : "⑂"} {pull.title}</span>
-          <span className="sub">{pull.repo}#{pull.number}{!mine && ` · ${pull.author}`}</span>
+          <span className="sub">{pull.repo}#{pull.number}{!mine && ` · ${pull.author}`}{rule && ` · hidden by ${rule}`}</span>
           <span className="pr-status">{pullStatus(pull).map((s) => <span key={s.label} className={`chip ${s.tone ?? ""}`}>{s.label}</span>)}</span>
           {review && <span className={`chip ${review.status === "failed" ? "err" : ""}`}>{review.status}{review.reviewed_sha && review.reviewed_sha !== pull.head_sha ? " · PR changed" : ""}</span>}
         </button>

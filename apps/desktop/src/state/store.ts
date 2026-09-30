@@ -139,6 +139,8 @@ export type UiSettings = {
   defaultCwd: string;
   showReasoning: boolean;
   summonShortcut: string;
+  /** Rules that hide matching pull requests from the sidebar; see `pullFilter`. */
+  pullFilters: string[];
 };
 
 export const defaultSettings: UiSettings = {
@@ -153,6 +155,7 @@ export const defaultSettings: UiSettings = {
   defaultCwd: "",
   showReasoning: true,
   summonShortcut: "CmdOrCtrl+Shift+A",
+  pullFilters: ["author:dependabot"],
 };
 
 export function emptyTranscript(): Transcript {

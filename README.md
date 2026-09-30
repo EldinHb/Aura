@@ -260,7 +260,11 @@ current diff in the main workspace. Applicable metadata and project fields can
 be edited when GitHub grants access. Project fields may require additional GitHub
 Projects permissions; their failure does not prevent reviewing the PR. Hide a PR
 with its × control and restore it through **Show hidden**. Hiding persists per
-account. **Review history** keeps results accessible after requests disappear.
+account. Settings → General → **Hide pull requests matching** hides PRs by rule,
+one per line: `author:<login>`, `label:<name>`, `repo:<owner/name>`,
+`title:<text>` or `draft`, with `*` as a wildcard (`repo:acme/*`,
+`title:*chore*`). The default, `author:dependabot`, hides Dependabot PRs; remove
+the line to show them again. Rule-hidden PRs are also listed with **Show hidden**. **Review history** keeps results accessible after requests disappear.
 The command palette also exposes refresh, hide/restore, history, and section
 visibility actions. Session processes and unsent messages survive switching views.
 
