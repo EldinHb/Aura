@@ -8,14 +8,14 @@ import { registerTranscriptCommands, setTranscriptHandle } from "../commands/tra
 import { ItemRow } from "./transcript/ItemRow";
 import { ApprovalCard } from "./transcript/ApprovalCard";
 import { UserInputCard } from "./transcript/UserInputCard";
-import { durationMs, fmtDuration, fmtTokens, fmtUsd, isCardKind } from "./transcript/format";
+import { durationMs, fmtDuration, fmtTokens, fmtUsd, isCardKind, lastBoundaryIndex } from "./transcript/format";
 
 let commandsRegistered: (() => void) | null = null;
 let mounted = 0;
 
 type Row =
   | { kind: "turn"; turn: Turn; key: string }
-  | { kind: "item"; item: Item; key: string; nested: boolean }
+  | { kind: "item"; item: Item; key: string; nested: boolean; stale: boolean }
   | { kind: "approval"; id: string; key: string }
   | { kind: "input"; id: string; key: string }
   | { kind: "notice"; key: string; level: string; message: string }
@@ -104,20 +104,22 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       if (r.item_id && t.items[r.item_id]) (inputsByItem.get(r.item_id) ?? inputsByItem.set(r.item_id, []).get(r.item_id)!).push(r.id);
       else looseInputs.push(r.id);
     }
-    const pushItem = (it: Item, nested: boolean) => {
+    const pushItem = (it: Item, nested: boolean, stale: boolean) => {
       if (it.kind === "reasoning" && !showReasoning) return;
-      out.push({ kind: "item", item: it, key: it.id, nested });
+      out.push({ kind: "item", item: it, key: it.id, nested, stale });
       for (const id of approvalsByItem.get(it.id) ?? []) out.push({ kind: "approval", id, key: `approval:${id}` });
       for (const id of inputsByItem.get(it.id) ?? []) out.push({ kind: "input", id, key: `input:${id}` });
     };
-    for (const it of top) {
+    // Items above the latest clear or compaction are no longer in the agent's context.
+    const boundary = lastBoundaryIndex(top);
+    for (const [i, it] of top.entries()) {
       if (it.turn_id !== lastTurn) {
         lastTurn = it.turn_id;
         const turn = it.turn_id ? turnsById.get(it.turn_id) : undefined;
         if (turn && turn.status !== "running") out.push({ kind: "turn", turn, key: `turn:${turn.id}` });
       }
-      pushItem(it, false);
-      for (const child of byParent.get(it.id) ?? []) pushItem(child, true);
+      pushItem(it, false, i < boundary);
+      for (const child of byParent.get(it.id) ?? []) pushItem(child, true, i < boundary);
     }
     for (const id of looseApprovals) out.push({ kind: "approval", id, key: `approval:${id}` });
     for (const id of looseInputs) out.push({ kind: "input", id, key: `input:${id}` });
@@ -227,6 +229,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
                   onToggle={toggle}
                   onCursor={onCursor}
                   showReasoning={showReasoning}
+                  stale={r.stale}
                 />
               );
             case "approval": {

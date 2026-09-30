@@ -246,6 +246,22 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .turn-divider::before, .turn-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .turn-divider::after { flex: 6; }
 .turn-divider.failed { color: var(--err); }
+.item.stale { opacity: 0.5; transition: opacity 0.15s; }
+.item.stale:hover, .item.stale.cursor { opacity: 1; }
+.item.context-boundary { display: flex; align-items: center; gap: 10px; padding: 8px 0; margin: 6px 0; font-size: 12px; }
+.item.context-boundary::before, .item.context-boundary::after { content: ""; flex: 1; height: 1px; background: var(--info); opacity: 0.6; }
+.item.context-boundary.clear::before, .item.context-boundary.clear::after { background: var(--accent); height: 2px; }
+.item.context-boundary.failed::before, .item.context-boundary.failed::after { background: var(--err); }
+.item.context-boundary.in_progress::before, .item.context-boundary.in_progress::after { background: var(--border-strong); }
+.context-boundary-label { display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; max-width: 70%; }
+.context-boundary-label .status-ico { display: inline-block; margin-right: 6px; }
+.context-boundary-title { font-weight: 600; color: var(--fg); }
+.item.context-boundary.clear .context-boundary-title { color: var(--accent-2); }
+.item.context-boundary.failed .context-boundary-title { color: var(--err); }
+.item.user_message.slash { font-family: var(--mono); font-size: 12px; }
+.item.command-output { background: var(--bg-elev); border-color: var(--border); border-left: 2px solid var(--border-strong); line-height: 1.5; user-select: text; }
+.command-output-head { display: flex; gap: 6px; align-items: baseline; font-size: 11px; margin-bottom: 4px; }
+.command-output-body { max-height: 420px; overflow: auto; }
 .notice { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--fg-muted); padding: 2px 0; }
 .notice.error { color: var(--err); }
 .notice.warn { color: var(--warn); }
@@ -263,6 +279,10 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .md .md-list { margin: 4px 0 8px; padding-left: 22px; }
 .md .md-list li { margin: 2px 0; white-space: pre-wrap; }
 .md .md-hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.md .md-table-wrap { overflow-x: auto; margin: 4px 0 8px; }
+.md .md-table { border-collapse: collapse; font-size: 12px; }
+.md .md-table th, .md .md-table td { border: 1px solid var(--border); padding: 3px 8px; vertical-align: top; }
+.md .md-table th { background: var(--bg-elev2); font-weight: 600; text-align: left; }
 .md .md-link { color: var(--info); text-decoration: underline; }
 .md .dim { color: var(--fg-dim); font-size: 11px; }
 /* cards */

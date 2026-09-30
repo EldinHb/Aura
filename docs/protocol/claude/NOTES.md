@@ -30,3 +30,19 @@ Messages we send (stdin):
 - `{"type":"control_request","request_id":"...","request":{"subtype":"interrupt"}}`
 - `{"type":"control_request","request_id":"...","request":{"subtype":"set_permission_mode","mode":"acceptEdits"}}`
 - Slash commands go in the prompt text, e.g. `/model` returns a synthetic assistant message listing models.
+
+Slash commands (captured 2026-09-30, Claude Code 2.1.280):
+
+- Local commands (`/cost`, `/context`, `/model`, `/effort`, `/config`, `/mcp`, `/usage`, ...) reply with a
+  synthetic `assistant` message (`model: "<synthetic>"`) carrying `local_command_source`
+  (`<local-command-stdout>...</local-command-stdout>`) and usually `local_command_run: {command, args}`.
+  Commands unavailable in `-p` mode (`/status`, `/memory`) omit `local_command_run`. Aura shows these as
+  command output, not as agent replies.
+- Their `result` has `local_command: "<name>"`, zero `usage`, empty `iterations` and empty `modelUsage`.
+- `/clear` emits a top-level `{"type": "conversation_reset", "new_conversation_id"}`, then a new
+  `system/init` and a `result` with a new `session_id` (the id to resume from).
+- `/compact` (and auto compaction) emits `system/status` with `status: "compacting"`, then `system/status`
+  with `compact_result: "success" | "failed"` (plus `compact_error`), then on success
+  `system/compact_boundary` with `compact_metadata: {trigger: "manual"|"auto", pre_tokens, post_tokens}`,
+  a non-replay `user` message holding the summary, and a replayed `<local-command-stdout>Compacted </local-command-stdout>`.
+  A failed compaction repeats `compact_error` as local command output.

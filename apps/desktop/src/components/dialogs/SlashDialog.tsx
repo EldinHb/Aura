@@ -5,6 +5,7 @@ import type { SlashCommand } from "../../gen";
 import { filterItems } from "../palette";
 import { setFocus } from "../../commands/core";
 import { acpSessionInfo, acpSlashCommands } from "../../lib/acp";
+import { mergeSlashCommands } from "../../views/transcript/slash";
 
 export function SlashDialog({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions[sessionId]);
@@ -22,7 +23,7 @@ export function SlashDialog({ sessionId }: { sessionId: string }) {
       setCmds(acpSlashCommands(acpInfo));
       return;
     }
-    client.commands(session.provider, session.cwd).then(setCmds).catch(() => setCmds([]));
+    client.commands(session.provider, session.cwd).then((list) => setCmds(mergeSlashCommands(session.provider, list))).catch(() => setCmds([]));
   }, [client, session, acpInfo]);
 
   const filtered = useMemo(() => filterItems(cmds ?? [], q, (c) => `${c.name} ${c.description ?? ""}`), [cmds, q]);

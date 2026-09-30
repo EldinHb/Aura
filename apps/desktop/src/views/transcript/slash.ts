@@ -5,16 +5,19 @@ export type SlashEntry = { name: string; description: string | null; source: str
 
 const BUILTINS: Record<string, SlashEntry[]> = {
   claude: [
+    { name: "clear", description: "Start over with an empty context (the transcript stays visible)", source: "builtin" },
+    { name: "compact", description: "Replace the context with a summary to free up space", source: "builtin" },
+    { name: "context", description: "Show context window usage", source: "builtin" },
     { name: "model", description: "Show or set the model (e.g. /model sonnet)", source: "builtin" },
     { name: "effort", description: "Set effort level (low, medium, high, xhigh, max)", source: "builtin" },
-    { name: "compact", description: "Compact the conversation context", source: "builtin" },
-    { name: "context", description: "Show context window usage", source: "builtin" },
     { name: "cost", description: "Show session cost", source: "builtin" },
+    { name: "usage", description: "Show plan usage limits", source: "builtin" },
+    { name: "mcp", description: "Show MCP server status", source: "builtin" },
     { name: "init", description: "Create a CLAUDE.md for this project", source: "builtin" },
     { name: "config", description: "Change a setting (key=value)", source: "builtin" },
   ],
   codex: [
-    { name: "compact", description: "Compact the thread", source: "builtin" },
+    { name: "compact", description: "Replace the thread's context with a summary to free up space", source: "builtin" },
     { name: "review", description: "Start a code review", source: "builtin" },
     { name: "model", description: "Change model", source: "builtin" },
     { name: "effort", description: "Set reasoning effort", source: "builtin" },
@@ -25,14 +28,19 @@ export function builtinSlashCommands(provider: string): SlashEntry[] {
   return BUILTINS[provider] ?? [];
 }
 
-/** Merge provider commands with builtins (provider wins on name clashes). */
+/**
+ * Merge provider commands with builtins (provider wins on name clashes). A
+ * provider command without a description keeps the builtin one: Claude's
+ * startup catalogue lists names only.
+ */
 export function mergeSlashCommands(provider: string, fromProvider: SlashCommand[]): SlashEntry[] {
+  const builtins = new Map(builtinSlashCommands(provider).map((b) => [b.name, b]));
   const seen = new Set<string>();
   const out: SlashEntry[] = [];
   for (const c of fromProvider) {
     if (seen.has(c.name)) continue;
     seen.add(c.name);
-    out.push({ name: c.name, description: c.description, source: c.source ?? "provider" });
+    out.push({ name: c.name, description: c.description ?? builtins.get(c.name)?.description ?? null, source: c.source ?? "provider" });
   }
   for (const b of builtinSlashCommands(provider)) {
     if (!seen.has(b.name)) {

@@ -5,7 +5,7 @@ import { Markdown } from "./MarkdownView";
 import { DiffText } from "./Diff";
 import { useStore } from "../../state/store";
 import { setPlanView } from "../../state/planView";
-import { durationMs, firstLine, fmtDuration, isCardKind, itemChanges, itemLabel, kindIcon, prettyJson, truncate } from "./format";
+import { commandOutput, contextBoundary, durationMs, firstLine, fmtDuration, isCardKind, isSlashCommand, itemChanges, itemLabel, kindIcon, prettyJson, truncate } from "./format";
 
 const JSON_LIMIT = 4000;
 
@@ -129,20 +129,55 @@ export type ItemRowProps = {
   onCursor: (id: string) => void;
   nested?: boolean;
   showReasoning: boolean;
+  /** Above the latest clear or compaction, so no longer in the agent's context. */
+  stale?: boolean;
 };
 
-export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle, onCursor, nested, showReasoning }: ItemRowProps) {
+export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle, onCursor, nested, showReasoning, stale }: ItemRowProps) {
   const dur = fmtDuration(durationMs(item.started_at, item.ended_at));
+  const boundary = contextBoundary(item);
+  if (boundary) {
+    return (
+      <div
+        className={clsx("item context-boundary", boundary.kind, item.status, cursor && "cursor", stale && "stale")}
+        data-item-id={item.id}
+        data-hint
+        role="separator"
+        aria-label={boundary.detail ? `${boundary.title}. ${boundary.detail}` : boundary.title}
+        onClick={() => onCursor(item.id)}
+      >
+        <span className="context-boundary-label">
+          {item.status === "in_progress" && <span className="status-ico in_progress" />}
+          <span className="context-boundary-title">{boundary.title}</span>
+          {boundary.detail && <span className="dim">{boundary.detail}</span>}
+        </span>
+      </div>
+    );
+  }
+  const command = commandOutput(item);
+  if (command) {
+    return (
+      <div className={clsx("item command-output", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+        <div className="command-output-head">
+          {command.name && <span className="mono">/{command.name}</span>}
+          <span className="dim">{command.name ? "output" : "Command output"}</span>
+        </div>
+        <div className="command-output-body">
+          <Markdown text={item.text} />
+        </div>
+      </div>
+    );
+  }
   if (item.kind === "user_message") {
     return (
-      <div className={clsx("item user_message", cursor && "cursor", nested && "nested")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+      <div className={clsx("item user_message", isSlashCommand(item.text) && "slash", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
         {item.text}
       </div>
     );
   }
   if (item.kind === "agent_message") {
     return (
-      <div className={clsx("item agent_message", cursor && "cursor", nested && "nested")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+      <div className={clsx("item agent_message", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
         <Markdown text={item.text} />
         {item.status !== "in_progress" && <button className="btn small keep-plan" data-hint onClick={(event) => {
           event.stopPropagation();
@@ -157,7 +192,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
     if (!showReasoning) return null;
     const open = expanded ?? false;
     return (
-      <div className={clsx("item reasoning", cursor && "cursor", nested && "nested")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+      <div className={clsx("item reasoning", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
         <button className="reasoning-toggle" data-hint onClick={(e) => { e.stopPropagation(); onToggle(item.id); }}>
           <span className={clsx("status-ico", item.status)} /> thinking {open ? "▾" : "▸"}
           {!open && <span className="dim"> {truncate(firstLine(item.text) || "…", 140)}</span>}
@@ -169,7 +204,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
   // cards
   const open = expanded ?? (item.status !== "completed");
   return (
-    <div className={clsx("item tool", item.kind, cursor && "cursor", nested && "nested")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+    <div className={clsx("item tool", item.kind, cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
       <button className="item-head" data-hint onClick={(e) => { e.stopPropagation(); onToggle(item.id); }}>
         <span className={clsx("status-ico", item.status)} />
         <span className="kind-ico">{kindIcon(item.kind)}</span>

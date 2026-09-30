@@ -7,7 +7,7 @@
 
 use aura_core::*;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A `can_use_tool` request we still owe an answer for.
 #[derive(Debug, Clone)]
@@ -51,6 +51,21 @@ pub struct Parser {
     sent_texts: Vec<String>,
     /// parent_tool_use_id -> id of the message currently streaming in that lane.
     current_message: HashMap<Option<String>, String>,
+    /// Name of the slash command we most recently wrote, to label its output.
+    last_command: Option<String>,
+    /// Id of the "compacting" boundary item while a compaction runs.
+    compacting: Option<String>,
+    /// Error of a failed compaction. Claude repeats it as command output,
+    /// which the failed boundary item already shows.
+    compact_error: Option<String>,
+    /// Context size right after the last compaction.
+    compacted_to: Option<u64>,
+    /// Uuids of messages a compaction kept. Claude emits them again after the
+    /// boundary; they are already in the transcript.
+    preserved: HashSet<String>,
+    /// Usage from the last model turn. Local commands report zero usage, so
+    /// their results reuse this instead of wiping the session's numbers.
+    last_usage: Option<Usage>,
 }
 
 impl Parser {
@@ -85,6 +100,7 @@ impl Parser {
         out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
         out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
         self.sent_texts.push(text.to_string());
+        self.last_command = slash_name(text);
         out.extend(self.setting_from_slash(text));
         out
     }
@@ -141,8 +157,10 @@ impl Parser {
         match ty {
             "system" => self.handle_system(v, &mut out),
             "stream_event" => self.handle_stream_event(v, &mut out),
+            "assistant" | "user" if self.is_preserved(v) => {}
             "assistant" => self.handle_assistant(v, &mut out),
             "user" => self.handle_user(v, &mut out),
+            "conversation_reset" => self.handle_conversation_reset(&mut out),
             "result" => self.handle_result(v, &mut out),
             "control_request" => self.handle_control_request(v, &mut out),
             "control_response" => self.handle_control_response(v, &mut out),
@@ -228,7 +246,15 @@ impl Parser {
                         });
                     }
                 }
+                if v.get("status").and_then(Value::as_str) == Some("compacting") {
+                    self.start_compacting(out);
+                }
+                if v.get("compact_result").and_then(Value::as_str) == Some("failed") {
+                    let err = v.get("compact_error").and_then(Value::as_str).unwrap_or("unknown error").to_string();
+                    self.fail_compacting(&err, out);
+                }
             }
+            "compact_boundary" => self.handle_compact_boundary(v, out),
             "api_retry" => {
                 let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0);
                 let max = v.get("max_retries").and_then(Value::as_u64).unwrap_or(0);
@@ -331,6 +357,10 @@ impl Parser {
 
     fn handle_assistant(&mut self, v: &Value, out: &mut Vec<Event>) {
         let Some(msg) = v.get("message") else { return };
+        if v.get("local_command_source").is_some() {
+            self.handle_local_command_output(v, msg, out);
+            return;
+        }
         let msg_id = msg.get("id").and_then(Value::as_str).unwrap_or("").to_string();
         let parent = v.get("parent_tool_use_id").and_then(Value::as_str).map(String::from);
         let Some(content) = msg.get("content").and_then(Value::as_array) else { return };
@@ -515,7 +545,15 @@ impl Parser {
         } else {
             TurnStatus::Completed
         };
-        let usage = usage_from_result(v, self.model.as_deref());
+        let local_command = v.get("local_command").and_then(Value::as_str);
+        let usage = match local_command {
+            None => {
+                let usage = usage_from_result(v, self.model.as_deref());
+                self.last_usage = Some(usage.clone());
+                Some(usage)
+            }
+            Some(cmd) => self.usage_after_local_command(cmd, v),
+        };
         if let Some(id) = v.get("session_id").and_then(Value::as_str) {
             if self.native_id.as_deref() != Some(id) {
                 self.native_id = Some(id.to_string());
@@ -553,10 +591,13 @@ impl Parser {
         });
         turn.status = status;
         turn.ended_at = Some(aura_core::now());
-        turn.usage = Some(usage.clone());
+        // A local command made no model call, so its zero usage is noise.
+        turn.usage = if local_command.is_none() { usage.clone() } else { None };
         turn.error = error;
         self.interrupt_requested = false;
-        out.push(Event::Usage { session_id: self.sid(), usage });
+        if let Some(usage) = usage {
+            out.push(Event::Usage { session_id: self.sid(), usage });
+        }
         out.push(Event::TurnCompleted { session_id: self.sid(), turn });
     }
 
@@ -705,6 +746,122 @@ impl Parser {
                     self.permission_mode = Some(mode.clone());
                     out.push(Event::SettingChanged { session_id: self.sid(), setting: Setting::PermissionMode(mode) });
                 }
+            }
+        }
+    }
+
+    // ------------------------------------------------------ local commands
+
+    /// Output of a command Claude Code runs itself (`/cost`, `/context`, ...).
+    /// It arrives as a synthetic assistant message; show it as the command's
+    /// output rather than as a reply from the agent.
+    fn handle_local_command_output(&mut self, v: &Value, msg: &Value, out: &mut Vec<Event>) {
+        let text = content_to_text(msg.get("content"));
+        if self.compact_error.as_deref() == Some(text.trim()) {
+            self.compact_error = None;
+            return;
+        }
+        // Name it after what was typed: Claude reports aliases by their target
+        // (`/cost` runs as `usage`), and some outputs do not name a command.
+        let command = self
+            .last_command
+            .clone()
+            .or_else(|| v.pointer("/local_command_run/command").and_then(Value::as_str).map(String::from));
+        let mut item = Item::new(&self.session_id, self.turn_id(), ItemKind::System)
+            .with_text(text)
+            .with_data(json!({ "command": command }));
+        item.title = Some(command.map(|c| format!("/{c}")).unwrap_or_else(|| "Command output".into()));
+        out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
+        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+    }
+
+    /// `/clear`: Claude starts a new conversation. The transcript keeps the
+    /// old items, so mark where the agent's context now begins.
+    fn handle_conversation_reset(&mut self, out: &mut Vec<Event>) {
+        let item = Item::new(&self.session_id, self.turn_id(), ItemKind::System)
+            .with_title("Context cleared")
+            .with_data(json!({ "boundary": "clear", "message": "Context cleared" }));
+        out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
+        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+    }
+
+    fn start_compacting(&mut self, out: &mut Vec<Event>) {
+        if self.compacting.is_some() {
+            return;
+        }
+        let item = Item::new(&self.session_id, self.turn_id(), ItemKind::System)
+            .with_title("Compacting context")
+            .with_data(json!({ "boundary": "compact", "message": "Compacting context" }));
+        self.compacting = Some(item.id.clone());
+        self.items.insert(item.id.clone(), item.clone());
+        out.push(Event::ItemStarted { session_id: self.sid(), item });
+    }
+
+    fn take_compacting(&mut self) -> Item {
+        self.compacting
+            .take()
+            .and_then(|id| self.items.remove(&id))
+            .unwrap_or_else(|| Item::new(&self.session_id, self.turn_id(), ItemKind::System))
+    }
+
+    fn fail_compacting(&mut self, err: &str, out: &mut Vec<Event>) {
+        let message = format!("Compaction failed: {err}");
+        let mut item = self.take_compacting();
+        item.title = Some(message.clone());
+        item.data = json!({ "boundary": "compact", "message": message });
+        self.compact_error = Some(err.trim().to_string());
+        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.failed() });
+    }
+
+    fn handle_compact_boundary(&mut self, v: &Value, out: &mut Vec<Event>) {
+        let meta = v.get("compact_metadata").cloned().unwrap_or(json!({}));
+        let trigger = meta.get("trigger").and_then(Value::as_str).unwrap_or("manual").to_string();
+        let pre = meta.get("pre_tokens").and_then(Value::as_u64);
+        let post = meta.get("post_tokens").and_then(Value::as_u64);
+        let message = if trigger == "auto" { "Context compacted automatically" } else { "Context compacted" };
+        let mut item = self.take_compacting();
+        item.title = Some(message.into());
+        item.data = json!({
+            "boundary": "compact",
+            "message": message,
+            "trigger": trigger,
+            "pre_tokens": pre,
+            "post_tokens": post,
+        });
+        self.compacted_to = post;
+        self.preserved = meta
+            .pointer("/preserved_messages/uuids")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default();
+        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+    }
+
+    fn is_preserved(&mut self, v: &Value) -> bool {
+        v.get("uuid").and_then(Value::as_str).is_some_and(|u| self.preserved.remove(u))
+    }
+
+    /// Session usage after a local command. Its own result reports zeros, so
+    /// keep the last model turn's numbers and adjust the context for commands
+    /// that change it. None leaves the session's usage as it is.
+    fn usage_after_local_command(&mut self, command: &str, v: &Value) -> Option<Usage> {
+        let cost = v.get("total_cost_usd").and_then(Value::as_f64);
+        match command {
+            "clear" => {
+                self.last_usage = None;
+                self.compacted_to = None;
+                Some(Usage { total_cost_usd: cost, ..usage_from_result(v, self.model.as_deref()) })
+            }
+            _ => {
+                let mut usage = self.last_usage.clone()?;
+                usage.total_cost_usd = cost.or(usage.total_cost_usd);
+                if command == "compact" {
+                    if let Some(post) = self.compacted_to.take() {
+                        usage.context_used = Some(post);
+                    }
+                }
+                self.last_usage = Some(usage.clone());
+                Some(usage)
             }
         }
     }
@@ -907,6 +1064,12 @@ fn approval_payload(tool_name: &str, input: &Value) -> (ApprovalKind, Value) {
         "ExitPlanMode" => (ApprovalKind::Generic, json!({"plan": input.get("plan").cloned().unwrap_or(Value::Null), "input": input})),
         _ => (ApprovalKind::Tool, json!({"input": input})),
     }
+}
+
+/// `"/compact keep it short"` -> `"compact"`.
+fn slash_name(text: &str) -> Option<String> {
+    let name = text.trim_start().strip_prefix('/')?.split_whitespace().next()?;
+    (!name.is_empty() && !name.contains('/')).then(|| name.to_string())
 }
 
 fn content_to_text(content: Option<&Value>) -> String {

@@ -153,8 +153,11 @@ mod tests {
         // Text deltas were streamed for it before completion.
         assert!(events.iter().any(|e| matches!(e, Event::ItemDelta { item_id, delta: ItemDelta::Text { .. }, .. } if item_id == &done.id)));
 
-        // Synthetic /model response arrives without stream events and is still an item.
-        assert!(completed.iter().any(|i| i.kind == ItemKind::AgentMessage && i.text.starts_with("Current model:")));
+        // Synthetic /model response arrives without stream events and shows as the command's output.
+        let model = completed.iter().find(|i| i.text.starts_with("Current model:")).expect("/model output");
+        assert_eq!(model.kind, ItemKind::System);
+        assert_eq!(model.data["command"], "model");
+        assert_eq!(model.title.as_deref(), Some("/model"));
 
         // User messages: 4 sent, none duplicated by the replay echo.
         let users = completed.iter().filter(|i| i.kind == ItemKind::UserMessage).count();
@@ -230,6 +233,182 @@ mod tests {
         for t in ["hello /effort low", "/effort", "/compact keep the summary short"] {
             assert!(!p.start_turn(t).iter().any(|e| matches!(e, Event::SettingChanged { .. })), "{t}");
         }
+    }
+
+    fn items_completed(events: &[Event]) -> Vec<Item> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::ItemCompleted { item, .. } => Some(item.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn zero_result(local_command: &str, session_id: &str) -> Value {
+        serde_json::json!({
+            "type": "result", "subtype": "success", "is_error": false, "session_id": session_id,
+            "total_cost_usd": 0.03, "num_turns": 0, "result": "", "local_command": local_command,
+            "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "iterations": []},
+            "modelUsage": {}
+        })
+    }
+
+    fn model_result() -> Value {
+        serde_json::json!({
+            "type": "result", "subtype": "success", "is_error": false, "session_id": "n1", "total_cost_usd": 0.02,
+            "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 0,
+                      "iterations": [{"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 25000, "cache_creation_input_tokens": 0}]},
+            "modelUsage": {"claude-haiku-4-5": {"contextWindow": 200000}}
+        })
+    }
+
+    fn usage_of(events: &[Event]) -> Option<Usage> {
+        events.iter().find_map(|e| match e {
+            Event::Usage { usage, .. } => Some(usage.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn local_command_output_is_not_an_agent_reply() {
+        let mut p = Parser::new("s");
+        p.start_turn("/cost");
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "assistant", "parent_tool_use_id": null,
+            "message": {"id": "m1", "model": "<synthetic>", "role": "assistant", "content": [{"type": "text", "text": "Total cost: $0.03"}]},
+            "local_command_source": "<local-command-stdout>Total cost: $0.03</local-command-stdout>",
+            "local_command_run": {"command": "cost", "args": ""}
+        }));
+        let items = items_completed(&ev);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ItemKind::System);
+        assert_eq!(items[0].text, "Total cost: $0.03");
+        assert_eq!(items[0].data["command"], "cost");
+
+        // Commands unavailable in -p mode reply without `local_command_run`;
+        // the name comes from what we sent.
+        p.start_turn("/status");
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "assistant",
+            "message": {"id": "m2", "model": "<synthetic>", "content": [{"type": "text", "text": "/status isn't available in this environment."}]},
+            "local_command_source": "<local-command-stdout>/status isn't available in this environment.</local-command-stdout>"
+        }));
+        assert_eq!(items_completed(&ev)[0].data["command"], "status");
+
+        // Aliases are labelled as typed, not by the command Claude ran.
+        p.start_turn("/cost");
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "assistant",
+            "message": {"id": "m3", "model": "<synthetic>", "content": [{"type": "text", "text": "Current session: 8% used"}]},
+            "local_command_source": "<local-command-stdout>Current session: 8% used</local-command-stdout>",
+            "local_command_run": {"command": "usage", "args": ""}
+        }));
+        assert_eq!(items_completed(&ev)[0].data["command"], "cost");
+    }
+
+    #[test]
+    fn clear_marks_a_context_boundary_and_resets_context_usage() {
+        let mut p = Parser::new("s");
+        p.start_turn("hi");
+        let ev = p.handle_line(&model_result());
+        assert_eq!(usage_of(&ev).unwrap().context_used, Some(25015));
+
+        p.start_turn("/clear");
+        let ev = p.handle_line(&serde_json::json!({"type": "conversation_reset", "new_conversation_id": "c2", "session_id": "n1"}));
+        let items = items_completed(&ev);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ItemKind::System);
+        assert_eq!(items[0].data["boundary"], "clear");
+        let ev = p.handle_line(&zero_result("clear", "n2"));
+        let usage = usage_of(&ev).expect("usage after clear");
+        assert_eq!(usage.context_used, None);
+        assert!(ev.iter().any(|e| matches!(e, Event::NativeId { native_id, .. } if native_id == "n2")));
+        let turn = ev.iter().find_map(|e| match e { Event::TurnCompleted { turn, .. } => Some(turn.clone()), _ => None }).unwrap();
+        assert!(turn.usage.is_none(), "local command turns carry no usage");
+    }
+
+    #[test]
+    fn other_local_commands_keep_the_last_usage() {
+        let mut p = Parser::new("s");
+        // Before any model turn there is nothing to keep, so usage is left alone.
+        p.start_turn("/cost");
+        assert!(usage_of(&p.handle_line(&zero_result("cost", "n1"))).is_none());
+
+        p.start_turn("hi");
+        p.handle_line(&model_result());
+        p.start_turn("/context");
+        let usage = usage_of(&p.handle_line(&zero_result("context", "n1"))).unwrap();
+        assert_eq!(usage.context_used, Some(25015));
+        assert_eq!(usage.context_window, Some(200000));
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.total_cost_usd, Some(0.03));
+    }
+
+    #[test]
+    fn compaction_shows_progress_then_a_boundary() {
+        let mut p = Parser::new("s");
+        p.start_turn("hi");
+        p.handle_line(&model_result());
+        p.start_turn("/compact");
+        let ev = p.handle_line(&serde_json::json!({"type": "system", "subtype": "status", "status": "compacting"}));
+        let started = ev.iter().find_map(|e| match e { Event::ItemStarted { item, .. } => Some(item.clone()), _ => None }).unwrap();
+        assert_eq!(started.status, ItemStatus::InProgress);
+        assert_eq!(started.data["boundary"], "compact");
+        assert!(p.handle_line(&serde_json::json!({"type": "system", "subtype": "status", "status": null, "compact_result": "success"})).is_empty());
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "pre_tokens": 25865, "post_tokens": 4470}
+        }));
+        let done = items_completed(&ev);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, started.id, "the progress item becomes the boundary");
+        assert_eq!(done[0].status, ItemStatus::Completed);
+        assert_eq!(done[0].data["pre_tokens"], 25865);
+        assert_eq!(done[0].data["post_tokens"], 4470);
+        let usage = usage_of(&p.handle_line(&zero_result("compact", "n1"))).unwrap();
+        assert_eq!(usage.context_used, Some(4470));
+
+        // Messages the compaction kept are emitted again; they are already shown.
+        let kept = serde_json::json!({
+            "type": "assistant", "uuid": "kept-1",
+            "message": {"id": "m9", "model": "<synthetic>", "content": [{"type": "text", "text": "Usage: /effort <low|medium>"}]},
+            "local_command_source": "<local-command-stdout>Usage: /effort <low|medium></local-command-stdout>",
+            "local_command_run": {"command": "effort", "args": ""}
+        });
+        p.handle_line(&serde_json::json!({
+            "type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "post_tokens": 4000, "preserved_messages": {"uuids": ["kept-1"]}}
+        }));
+        assert!(p.handle_line(&kept).is_empty());
+        // Only once: a later message with that uuid is not swallowed.
+        assert!(!items_completed(&p.handle_line(&kept)).is_empty());
+
+        // Auto compaction mid-turn has no progress status first.
+        let ev = p.handle_line(&serde_json::json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "auto"}}));
+        assert_eq!(items_completed(&ev)[0].data["message"], "Context compacted automatically");
+    }
+
+    #[test]
+    fn failed_compaction_is_shown_once() {
+        let mut p = Parser::new("s");
+        p.start_turn("/compact");
+        p.handle_line(&serde_json::json!({"type": "system", "subtype": "status", "status": "compacting"}));
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "system", "subtype": "status", "status": null,
+            "compact_result": "failed", "compact_error": "Not enough messages to compact."
+        }));
+        let done = items_completed(&ev);
+        assert_eq!(done[0].status, ItemStatus::Failed);
+        assert_eq!(done[0].data["message"], "Compaction failed: Not enough messages to compact.");
+        // Claude repeats the error as command output; drop the duplicate.
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "assistant",
+            "message": {"id": "m", "model": "<synthetic>", "content": [{"type": "text", "text": "Not enough messages to compact."}]},
+            "local_command_source": "<local-command-stdout>Not enough messages to compact.</local-command-stdout>",
+            "local_command_run": {"command": "compact", "args": ""}
+        }));
+        assert!(items_completed(&ev).is_empty());
     }
 
     #[test]

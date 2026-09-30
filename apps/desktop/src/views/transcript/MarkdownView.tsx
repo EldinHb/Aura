@@ -59,6 +59,21 @@ function BlockNode({ b }: { b: Block }) {
       );
     case "para":
       return <p className="md-p"><InlineNodes nodes={b.v} /></p>;
+    case "table":
+      return (
+        <div className="md-table-wrap">
+          <table className="md-table">
+            <thead>
+              <tr>{b.head.map((c, i) => <th key={i} style={{ textAlign: b.align[i] ?? undefined }}><InlineNodes nodes={c} /></th>)}</tr>
+            </thead>
+            <tbody>
+              {b.rows.map((r, ri) => (
+                <tr key={ri}>{r.map((c, i) => <td key={i} style={{ textAlign: b.align[i] ?? undefined }}><InlineNodes nodes={c} /></td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
     case "hr":
       return <hr className="md-hr" />;
   }

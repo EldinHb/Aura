@@ -1,7 +1,7 @@
 /**
  * Markdown-lite parser producing a safe block tree (no HTML passthrough).
- * Supports fenced code blocks, headings, bullet/numbered lists, paragraphs,
- * and inline `code`, **bold**, *italic*, and [text](url) links.
+ * Supports fenced code blocks, headings, bullet/numbered lists, tables,
+ * paragraphs, and inline `code`, **bold**, *italic*, and [text](url) links.
  */
 export type Inline =
   | { t: "text"; v: string }
@@ -14,8 +14,27 @@ export type Block =
   | { t: "code"; lang: string; v: string }
   | { t: "heading"; level: number; v: Inline[] }
   | { t: "list"; ordered: boolean; items: Inline[][] }
+  | { t: "table"; align: TableAlign[]; head: Inline[][]; rows: Inline[][][] }
   | { t: "para"; v: Inline[] }
   | { t: "hr" };
+
+export type TableAlign = "left" | "center" | "right" | null;
+
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/** `| a | b \| c |` -> ["a", "b | c"]. */
+function tableCells(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  return s.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+}
+
+function tableAlign(cell: string): TableAlign {
+  const left = cell.startsWith(":");
+  const right = cell.endsWith(":");
+  return left && right ? "center" : right ? "right" : left ? "left" : null;
+}
 
 export function parseInline(src: string): Inline[] {
   const out: Inline[] = [];
@@ -95,6 +114,21 @@ export function parseMarkdown(src: string): Block[] {
       i++; // closing fence (or EOF)
       blocks.push({ t: "code", lang, v: body.join("\n") });
       continue;
+    }
+    if (line.includes("|") && i + 1 < lines.length && lines[i + 1].includes("|") && TABLE_DELIMITER.test(lines[i + 1])) {
+      const head = tableCells(line);
+      const align = tableCells(lines[i + 1]).map(tableAlign);
+      if (align.length === head.length) {
+        flushPara();
+        i += 2;
+        const rows: Inline[][][] = [];
+        while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+          const cells = tableCells(lines[i++]);
+          rows.push(head.map((_, c) => parseInline(cells[c] ?? "")));
+        }
+        blocks.push({ t: "table", align, head: head.map((c) => parseInline(c)), rows });
+        continue;
+      }
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) {

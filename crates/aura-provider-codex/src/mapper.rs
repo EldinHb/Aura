@@ -718,7 +718,7 @@ impl ThreadMapper {
             }
             "contextCompaction" => {
                 it.title = Some("Context compacted".into());
-                it.data = json!({ "message": "Context compacted" });
+                it.data = json!({ "boundary": "compact", "message": "Context compacted" });
                 it.status = ItemStatus::Completed;
             }
             "enteredReviewMode" | "exitedReviewMode" => {

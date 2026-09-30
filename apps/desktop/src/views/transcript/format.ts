@@ -133,3 +133,45 @@ export function relTime(iso: string): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
+
+export type ContextBoundary = { kind: "clear" | "compact"; title: string; detail: string | null };
+
+/** A clear or compaction marker: the agent's context starts over at this item. */
+export function contextBoundary(item: Item): ContextBoundary | null {
+  if (item.kind !== "system") return null;
+  const d = item.data as Record<string, unknown>;
+  if (d.boundary === "clear") {
+    return { kind: "clear", title: "Context cleared", detail: "The agent no longer sees anything above this line" };
+  }
+  if (d.boundary !== "compact") return null;
+  if (item.status === "in_progress") return { kind: "compact", title: "Compacting context…", detail: null };
+  if (item.status === "failed") return { kind: "compact", title: String(d.message ?? "Compaction failed"), detail: "Context unchanged" };
+  const pre = typeof d.pre_tokens === "number" ? d.pre_tokens : null;
+  const post = typeof d.post_tokens === "number" ? d.post_tokens : null;
+  const tokens = pre !== null && post !== null ? ` (${fmtTokens(pre)} → ${fmtTokens(post)} tokens)` : "";
+  return {
+    kind: "compact",
+    title: String(d.message ?? "Context compacted"),
+    detail: `The agent sees a summary of everything above this line${tokens}`,
+  };
+}
+
+/** Index of the last item that replaced the agent's context, or -1. */
+export function lastBoundaryIndex(items: Item[]): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].status === "completed" && contextBoundary(items[i])) return i;
+  }
+  return -1;
+}
+
+/** Output of a slash command the CLI ran itself; `name` is null when unknown. */
+export function commandOutput(item: Item): { name: string | null } | null {
+  const d = item.data as Record<string, unknown>;
+  if (item.kind !== "system" || !("command" in d)) return null;
+  return { name: typeof d.command === "string" && d.command ? d.command : null };
+}
+
+/** `/compact keep it short` is a slash command; `/src/a.ts is broken` is not. */
+export function isSlashCommand(text: string): boolean {
+  return /^\/[\w:.-]+(\s|$)/.test(text.trimStart());
+}

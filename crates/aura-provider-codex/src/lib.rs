@@ -714,6 +714,14 @@ mod tests {
         assert_eq!(it.data["raw"]["foo"], 1);
     }
 
+    #[test]
+    fn context_compaction_is_a_boundary() {
+        let mapper = ThreadMapper::new("sess", "t");
+        let it = mapper.map_item(&json!({ "type": "contextCompaction", "id": "c" }), None);
+        assert_eq!(it.kind, ItemKind::System);
+        assert_eq!(it.data["boundary"], "compact");
+    }
+
     fn live() -> bool {
         std::env::var("AURA_LIVE_TESTS").is_ok()
     }

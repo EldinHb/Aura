@@ -11,6 +11,11 @@ describe("slash commands", () => {
     expect(entries.find((e) => e.name === "model")?.source).toBe("cli");
     expect(entries.some((e) => e.name === "compact")).toBe(true);
   });
+  it("keeps builtin descriptions for provider commands that have none", () => {
+    const merged = mergeSlashCommands("claude", [{ name: "clear", description: null, source: null }]);
+    expect(merged.find((e) => e.name === "clear")?.description).toMatch(/empty context/);
+    expect(merged.find((e) => e.name === "clear")?.source).toBe("provider");
+  });
   it("filters fuzzily and ranks name matches first", () => {
     const r = filterSlashCommands(entries, "mod");
     expect(r[0].name).toBe("model");

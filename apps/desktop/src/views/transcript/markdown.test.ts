@@ -41,6 +41,25 @@ describe("parseMarkdown", () => {
   it("handles an unterminated fence", () => {
     expect(parseMarkdown("```\nabc")).toEqual([{ t: "code", lang: "", v: "abc" }]);
   });
+  it("parses tables with alignment, escaped pipes and short rows", () => {
+    const blocks = parseMarkdown("intro\n| Category | Tokens |\n|:---|---:|\n| System `prompt` | 3.9k |\n| a \\| b |\n\nafter");
+    expect(blocks).toEqual([
+      { t: "para", v: [{ t: "text", v: "intro" }] },
+      {
+        t: "table",
+        align: ["left", "right"],
+        head: [[{ t: "text", v: "Category" }], [{ t: "text", v: "Tokens" }]],
+        rows: [
+          [[{ t: "text", v: "System " }, { t: "code", v: "prompt" }], [{ t: "text", v: "3.9k" }]],
+          [[{ t: "text", v: "a | b" }], []],
+        ],
+      },
+      { t: "para", v: [{ t: "text", v: "after" }] },
+    ]);
+  });
+  it("does not treat a pipe line above a rule as a table", () => {
+    expect(parseMarkdown("a | b\n---").map((b) => b.t)).toEqual(["para", "hr"]);
+  });
   it("keeps line breaks inside a paragraph", () => {
     expect(parseMarkdown("a\nb")).toEqual([{ t: "para", v: [{ t: "text", v: "a\nb" }] }]);
   });
