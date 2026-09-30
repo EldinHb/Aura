@@ -1,7 +1,7 @@
 import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
-import { useEffect, useMemo, useRef } from "react";
-import { useStore, selectVisibleSessions } from "../state/store";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useStore, selectVisibleSessions, canReorder } from "../state/store";
 import type { Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
 import { registerCommands } from "../lib/commands";
@@ -61,6 +61,8 @@ export function Sidebar() {
   const listRef = useRef<HTMLDivElement>(null);
   useSidebarLinks(useMemo(() => sessions.map((s) => s.id), [sessions]));
 
+  // Visible sessions are already in section order; split them without re-sorting
+  // so the rows read top to bottom in ⌘1–9 order.
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
     for (const s of sessions) {
@@ -68,8 +70,56 @@ export function Sidebar() {
       if (!m.has(g)) m.set(g, []);
       m.get(g)!.push(s);
     }
-    return [...m.entries()].sort((a, b) => (a[0] === "" ? -1 : b[0] === "" ? 1 : a[0].localeCompare(b[0])));
+    return [...m.entries()];
   }, [sessions]);
+
+  // Drag a row onto another row of the same group to reorder.
+  const drag = useRef<{ id: string; startY: number; active: boolean } | null>(null);
+  const suppressClick = useRef(false);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; below: boolean } | null>(null);
+  useEffect(() => {
+    const targetAt = (e: PointerEvent) => {
+      const d = drag.current;
+      const id = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-session-id]")?.dataset.sessionId;
+      if (!d || !id || id === d.id) return null;
+      const list = selectVisibleSessions(useStore.getState());
+      const from = list.findIndex((s) => s.id === d.id);
+      const to = list.findIndex((s) => s.id === id);
+      return from >= 0 && to >= 0 && canReorder(list[from], list[to]) ? { id, below: to > from } : null;
+    };
+    const end = () => {
+      drag.current = null;
+      setDragging(null);
+      setDropTarget(null);
+    };
+    const onMove = (e: PointerEvent) => {
+      const d = drag.current;
+      if (!d || (!d.active && Math.abs(e.clientY - d.startY) < 5)) return;
+      d.active = true;
+      setDragging(d.id);
+      setDropTarget(targetAt(e));
+    };
+    const onUp = (e: PointerEvent) => {
+      const d = drag.current;
+      if (d?.active) {
+        const target = targetAt(e);
+        if (target) useStore.getState().moveSessionTo(d.id, target.id);
+        // The click that follows a drag must not select the row.
+        suppressClick.current = true;
+        setTimeout(() => (suppressClick.current = false));
+      }
+      end();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", end);
+    };
+  }, []);
 
   // navigation commands scoped to the sidebar
   useEffect(() => {
@@ -121,7 +171,7 @@ export function Sidebar() {
           +
         </button>
       </div>
-      <div className="session-list" ref={listRef}>
+      <div className={clsx("session-list", dragging && "dragging")} ref={listRef}>
         {sessions.length === 0 && (
           <div className="empty" style={{ height: "auto", padding: 20 }}>
             <span>No sessions{filter ? " match" : ""}.</span>
@@ -136,11 +186,22 @@ export function Sidebar() {
               return (
                 <div
                   key={s.id}
-                  className={clsx("session-row", s.id === selectedId && "selected", s.id === cursor && cursor !== selectedId && "cursor", s.archived && "archived")}
+                  className={clsx(
+                    "session-row",
+                    s.id === selectedId && "selected",
+                    s.id === cursor && cursor !== selectedId && "cursor",
+                    s.archived && "archived",
+                    s.id === dragging && "drag-source",
+                    dropTarget?.id === s.id && (dropTarget.below ? "drop-below" : "drop-above"),
+                  )}
                   data-session-id={s.id}
                   data-hint
                   data-command="session.select"
+                  onPointerDown={(e) => {
+                    if (e.button === 0) drag.current = { id: s.id, startY: e.clientY, active: false };
+                  }}
                   onClick={() => {
+                    if (suppressClick.current) return;
                     select(s.id);
                     setFocus("main");
                   }}

@@ -104,6 +104,10 @@ export type AppState = {
   setSessions: (s: Session[]) => void;
   upsertSession: (s: Session) => void;
   removeSession: (id: string) => void;
+  /** Move a session next to `targetId` in the sidebar, if both share a group and pin state. */
+  moveSessionTo: (id: string, targetId: string) => void;
+  /** Move a session one row up (-1) or down (1) within its group. */
+  moveSessionBy: (id: string, delta: -1 | 1) => void;
   select: (id: string | null) => void;
   applyEvent: (ev: Event) => void;
   loadHistory: (id: string, events: StoredEvent[]) => void;
@@ -268,6 +272,8 @@ function applyToTranscript(t: Transcript, ev: Event): Transcript {
   }
 }
 
+const ORDER_KEY = "aura.session-order.v1";
+
 export const useStore = create<AppState>((set, get) => ({
   client: null,
   connection: "closed",
@@ -275,7 +281,7 @@ export const useStore = create<AppState>((set, get) => ({
   daemonVersion: null,
   providers: [],
   sessions: {},
-  sessionOrder: [],
+  sessionOrder: loadOrder(),
   selectedId: null,
   prSelection: null,
   reviewHistoryOpen: false,
@@ -301,11 +307,12 @@ export const useStore = create<AppState>((set, get) => ({
   setSessions: (list) => {
     const sessions: Record<string, Session> = {};
     for (const s of list) sessions[s.id] = s;
-    set({ sessions, sessionOrder: sortSessions(list) });
+    set({ sessions, sessionOrder: saveOrder(mergeOrder(get().sessionOrder, list)) });
   },
   upsertSession: (s) => {
     const sessions = { ...get().sessions, [s.id]: s };
-    set({ sessions, sessionOrder: sortSessions(Object.values(sessions)) });
+    const order = get().sessionOrder;
+    set(order.includes(s.id) ? { sessions } : { sessions, sessionOrder: saveOrder([...order, s.id]) });
   },
   removeSession: (id) => {
     const { [id]: _gone, ...sessions } = get().sessions;
@@ -313,7 +320,23 @@ export const useStore = create<AppState>((set, get) => ({
     const { [id]: _t, ...transcripts } = get().transcripts;
     void _t;
     const selectedId = get().selectedId === id ? null : get().selectedId;
-    set({ sessions, transcripts, selectedId, sessionOrder: sortSessions(Object.values(sessions)) });
+    set({ sessions, transcripts, selectedId, sessionOrder: saveOrder(get().sessionOrder.filter((o) => o !== id)) });
+  },
+  moveSessionTo: (id, targetId) => {
+    const st = get();
+    const list = selectVisibleSessions(st);
+    const from = list.findIndex((s) => s.id === id);
+    const to = list.findIndex((s) => s.id === targetId);
+    if (from < 0 || to < 0 || from === to || !canReorder(list[from], list[to])) return;
+    const order = st.sessionOrder.filter((o) => o !== id);
+    // Moving up lands above the target, moving down lands below it.
+    order.splice(order.indexOf(targetId) + (to > from ? 1 : 0), 0, id);
+    set({ sessionOrder: saveOrder(order) });
+  },
+  moveSessionBy: (id, delta) => {
+    const list = selectVisibleSessions(get());
+    const target = list[list.findIndex((s) => s.id === id) + delta];
+    if (target) get().moveSessionTo(id, target.id);
   },
   select: (id) => set({ prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id }),
   ensureTranscript: (id) => {
@@ -382,13 +405,51 @@ export const useStore = create<AppState>((set, get) => ({
   },
 }));
 
-export function sortSessions(list: Session[]): string[] {
-  return [...list]
-    .sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      return b.last_activity.localeCompare(a.last_activity);
-    })
+/**
+ * Keeps the saved order and appends sessions it has not seen yet, oldest
+ * first, so a new session never pushes existing ones (and their ⌘-numbers) down.
+ */
+export function mergeOrder(order: string[], list: Session[]): string[] {
+  const ids = new Set(list.map((s) => s.id));
+  const kept = order.filter((id) => ids.has(id));
+  const known = new Set(kept);
+  const added = list
+    .filter((s) => !known.has(s.id))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
     .map((s) => s.id);
+  return [...kept, ...added];
+}
+
+/** Sessions can only be reordered among their own group, and pinned among pinned. */
+export function canReorder(a: Session, b: Session): boolean {
+  return (a.group ?? "") === (b.group ?? "") && a.pinned === b.pinned;
+}
+
+function loadOrder(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(ORDER_KEY) ?? "[]");
+    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveOrder(order: string[]): string[] {
+  try {
+    localStorage.setItem(ORDER_KEY, JSON.stringify(order));
+  } catch {
+    /* ignore */
+  }
+  return order;
+}
+
+// Another window reordered the sessions; follow it.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== ORDER_KEY) return;
+    const st = useStore.getState();
+    useStore.setState({ sessionOrder: mergeOrder(loadOrder(), Object.values(st.sessions)) });
+  });
 }
 
 const SETTINGS_KEY = "aura.settings.v1";
@@ -413,13 +474,30 @@ function saveSettings(s: UiSettings) {
 
 // ---- selectors --------------------------------------------------------------
 
-export function selectVisibleSessions(st: AppState): Session[] {
+/**
+ * The sidebar's sections, top to bottom: ungrouped sessions first, then each
+ * group in the order its first session appears. Within a section, pinned
+ * sessions come first, then the saved order.
+ */
+export function selectSessionSections(st: AppState): [string, Session[]][] {
   const q = st.sidebarFilter.trim().toLowerCase();
-  return st.sessionOrder
-    .map((id) => st.sessions[id])
-    .filter((s): s is Session => !!s)
-    .filter((s) => st.showArchived || !s.archived)
-    .filter((s) => !q || s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q) || (s.group ?? "").toLowerCase().includes(q));
+  const sections = new Map<string, Session[]>([["", []]]);
+  for (const id of st.sessionOrder) {
+    const s = st.sessions[id];
+    if (!s || (!st.showArchived && s.archived)) continue;
+    if (q && !s.title.toLowerCase().includes(q) && !s.cwd.toLowerCase().includes(q) && !(s.group ?? "").toLowerCase().includes(q)) continue;
+    const g = s.group ?? "";
+    if (!sections.has(g)) sections.set(g, []);
+    sections.get(g)!.push(s);
+  }
+  return [...sections]
+    .filter(([, list]) => list.length > 0)
+    .map(([g, list]) => [g, [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)]]);
+}
+
+/** Visible sessions in the order the sidebar shows them; ⌘1–9 index into this. */
+export function selectVisibleSessions(st: AppState): Session[] {
+  return selectSessionSections(st).flatMap(([, list]) => list);
 }
 
 export function selectPendingCount(st: AppState): number {

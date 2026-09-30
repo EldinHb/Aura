@@ -3,7 +3,7 @@ import { registerReviewCommands } from "./features/reviews/state";
 import { registerWatchCommands, useWatchSync } from "./features/watches/state";
 import "./features/reviews/reviews.css";
 import { useEffect } from "react";
-import { useStore, selectSelected } from "./state/store";
+import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
 import { useDetectedLinksSync } from "./state/sessionLinkPreferences";
 import { connectDaemon, isTauri } from "./lib/connection";
 import { useKeyboard } from "./hooks/useKeyboard";
@@ -76,7 +76,7 @@ export default function App() {
           st().setSessions(sessions);
           useStore.setState({ daemonVersion: info.version });
           if (initialSession && sessions.some((s) => s.id === initialSession)) st().select(initialSession);
-          else if (!st().selectedId && !st().prSelection && !st().reviewHistoryOpen && sessions.length > 0 && windowMode !== "session") st().select(st().sessionOrder[0]);
+          else if (!st().selectedId && !st().prSelection && !st().reviewHistoryOpen && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
         };
         await refresh();
         offEvent = client.onEvent((ev: Event) => {

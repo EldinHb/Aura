@@ -1,0 +1,59 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import type { Session } from "../gen";
+import { selectVisibleSessions, useStore } from "./store";
+
+function session(id: string, patch: Partial<Session> = {}): Session {
+  return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false, pending_count: 0,
+    created_at: `2026-09-30T00:00:${String(id.charCodeAt(0) - 90).padStart(2, "0")}Z`, last_activity: "2026-09-30T00:00:00Z", group: null, worktree: null, model: null, ...patch } as Session;
+}
+const visible = () => selectVisibleSessions(useStore.getState()).map((s) => s.id);
+
+const values = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => values.set(k, v), removeItem: (k: string) => values.delete(k), clear: () => values.clear() } });
+
+beforeEach(() => {
+  localStorage.clear();
+  useStore.setState({ sessions: {}, sessionOrder: [], sidebarFilter: "", showArchived: false });
+});
+
+describe("session order", () => {
+  it("starts oldest first and appends new sessions instead of pushing others down", () => {
+    useStore.getState().setSessions([session("b"), session("a")]);
+    expect(visible()).toEqual(["a", "b"]);
+    useStore.getState().upsertSession(session("c"));
+    expect(visible()).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not reorder on activity", () => {
+    useStore.getState().setSessions([session("a"), session("b")]);
+    useStore.getState().upsertSession(session("b", { last_activity: "2026-10-01T00:00:00Z", status: "running" }));
+    expect(visible()).toEqual(["a", "b"]);
+  });
+
+  it("keeps the saved order across a reload and drops removed sessions", () => {
+    useStore.getState().setSessions([session("a"), session("b"), session("c")]);
+    useStore.getState().moveSessionTo("c", "a");
+    expect(visible()).toEqual(["c", "a", "b"]);
+    useStore.setState({ sessionOrder: JSON.parse(localStorage.getItem("aura.session-order.v1")!) });
+    useStore.getState().setSessions([session("a"), session("c")]);
+    expect(visible()).toEqual(["c", "a"]);
+  });
+
+  it("moves up and down only within the same group", () => {
+    useStore.getState().setSessions([session("a"), session("b", { group: "x" }), session("c", { group: "x" }), session("d")]);
+    // Ungrouped first, then groups; the displayed order is the ⌘-number order.
+    expect(visible()).toEqual(["a", "d", "b", "c"]);
+    useStore.getState().moveSessionBy("b", -1);
+    expect(visible()).toEqual(["a", "d", "b", "c"]);
+    useStore.getState().moveSessionTo("a", "b");
+    expect(visible()).toEqual(["a", "d", "b", "c"]);
+    useStore.getState().moveSessionBy("c", -1);
+    useStore.getState().moveSessionBy("a", 1);
+    expect(visible()).toEqual(["d", "a", "c", "b"]);
+  });
+
+  it("puts a new group below the existing ones", () => {
+    useStore.getState().setSessions([session("a", { group: "z" }), session("b", { group: "a" })]);
+    expect(visible()).toEqual(["a", "b"]);
+  });
+});

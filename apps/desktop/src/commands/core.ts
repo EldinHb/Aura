@@ -155,6 +155,8 @@ export const coreCommands: Command[] = [
       if (list[idx]) st().select(list[idx].id);
     },
   },
+  { id: "session.move-up", title: "Move session up", group: "Session", when: "hasSelection", run: () => st().moveSessionBy(selected().id, -1) },
+  { id: "session.move-down", title: "Move session down", group: "Session", when: "hasSelection", run: () => st().moveSessionBy(selected().id, 1) },
   { id: "session.clear-notices", title: "Clear warnings in this session", group: "Session", when: "hasSelection", run: async () => { await client().clearNotices(selected().id); } },
   { id: "session.clear-all-notices", title: "Clear warnings in all sessions", group: "Session", run: async () => { await client().clearNotices(); st().toast("Cleared warnings in all sessions"); } },
   { id: "session.fork", title: "Fork session", group: "Session", when: "hasSelection", run: async () => { const s = await client().fork(selected().id); st().select(s.id); } },

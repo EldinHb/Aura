@@ -30,6 +30,8 @@ export const defaultBindings: Binding[] = [
   { keys: "mod+7", command: "session.select-nth", arg: 7 },
   { keys: "mod+8", command: "session.select-nth", arg: 8 },
   { keys: "mod+9", command: "session.select-nth", arg: 9 },
+  { keys: "mod+alt+up", command: "session.move-up" },
+  { keys: "mod+alt+down", command: "session.move-down" },
   { keys: "mod+y", command: "approval.accept-oldest" },
   { keys: "mod+shift+y", command: "approval.decline-oldest" },
   { keys: "mod+shift+c", command: "session.interrupt" },
