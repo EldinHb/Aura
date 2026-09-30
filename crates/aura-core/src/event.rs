@@ -32,19 +32,59 @@ pub enum ItemDelta {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum Event {
-    SessionCreated { session: Session },
-    SessionUpdated { session: Session },
-    SessionRemoved { session_id: SessionId },
-    TurnStarted { session_id: SessionId, turn: Turn },
-    TurnCompleted { session_id: SessionId, turn: Turn },
-    ItemStarted { session_id: SessionId, item: Item },
-    ItemDelta { session_id: SessionId, item_id: String, delta: ItemDelta },
-    ItemCompleted { session_id: SessionId, item: Item },
-    ApprovalRequested { session_id: SessionId, approval: Approval },
-    ApprovalResolved { session_id: SessionId, approval_id: String, decision: ApprovalDecision },
-    UserInputRequested { session_id: SessionId, request: UserInputRequest },
-    UserInputResolved { session_id: SessionId, request_id: String, response: UserInputResponse },
-    Notice { session_id: SessionId, level: NoticeLevel, message: String },
+    SessionCreated {
+        session: Session,
+    },
+    SessionUpdated {
+        session: Session,
+    },
+    SessionRemoved {
+        session_id: SessionId,
+    },
+    TurnStarted {
+        session_id: SessionId,
+        turn: Turn,
+    },
+    TurnCompleted {
+        session_id: SessionId,
+        turn: Turn,
+    },
+    ItemStarted {
+        session_id: SessionId,
+        item: Item,
+    },
+    ItemDelta {
+        session_id: SessionId,
+        item_id: String,
+        delta: ItemDelta,
+    },
+    ItemCompleted {
+        session_id: SessionId,
+        item: Item,
+    },
+    ApprovalRequested {
+        session_id: SessionId,
+        approval: Approval,
+    },
+    ApprovalResolved {
+        session_id: SessionId,
+        approval_id: String,
+        decision: ApprovalDecision,
+    },
+    UserInputRequested {
+        session_id: SessionId,
+        request: UserInputRequest,
+    },
+    UserInputResolved {
+        session_id: SessionId,
+        request_id: String,
+        response: UserInputResponse,
+    },
+    Notice {
+        session_id: SessionId,
+        level: NoticeLevel,
+        message: String,
+    },
     /// Provider specific metadata (e.g. Claude `system/init`, Codex thread info).
     ProviderInfo {
         session_id: SessionId,
@@ -52,16 +92,31 @@ pub enum Event {
         info: serde_json::Value,
     },
     /// Native session id became known or changed (e.g. after fork).
-    NativeId { session_id: SessionId, native_id: String },
+    NativeId {
+        session_id: SessionId,
+        native_id: String,
+    },
     /// Usage changed (tokens, cost, context).
-    Usage { session_id: SessionId, usage: Usage },
+    Usage {
+        session_id: SessionId,
+        usage: Usage,
+    },
     /// The structured driver or PTY process exited.
-    ProcessExited { session_id: SessionId, exit_code: Option<i32>, message: Option<String> },
+    ProcessExited {
+        session_id: SessionId,
+        exit_code: Option<i32>,
+        message: Option<String>,
+    },
     /// Settings acknowledged by the provider.
-    SettingChanged { session_id: SessionId, setting: Setting },
+    SettingChanged {
+        session_id: SessionId,
+        setting: Setting,
+    },
     /// The user dismissed the session's notices. Stored in the history like
     /// any other event, so a replay drops the notices that came before it.
-    NoticesCleared { session_id: SessionId },
+    NoticesCleared {
+        session_id: SessionId,
+    },
 }
 
 impl Event {

@@ -26,18 +26,28 @@ pub struct StoredEvent {
 pub trait Store: Send + Sync {
     /// Namespaced persistent feature documents. Default implementation supports in-memory stores.
     fn feature_records(&self, namespace: &str) -> Result<Vec<(String, String)>> {
-        Ok(serde_json::from_str(&self.get_setting(&format!("feature:{namespace}"))?.unwrap_or_else(|| "[]".into()))?)
+        Ok(serde_json::from_str(
+            &self
+                .get_setting(&format!("feature:{namespace}"))?
+                .unwrap_or_else(|| "[]".into()),
+        )?)
     }
     fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> Result<()> {
         let mut records = self.feature_records(namespace)?;
         records.retain(|(key, _)| key != id);
         records.push((id.into(), value.into()));
-        self.set_setting(&format!("feature:{namespace}"), &serde_json::to_string(&records)?)
+        self.set_setting(
+            &format!("feature:{namespace}"),
+            &serde_json::to_string(&records)?,
+        )
     }
     fn delete_feature_record(&self, namespace: &str, id: &str) -> Result<()> {
         let mut records = self.feature_records(namespace)?;
         records.retain(|(key, _)| key != id);
-        self.set_setting(&format!("feature:{namespace}"), &serde_json::to_string(&records)?)
+        self.set_setting(
+            &format!("feature:{namespace}"),
+            &serde_json::to_string(&records)?,
+        )
     }
     fn upsert_session(&self, session: &Session) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;
@@ -68,10 +78,26 @@ struct MemInner {
 
 impl Store for MemoryStore {
     fn feature_records(&self, namespace: &str) -> Result<Vec<(String, String)>> {
-        Ok(self.inner.lock().features.get(namespace).map(|records| records.iter().map(|(key, value)| (key.clone(), value.clone())).collect()).unwrap_or_default())
+        Ok(self
+            .inner
+            .lock()
+            .features
+            .get(namespace)
+            .map(|records| {
+                records
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
     fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> Result<()> {
-        self.inner.lock().features.entry(namespace.into()).or_default().insert(id.into(), value.into());
+        self.inner
+            .lock()
+            .features
+            .entry(namespace.into())
+            .or_default()
+            .insert(id.into(), value.into());
         Ok(())
     }
     fn delete_feature_record(&self, namespace: &str, id: &str) -> Result<()> {
@@ -81,7 +107,10 @@ impl Store for MemoryStore {
         Ok(())
     }
     fn upsert_session(&self, session: &Session) -> Result<()> {
-        self.inner.lock().sessions.insert(session.id.clone(), session.clone());
+        self.inner
+            .lock()
+            .sessions
+            .insert(session.id.clone(), session.clone());
         Ok(())
     }
     fn delete_session(&self, id: &str) -> Result<()> {
@@ -98,7 +127,11 @@ impl Store for MemoryStore {
         let mut g = self.inner.lock();
         let v = g.events.entry(session_id.to_string()).or_default();
         let seq = v.len() as u64 + 1;
-        v.push(StoredEvent { seq, ts: crate::now(), event: event.clone() });
+        v.push(StoredEvent {
+            seq,
+            ts: crate::now(),
+            event: event.clone(),
+        });
         Ok(seq)
     }
     fn events(&self, session_id: &str, after_seq: u64, limit: usize) -> Result<Vec<StoredEvent>> {
@@ -107,7 +140,13 @@ impl Store for MemoryStore {
             .lock()
             .events
             .get(session_id)
-            .map(|v| v.iter().filter(|e| e.seq > after_seq).take(limit).cloned().collect())
+            .map(|v| {
+                v.iter()
+                    .filter(|e| e.seq > after_seq)
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default())
     }
     fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
@@ -137,11 +176,17 @@ impl Store for MemoryStore {
         Ok(self.inner.lock().settings.get(key).cloned())
     }
     fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        self.inner.lock().settings.insert(key.to_string(), value.to_string());
+        self.inner
+            .lock()
+            .settings
+            .insert(key.to_string(), value.to_string());
         Ok(())
     }
     fn save_scrollback(&self, session_id: &str, data: &[u8]) -> Result<()> {
-        self.inner.lock().scrollback.insert(session_id.to_string(), data.to_vec());
+        self.inner
+            .lock()
+            .scrollback
+            .insert(session_id.to_string(), data.to_vec());
         Ok(())
     }
     fn load_scrollback(&self, session_id: &str) -> Result<Option<Vec<u8>>> {

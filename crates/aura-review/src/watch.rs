@@ -29,7 +29,11 @@ pub struct WatchService {
 }
 
 impl WatchService {
-    pub fn new(store: Arc<dyn Store>, gh: Arc<dyn Github>, events: broadcast::Sender<Value>) -> Result<Arc<Self>> {
+    pub fn new(
+        store: Arc<dyn Store>,
+        gh: Arc<dyn Github>,
+        events: broadcast::Sender<Value>,
+    ) -> Result<Arc<Self>> {
         let watches = store
             .feature_records(NAMESPACE)?
             .into_iter()
@@ -61,7 +65,9 @@ impl WatchService {
     }
 
     fn changed(&self) {
-        let _ = self.events.send(json!({"method":"watches.changed","params":{}}));
+        let _ = self
+            .events
+            .send(json!({"method":"watches.changed","params":{}}));
     }
 
     fn save(&self, watch: PrWatch) -> Result<()> {
@@ -85,7 +91,15 @@ impl WatchService {
             }
             "watches.start" => {
                 let (repo, number) = target(&p)?;
-                json!(self.start(&repo, number, logins(&p["reviewers"])?, logins(&p["request"])?).await?)
+                json!(
+                    self.start(
+                        &repo,
+                        number,
+                        logins(&p["reviewers"])?,
+                        logins(&p["request"])?
+                    )
+                    .await?
+                )
             }
             "watches.remove" => {
                 let id = p["id"].as_str().context("Missing id")?;
@@ -109,17 +123,31 @@ impl WatchService {
         let base = format!("repos/{repo}/pulls/{number}");
         let pull = self.gh.request("GET", &base, None).await?;
         let author = s(&pull["user"], "login");
-        let requested = self.gh.request("GET", &format!("{base}/requested_reviewers"), None).await?;
-        let (review_path, assignee_path) = (format!("{base}/reviews"), format!("repos/{repo}/assignees"));
-        let (reviews, assignees) = tokio::join!(pages(&*self.gh, &review_path), pages(&*self.gh, &assignee_path));
+        let requested = self
+            .gh
+            .request("GET", &format!("{base}/requested_reviewers"), None)
+            .await?;
+        let (review_path, assignee_path) =
+            (format!("{base}/reviews"), format!("repos/{repo}/assignees"));
+        let (reviews, assignees) = tokio::join!(
+            pages(&*self.gh, &review_path),
+            pages(&*self.gh, &assignee_path)
+        );
         let mut reviewed: Vec<Value> = vec![];
         for review in reviews?.iter().rev() {
             let login = s(&review["user"], "login");
             let state = s(review, "state");
-            if login.is_empty() || login.eq_ignore_ascii_case(&author) || !RESPONSES.contains(&state.as_str()) {
+            if login.is_empty()
+                || login.eq_ignore_ascii_case(&author)
+                || !RESPONSES.contains(&state.as_str())
+            {
                 continue;
             }
-            if !reviewed.iter().any(|r| r["login"].as_str().is_some_and(|l| l.eq_ignore_ascii_case(&login))) {
+            if !reviewed.iter().any(|r| {
+                r["login"]
+                    .as_str()
+                    .is_some_and(|l| l.eq_ignore_ascii_case(&login))
+            }) {
                 reviewed.push(json!({"login": login, "state": state}));
             }
         }
@@ -134,7 +162,13 @@ impl WatchService {
             Err(e) => (vec![], Some(format!("{e:#}"))),
         };
         let names = |key: &str, field: &str| -> Vec<String> {
-            requested[key].as_array().into_iter().flatten().map(|v| s(v, field)).filter(|v| !v.is_empty()).collect()
+            requested[key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|v| s(v, field))
+                .filter(|v| !v.is_empty())
+                .collect()
         };
         Ok(json!({
             "title": s(&pull, "title"),
@@ -150,7 +184,13 @@ impl WatchService {
         }))
     }
 
-    async fn start(&self, repo: &str, number: u32, reviewers: Vec<String>, request: Vec<String>) -> Result<PrWatch> {
+    async fn start(
+        &self,
+        repo: &str,
+        number: u32,
+        reviewers: Vec<String>,
+        request: Vec<String>,
+    ) -> Result<PrWatch> {
         let account = self.gh.account().await?;
         let base = format!("repos/{repo}/pulls/{number}");
         let pull = self.gh.request("GET", &base, None).await?;
@@ -161,7 +201,10 @@ impl WatchService {
         if request.iter().any(|login| login.ends_with("[bot]")) {
             bail!("Bots cannot be requested as reviewers here");
         }
-        if request.iter().any(|login| login.eq_ignore_ascii_case(&author)) {
+        if request
+            .iter()
+            .any(|login| login.eq_ignore_ascii_case(&author))
+        {
             bail!("The PR author cannot be requested as a reviewer");
         }
         // The watch begins now: reviews that already exist are history, not news. Read before
@@ -174,7 +217,12 @@ impl WatchService {
             .unwrap_or(0);
         if !request.is_empty() {
             self.gh
-                .request_for(&account, "POST", &format!("{base}/requested_reviewers"), Some(json!({"reviewers": request})))
+                .request_for(
+                    &account,
+                    "POST",
+                    &format!("{base}/requested_reviewers"),
+                    Some(json!({"reviewers": request})),
+                )
                 .await
                 .context("Request reviewers")?;
         }
@@ -213,7 +261,13 @@ impl WatchService {
     /// One pass over every active watch.
     pub async fn poll(&self) {
         let _gate = self.poll_gate.lock().await;
-        let active: Vec<PrWatch> = self.watches.lock().iter().filter(|w| w.status == "watching").cloned().collect();
+        let active: Vec<PrWatch> = self
+            .watches
+            .lock()
+            .iter()
+            .filter(|w| w.status == "watching")
+            .cloned()
+            .collect();
         if active.is_empty() {
             return;
         }
@@ -222,7 +276,12 @@ impl WatchService {
             let mut next = watch.clone();
             next.last_checked = Some(now().to_rfc3339());
             let fresh = match checked {
-                Ok(Check { title, state, seen, fresh }) => {
+                Ok(Check {
+                    title,
+                    state,
+                    seen,
+                    fresh,
+                }) => {
                     next.error = None;
                     if !title.is_empty() {
                         next.title = title;
@@ -243,7 +302,12 @@ impl WatchService {
             };
             next.updated_at = now().to_rfc3339();
             // The user may have removed or replaced the watch during the request.
-            if !self.watches.lock().iter().any(|w| w.id == watch.id && w.created_at == watch.created_at) {
+            if !self
+                .watches
+                .lock()
+                .iter()
+                .any(|w| w.id == watch.id && w.created_at == watch.created_at)
+            {
                 continue;
             }
             if let Err(e) = self.save(next.clone()) {
@@ -251,7 +315,9 @@ impl WatchService {
                 continue;
             }
             for review in fresh {
-                let _ = self.events.send(json!({"method":"watches.review","params":{"watch": next, "review": review}}));
+                let _ = self.events.send(
+                    json!({"method":"watches.review","params":{"watch": next, "review": review}}),
+                );
             }
         }
         self.changed();
@@ -269,11 +335,17 @@ async fn check(gh: &dyn Github, watch: &PrWatch) -> Result<Check> {
     let base = format!("repos/{}/pulls/{}", watch.repo, watch.number);
     let pull = gh.request("GET", &base, None).await?;
     let rows = pages(gh, &format!("{base}/reviews")).await?;
-    let me = watch.account.split_once(':').map(|(_, login)| login).unwrap_or_default();
+    let me = watch
+        .account
+        .split_once(':')
+        .map(|(_, login)| login)
+        .unwrap_or_default();
     let mut seen = watch.seen;
     let mut fresh = vec![];
     for row in &rows {
-        let Some(id) = row["id"].as_u64() else { continue };
+        let Some(id) = row["id"].as_u64() else {
+            continue;
+        };
         seen = seen.max(id);
         if id <= watch.seen {
             continue;
@@ -294,7 +366,12 @@ async fn check(gh: &dyn Github, watch: &PrWatch) -> Result<Check> {
         });
     }
     fresh.sort_by_key(|r| r.id);
-    Ok(Check { title: s(&pull, "title"), state: pull_state(&pull), seen, fresh })
+    Ok(Check {
+        title: s(&pull, "title"),
+        state: pull_state(&pull),
+        seen,
+        fresh,
+    })
 }
 
 fn watches_reviewer(watch: &PrWatch, reviewer: &str, bot: bool, me: &str) -> bool {
@@ -306,7 +383,10 @@ fn watches_reviewer(watch: &PrWatch, reviewer: &str, bot: bool, me: &str) -> boo
     if watch.reviewers.is_empty() {
         return !bot && !reviewer.eq_ignore_ascii_case(me);
     }
-    watch.reviewers.iter().any(|r| r.eq_ignore_ascii_case(reviewer))
+    watch
+        .reviewers
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(reviewer))
 }
 
 /// Done once every watched reviewer has responded, or anyone has when no
@@ -315,10 +395,12 @@ fn complete(watch: &PrWatch) -> bool {
     if watch.reviewers.is_empty() {
         return !watch.reviews.is_empty();
     }
-    watch
-        .reviewers
-        .iter()
-        .all(|login| watch.reviews.iter().any(|r| r.reviewer.eq_ignore_ascii_case(login)))
+    watch.reviewers.iter().all(|login| {
+        watch
+            .reviews
+            .iter()
+            .any(|r| r.reviewer.eq_ignore_ascii_case(login))
+    })
 }
 
 fn pull_state(pull: &Value) -> String {
@@ -345,7 +427,10 @@ fn logins(v: &Value) -> Result<Vec<String>> {
         let login = login.as_str().context("Invalid reviewer")?;
         // GitHub logins: alphanumerics and hyphens, at most 39 characters; apps add "[bot]".
         let name = login.strip_suffix("[bot]").unwrap_or(login);
-        if name.is_empty() || name.len() > 39 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if name.is_empty()
+            || name.len() > 39
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
             bail!("Invalid reviewer {login:?}");
         }
         out.push(login.to_string());
@@ -380,11 +465,19 @@ mod tests {
                 ("GET", "user") => Ok(json!({"login": "me"})),
                 ("GET", "repos/o/r/pulls/1") => {
                     let state = self.state.lock().clone();
-                    Ok(json!({"title": "PR", "html_url": "https://github.com/o/r/pull/1", "state": if state.is_empty() { "open" } else { &state }, "merged": state == "merged", "user": {"login": "me"}}))
+                    Ok(
+                        json!({"title": "PR", "html_url": "https://github.com/o/r/pull/1", "state": if state.is_empty() { "open" } else { &state }, "merged": state == "merged", "user": {"login": "me"}}),
+                    )
                 }
-                ("GET", "repos/o/r/pulls/1/requested_reviewers") => Ok(json!({"users": [{"login": "alice"}], "teams": [{"slug": "core"}]})),
-                ("GET", p) if p.starts_with("repos/o/r/pulls/1/reviews?") => Ok(json!(self.reviews.lock().clone())),
-                ("GET", p) if p.starts_with("repos/o/r/assignees?") => Ok(json!([{"login": "me"}, {"login": "alice"}, {"login": "bob"}])),
+                ("GET", "repos/o/r/pulls/1/requested_reviewers") => {
+                    Ok(json!({"users": [{"login": "alice"}], "teams": [{"slug": "core"}]}))
+                }
+                ("GET", p) if p.starts_with("repos/o/r/pulls/1/reviews?") => {
+                    Ok(json!(self.reviews.lock().clone()))
+                }
+                ("GET", p) if p.starts_with("repos/o/r/assignees?") => {
+                    Ok(json!([{"login": "me"}, {"login": "alice"}, {"login": "bob"}]))
+                }
                 ("POST", "repos/o/r/pulls/1/requested_reviewers") => {
                     self.requested.lock().push(body.unwrap());
                     Ok(json!({}))
@@ -392,19 +485,31 @@ mod tests {
                 _ => bail!("Unexpected request {method} {path}"),
             }
         }
-        async fn request_for(&self, _: &str, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        async fn request_for(
+            &self,
+            _: &str,
+            method: &str,
+            path: &str,
+            body: Option<Value>,
+        ) -> Result<Value> {
             self.request(method, path, body).await
         }
     }
     fn service(gh: Arc<Fake>) -> (Arc<WatchService>, broadcast::Receiver<Value>) {
         let (events, rx) = broadcast::channel(64);
-        (WatchService::new(Arc::new(MemoryStore::default()), gh, events).unwrap(), rx)
+        (
+            WatchService::new(Arc::new(MemoryStore::default()), gh, events).unwrap(),
+            rx,
+        )
     }
     fn reported(rx: &mut broadcast::Receiver<Value>) -> Vec<(String, String)> {
         let mut out = vec![];
         while let Ok(v) = rx.try_recv() {
             if v["method"] == "watches.review" {
-                out.push((s(&v["params"]["review"], "reviewer"), s(&v["params"]["review"], "state")));
+                out.push((
+                    s(&v["params"]["review"], "reviewer"),
+                    s(&v["params"]["review"], "state"),
+                ));
             }
         }
         out
@@ -415,38 +520,66 @@ mod tests {
         let gh = Arc::new(Fake::default());
         gh.reviews.lock().push(review(5, "alice", "APPROVED"));
         let (svc, mut rx) = service(gh.clone());
-        let watch = svc.start("o/r", 1, vec!["alice".into()], vec![]).await.unwrap();
+        let watch = svc
+            .start("o/r", 1, vec!["alice".into()], vec![])
+            .await
+            .unwrap();
         assert_eq!(watch.seen, 5);
         svc.poll().await;
-        assert!(reported(&mut rx).is_empty(), "an approval from before the watch is not news");
+        assert!(
+            reported(&mut rx).is_empty(),
+            "an approval from before the watch is not news"
+        );
 
         gh.reviews.lock().push(review(6, "bob", "COMMENTED"));
         gh.reviews.lock().push(review(7, "me", "COMMENTED"));
         gh.reviews.lock().push(review(8, "alice", "PENDING"));
         svc.poll().await;
-        assert!(reported(&mut rx).is_empty(), "unwatched reviewers, the author's replies and drafts are skipped");
+        assert!(
+            reported(&mut rx).is_empty(),
+            "unwatched reviewers, the author's replies and drafts are skipped"
+        );
 
         gh.reviews.lock().push(review(9, "Alice", "COMMENTED"));
         svc.poll().await;
-        assert_eq!(reported(&mut rx), vec![("Alice".into(), "COMMENTED".into())]);
+        assert_eq!(
+            reported(&mut rx),
+            vec![("Alice".into(), "COMMENTED".into())]
+        );
         let watch = &svc.list()[0];
         assert_eq!(watch.status, "done");
         assert_eq!(watch.seen, 9);
 
         svc.poll().await;
-        assert!(reported(&mut rx).is_empty(), "finished watches are not polled again");
+        assert!(
+            reported(&mut rx).is_empty(),
+            "finished watches are not polled again"
+        );
     }
 
     #[tokio::test]
     async fn waits_for_every_reviewer_and_requests_new_ones() {
         let gh = Arc::new(Fake::default());
         let (svc, mut rx) = service(gh.clone());
-        let watch = svc.start("o/r", 1, vec!["alice".into()], vec!["bob".into(), "alice".into()]).await.unwrap();
+        let watch = svc
+            .start(
+                "o/r",
+                1,
+                vec!["alice".into()],
+                vec!["bob".into(), "alice".into()],
+            )
+            .await
+            .unwrap();
         assert_eq!(watch_id("O/R", 1), "o/r#1");
         assert_eq!(watch.reviewers, vec!["alice", "bob"]);
-        assert_eq!(gh.requested.lock().as_slice(), &[json!({"reviewers": ["bob", "alice"]})]);
+        assert_eq!(
+            gh.requested.lock().as_slice(),
+            &[json!({"reviewers": ["bob", "alice"]})]
+        );
 
-        gh.reviews.lock().push(review(1, "alice", "CHANGES_REQUESTED"));
+        gh.reviews
+            .lock()
+            .push(review(1, "alice", "CHANGES_REQUESTED"));
         svc.poll().await;
         assert_eq!(svc.list()[0].status, "watching");
         gh.reviews.lock().push(review(2, "bob", "APPROVED"));
@@ -454,7 +587,10 @@ mod tests {
         assert_eq!(svc.list()[0].status, "done");
         assert_eq!(
             reported(&mut rx),
-            vec![("alice".into(), "CHANGES_REQUESTED".into()), ("bob".into(), "APPROVED".into())]
+            vec![
+                ("alice".into(), "CHANGES_REQUESTED".into()),
+                ("bob".into(), "APPROVED".into())
+            ]
         );
     }
 
@@ -463,14 +599,23 @@ mod tests {
         let gh = Arc::new(Fake::default());
         let (svc, mut rx) = service(gh.clone());
         svc.start("o/r", 1, vec![], vec![]).await.unwrap();
-        gh.reviews.lock().push(review(1, "copilot-pull-request-reviewer[bot]", "COMMENTED"));
+        gh.reviews
+            .lock()
+            .push(review(1, "copilot-pull-request-reviewer[bot]", "COMMENTED"));
         svc.poll().await;
-        assert_eq!(svc.list()[0].status, "watching", "an automatic bot review does not end an open-ended watch");
+        assert_eq!(
+            svc.list()[0].status,
+            "watching",
+            "an automatic bot review does not end an open-ended watch"
+        );
         *gh.state.lock() = "merged".into();
         svc.poll().await;
         assert_eq!(svc.list()[0].status, "closed");
         assert!(reported(&mut rx).is_empty());
-        assert!(svc.start("o/r", 1, vec![], vec![]).await.is_err(), "a merged PR cannot be watched");
+        assert!(
+            svc.start("o/r", 1, vec![], vec![]).await.is_err(),
+            "a merged PR cannot be watched"
+        );
     }
 
     #[tokio::test]
@@ -482,7 +627,10 @@ mod tests {
         let v = svc.candidates("o/r", 1).await.unwrap();
         assert_eq!(v["requested"], json!(["alice"]));
         assert_eq!(v["teams"], json!(["core"]));
-        assert_eq!(v["reviewed"], json!([{"login": "bob", "state": "COMMENTED"}]));
+        assert_eq!(
+            v["reviewed"],
+            json!([{"login": "bob", "state": "COMMENTED"}])
+        );
         assert_eq!(v["candidates"], json!(["alice", "bob"]));
     }
 

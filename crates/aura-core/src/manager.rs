@@ -95,7 +95,12 @@ impl Manager {
     }
 
     pub fn get_session(&self, id: &str) -> Result<Session> {
-        self.inner.sessions.lock().get(id).cloned().ok_or_else(|| anyhow!("unknown session {id}"))
+        self.inner
+            .sessions
+            .lock()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown session {id}"))
     }
 
     /// Provider info, with stale CLI detection refreshed first. The daemon
@@ -112,7 +117,11 @@ impl Manager {
     }
 
     pub fn provider(&self, kind: ProviderKind) -> Result<Arc<dyn Provider>> {
-        self.inner.providers.get(&kind).cloned().ok_or_else(|| anyhow!("provider {kind:?} not registered"))
+        self.inner
+            .providers
+            .get(&kind)
+            .cloned()
+            .ok_or_else(|| anyhow!("provider {kind:?} not registered"))
     }
 
     pub async fn list_native(&self, kind: ProviderKind) -> Result<Vec<NativeSession>> {
@@ -136,19 +145,35 @@ impl Manager {
             let mut seq = evs.last().map(|e| e.seq).unwrap_or(after_seq);
             let mut push = |event: Event| {
                 seq += 1;
-                evs.push(StoredEvent { seq, ts: now, event });
+                evs.push(StoredEvent {
+                    seq,
+                    ts: now,
+                    event,
+                });
             };
             if let Some(t) = &rt.current_turn {
-                push(Event::TurnStarted { session_id: id.into(), turn: t.clone() });
+                push(Event::TurnStarted {
+                    session_id: id.into(),
+                    turn: t.clone(),
+                });
             }
             for item in rt.live_items.values() {
-                push(Event::ItemStarted { session_id: id.into(), item: item.clone() });
+                push(Event::ItemStarted {
+                    session_id: id.into(),
+                    item: item.clone(),
+                });
             }
             for a in rt.pending_approvals.values() {
-                push(Event::ApprovalRequested { session_id: id.into(), approval: a.clone() });
+                push(Event::ApprovalRequested {
+                    session_id: id.into(),
+                    approval: a.clone(),
+                });
             }
             for r in rt.pending_inputs.values() {
-                push(Event::UserInputRequested { session_id: id.into(), request: r.clone() });
+                push(Event::UserInputRequested {
+                    session_id: id.into(),
+                    request: r.clone(),
+                });
             }
         }
         Ok(evs)
@@ -156,8 +181,14 @@ impl Manager {
 
     pub fn pending(&self) -> (Vec<Approval>, Vec<UserInputRequest>) {
         let rt = self.inner.runtimes.lock();
-        let mut a: Vec<Approval> = rt.values().flat_map(|r| r.pending_approvals.values().cloned()).collect();
-        let mut u: Vec<UserInputRequest> = rt.values().flat_map(|r| r.pending_inputs.values().cloned()).collect();
+        let mut a: Vec<Approval> = rt
+            .values()
+            .flat_map(|r| r.pending_approvals.values().cloned())
+            .collect();
+        let mut u: Vec<UserInputRequest> = rt
+            .values()
+            .flat_map(|r| r.pending_inputs.values().cloned())
+            .collect();
         a.sort_by_key(|x| x.created_at);
         u.sort_by_key(|x| x.created_at);
         (a, u)
@@ -205,7 +236,8 @@ impl Manager {
         }
         drop(sessions);
         // Sessions grouped before the registry existed: register their groups once.
-        let known: std::collections::HashSet<String> = self.list_groups()?.into_iter().map(|g| g.name).collect();
+        let known: std::collections::HashSet<String> =
+            self.list_groups()?.into_iter().map(|g| g.name).collect();
         for s in self.list_sessions() {
             if s.group.as_ref().is_some_and(|g| !known.contains(g)) {
                 self.remember_group(&s);
@@ -235,8 +267,14 @@ impl Manager {
         }
         let mut session = Session::new(&opts);
         if let Some(wt) = &opts.worktree {
-            let backend = self.inner.worktrees.clone().ok_or_else(|| anyhow!("git worktrees not available"))?;
-            let info = backend.create(&opts.cwd, wt).with_context(|| "create worktree")?;
+            let backend = self
+                .inner
+                .worktrees
+                .clone()
+                .ok_or_else(|| anyhow!("git worktrees not available"))?;
+            let info = backend
+                .create(&opts.cwd, wt)
+                .with_context(|| "create worktree")?;
             session.cwd = info.path.clone();
             session.worktree = Some(info);
             if opts.title.is_none() {
@@ -254,9 +292,17 @@ impl Manager {
             session.command = Some(argv);
         }
         self.inner.store.upsert_session(&session)?;
-        self.inner.sessions.lock().insert(session.id.clone(), session.clone());
-        self.inner.runtimes.lock().insert(session.id.clone(), Runtime::default());
-        self.broadcast(Event::SessionCreated { session: session.clone() });
+        self.inner
+            .sessions
+            .lock()
+            .insert(session.id.clone(), session.clone());
+        self.inner
+            .runtimes
+            .lock()
+            .insert(session.id.clone(), Runtime::default());
+        self.broadcast(Event::SessionCreated {
+            session: session.clone(),
+        });
         self.remember_group(&session);
 
         match session.mode {
@@ -269,7 +315,14 @@ impl Manager {
                     return Err(e);
                 }
                 if let Some(p) = opts.initial_prompt.filter(|p| !p.trim().is_empty()) {
-                    self.send(&session.id, Input { text: p, ..Default::default() }).await?;
+                    self.send(
+                        &session.id,
+                        Input {
+                            text: p,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
                 }
             }
         }
@@ -279,7 +332,10 @@ impl Manager {
     /// Fork a structured session into a new native session.
     pub async fn fork(&self, id: &str) -> Result<Session> {
         let s = self.get_session(id)?;
-        let native = s.native_id.clone().ok_or_else(|| anyhow!("session has no native id yet"))?;
+        let native = s
+            .native_id
+            .clone()
+            .ok_or_else(|| anyhow!("session has no native id yet"))?;
         if !self.provider(s.provider)?.capabilities().fork {
             bail!("provider does not support fork");
         }
@@ -329,8 +385,15 @@ impl Manager {
         }
     }
 
-    pub async fn respond_approval(&self, id: &str, approval_id: &str, decision: ApprovalDecision) -> Result<()> {
-        let driver = self.driver(id).ok_or_else(|| anyhow!("session is not running"))?;
+    pub async fn respond_approval(
+        &self,
+        id: &str,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<()> {
+        let driver = self
+            .driver(id)
+            .ok_or_else(|| anyhow!("session is not running"))?;
         let exists = self
             .inner
             .runtimes
@@ -341,13 +404,21 @@ impl Manager {
         if !exists {
             bail!("unknown approval {approval_id}");
         }
-        driver.respond_approval(approval_id, decision.clone()).await?;
-        self.publish(Event::ApprovalResolved { session_id: id.into(), approval_id: approval_id.into(), decision });
+        driver
+            .respond_approval(approval_id, decision.clone())
+            .await?;
+        self.publish(Event::ApprovalResolved {
+            session_id: id.into(),
+            approval_id: approval_id.into(),
+            decision,
+        });
         Ok(())
     }
 
     pub async fn respond_input(&self, id: &str, response: UserInputResponse) -> Result<()> {
-        let driver = self.driver(id).ok_or_else(|| anyhow!("session is not running"))?;
+        let driver = self
+            .driver(id)
+            .ok_or_else(|| anyhow!("session is not running"))?;
         let exists = self
             .inner
             .runtimes
@@ -373,11 +444,19 @@ impl Manager {
             d.set(setting.clone()).await?;
         }
         // Applied locally too so the next (re)start uses it.
-        self.publish(Event::SettingChanged { session_id: id.into(), setting });
+        self.publish(Event::SettingChanged {
+            session_id: id.into(),
+            setting,
+        });
         Ok(())
     }
 
-    pub async fn action(&self, id: &str, name: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn action(
+        &self,
+        id: &str,
+        name: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let driver = self.ensure_driver(id, false).await?;
         driver.action(name, params).await
     }
@@ -428,11 +507,18 @@ impl Manager {
     /// The group to suggest for a new session in `cwd`: of the groups linked to
     /// its repository, the one a session there joined last.
     pub fn group_for_dir(&self, cwd: &str) -> Result<Option<String>> {
-        let Some(repo) = self.repo_root(cwd) else { return Ok(None) };
+        let Some(repo) = self.repo_root(cwd) else {
+            return Ok(None);
+        };
         Ok(self
             .list_groups()?
             .into_iter()
-            .filter_map(|g| g.repos.iter().find(|r| r.path == repo).map(|r| (r.last_used, g.name.clone())))
+            .filter_map(|g| {
+                g.repos
+                    .iter()
+                    .find(|r| r.path == repo)
+                    .map(|r| (r.last_used, g.name.clone()))
+            })
             .max()
             .map(|(_, name)| name))
     }
@@ -464,20 +550,36 @@ impl Manager {
     /// Register the session's group, linked to the session's repository. A
     /// failure is logged: it must not fail the change that triggered it.
     fn remember_group(&self, session: &Session) {
-        let Some(name) = session.group.clone().filter(|g| !g.trim().is_empty()) else { return };
+        let Some(name) = session.group.clone().filter(|g| !g.trim().is_empty()) else {
+            return;
+        };
         let repo = self.repo_root(&session.cwd);
         let _guard = self.inner.groups.lock();
         let result = (|| -> Result<()> {
-            let mut group = match self.inner.store.feature_records(GROUPS)?.into_iter().find(|(id, _)| *id == name) {
+            let mut group = match self
+                .inner
+                .store
+                .feature_records(GROUPS)?
+                .into_iter()
+                .find(|(id, _)| *id == name)
+            {
                 Some((_, json)) => serde_json::from_str(&json)?,
-                None => Group { name: name.clone(), repos: vec![] },
+                None => Group {
+                    name: name.clone(),
+                    repos: vec![],
+                },
             };
             if let Some(path) = repo {
                 group.repos.retain(|r| r.path != path);
-                group.repos.push(GroupRepo { path, last_used: session.last_activity });
+                group.repos.push(GroupRepo {
+                    path,
+                    last_used: session.last_activity,
+                });
                 group.repos.sort_by(|a, b| a.path.cmp(&b.path));
             }
-            self.inner.store.save_feature_record(GROUPS, &name, &serde_json::to_string(&group)?)
+            self.inner
+                .store
+                .save_feature_record(GROUPS, &name, &serde_json::to_string(&group)?)
         })();
         if let Err(e) = result {
             tracing::warn!("remember group {name}: {e}");
@@ -553,7 +655,9 @@ impl Manager {
                 }
             }
         }
-        self.broadcast(Event::SessionRemoved { session_id: id.into() });
+        self.broadcast(Event::SessionRemoved {
+            session_id: id.into(),
+        });
         Ok(())
     }
 
@@ -599,7 +703,9 @@ impl Manager {
     // ------------------------------------------------------------------- pty
 
     pub fn pty_input(&self, id: &str, data: &[u8]) -> Result<()> {
-        let pty = self.pty(id).ok_or_else(|| anyhow!("session has no terminal"))?;
+        let pty = self
+            .pty(id)
+            .ok_or_else(|| anyhow!("session has no terminal"))?;
         pty.write(data)
     }
 
@@ -627,7 +733,12 @@ impl Manager {
         if let Some(saved) = self.inner.store.load_scrollback(id)? {
             handle.seed_scrollback(&saved);
         }
-        self.inner.runtimes.lock().entry(id.to_string()).or_default().pty = Some(handle.clone());
+        self.inner
+            .runtimes
+            .lock()
+            .entry(id.to_string())
+            .or_default()
+            .pty = Some(handle.clone());
         self.update_session(id, |x| {
             x.status = SessionStatus::Running;
             x.exit_code = None;
@@ -680,11 +791,19 @@ impl Manager {
     // ---------------------------------------------------------------- drivers
 
     fn driver(&self, id: &str) -> Option<Arc<dyn Driver>> {
-        self.inner.runtimes.lock().get(id).and_then(|r| r.driver.clone())
+        self.inner
+            .runtimes
+            .lock()
+            .get(id)
+            .and_then(|r| r.driver.clone())
     }
 
     fn pty(&self, id: &str) -> Option<PtyHandle> {
-        self.inner.runtimes.lock().get(id).and_then(|r| r.pty.clone())
+        self.inner
+            .runtimes
+            .lock()
+            .get(id)
+            .and_then(|r| r.pty.clone())
     }
 
     async fn ensure_driver(&self, id: &str, fork: bool) -> Result<Arc<dyn Driver>> {
@@ -699,14 +818,21 @@ impl Manager {
         if !provider.capabilities().structured {
             bail!("provider {:?} has no structured mode", s.provider);
         }
-        let resuming = s.native_id.is_some() && !fork && !self.inner.store.events(id, 0, 1)?.is_empty();
+        let resuming =
+            s.native_id.is_some() && !fork && !self.inner.store.events(id, 0, 1)?.is_empty();
         {
             let mut rts = self.inner.runtimes.lock();
             let rt = rts.entry(id.to_string()).or_default();
             rt.replaying = resuming;
         }
-        let driver: Arc<dyn Driver> = Arc::from(provider.start(&s, fork, self.inner.sink.clone()).await?);
-        self.inner.runtimes.lock().entry(id.to_string()).or_default().driver = Some(driver.clone());
+        let driver: Arc<dyn Driver> =
+            Arc::from(provider.start(&s, fork, self.inner.sink.clone()).await?);
+        self.inner
+            .runtimes
+            .lock()
+            .entry(id.to_string())
+            .or_default()
+            .driver = Some(driver.clone());
         let _ = self.update_session(id, |x| {
             if x.status == SessionStatus::Exited || x.status == SessionStatus::Error {
                 x.status = SessionStatus::Idle;
@@ -737,13 +863,17 @@ impl Manager {
     fn update_session(&self, id: &str, f: impl FnOnce(&mut Session)) -> Result<Session> {
         let updated = {
             let mut sessions = self.inner.sessions.lock();
-            let s = sessions.get_mut(id).ok_or_else(|| anyhow!("unknown session {id}"))?;
+            let s = sessions
+                .get_mut(id)
+                .ok_or_else(|| anyhow!("unknown session {id}"))?;
             f(s);
             s.last_activity = crate::now();
             s.clone()
         };
         self.inner.store.upsert_session(&updated)?;
-        self.broadcast(Event::SessionUpdated { session: updated.clone() });
+        self.broadcast(Event::SessionUpdated {
+            session: updated.clone(),
+        });
         Ok(updated)
     }
 
@@ -777,7 +907,13 @@ impl Manager {
                 rt.replaying
             }
         };
-        let skip_persist = replaying && matches!(ev, Event::ItemStarted { .. } | Event::ItemCompleted { .. } | Event::TurnCompleted { .. });
+        let skip_persist = replaying
+            && matches!(
+                ev,
+                Event::ItemStarted { .. }
+                    | Event::ItemCompleted { .. }
+                    | Event::TurnCompleted { .. }
+            );
         if ev.is_persistent() && !skip_persist {
             if let Err(e) = self.inner.store.append_event(&sid, &ev) {
                 tracing::warn!("persist event failed: {e}");
@@ -805,13 +941,15 @@ impl Manager {
                     rt.live_items.remove(&item.id);
                 }
                 Event::ApprovalRequested { approval, .. } => {
-                    rt.pending_approvals.insert(approval.id.clone(), approval.clone());
+                    rt.pending_approvals
+                        .insert(approval.id.clone(), approval.clone());
                 }
                 Event::ApprovalResolved { approval_id, .. } => {
                     rt.pending_approvals.remove(approval_id);
                 }
                 Event::UserInputRequested { request, .. } => {
-                    rt.pending_inputs.insert(request.id.clone(), request.clone());
+                    rt.pending_inputs
+                        .insert(request.id.clone(), request.clone());
                 }
                 Event::UserInputResolved { request_id, .. } => {
                     rt.pending_inputs.remove(request_id);
@@ -833,7 +971,13 @@ impl Manager {
             .get(&sid)
             .map(|r| (r.pending_approvals.len() + r.pending_inputs.len()) as u32)
             .unwrap_or(0);
-        let running = self.inner.runtimes.lock().get(&sid).map(|r| r.current_turn.is_some()).unwrap_or(false);
+        let running = self
+            .inner
+            .runtimes
+            .lock()
+            .get(&sid)
+            .map(|r| r.current_turn.is_some())
+            .unwrap_or(false);
 
         // Update the session row.
         let _ = self.update_session(&sid, |s| {
@@ -872,7 +1016,9 @@ impl Manager {
                     Setting::PermissionMode(p) => s.permission_mode = Some(p.clone()),
                     Setting::SandboxMode(p) => s.sandbox_mode = Some(p.clone()),
                 },
-                Event::ProcessExited { exit_code, message, .. } => {
+                Event::ProcessExited {
+                    exit_code, message, ..
+                } => {
                     s.exit_code = *exit_code;
                     match s.mode {
                         SessionMode::Terminal => s.status = SessionStatus::Exited,
@@ -886,7 +1032,11 @@ impl Manager {
                         }
                     }
                 }
-                Event::Notice { level: NoticeLevel::Error, message, .. } => {
+                Event::Notice {
+                    level: NoticeLevel::Error,
+                    message,
+                    ..
+                } => {
                     s.last_error = Some(message.clone());
                 }
                 _ => {}
@@ -900,7 +1050,13 @@ pub fn apply_delta(item: &mut Item, delta: &ItemDelta) {
     match delta {
         ItemDelta::Text { text } => item.text.push_str(text),
         ItemDelta::Output { text } => {
-            let out = item.data.get("output").and_then(|v| v.as_str()).unwrap_or("").to_string() + text;
+            let out = item
+                .data
+                .get("output")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+                + text;
             if let Some(obj) = item.data.as_object_mut() {
                 obj.insert("output".into(), serde_json::Value::String(out));
             } else {
@@ -918,4 +1074,3 @@ pub fn apply_delta(item: &mut Item, delta: &ItemDelta) {
         }
     }
 }
-

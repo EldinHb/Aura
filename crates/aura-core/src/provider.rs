@@ -37,7 +37,12 @@ pub trait Provider: Send + Sync {
     /// Existing sessions on disk / in the provider that Aura could adopt.
     async fn list_native(&self) -> Result<Vec<NativeSession>>;
     /// Start (or resume when `session.native_id` is set) a structured session.
-    async fn start(&self, session: &Session, fork: bool, sink: EventSink) -> Result<Box<dyn Driver>>;
+    async fn start(
+        &self,
+        session: &Session,
+        fork: bool,
+        sink: EventSink,
+    ) -> Result<Box<dyn Driver>>;
     /// argv that opens the same session in a terminal (interactive TUI).
     fn terminal_command(&self, session: &Session) -> Vec<String>;
     /// Models available to this provider.

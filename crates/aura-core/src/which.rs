@@ -20,14 +20,28 @@ pub fn find_binary(name: &str, env_override: &str, extra: &[PathBuf]) -> Option<
     }
     candidates.extend(extra.iter().cloned());
     if let Some(home) = dirs::home_dir() {
-        for rel in [".local/bin", ".volta/bin", ".npm-global/bin", ".bun/bin", ".cargo/bin", ".nix-profile/bin"] {
+        for rel in [
+            ".local/bin",
+            ".volta/bin",
+            ".npm-global/bin",
+            ".bun/bin",
+            ".cargo/bin",
+            ".nix-profile/bin",
+        ] {
             candidates.push(home.join(rel).join(name));
         }
     }
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/run/current-system/sw/bin"] {
+    for dir in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/run/current-system/sw/bin",
+    ] {
         candidates.push(PathBuf::from(dir).join(name));
     }
-    candidates.into_iter().find(|p| p.is_file()).map(|p| p.to_string_lossy().to_string())
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 /// How long a detection result is trusted before the CLI is probed again.
@@ -65,9 +79,18 @@ struct Lookup {
 
 impl BinaryProbe {
     /// Probe that searches for `name` the way [`find_binary`] does.
-    pub fn search(name: &str, env_override: &str, extra: Vec<PathBuf>, parse_version: fn(&str) -> Option<String>) -> Self {
+    pub fn search(
+        name: &str,
+        env_override: &str,
+        extra: Vec<PathBuf>,
+        parse_version: fn(&str) -> Option<String>,
+    ) -> Self {
         Self {
-            lookup: Some(Lookup { name: name.to_string(), env_override: env_override.to_string(), extra }),
+            lookup: Some(Lookup {
+                name: name.to_string(),
+                env_override: env_override.to_string(),
+                extra,
+            }),
             pinned: None,
             parse_version,
             ttl: PROBE_TTL,
@@ -119,8 +142,13 @@ impl BinaryProbe {
         if fresh {
             return;
         }
-        let (lookup, pinned, parse) = (self.lookup.clone(), self.pinned.clone(), self.parse_version);
-        match tokio::task::spawn_blocking(move || detect_with(lookup.as_ref(), pinned.as_deref(), parse)).await {
+        let (lookup, pinned, parse) =
+            (self.lookup.clone(), self.pinned.clone(), self.parse_version);
+        match tokio::task::spawn_blocking(move || {
+            detect_with(lookup.as_ref(), pinned.as_deref(), parse)
+        })
+        .await
+        {
             Ok(d) => *self.state.lock() = (d, Some(Instant::now())),
             // A join error means the probe panicked or was cancelled; keep the
             // last known result rather than reporting the CLI as missing.
@@ -129,22 +157,35 @@ impl BinaryProbe {
     }
 
     fn detect(&self) -> Detected {
-        detect_with(self.lookup.as_ref(), self.pinned.as_deref(), self.parse_version)
+        detect_with(
+            self.lookup.as_ref(),
+            self.pinned.as_deref(),
+            self.parse_version,
+        )
     }
 }
 
-fn detect_with(lookup: Option<&Lookup>, pinned: Option<&str>, parse_version: fn(&str) -> Option<String>) -> Detected {
+fn detect_with(
+    lookup: Option<&Lookup>,
+    pinned: Option<&str>,
+    parse_version: fn(&str) -> Option<String>,
+) -> Detected {
     let binary = match (lookup, pinned) {
         (_, Some(p)) => Some(p.to_string()),
         (Some(l), None) => find_binary(&l.name, &l.env_override, &l.extra),
         (None, None) => None,
     };
-    let version = binary.as_deref().and_then(|b| read_version(b, parse_version));
+    let version = binary
+        .as_deref()
+        .and_then(|b| read_version(b, parse_version));
     Detected { binary, version }
 }
 
 fn read_version(binary: &str, parse_version: fn(&str) -> Option<String>) -> Option<String> {
-    let out = std::process::Command::new(binary).arg("--version").output().ok()?;
+    let out = std::process::Command::new(binary)
+        .arg("--version")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -174,14 +215,19 @@ mod tests {
         let cli = dir.path().join("tool");
         write_cli(&cli, "1.0.0");
 
-        let probe = BinaryProbe::pinned(cli.to_str().unwrap(), parse).with_ttl(Duration::from_millis(1));
+        let probe =
+            BinaryProbe::pinned(cli.to_str().unwrap(), parse).with_ttl(Duration::from_millis(1));
         probe.probe_blocking();
         assert_eq!(probe.version().as_deref(), Some("1.0.0"));
 
         write_cli(&cli, "2.0.0");
         tokio::time::sleep(Duration::from_millis(5)).await;
         probe.refresh().await;
-        assert_eq!(probe.version().as_deref(), Some("2.0.0"), "upgrade picked up once the probe went stale");
+        assert_eq!(
+            probe.version().as_deref(),
+            Some("2.0.0"),
+            "upgrade picked up once the probe went stale"
+        );
     }
 
     #[tokio::test]
@@ -190,11 +236,16 @@ mod tests {
         let cli = dir.path().join("tool");
         write_cli(&cli, "1.0.0");
 
-        let probe = BinaryProbe::pinned(cli.to_str().unwrap(), parse).with_ttl(Duration::from_secs(600));
+        let probe =
+            BinaryProbe::pinned(cli.to_str().unwrap(), parse).with_ttl(Duration::from_secs(600));
         probe.probe_blocking();
         write_cli(&cli, "2.0.0");
         probe.refresh().await;
-        assert_eq!(probe.version().as_deref(), Some("1.0.0"), "no re-probe while the cached result is fresh");
+        assert_eq!(
+            probe.version().as_deref(),
+            Some("1.0.0"),
+            "no re-probe while the cached result is fresh"
+        );
     }
 
     #[tokio::test]
@@ -202,14 +253,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cli = dir.path().join("tool");
 
-        let probe = BinaryProbe::pinned(cli.to_str().unwrap(), parse).with_ttl(Duration::from_millis(1));
+        let probe =
+            BinaryProbe::pinned(cli.to_str().unwrap(), parse).with_ttl(Duration::from_millis(1));
         probe.probe_blocking();
         assert_eq!(probe.version(), None, "nothing installed yet");
 
         write_cli(&cli, "1.0.0");
         tokio::time::sleep(Duration::from_millis(5)).await;
         probe.refresh().await;
-        assert_eq!(probe.version().as_deref(), Some("1.0.0"), "install after startup is noticed");
+        assert_eq!(
+            probe.version().as_deref(),
+            Some("1.0.0"),
+            "install after startup is noticed"
+        );
     }
 }
 
@@ -235,7 +291,9 @@ pub fn login_path() -> Option<String> {
     if !cfg!(unix) {
         return None;
     }
-    let shell = std::env::var("SHELL").ok().filter(|s| !s.trim().is_empty())?;
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
     probe_login_path(&shell)
 }
 
@@ -294,7 +352,10 @@ pub fn adopt_login_path() -> String {
             let merged = merge_paths(&current, &from_shell);
             if merged != current {
                 std::env::set_var("PATH", &merged);
-                tracing::info!(entries = merged.split(':').count(), "adopted login shell PATH");
+                tracing::info!(
+                    entries = merged.split(':').count(),
+                    "adopted login shell PATH"
+                );
             }
             merged
         }
@@ -314,7 +375,11 @@ mod path_tests {
         let mut f = std::fs::File::create(&p).unwrap();
         writeln!(f, "#!/bin/sh").unwrap();
         writeln!(f, "echo 'welcome to your shell'").unwrap();
-        writeln!(f, "printf '{PATH_SENTINEL_START}{path_value}{PATH_SENTINEL_END}'").unwrap();
+        writeln!(
+            f,
+            "printf '{PATH_SENTINEL_START}{path_value}{PATH_SENTINEL_END}'"
+        )
+        .unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
     }
@@ -323,7 +388,10 @@ mod path_tests {
     fn reads_path_past_rc_file_noise() {
         let dir = tempfile::tempdir().unwrap();
         let sh = fake_shell(dir.path(), "/opt/homebrew/bin:/usr/bin");
-        assert_eq!(probe_login_path(sh.to_str().unwrap()).as_deref(), Some("/opt/homebrew/bin:/usr/bin"));
+        assert_eq!(
+            probe_login_path(sh.to_str().unwrap()).as_deref(),
+            Some("/opt/homebrew/bin:/usr/bin")
+        );
     }
 
     #[test]
@@ -342,20 +410,29 @@ mod path_tests {
     fn recovers_the_real_login_path() {
         let before = std::env::var("PATH").unwrap_or_default();
         let after = adopt_login_path();
-        let gained: Vec<&str> = after.split(':').filter(|e| !before.split(':').any(|b| b == *e)).collect();
+        let gained: Vec<&str> = after
+            .split(':')
+            .filter(|e| !before.split(':').any(|b| b == *e))
+            .collect();
         println!("gained {} entries: {gained:?}", gained.len());
         // Counting entries would be wrong: merging removes duplicates, and an
         // inherited PATH can repeat the same directory many times. What must
         // hold is that nothing present before is dropped.
         for entry in before.split(':').filter(|e| !e.is_empty()) {
-            assert!(after.split(':').any(|e| e == entry), "adopting dropped {entry}");
+            assert!(
+                after.split(':').any(|e| e == entry),
+                "adopting dropped {entry}"
+            );
         }
     }
 
     #[test]
     fn merge_keeps_order_and_drops_duplicates() {
         // Login entries win the front; existing ones survive; no repeats.
-        assert_eq!(merge_paths("/usr/bin:/bin", "/opt/homebrew/bin:/usr/bin"), "/opt/homebrew/bin:/usr/bin:/bin");
+        assert_eq!(
+            merge_paths("/usr/bin:/bin", "/opt/homebrew/bin:/usr/bin"),
+            "/opt/homebrew/bin:/usr/bin:/bin"
+        );
         assert_eq!(merge_paths("", "/a:/a:/b"), "/a:/b");
     }
 }
