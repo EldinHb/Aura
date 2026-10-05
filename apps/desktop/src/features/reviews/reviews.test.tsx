@@ -124,3 +124,21 @@ it("preview is inert until its explicit Post button is clicked", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Post comment" }));
   await waitFor(() => expect(call).toHaveBeenCalledWith("reviews.submit", { id: reviewFixture.id, token: "token" }));
 });
+it("marks a PR whose review was requested again after you reviewed it", () => {
+  const again = { ...pullFixture, my_review: { state: "APPROVED", submitted_at: "2026-10-01T10:00:00Z", commit_sha: "c".repeat(40) }, review_requested_at: "2026-10-02T10:00:00Z" };
+  const earlier = { ...reviewFixture, status: "submitted", created_at: "2026-10-01T09:00:00Z" };
+  useReviews.setState({ inbox: { ...inboxFixture, pulls: [again], reviews: [earlier] } });
+  render(<ReviewSidebar />);
+  const row = screen.getByTitle(pullFixture.title);
+  expect([...row.querySelectorAll(".chip")].map((c) => c.textContent)).toEqual(["re-review requested", "changed since your review", "checks pass", "review required", "submitted · earlier round"]);
+  expect(row.closest(".pr-sidebar-row")!.className).toContain("rerequested");
+});
+it("shows your verdict on a PR you already reviewed in this round", () => {
+  const reviewed = { ...pullFixture, my_review: { state: "CHANGES_REQUESTED", submitted_at: "2026-10-02T10:00:00Z", commit_sha: pullFixture.head_sha }, review_requested_at: "2026-10-01T10:00:00Z" };
+  useReviews.setState({ inbox: { ...inboxFixture, pulls: [reviewed] } });
+  render(<ReviewSidebar />);
+  const row = screen.getByTitle(pullFixture.title);
+  expect(row.textContent).toContain("you requested changes");
+  expect(row.textContent).not.toContain("re-review requested");
+  expect(row.closest(".pr-sidebar-row")!.className).not.toContain("rerequested");
+});

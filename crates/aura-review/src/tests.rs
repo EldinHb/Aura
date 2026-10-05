@@ -98,8 +98,14 @@ impl Github for MockGithub {
             return Ok(json!({"merge_base_commit":{"sha":"b".repeat(40)}}));
         }
         if path == "graphql" {
+            let reviews: Vec<Value> = self
+                .posted
+                .lock()
+                .iter()
+                .map(|_| json!({"state":"COMMENTED","submittedAt":"2026-10-05T10:00:00Z","commit":{"oid":"a".repeat(40)}}))
+                .collect();
             return Ok(
-                json!({"data":{"repository":{"pullRequest":{"viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","commits":{"nodes":[]}}}}}),
+                json!({"data":{"repository":{"pullRequest":{"viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","commits":{"nodes":[]},"reviews":{"nodes":reviews}}}}}),
             );
         }
         if path == "repos/o/r/pulls/1" {
@@ -208,6 +214,29 @@ async fn concurrent_submit_is_serialized_and_sent_once() {
     );
     assert!(a.is_ok() && b.is_ok());
     assert_eq!(gh.posts.load(Ordering::SeqCst), 1);
+}
+#[tokio::test]
+async fn submitting_updates_the_pull_list_without_waiting_for_the_poll() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    svc.refresh().await.unwrap();
+    assert_eq!(svc.snapshot().mine[0].my_review, None);
+    let mut events = svc.events.subscribe();
+    let p = svc.preview("review-1").await.unwrap();
+    svc.handle("reviews.submit", json!({"id":"review-1","token":p.token}))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while svc.snapshot().mine[0].my_review.is_none() {
+            events.recv().await.unwrap();
+        }
+    })
+    .await
+    .expect("the submitted review reaches the list");
+    assert_eq!(
+        svc.snapshot().mine[0].my_review.as_ref().unwrap().state,
+        "COMMENTED"
+    );
 }
 #[tokio::test]
 async fn uncertain_success_is_reconciled_without_reposting() {

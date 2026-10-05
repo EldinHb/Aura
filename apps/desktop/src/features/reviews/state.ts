@@ -89,6 +89,16 @@ export function pullStatus(pull: Pick<PullRequest, "draft" | "checks" | "review_
   const review = ({ APPROVED: { label: "approved", tone: "ok" }, CHANGES_REQUESTED: { label: "changes requested", tone: "err" }, REVIEW_REQUIRED: { label: "review required" } } as const)[pull.review_decision as "APPROVED"];
   return [...(pull.draft ? [{ label: "draft" }] : []), checks ?? { label: "no checks" }, ...(review ? [review] : [])];
 }
+const verdict: Record<string, string> = { APPROVED: "you approved", CHANGES_REQUESTED: "you requested changes", COMMENTED: "you commented", DISMISSED: "your review was dismissed" };
+/** True when your review was requested again after your latest review was submitted. */
+export const isRerequested = (pull: Pick<PullRequest, "my_review" | "review_requested_at">) =>
+  !!pull.my_review && !!pull.review_requested_at && Date.parse(pull.review_requested_at) > Date.parse(pull.my_review.submitted_at);
+/** Where you stand on a PR that asks for your review: asked again since you reviewed, or already reviewed. */
+export function reviewRound(pull: Pick<PullRequest, "my_review" | "review_requested_at" | "head_sha">): { label: string; tone?: "new" | "ok" }[] {
+  if (!pull.my_review) return [];
+  if (!isRerequested(pull)) return [{ label: verdict[pull.my_review.state] ?? "you reviewed", tone: "ok" }];
+  return [{ label: "re-review requested", tone: "new" }, ...(pull.my_review.commit_sha && pull.my_review.commit_sha !== pull.head_sha ? [{ label: "changed since your review" }] : [])];
+}
 export async function hidePull(pull: PullRequest, hidden: boolean) {
   await rpc(hidden ? "pulls.hide" : "pulls.restore", { id: pull.id, account: pull.account });
   await useReviews.getState().refresh();

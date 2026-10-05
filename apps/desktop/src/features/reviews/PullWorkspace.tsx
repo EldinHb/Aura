@@ -5,7 +5,7 @@ import { ExternalLink } from "../../components/ExternalLink";
 import { Markdown } from "../../views/transcript/MarkdownView";
 import { ReviewDiff } from "./ReviewDiff";
 import { ReviewEditor } from "./ReviewEditor";
-import { openPull, rpc, startReview, useReviews } from "./state";
+import { isRerequested, openPull, rpc, startReview, useReviews } from "./state";
 
 type Conversation = { id: number; body: string; html_url: string; created_at?: string; submitted_at?: string; state?: string; path?: string; line?: number; user: { login: string } };
 type ProjectField = { text?: string; number?: number; date?: string; name?: string; title?: string; optionId?: string; iterationId?: string; field?: { id: string; name: string; dataType: string; options?: { id: string; name: string }[]; configuration?: { iterations: { id: string; title: string }[]; completedIterations: { id: string; title: string }[] } } };
@@ -53,7 +53,7 @@ function PullDetail({ pull: initial }: { pull: PullRequest }) {
   }, [tab, diff, diffVersion, initial.repo, initial.number, initial.account]);
   const mutate = async (method: string, params: object) => {
     setBusy(true); setError(null);
-    try { await rpc(method, { ...identity, ...params }); await load(); void useReviews.getState().refresh(true); return true; }
+    try { await rpc(method, { ...identity, ...params }); await load(); return true; }
     catch (e) { setError(String(e)); return false; }
     finally { setBusy(false); }
   };
@@ -67,6 +67,7 @@ function PullDetail({ pull: initial }: { pull: PullRequest }) {
         {latest && <button className="btn" data-hint onClick={() => useReviews.setState({ reviewId: latest.id })}>Open pre-review · {latest.status}</button>}
         <button className="btn primary" data-command="reviews.start" disabled={busy || !!error || pull.state !== "open" || latest?.status === "running" || latest?.status === "queued"} onClick={() => startReview(pull, latest)}>{latest ? "Pre-review again…" : "Pre-review…"}</button></div>
     </header>
+    {isRerequested(pull) && <div className="pr-rerequested" role="status"><strong>Your review was requested again</strong> on {new Date(pull.review_requested_at!).toLocaleString()}. You last reviewed on {new Date(pull.my_review!.submitted_at).toLocaleString()}{pull.my_review!.commit_sha && ` at ${pull.my_review!.commit_sha.slice(0, 7)}`}{pull.my_review!.commit_sha && pull.my_review!.commit_sha !== pull.head_sha ? "; the PR has changed since." : "."}</div>}
     {error && <div className="pr-error" role="alert">{error}{detail && " · Showing cached data."}</div>}
     {tab === "files" ? <div className="pr-detail-scroll">{diff ? <><div className="pr-revision">Current PR diff · {diff.sha.slice(0, 10)}</div><ReviewDiff diff={diff.diff} /></> : <p className="pr-padding">Loading diff…</p>}</div>
       : <div className="pr-detail-scroll pr-overview"><main>

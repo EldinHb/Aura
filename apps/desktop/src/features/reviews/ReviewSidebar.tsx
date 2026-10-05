@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import type { PullRequest } from "../../gen";
 import { useStore } from "../../state/store";
-import { hidePull, isPullHidden, openHistory, openPull, pullFilter, pullStatus, report, useReviews, visiblePulls } from "./state";
+import { hidePull, isPullHidden, isRerequested, openHistory, openPull, pullFilter, pullStatus, report, reviewRound, useReviews, visiblePulls } from "./state";
 
 export function ReviewSidebar() {
   const state = useReviews();
@@ -46,12 +46,15 @@ function PullGroup({ title, all, shown, collapsed, onToggle, empty, mine = false
     {!collapsed && shown.map((pull) => {
       const review = reviews?.find((r) => r.pull.id === pull.id && r.status !== "discarded");
       const rule = pullFilter(pull, rules);
-      return <div key={pull.id} className={`pr-sidebar-row ${selected?.id === pull.id ? "selected" : ""} ${isPullHidden(pull, rules) ? "muted" : ""}`}>
+      const again = !mine && isRerequested(pull);
+      // A pre-review from before the new request covers the previous round, not this one.
+      const earlier = again && review && Date.parse(review.created_at) < Date.parse(pull.review_requested_at!);
+      return <div key={pull.id} className={`pr-sidebar-row ${selected?.id === pull.id ? "selected" : ""} ${isPullHidden(pull, rules) ? "muted" : ""} ${again ? "rerequested" : ""}`}>
         <button className="pr-row-main" data-hint onClick={() => openPull(pull)} title={pull.title}>
           <span className="title">{pull.draft ? "◌" : "⑂"} {pull.title}</span>
           <span className="sub">{pull.repo}#{pull.number}{!mine && ` · ${pull.author}`}{rule && ` · hidden by ${rule}`}</span>
-          <span className="pr-status">{pullStatus(pull).map((s) => <span key={s.label} className={`chip ${s.tone ?? ""}`}>{s.label}</span>)}</span>
-          {review && <span className={`chip ${review.status === "failed" ? "err" : ""}`}>{review.status}{review.reviewed_sha && review.reviewed_sha !== pull.head_sha ? " · PR changed" : ""}</span>}
+          <span className="pr-status">{[...(mine ? [] : reviewRound(pull)), ...pullStatus(pull)].map((s) => <span key={s.label} className={`chip ${s.tone ?? ""}`}>{s.label}</span>)}</span>
+          {review && <span className={`chip ${review.status === "failed" ? "err" : ""}`}>{review.status}{earlier ? " · earlier round" : review.reviewed_sha && review.reviewed_sha !== pull.head_sha ? " · PR changed" : ""}</span>}
         </button>
         <button className="btn small" data-hint title={pull.hidden ? "Restore PR" : "Hide PR"} onClick={() => void hidePull(pull, !pull.hidden).catch(report)}>{pull.hidden ? "↶" : "×"}</button>
       </div>;

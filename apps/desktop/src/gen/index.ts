@@ -46,6 +46,7 @@ export * from './Setting';
 export * from './SlashCommand';
 export * from './StoredEvent';
 export * from './SubmissionPreview';
+export * from './SubmittedReview';
 export * from './Turn';
 export * from './TurnStatus';
 export * from './Usage';

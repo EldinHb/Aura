@@ -8,7 +8,15 @@ use aura_github::{pages, pull, Github};
 use parking_lot::Mutex;
 use runner::{Progress, ReviewRunner};
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::{broadcast, Semaphore};
 
 #[async_trait::async_trait]
@@ -33,6 +41,8 @@ pub struct ReviewService {
     gate: tokio::sync::Mutex<()>,
     jobs: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     slots: Arc<Semaphore>,
+    /// Bumped on every change made through Aura, so only the latest one schedules a resync.
+    changes: AtomicU64,
     root: PathBuf,
     pub events: broadcast::Sender<Value>,
 }
@@ -82,6 +92,7 @@ impl ReviewService {
             gate: tokio::sync::Mutex::new(()),
             jobs: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(2)),
+            changes: AtomicU64::new(0),
             root,
             events,
         }))
@@ -211,6 +222,49 @@ impl ReviewService {
         self.emit();
         result
     }
+    /// After Aura changes a PR on GitHub, show the change straight away instead of at the next
+    /// poll: re-read that PR, resync both lists, and resync once more after GitHub's search
+    /// index has caught up (it can keep listing a PR you just reviewed for a while).
+    fn changed(self: &Arc<Self>, pr: &PullRequest) {
+        let generation = self.changes.fetch_add(1, Ordering::SeqCst) + 1;
+        let (svc, account, repo, number) =
+            (self.clone(), pr.account.clone(), pr.repo.clone(), pr.number);
+        tokio::spawn(async move {
+            if let Err(e) = svc.update_pull(&account, &repo, number).await {
+                tracing::debug!("re-reading {repo}#{number} failed: {e:#}");
+            }
+            let _ = svc.refresh().await;
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            if svc.changes.load(Ordering::SeqCst) == generation {
+                let _ = svc.refresh().await;
+            }
+        });
+    }
+    /// Replace one PR in the lists with its live state; one that is no longer open is dropped.
+    async fn update_pull(&self, account: &str, repo: &str, number: u32) -> Result<()> {
+        self.ensure_account(account).await?;
+        let mut live = pull(&*self.gh, account, repo, number).await?;
+        {
+            let mut state = self.state.lock();
+            let state = &mut *state;
+            if state.account.as_deref() != Some(account) {
+                return Ok(());
+            }
+            for list in [&mut state.pulls, &mut state.mine] {
+                if let Some(i) = list.iter().position(|p| p.id == live.id) {
+                    if live.state == "open" {
+                        live.hidden = list[i].hidden;
+                        list[i] = live.clone();
+                    } else {
+                        list.remove(i);
+                    }
+                }
+            }
+        }
+        self.persist_inbox()?;
+        self.emit();
+        Ok(())
+    }
     async fn lookup(&self, p: &Value) -> Result<PullRequest> {
         let repo = required(p, "repo")?;
         let number = p["number"]
@@ -336,7 +390,7 @@ impl ReviewService {
                         Some(Value::Object(body)),
                     )
                     .await?;
-                self.emit();
+                self.changed(&pr);
                 v
             }
             "pulls.addComment" => {
@@ -355,7 +409,7 @@ impl ReviewService {
                         Some(json!({"body":body})),
                     )
                     .await?;
-                self.emit();
+                self.changed(&pr);
                 v
             }
             "pulls.setField" => {
@@ -399,7 +453,7 @@ impl ReviewService {
                 if v.get("errors").is_some() {
                     bail!("{}", v["errors"]);
                 }
-                self.emit();
+                self.changed(&pr);
                 v
             }
             "reviews.start" => json!(self.start(&p).await?),
@@ -502,14 +556,21 @@ impl ReviewService {
             }
             "reviews.submit" => {
                 let _g = self.gate.lock().await;
-                json!(
-                    self.submit(required(&p, "id")?, required(&p, "token")?)
-                        .await?
-                )
+                let id = required(&p, "id")?;
+                let result = self.submit(id, required(&p, "token")?).await;
+                // Even a failed post may have reached GitHub; resyncing is harmless either way.
+                if let Ok(r) = self.get(id) {
+                    if r.status != "ready" {
+                        self.changed(&r.pull);
+                    }
+                }
+                json!(result?)
             }
             "reviews.reconcile" => {
                 let _g = self.gate.lock().await;
-                json!(self.reconcile(required(&p, "id")?).await?)
+                let r = self.reconcile(required(&p, "id")?).await?;
+                self.changed(&r.pull);
+                json!(r)
             }
             _ => bail!("Unknown review method"),
         };

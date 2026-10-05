@@ -380,6 +380,7 @@ dependencies = [
  "async-trait",
  "aura-core",
  "chrono",
+ "futures",
  "serde_json",
  "tokio",
 ]

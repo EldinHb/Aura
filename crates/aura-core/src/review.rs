@@ -32,6 +32,20 @@ pub struct PullRequest {
     pub assignees: Vec<String>,
     pub labels: Vec<String>,
     pub milestone: Option<u32>,
+    /// Your latest submitted review of this PR on GitHub.
+    #[serde(default)]
+    pub my_review: Option<SubmittedReview>,
+    /// When your review, or a team's, was last requested.
+    #[serde(default)]
+    pub review_requested_at: Option<String>,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SubmittedReview {
+    /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
+    pub state: String,
+    pub submitted_at: String,
+    pub commit_sha: String,
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]

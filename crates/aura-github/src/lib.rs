@@ -1,7 +1,8 @@
 //! GitHub transport. Only the daemon invokes gh; credentials never reach the webview.
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use aura_core::PullRequest;
+use aura_core::{PullRequest, SubmittedReview};
+use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command};
@@ -260,7 +261,14 @@ pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Re
         ..Default::default()
     };
     let (owner, name) = repo.split_once('/').unwrap();
-    let q=gh.request("POST","graphql",Some(json!({"query":"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){viewerCanUpdate reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}","variables":{"owner":owner,"name":name,"number":number}}))).await?;
+    let login = account.split_once(':').map_or(account, |(_, login)| login);
+    let q = gh
+        .request(
+            "POST",
+            "graphql",
+            Some(json!({"query": PULL, "variables": {"owner": owner, "name": name, "number": number, "login": login}})),
+        )
+        .await?;
     if q.get("errors").is_some() {
         bail!("Unable to read PR capabilities: {}", q["errors"]);
     }
@@ -271,7 +279,36 @@ pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Re
         &d["commits"]["nodes"][0]["commit"]["statusCheckRollup"],
         "state",
     );
+    let review = &d["reviews"]["nodes"][0];
+    p.my_review = review["submittedAt"]
+        .as_str()
+        .map(|submitted_at| SubmittedReview {
+            state: s(review, "state"),
+            submitted_at: submitted_at.into(),
+            commit_sha: s(&review["commit"], "oid"),
+        });
+    p.review_requested_at = requested_at(&d["timelineItems"]["nodes"], login);
     Ok(p)
+}
+/// Your latest review and recent review requests ride along with the capability query.
+const PULL: &str = r#"query($owner:String!,$name:String!,$number:Int!,$login:String!){repository(owner:$owner,name:$name){pullRequest(number:$number){viewerCanUpdate reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}}}}}"#;
+/// The latest request addressed to `login` or to a team. Team membership is not
+/// resolved, so a request to any team counts.
+fn requested_at(events: &Value, login: &str) -> Option<String> {
+    events
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| {
+            let who = &e["requestedReviewer"];
+            who["__typename"] == "Team"
+                || who["login"]
+                    .as_str()
+                    .is_some_and(|l| l.eq_ignore_ascii_case(login))
+        })
+        .filter_map(|e| e["createdAt"].as_str())
+        .max()
+        .map(String::from)
 }
 pub fn s(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().to_string()
@@ -304,22 +341,26 @@ async fn search(
         let rows = response["items"]
             .as_array()
             .context("Invalid search response")?;
-        for row in rows {
-            let url = s(row, "repository_url");
-            let repo = url
-                .split("/repos/")
-                .nth(1)
-                .context("Invalid repository URL")?;
-            items.push(
-                pull(
-                    gh,
-                    account,
-                    repo,
-                    row["number"].as_u64().context("Missing PR number")? as u32,
-                )
-                .await?,
-            );
-        }
+        let ids = rows
+            .iter()
+            .map(|row| {
+                let url = s(row, "repository_url");
+                let repo = url
+                    .split("/repos/")
+                    .nth(1)
+                    .context("Invalid repository URL")?
+                    .to_string();
+                let number = row["number"].as_u64().context("Missing PR number")? as u32;
+                Ok((repo, number))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Each PR costs two gh invocations; fetching them one by one made large inboxes slow.
+        let fetched: Vec<PullRequest> = stream::iter(ids)
+            .map(|(repo, number)| async move { pull(gh, account, &repo, number).await })
+            .buffered(6)
+            .try_collect()
+            .await?;
+        items.extend(fetched);
         if rows.len() < 100 {
             break;
         }
@@ -441,6 +482,20 @@ mod tests {
             fail_second: true,
         };
         assert!(pages(&gh, "repos/o/r/issues/1/comments").await.is_err());
+    }
+    #[test]
+    fn review_requests_count_when_addressed_to_you_or_a_team() {
+        let events = json!([
+            {"createdAt":"2026-10-01T09:00:00Z","requestedReviewer":{"__typename":"User","login":"Alice"}},
+            {"createdAt":"2026-10-03T09:00:00Z","requestedReviewer":{"__typename":"User","login":"bob"}},
+            {"createdAt":"2026-10-02T09:00:00Z","requestedReviewer":{"__typename":"Team"}},
+        ]);
+        assert_eq!(
+            requested_at(&events, "alice").as_deref(),
+            Some("2026-10-02T09:00:00Z")
+        );
+        assert_eq!(requested_at(&json!([events[1]]), "alice"), None);
+        assert_eq!(requested_at(&Value::Null, "alice"), None);
     }
     #[test]
     fn rejects_unsafe_repository_paths() {
