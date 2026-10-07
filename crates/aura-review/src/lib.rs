@@ -600,16 +600,29 @@ impl ReviewService {
         if provider.info().binary.is_none() {
             bail!("Selected provider is unavailable");
         }
+        let models = match (&config.effort, kind) {
+            (Some(_), _) => provider.list_models().await?,
+            // Codex lists real model ids, so its default names the model that will run.
+            (None, ProviderKind::Codex) => provider.list_models().await.unwrap_or_default(),
+            (None, _) => vec![],
+        };
+        let model = models
+            .iter()
+            .find(|m| config.model.as_deref() == Some(&m.id))
+            .or_else(|| models.iter().find(|m| m.is_default));
         if let Some(effort) = &config.effort {
-            let models = provider.list_models().await?;
-            let model = models
-                .iter()
-                .find(|m| config.model.as_deref() == Some(&m.id))
-                .or_else(|| models.iter().find(|m| m.is_default));
             if !model.is_some_and(|m| m.efforts.contains(effort)) {
                 bail!("Effort is not supported by the selected model");
             }
         }
+        let agent = ReviewAgent {
+            provider: provider.info().display_name,
+            model: config.model.clone(),
+            model_id: (kind == ProviderKind::Codex)
+                .then(|| model.map(|m| m.id.clone()))
+                .flatten(),
+            effort: config.effort.clone(),
+        };
         let instructions = runner::instructions(&config)?;
         let id = new_id();
         let ts = now().to_rfc3339();
@@ -637,6 +650,7 @@ impl ReviewService {
             },
             submitted_url: None,
             submission: None,
+            agent: Some(agent),
         };
         self.store
             .save_feature_record("reviews", &id, &serde_json::to_string(&review)?)?;
@@ -789,7 +803,10 @@ impl ReviewService {
                 Ok(())
             });
         });
-        let mut result = self.runner.run(&r, &cwd, progress).await?;
+        let runner::RunOutput {
+            mut result,
+            model_id,
+        } = self.runner.run(&r, &cwd, progress).await?;
         self.change(id, |r| {
             if r.status != "running" {
                 bail!("Review was cancelled");
@@ -813,6 +830,9 @@ impl ReviewService {
                 bail!("Review was cancelled");
             }
             r.result = result;
+            if let (Some(agent), Some(id)) = (r.agent.as_mut(), model_id) {
+                agent.model_id = Some(id);
+            }
             r.status = "ready".into();
             r.phase = "done".into();
             Ok(())
@@ -966,12 +986,24 @@ pub fn build_preview(r: &PreReview, head: &str) -> Result<SubmissionPreview> {
         }
     }
     comments.retain(|c| c.valid);
+    let agent = review_agent(r);
     for c in &mut comments {
         c.rationale = None;
+        // Comments the user wrote themselves are theirs, not the agent's.
+        if !c.user_authored {
+            c.body.push_str(&format!(
+                "\n\n<sub>🤖 AI agent · {}</sub>",
+                agent.signature()
+            ));
+        }
     }
     if body.trim().is_empty() && comments.is_empty() {
         bail!("There is nothing to post");
     }
+    body.push_str(&format!(
+        "\n\n---\n<sub>🤖 Drafted by an AI agent with Aura and reviewed by a person before posting · {}</sub>",
+        agent.signature()
+    ));
     let token = new_id();
     body.push_str(&format!("\n\n<!-- aura-review:{token} -->"));
     Ok(SubmissionPreview {
@@ -990,6 +1022,20 @@ pub fn build_preview(r: &PreReview, head: &str) -> Result<SubmissionPreview> {
         body,
         comments,
         stale: head != r.reviewed_sha,
+    })
+}
+/// The agent behind a draft; older drafts did not record one, so it is
+/// rebuilt from the configuration they ran with.
+fn review_agent(r: &PreReview) -> ReviewAgent {
+    r.agent.clone().unwrap_or_else(|| ReviewAgent {
+        provider: match r.config.provider.as_str() {
+            "claude" => "Claude Code".into(),
+            "codex" => "Codex".into(),
+            other => other.into(),
+        },
+        model: r.config.model.clone(),
+        model_id: None,
+        effort: r.config.effort.clone(),
     })
 }
 pub fn payload(p: &SubmissionPreview) -> Value {

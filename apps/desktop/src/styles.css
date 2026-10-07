@@ -440,6 +440,14 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; }
 .settings-grid .check-row, .settings-grid .field.wide { grid-column: 1 / -1; }
 .settings-grid input.recording { border-color: var(--warn); }
+.prompt-input { width: 100%; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.45; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 7px 9px; }
+.prompt-input:focus { box-shadow: var(--focus-ring); border-color: var(--accent); outline: none; }
+.prompt-help { font-size: 12px; line-height: 1.5; }
+.prompts-tab .prompt-help { margin: 0 0 12px; }
+.prompt-field { margin-bottom: 16px; }
+.prompt-actions { display: flex; gap: 6px; align-items: center; }
+.prompt-effective summary { cursor: pointer; font-size: 12px; color: var(--fg-muted); }
+.prompt-effective pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 6px; font-size: 12px; user-select: text; }
 .keymap-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .keymap-head { display: flex; gap: 8px; align-items: center; }
 .keymap-head input { flex: 1; }

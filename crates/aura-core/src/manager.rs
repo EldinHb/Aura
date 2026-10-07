@@ -1,4 +1,5 @@
 use crate::event::*;
+use crate::prompts::SystemPrompts;
 use crate::provider::*;
 use crate::store::*;
 use crate::types::*;
@@ -206,6 +207,119 @@ impl Manager {
         self.inner.store.set_setting(key, value)
     }
 
+    // ---------------------------------------------------------- system prompts
+
+    fn stored_prompts(&self) -> Result<crate::prompts::Stored> {
+        Ok(
+            match self.inner.store.get_setting(crate::prompts::SETTING_KEY)? {
+                Some(raw) => {
+                    serde_json::from_str(&raw).context("stored system prompts are unreadable")?
+                }
+                None => Default::default(),
+            },
+        )
+    }
+
+    pub fn system_prompts(&self) -> Result<SystemPrompts> {
+        Ok(self.stored_prompts()?.view())
+    }
+
+    /// Set the global prompt; `None` goes back to Aura's default.
+    pub async fn set_global_prompt(&self, prompt: Option<String>) -> Result<SystemPrompts> {
+        let mut stored = self.stored_prompts()?;
+        stored.global = prompt;
+        self.inner.store.set_setting(
+            crate::prompts::SETTING_KEY,
+            &serde_json::to_string(&stored)?,
+        )?;
+        self.restart_idle_agents(|_| true).await;
+        Ok(stored.view())
+    }
+
+    /// Set one agent's prompt (`claude`, `codex`, `acp:<id>`); empty or `None` removes it.
+    pub async fn set_agent_prompt(
+        &self,
+        agent: &str,
+        prompt: Option<String>,
+    ) -> Result<SystemPrompts> {
+        if agent.is_empty() {
+            bail!("missing agent");
+        }
+        let mut stored = self.stored_prompts()?;
+        match prompt.filter(|p| !p.trim().is_empty()) {
+            Some(p) => stored.agents.insert(agent.to_string(), p),
+            None => stored.agents.remove(agent),
+        };
+        self.inner.store.set_setting(
+            crate::prompts::SETTING_KEY,
+            &serde_json::to_string(&stored)?,
+        )?;
+        self.restart_idle_agents(|s| crate::prompts::agent_key(s) == agent)
+            .await;
+        Ok(stored.view())
+    }
+
+    /// Set a session's own prompt.
+    pub async fn set_session_prompt(&self, id: &str, prompt: Option<String>) -> Result<Session> {
+        self.update_session(id, |s| {
+            s.system_prompt = prompt.filter(|p| !p.trim().is_empty())
+        })?;
+        self.restart_idle_agents(|s| s.id == id).await;
+        self.get_session(id)
+    }
+
+    /// A changed prompt reaches an agent only when it starts. Stop the idle
+    /// ones it applies to; each resumes with the new prompt on its next
+    /// message. Agents in a turn keep their prompt until they next start.
+    async fn restart_idle_agents(&self, applies: impl Fn(&Session) -> bool) {
+        let idle: Vec<String> = self
+            .list_sessions()
+            .into_iter()
+            .filter(|s| {
+                s.mode == SessionMode::Structured && s.status == SessionStatus::Idle && applies(s)
+            })
+            .filter(|s| self.driver(&s.id).is_some())
+            .map(|s| s.id)
+            .collect();
+        for id in idle {
+            let _ = self.stop(&id).await;
+        }
+    }
+
+    /// The system prompt a session's agent starts with.
+    pub fn instructions_for(&self, s: &Session) -> Result<Option<String>> {
+        let stored = self.stored_prompts()?;
+        let global = stored
+            .global
+            .as_deref()
+            .unwrap_or(crate::prompts::DEFAULT_GLOBAL_PROMPT);
+        let key = crate::prompts::agent_key(s);
+        let info = self.provider(s.provider).map(|p| p.info()).ok();
+        let name = match (s.provider, &info) {
+            (ProviderKind::Acp, Some(i)) => i
+                .agents
+                .iter()
+                .find(|a| Some(&a.id) == s.agent.as_ref())
+                .map(|a| a.display_name.clone())
+                .unwrap_or_else(|| s.agent.clone().unwrap_or_default()),
+            (_, Some(i)) => i.display_name.clone(),
+            (_, None) => s.provider.as_str().to_string(),
+        };
+        Ok(crate::prompts::compose(
+            global,
+            stored.agents.get(&key).map(String::as_str),
+            s,
+            &name,
+        ))
+    }
+
+    /// The session as handed to its provider: with the system prompt to start with.
+    fn with_instructions(&self, s: &Session) -> Result<Session> {
+        let mut s = s.clone();
+        s.instructions = self.instructions_for(&s)?;
+        Ok(s)
+    }
+
     // -------------------------------------------------------------- lifecycle
 
     /// Load sessions from the store. Structured sessions become idle and are
@@ -284,7 +398,7 @@ impl Manager {
         if session.mode == SessionMode::Terminal && session.command.is_none() {
             let argv = match opts.provider {
                 ProviderKind::Terminal => aura_pty::default_shell(),
-                _ => provider.terminal_command(&session),
+                _ => provider.terminal_command(&self.with_instructions(&session)?),
             };
             if argv.is_empty() {
                 bail!("{} sessions have no terminal mode", opts.label());
@@ -355,6 +469,7 @@ impl Manager {
             initial_prompt: None,
             resume_native_id: Some(native),
             fork: true,
+            system_prompt: s.system_prompt.clone(),
         })
         .await
     }
@@ -671,7 +786,7 @@ impl Manager {
         let provider = self.provider(s.provider)?;
         match mode {
             SessionMode::Terminal => {
-                let argv = provider.terminal_command(&s);
+                let argv = provider.terminal_command(&self.with_instructions(&s)?);
                 if argv.is_empty() {
                     bail!("provider has no terminal command");
                 }
@@ -825,6 +940,7 @@ impl Manager {
             let rt = rts.entry(id.to_string()).or_default();
             rt.replaying = resuming;
         }
+        let s = self.with_instructions(&s)?;
         let driver: Arc<dyn Driver> =
             Arc::from(provider.start(&s, fork, self.inner.sink.clone()).await?);
         self.inner

@@ -238,7 +238,7 @@ impl AcpDriver {
         tokio::spawn(process_incoming(conn.clone(), incoming, mapper.clone(), sink.clone(), session.id.clone(), stderr.clone(), life.clone(), child));
 
         let started = Self::handshake(&conn, spec, session, &mapper, &sink).await;
-        let (acp_session, caps) = match started {
+        let (acp_session, caps, fresh) = match started {
             Ok(v) => v,
             Err(e) => {
                 life.store(FAILED_START, Ordering::SeqCst);
@@ -260,14 +260,16 @@ impl AcpDriver {
             life,
             group: Mutex::new(group),
         };
-        driver.spawn_turns(rx);
+        // ACP has no system prompt, so the first prompt of a new conversation
+        // carries it; resumed conversations already have it.
+        driver.spawn_turns(rx, session.instructions.clone().filter(|_| fresh));
         driver.apply_initial_settings(session).await;
         Ok(driver)
     }
 
     /// `initialize`, then a new, resumed or loaded session. Returns the ACP
-    /// session id and the agent's capabilities.
-    async fn handshake(conn: &Connection, spec: &AgentSpec, session: &Session, mapper: &Arc<Mutex<SessionMapper>>, sink: &EventSink) -> Result<(String, Value)> {
+    /// session id, the agent's capabilities and whether the session is new.
+    async fn handshake(conn: &Connection, spec: &AgentSpec, session: &Session, mapper: &Arc<Mutex<SessionMapper>>, sink: &EventSink) -> Result<(String, Value, bool)> {
         let init = with_timeout(
             "initialize",
             conn.request(
@@ -331,7 +333,7 @@ impl AcpDriver {
             for ev in mapper.lock().session_state(&res) {
                 let _ = sink.send(ev);
             }
-            return Ok((id.clone(), caps));
+            return Ok((id.clone(), caps, false));
         }
         if native.is_some() {
             let _ = sink.send(Event::Notice {
@@ -346,7 +348,7 @@ impl AcpDriver {
         for ev in mapper.lock().session_state(&res) {
             let _ = sink.send(ev);
         }
-        Ok((id, caps))
+        Ok((id, caps, true))
     }
 
     /// Model and mode chosen when the session was created. A choice the agent
@@ -362,12 +364,18 @@ impl AcpDriver {
 
     /// Prompts run one at a time: ACP has no queue of its own, and a second
     /// `session/prompt` during a turn is an error for most agents.
-    fn spawn_turns(&self, mut rx: mpsc::UnboundedReceiver<Input>) {
+    fn spawn_turns(&self, mut rx: mpsc::UnboundedReceiver<Input>, mut instructions: Option<String>) {
         let conn = self.conn.clone();
         let acp_session = self.acp_session.clone();
         tokio::spawn(async move {
             while let Some(input) = rx.recv().await {
-                let prompt = match prompt_blocks(&input).await {
+                let prompt = prompt_blocks(&input).await.map(|mut p| {
+                    if let Some(i) = instructions.take() {
+                        p.insert(0, json!({ "type": "text", "text": format!("<system-instructions>\n{i}\n</system-instructions>") }));
+                    }
+                    p
+                });
+                let prompt = match prompt {
                     Ok(p) => p,
                     Err(e) => {
                         conn.inject("__turn_start", json!({ "text": input.text, "images": input.images.len() }));

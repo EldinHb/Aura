@@ -132,6 +132,8 @@ impl Driver for FakeDriver {
 struct FakeProvider {
     calls: Calls,
     starts: Starts,
+    /// The system prompt each start was given.
+    prompts: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 #[async_trait::async_trait]
@@ -165,6 +167,7 @@ impl Provider for FakeProvider {
         sink: EventSink,
     ) -> anyhow::Result<Box<dyn Driver>> {
         self.starts.lock().push((session.native_id.clone(), fork));
+        self.prompts.lock().push(session.instructions.clone());
         let _ = sink.send(Event::NativeId {
             session_id: session.id.clone(),
             native_id: format!("native-{}", if fork { "fork" } else { "1" }),
@@ -208,9 +211,76 @@ fn setup() -> (Manager, Calls, Starts, Arc<MemoryStore>) {
     let provider = Arc::new(FakeProvider {
         calls: calls.clone(),
         starts: starts.clone(),
+        prompts: Default::default(),
     });
     let m = Manager::new(store.clone(), vec![provider], None);
     (m, calls, starts, store)
+}
+
+#[tokio::test]
+async fn agents_start_with_the_global_agent_and_session_prompts() {
+    let calls: Calls = Default::default();
+    let provider = Arc::new(FakeProvider {
+        calls: calls.clone(),
+        starts: Default::default(),
+        prompts: Default::default(),
+    });
+    let prompts = provider.prompts.clone();
+    let m = Manager::new(Arc::new(MemoryStore::default()), vec![provider], None);
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            system_prompt: Some("Session rule".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The default global prompt asks for attribution, filled in with the start values.
+    let first = prompts.lock()[0].clone().unwrap();
+    assert!(first.starts_with("You are running inside Aura"), "{first}");
+    assert!(
+        first.contains("Aura started you as Fake with model `opus` and reasoning effort `high`"),
+        "{first}"
+    );
+    assert!(first.ends_with("Session rule"), "{first}");
+    assert!(m.system_prompts().unwrap().global_is_default);
+
+    // A change stops the idle agent; the next message starts it with the new prompt.
+    m.set_global_prompt(Some("Global rule".into()))
+        .await
+        .unwrap();
+    m.set_agent_prompt("claude", Some("Claude rule".into()))
+        .await
+        .unwrap();
+    assert!(calls.lock().iter().any(|c| c == "stop"));
+    m.send(
+        &s.id,
+        Input {
+            text: "hi".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        prompts.lock().last().unwrap().as_deref(),
+        Some("Global rule\n\nClaude rule\n\nSession rule")
+    );
+
+    // An empty global prompt is kept as empty; resetting brings the default back.
+    m.set_global_prompt(Some(String::new())).await.unwrap();
+    m.set_agent_prompt("claude", None).await.unwrap();
+    m.set_session_prompt(&s.id, None).await.unwrap();
+    assert_eq!(
+        m.instructions_for(&m.get_session(&s.id).unwrap()).unwrap(),
+        None
+    );
+    let reset = m.set_global_prompt(None).await.unwrap();
+    assert!(reset.global_is_default && reset.agents.is_empty());
 }
 
 #[tokio::test]
@@ -396,6 +466,7 @@ async fn mode_switch_and_restore() {
         vec![Arc::new(FakeProvider {
             calls: Default::default(),
             starts: Default::default(),
+            prompts: Default::default(),
         })],
         None,
     );
@@ -586,6 +657,7 @@ async fn groups_are_remembered_with_their_repositories() {
     let provider = Arc::new(FakeProvider {
         calls: Default::default(),
         starts: Default::default(),
+        prompts: Default::default(),
     });
     let m = Manager::new(store.clone(), vec![provider], Some(Arc::new(DirRepos)));
     let a = tempfile::tempdir().unwrap();

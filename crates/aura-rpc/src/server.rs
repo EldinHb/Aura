@@ -412,6 +412,43 @@ async fn dispatch(
             let P { id, title } = params(p)?;
             ok(m.rename(&id, &title)?)
         }
+        "session.set_system_prompt" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                prompt: Option<String>,
+            }
+            let P { id, prompt } = params(p)?;
+            ok(m.set_session_prompt(&id, prompt).await?)
+        }
+        "prompts.get" => ok(m.system_prompts()?),
+        "prompts.set_global" => {
+            /// `prompt: null` goes back to Aura's default.
+            #[derive(Deserialize)]
+            struct P {
+                prompt: Option<String>,
+            }
+            let P { prompt } = params(p)?;
+            ok(m.set_global_prompt(prompt).await?)
+        }
+        "prompts.set_agent" => {
+            #[derive(Deserialize)]
+            struct P {
+                agent: String,
+                prompt: Option<String>,
+            }
+            let P { agent, prompt } = params(p)?;
+            ok(m.set_agent_prompt(&agent, prompt).await?)
+        }
+        "prompts.preview" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+            }
+            let P { id } = params(p)?;
+            let s = m.get_session(&id)?;
+            ok(m.instructions_for(&s)?)
+        }
         "session.set_group" => {
             #[derive(Deserialize)]
             struct P {

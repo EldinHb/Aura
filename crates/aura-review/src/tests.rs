@@ -52,6 +52,15 @@ fn draft() -> PreReview {
         },
         submitted_url: None,
         submission: None,
+        agent: None,
+    }
+}
+fn claude_agent() -> ReviewAgent {
+    ReviewAgent {
+        provider: "Claude Code".into(),
+        model: Some("opus".into()),
+        model_id: None,
+        effort: Some("high".into()),
     }
 }
 struct MockGithub {
@@ -140,9 +149,12 @@ impl ReviewRunner for MockRunner {
         _: &PreReview,
         _: &std::path::Path,
         progress: Progress,
-    ) -> Result<ReviewResult> {
+    ) -> Result<runner::RunOutput> {
         progress("Reading changed file".into());
-        Ok(draft().result)
+        Ok(runner::RunOutput {
+            result: draft().result,
+            model_id: Some("claude-opus-5-5".into()),
+        })
     }
 }
 struct MockWorkspace;
@@ -331,6 +343,68 @@ async fn mocked_runner_produces_frozen_diff_and_cleans_workspace() {
     std::fs::remove_dir(&svc.root).unwrap();
 }
 #[tokio::test]
+async fn a_finished_review_records_the_model_that_ran() {
+    let mut r = draft();
+    r.agent = Some(claude_agent());
+    let svc = service(Arc::new(MockGithub::default()), r);
+    svc.change("review-1", |r| {
+        r.status = "running".into();
+        Ok(())
+    })
+    .unwrap();
+    svc.execute("review-1").await.unwrap();
+    let agent = svc.get("review-1").unwrap().agent.unwrap();
+    assert_eq!(agent.model_id.as_deref(), Some("claude-opus-5-5"));
+    assert_eq!(
+        agent.signature(),
+        "Claude Code · model opus (claude-opus-5-5) · effort high"
+    );
+    let _ = std::fs::remove_dir(&svc.root);
+}
+#[test]
+fn posted_reviews_and_agent_comments_name_the_agent_model_and_effort() {
+    let mut r = draft();
+    r.agent = Some(ReviewAgent {
+        model_id: Some("claude-opus-5-5".into()),
+        ..claude_agent()
+    });
+    let mut mine = r.result.comments[0].clone();
+    mine.id = "mine".into();
+    mine.body = "My own note".into();
+    mine.user_authored = true;
+    r.result.comments.push(mine);
+    let preview = build_preview(&r, &"a".repeat(40)).unwrap();
+    let sig = "Claude Code · model opus (claude-opus-5-5) · effort high";
+    assert!(
+        preview.body.contains(&format!(
+            "Drafted by an AI agent with Aura and reviewed by a person before posting · {sig}"
+        )),
+        "{}",
+        preview.body
+    );
+    assert!(preview
+        .body
+        .ends_with(&format!("<!-- aura-review:{} -->", preview.token)));
+    let agent = preview.comments.iter().find(|c| c.id == "c1").unwrap();
+    assert_eq!(
+        agent.body,
+        format!("Fix this\n\n<sub>🤖 AI agent · {sig}</sub>")
+    );
+    let user = preview.comments.iter().find(|c| c.id == "mine").unwrap();
+    assert_eq!(user.body, "My own note");
+}
+#[test]
+fn drafts_from_before_agents_were_recorded_are_signed_from_their_config() {
+    let preview = build_preview(&draft(), &"a".repeat(40)).unwrap();
+    assert!(
+        preview
+            .body
+            .contains("Codex · model default model · effort default"),
+        "{}",
+        preview.body
+    );
+}
+#[tokio::test]
 async fn restart_marks_interrupted_and_uncertain_jobs() {
     let mut r = draft();
     r.status = "running".into();
@@ -358,10 +432,18 @@ struct BlockingRunner {
 }
 #[async_trait]
 impl ReviewRunner for BlockingRunner {
-    async fn run(&self, _: &PreReview, _: &std::path::Path, _: Progress) -> Result<ReviewResult> {
+    async fn run(
+        &self,
+        _: &PreReview,
+        _: &std::path::Path,
+        _: Progress,
+    ) -> Result<runner::RunOutput> {
         self.started.notify_one();
         self.finish.notified().await;
-        Ok(draft().result)
+        Ok(runner::RunOutput {
+            result: draft().result,
+            model_id: None,
+        })
     }
 }
 #[tokio::test]

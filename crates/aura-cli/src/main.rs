@@ -44,6 +44,9 @@ enum Cmd {
         /// First message for AI providers
         #[arg(long)]
         prompt: Option<String>,
+        /// System prompt for this session, added after the global and per-agent ones
+        #[arg(long)]
+        system_prompt: Option<String>,
         /// Create a git worktree on this branch
         #[arg(long)]
         branch: Option<String>,
@@ -131,7 +134,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::New { provider, agent, cwd, title, group, prompt, branch, resume, attach, command } => {
+        Cmd::New { provider, agent, cwd, title, group, prompt, system_prompt, branch, resume, attach, command } => {
             let mut provider = ProviderKind::parse(&provider).ok_or_else(|| anyhow!("unknown provider {provider}"))?;
             if agent.is_some() {
                 if !matches!(provider, ProviderKind::Acp | ProviderKind::Terminal) {
@@ -148,6 +151,7 @@ async fn main() -> Result<()> {
                 group,
                 command: if command.is_empty() { None } else { Some(command) },
                 initial_prompt: prompt,
+                system_prompt,
                 resume_native_id: resume,
                 worktree: branch.map(|b| WorktreeOpts { branch: b, base: None, path: None }),
                 ..Default::default()

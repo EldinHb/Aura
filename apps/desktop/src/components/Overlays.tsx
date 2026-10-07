@@ -10,6 +10,7 @@ import { CommandPalette } from "./CommandPalette";
 import { HelpOverlay } from "./HelpOverlay";
 import { ConfirmDialog } from "./dialogs/ConfirmDialog";
 import { RenameDialog } from "./dialogs/RenameDialog";
+import { SystemPromptDialog } from "./dialogs/SystemPromptDialog";
 import { SessionLinksDialog } from "./dialogs/SessionLinksDialog";
 import { GroupDialog } from "./dialogs/GroupDialog";
 import { PickerDialog } from "./dialogs/PickerDialog";
@@ -38,6 +39,8 @@ function CurrentDialog() {
       return <ConfirmDialog title={dialog.title} message={dialog.message} onConfirm={dialog.onConfirm} danger={dialog.danger} />;
     case "rename":
       return <RenameDialog sessionId={dialog.sessionId} />;
+    case "system-prompt":
+      return <SystemPromptDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "pr-watch":
       return <WatchDialog key={`${dialog.repo}#${dialog.number}`} target={{ repo: dialog.repo, number: dialog.number }} />;
     case "session-links":

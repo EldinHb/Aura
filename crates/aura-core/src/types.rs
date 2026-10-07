@@ -110,6 +110,16 @@ pub struct Session {
     pub pending_count: u32,
     /// Exit code for exited terminal sessions.
     pub exit_code: Option<i32>,
+    /// The user's system prompt for this session, added after the global and
+    /// per-agent prompts. Takes effect the next time the agent starts.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// The complete system prompt Aura hands the agent when it starts: global,
+    /// per-agent and per-session prompts with their placeholders filled in.
+    /// Set by the manager just before `Provider::start`; never stored or sent.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub instructions: Option<String>,
 }
 
 /// A session group the user created. Kept after its last session is deleted,
@@ -494,6 +504,8 @@ pub struct CreateSessionOpts {
     pub resume_native_id: Option<String>,
     /// When resuming, fork into a new native session.
     pub fork: bool,
+    /// This session's own system prompt (see [`Session::system_prompt`]).
+    pub system_prompt: Option<String>,
 }
 
 impl Session {
@@ -535,6 +547,8 @@ impl Session {
             last_error: None,
             pending_count: 0,
             exit_code: None,
+            system_prompt: opts.system_prompt.clone().filter(|p| !p.trim().is_empty()),
+            instructions: None,
         }
     }
 }

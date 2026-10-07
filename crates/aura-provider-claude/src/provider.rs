@@ -110,11 +110,14 @@ impl Provider for ClaudeProvider {
     }
 
     fn terminal_command(&self, session: &Session) -> Vec<String> {
-        let bin = self.probe.binary().unwrap_or_else(|| "claude".into());
-        match &session.native_id {
-            Some(id) => vec![bin, "--resume".into(), id.clone()],
-            None => vec![bin],
+        let mut argv = vec![self.probe.binary().unwrap_or_else(|| "claude".into())];
+        if let Some(id) = &session.native_id {
+            argv.extend(["--resume".into(), id.clone()]);
         }
+        if let Some(i) = &session.instructions {
+            argv.extend(["--append-system-prompt".into(), i.clone()]);
+        }
+        argv
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {

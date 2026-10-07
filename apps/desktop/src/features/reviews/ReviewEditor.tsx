@@ -6,6 +6,15 @@ import { useStore } from "../../state/store";
 import { ReviewDiff } from "./ReviewDiff";
 import { editDraft, ensureDraft, flushDraft, reloadDraft, rpc, startReview, useReviewDrafts, useReviews } from "./state";
 
+
+/** Same wording as the signature Aura adds to the posted review. */
+export function agentLabel(review: PreReview): string {
+  const a = review.agent;
+  if (!a) return `${review.config.provider} · ${review.config.model ?? "default model"}${review.config.effort ? ` · ${review.config.effort}` : ""}`;
+  const chosen = a.model && a.model !== "default" ? a.model : null;
+  const model = chosen && a.model_id && chosen !== a.model_id ? `${chosen} (${a.model_id})` : a.model_id ?? chosen ?? "default model";
+  return `${a.provider} · model ${model} · effort ${a.effort ?? "default"}`;
+}
 export function ReviewEditor({ id }: { id: string }) {
   const [review, setReview] = useState<PreReview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +46,7 @@ export function ReviewEditor({ id }: { id: string }) {
   const focusComment = (id: string) => { setFocus((s) => ({ id, seq: (s?.seq ?? 0) + 1 })); document.getElementById(`review-comment-${id}`)?.scrollIntoView({ block: "nearest" }); };
   const active = review.status === "queued" || review.status === "running";
   return <div className="pr-review-editor" data-keynav>
-    <header className="pr-toolbar"><button className="btn small" data-hint onClick={() => useReviews.setState({ reviewId: null })}>← Pull request</button><strong>Pre-review</strong><span className="chip">{review.status}</span><span className="pr-muted">{review.config.provider} · {review.config.model ?? "default model"}{review.config.effort && ` · ${review.config.effort}`} · {new Date(review.created_at).toLocaleString()}</span>
+    <header className="pr-toolbar"><button className="btn small" data-hint onClick={() => useReviews.setState({ reviewId: null })}>← Pull request</button><strong>Pre-review</strong><span className="chip">{review.status}</span><span className="pr-muted">{agentLabel(review)} · {new Date(review.created_at).toLocaleString()}</span>
       {!active && <button className="btn small" data-hint onClick={() => startReview(review.pull, review)}>Pre-review again…</button>}</header>
     {error && <div className="pr-error" role="alert">{error}</div>}
     {active ? <div className="pr-progress"><h2>{review.status === "queued" ? "Waiting for an agent slot" : "Review in progress"}</h2><ol>{[["preparing", "Preparing"], ["cloning", "Fetching the branch"], ["running", "Agent reviewing"], ["validating", "Checking findings"]].map(([phase, label]) => <li key={phase} className={review.phase === phase ? "active" : ""}>{label}{review.phase === phase ? " …" : ""}</li>)}</ol><Elapsed since={review.created_at} /><pre className="pr-log">{review.log_tail.join("\n")}</pre><button className="btn" data-hint disabled={busy} onClick={() => void action("reviews.cancel")}>Cancel pre-review</button></div>

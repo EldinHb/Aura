@@ -30,4 +30,9 @@ pending_count: number,
 /**
  * Exit code for exited terminal sessions.
  */
-exit_code: number | null, };
+exit_code: number | null, 
+/**
+ * The user's system prompt for this session, added after the global and
+ * per-agent prompts. Takes effect the next time the agent starts.
+ */
+system_prompt: string | null, };

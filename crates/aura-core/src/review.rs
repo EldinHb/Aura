@@ -110,6 +110,46 @@ pub struct PreReview {
     pub result: ReviewResult,
     pub submitted_url: Option<String>,
     pub submission: Option<SubmissionPreview>,
+    /// The agent that wrote the draft. Missing on drafts from before Aura recorded it.
+    #[serde(default)]
+    pub agent: Option<ReviewAgent>,
+}
+/// Who wrote a pre-review; signed onto what Aura posts to GitHub.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewAgent {
+    /// `Claude Code`, `Codex`.
+    pub provider: String,
+    /// The model as chosen: an alias such as `opus`, or a model id. None for the default.
+    pub model: Option<String>,
+    /// The exact model that ran, when the agent or provider reports it.
+    pub model_id: Option<String>,
+    /// None when the model's default effort was used.
+    pub effort: Option<String>,
+}
+impl ReviewAgent {
+    /// `opus (claude-opus-5-5)`, `gpt-5.5-codex`, or `default model`.
+    pub fn model_label(&self) -> String {
+        let chosen = self
+            .model
+            .as_deref()
+            .filter(|m| !m.is_empty() && *m != "default");
+        match (chosen, self.model_id.as_deref()) {
+            (Some(m), Some(id)) if m != id => format!("{m} ({id})"),
+            (_, Some(id)) => id.to_string(),
+            (Some(m), None) => m.to_string(),
+            (None, None) => "default model".into(),
+        }
+    }
+    /// `Claude Code · model opus (claude-opus-5-5) · effort high`
+    pub fn signature(&self) -> String {
+        format!(
+            "{} · model {} · effort {}",
+            self.provider,
+            self.model_label(),
+            self.effort.as_deref().unwrap_or("default")
+        )
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]

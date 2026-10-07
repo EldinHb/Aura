@@ -6,14 +6,14 @@ import { chordFromEvent, formatKeys, type Binding } from "../../lib/keymap";
 import { buildBindings } from "../../hooks/useKeyboard";
 import { isMac } from "../../lib/platform";
 import { findConflicts, isConflicting } from "./keymapUtils";
-import type { CapabilitySet } from "../../gen";
+import type { CapabilitySet, SystemPrompts } from "../../gen";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
 import { pullFilterError } from "../../features/reviews/state";
 
-type Tab = "general" | "keymap" | "providers" | "groups";
-const TABS: Tab[] = ["general", "keymap", "providers", "groups"];
+type Tab = "general" | "keymap" | "providers" | "prompts" | "groups";
+const TABS: Tab[] = ["general", "keymap", "providers", "prompts", "groups"];
 
 export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initial ?? "general");
@@ -55,6 +55,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
         {tab === "general" && <GeneralTab />}
         {tab === "keymap" && <KeymapTab />}
         {tab === "providers" && <ProvidersTab />}
+        {tab === "prompts" && <PromptsTab />}
         {tab === "groups" && <GroupsTab />}
       </div>
     </ModalC>
@@ -383,6 +384,102 @@ function ProvidersTab() {
         </div>
       ))}
       {providers.length === 0 && <div className="empty" style={{ height: "auto", padding: 20 }}>No providers reported by the daemon.</div>}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ prompts
+
+function PromptsTab() {
+  const client = useStore((s) => s.client);
+  const providers = useStore((s) => s.providers);
+  const toast = useStore((s) => s.toast);
+  const [prompts, setPrompts] = useState<SystemPrompts | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    client?.systemPrompts().then(setPrompts, (e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [client]);
+  // Agents a per-agent prompt can target: Claude Code, Codex, then the installed ACP agents.
+  const agents = useMemo(() => {
+    const out: { key: string; name: string }[] = [];
+    for (const kind of ["claude", "codex"]) {
+      const p = providers.find((x) => x.kind === kind);
+      if (p) out.push({ key: kind, name: p.display_name });
+    }
+    for (const a of providers.find((x) => x.kind === "acp")?.agents ?? []) if (a.available) out.push({ key: `acp:${a.id}`, name: a.display_name });
+    // Prompts saved for agents that are no longer listed stay editable.
+    for (const key of Object.keys(prompts?.agents ?? {})) if (!out.some((a) => a.key === key)) out.push({ key, name: key });
+    return out;
+  }, [providers, prompts]);
+  const run = async (f: () => Promise<SystemPrompts>, done: string) => {
+    try {
+      setPrompts(await f());
+      toast(done);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+  if (error) return <div className="err-text">{error}</div>;
+  if (!prompts || !client) return <div className="dim">Loading…</div>;
+  return (
+    <div className="prompts-tab">
+      <p className="dim prompt-help">
+        Every agent Aura starts gets the global prompt, then its agent's prompt, then the session's own (set from the inspector or <span className="mono">⌘K</span> → Session system prompt). <span className="mono">{"{{agent}}"}</span>, <span className="mono">{"{{model}}"}</span> and <span className="mono">{"{{effort}}"}</span> are filled in when the agent starts. Idle agents restart with a changed prompt on their next message.
+      </p>
+      <PromptEditor
+        key={`global:${prompts.global}`}
+        label={prompts.global_is_default ? "Global · Aura's default" : "Global"}
+        initial={prompts.global}
+        autofocus
+        onSave={(v) => run(() => client.setGlobalPrompt(v), "Global prompt saved")}
+        extra={!prompts.global_is_default && (
+          <button type="button" className="btn small" data-hint onClick={() => void run(() => client.setGlobalPrompt(null), "Global prompt reset to Aura's default")}>Reset to default</button>
+        )}
+      />
+      {agents.map((a) => (
+        <PromptEditor
+          key={`${a.key}:${prompts.agents[a.key] ?? ""}`}
+          label={a.name}
+          initial={prompts.agents[a.key] ?? ""}
+          placeholder={`Only for ${a.name} sessions`}
+          onSave={(v) => run(() => client.setAgentPrompt(a.key, v.trim() ? v : null), `${a.name} prompt saved`)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PromptEditor({ label, initial, placeholder, autofocus, onSave, extra }: { label: string; initial: string; placeholder?: string; autofocus?: boolean; onSave: (v: string) => Promise<void>; extra?: React.ReactNode }) {
+  const [value, setValue] = useState(initial);
+  const dirty = value !== initial;
+  return (
+    <div className="field prompt-field">
+      <label>{label}</label>
+      <textarea
+        className="prompt-input"
+        rows={label.startsWith("Global") ? 10 : 3}
+        data-autofocus={autofocus || undefined}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && dirty) {
+            e.preventDefault();
+            e.stopPropagation();
+            void onSave(value);
+          }
+        }}
+      />
+      <div className="prompt-actions">
+        {extra}
+        <span style={{ flex: 1 }} />
+        {dirty && (
+          <>
+            <button type="button" className="btn small" data-hint onClick={() => setValue(initial)}>Discard</button>
+            <button type="button" className="btn small primary" data-hint onClick={() => void onSave(value)}>Save <kbd>⌘↩</kbd></button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

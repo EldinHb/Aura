@@ -14,6 +14,7 @@ import type {
   ProviderKind,
   SearchHit,
   Session,
+  SystemPrompts,
   SessionMode,
   Setting,
   SlashCommand,
@@ -248,6 +249,25 @@ export class RpcClient {
   }
   rename(id: string, title: string) {
     return this.call<Session>("session.rename", { id, title });
+  }
+  /** This session's own system prompt; `null` removes it. */
+  setSystemPrompt(id: string, prompt: string | null) {
+    return this.call<Session>("session.set_system_prompt", { id, prompt });
+  }
+  systemPrompts() {
+    return this.call<SystemPrompts>("prompts.get");
+  }
+  /** `null` goes back to Aura's default global prompt. */
+  setGlobalPrompt(prompt: string | null) {
+    return this.call<SystemPrompts>("prompts.set_global", { prompt });
+  }
+  /** `agent`: `claude`, `codex` or `acp:<agent id>`. `null` removes its prompt. */
+  setAgentPrompt(agent: string, prompt: string | null) {
+    return this.call<SystemPrompts>("prompts.set_agent", { agent, prompt });
+  }
+  /** The complete system prompt the session's agent starts with. */
+  effectivePrompt(id: string) {
+    return this.call<string | null>("prompts.preview", { id });
   }
   setGroup(id: string, group: string | null) {
     return this.call<Session>("session.set_group", { id, group });

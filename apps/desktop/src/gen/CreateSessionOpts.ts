@@ -27,4 +27,8 @@ resume_native_id: string | null,
 /**
  * When resuming, fork into a new native session.
  */
-fork: boolean, };
+fork: boolean, 
+/**
+ * This session's own system prompt (see [`Session::system_prompt`]).
+ */
+system_prompt: string | null, };

@@ -117,6 +117,28 @@ with `aura daemon stop`.
 For PR reviews, also install the [GitHub CLI](https://cli.github.com) and run
 `gh auth login`.
 
+## System prompts
+
+Aura adds a system prompt to every agent it starts, built from three parts in this
+order:
+
+- **Global**, for every agent. Edit it in Settings → Prompts. Until you change it,
+  Aura's default applies: whenever an agent posts on GitHub or another issue tracker
+  on your behalf (PR descriptions, reviews, issue comments, new issues), it must end
+  the post with a line saying an AI agent wrote it, with the agent, model, model
+  version and effort. **Reset to default** brings it back.
+- **Per agent**: Claude Code, Codex and each ACP agent, also in Settings → Prompts.
+- **Per session**: in the new-session dialog, or later with **Prompt** in the
+  inspector (`⌘K` → Session system prompt…). It also shows the complete prompt the
+  agent starts with.
+
+`{{agent}}`, `{{model}}` and `{{effort}}` are filled in with the values the agent
+starts with. Claude Code gets the prompt through `--append-system-prompt` and Codex
+as developer instructions, in Aura's view and in their own TUI. ACP has no system
+prompt, so ACP agents receive it at the start of the first message of a new
+conversation. After a change, an idle agent restarts with the new prompt on your next
+message; one that is working keeps its prompt until it next starts.
+
 ## ACP agents
 
 Besides Claude Code and Codex, Aura runs any agent that speaks the
@@ -202,7 +224,7 @@ show up in the other.
 ```bash
 aura daemon start|stop|status
 aura ls [--all]
-aura new --provider claude|codex|terminal|acp [--agent ID] [--cwd DIR] [--title T] [--group G] [--prompt TEXT] [--branch B] [--resume NATIVE_ID] [-- cmd args...]
+aura new --provider claude|codex|terminal|acp [--agent ID] [--cwd DIR] [--title T] [--group G] [--prompt TEXT] [--system-prompt TEXT] [--branch B] [--resume NATIVE_ID] [-- cmd args...]
 aura attach <id>         # raw terminal passthrough; Ctrl+\ detaches
 aura send <id> <text>
 aura interrupt <id>
@@ -304,6 +326,10 @@ preview. Unanchorable findings become Additional notes in the body. Deleted
 findings and private agent rationale are excluded. A hidden receipt marker lets
 Aura reconcile a request whose response was lost. If a submission outcome is
 uncertain, use **Reconcile with GitHub**; Aura will not blindly repeat the POST.
+The posted review ends with a line saying an AI agent drafted it and a person
+reviewed it, naming the agent, the model (with the exact model id when the agent
+reports it) and the effort. Each finding the agent wrote carries a short version of
+that line; findings you added yourself do not.
 
 ### Watching your own PRs for reviews
 

@@ -251,6 +251,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
             <div className="actions">
               {caps?.fork && s.native_id && <Action cmd="session.fork" label="Fork" />}
               <Action cmd="session.rename" label="Rename" />
+              {s.provider !== "terminal" && <Action cmd="session.system-prompt" label="Prompt" />}
               {caps?.terminal_mode && s.provider !== "terminal" && <Action cmd="session.toggle-mode" label={s.mode === "terminal" ? "Structured" : "Terminal"} />}
               {s.mode === "terminal" && s.status === "exited" && <Action cmd="session.restart" label="Restart" />}
               <Action cmd="git.diff" label="Diff" />

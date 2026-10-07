@@ -96,6 +96,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [worktree, setWorktree] = useState(preset === "worktree");
   const [branch, setBranch] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [issue, setIssue] = useState<PickedIssue | null>(null);
   const [busy, setBusy] = useState(false);
   const dirInput = useRef<HTMLInputElement>(null);
@@ -227,6 +228,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         sandbox_mode: sandbox || null,
         worktree: worktree && repoRoot && branch.trim() ? { branch: branch.trim(), base: null, path: null } : null,
         initial_prompt: mode === "structured" && prompt.trim() ? prompt.trim() : null,
+        system_prompt: provider !== "terminal" && systemPrompt.trim() ? systemPrompt : null,
       });
       pushRecentDir(cwd);
       if (issue) {
@@ -241,7 +243,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, issue, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, issue, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -426,6 +428,19 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
           <label>Initial prompt (optional)</label>
           <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="First message to the agent… (⌘↩ to create)" />
         </div>
+      )}
+
+      {provider !== "terminal" && (
+        <details className="field prompt-effective" open={!!systemPrompt}>
+          <summary>System prompt for this session (optional)</summary>
+          <textarea
+            className="prompt-input"
+            rows={4}
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder="Added after the global and agent prompts from Settings → Prompts"
+          />
+        </details>
       )}
     </Modal>
   );

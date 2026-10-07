@@ -232,6 +232,45 @@ async fn prompts_sent_during_a_turn_wait_for_it() {
 }
 
 #[tokio::test]
+async fn the_system_prompt_rides_on_the_first_prompt_of_a_new_session_only() {
+    let (pipe, mut agent) = link();
+    let mut s = session(None, None);
+    s.instructions = Some("Sign your GitHub comments".into());
+    let (handle, _rx) = connect(pipe, s);
+    let (id, _) = agent.expect("initialize").await;
+    agent.respond(id, init_result(json!({}))).await;
+    let (id, _) = agent.expect("session/new").await;
+    agent.respond(id, json!({ "sessionId": "acp-1" })).await;
+    let driver = handle.await.unwrap().unwrap();
+
+    driver.send(Input { text: "one".into(), ..Default::default() }).await.unwrap();
+    let (first, params) = agent.expect("session/prompt").await;
+    assert_eq!(params["prompt"][0]["text"], "<system-instructions>\nSign your GitHub comments\n</system-instructions>");
+    assert_eq!(params["prompt"][1]["text"], "one");
+    agent.respond(first, json!({ "stopReason": "end_turn" })).await;
+    driver.send(Input { text: "two".into(), ..Default::default() }).await.unwrap();
+    let (_, params) = agent.expect("session/prompt").await;
+    assert_eq!(params["prompt"].as_array().unwrap().len(), 1);
+    assert_eq!(params["prompt"][0]["text"], "two");
+}
+
+#[tokio::test]
+async fn a_resumed_session_is_not_sent_the_system_prompt_again() {
+    let (pipe, mut agent) = link();
+    let mut s = session(Some("old"), None);
+    s.instructions = Some("Sign your GitHub comments".into());
+    let (handle, _rx) = connect(pipe, s);
+    let (id, _) = agent.expect("initialize").await;
+    agent.respond(id, init_result(json!({ "sessionCapabilities": { "resume": {} } }))).await;
+    let (id, _) = agent.expect("session/resume").await;
+    agent.respond(id, json!({})).await;
+    let driver = handle.await.unwrap().unwrap();
+    driver.send(Input { text: "again".into(), ..Default::default() }).await.unwrap();
+    let (_, params) = agent.expect("session/prompt").await;
+    assert_eq!(params["prompt"][0]["text"], "again");
+}
+
+#[tokio::test]
 async fn sign_in_errors_explain_what_to_do_and_stay_the_reported_error() {
     let (pipe, mut agent) = link();
     let (handle, mut rx) = connect(pipe, session(None, None));

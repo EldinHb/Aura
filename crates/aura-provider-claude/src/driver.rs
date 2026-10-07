@@ -62,6 +62,10 @@ impl ClaudeDriver {
         if let Some(e) = &session.effort {
             cmd.args(["--effort", e]);
         }
+        // Not kept with the conversation, so it is passed again on every resume.
+        if let Some(i) = &session.instructions {
+            cmd.args(["--append-system-prompt", i]);
+        }
         cmd.current_dir(&session.cwd);
         cmd.env("AURA_SESSION_ID", &session.id);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());

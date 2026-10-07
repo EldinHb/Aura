@@ -48,11 +48,12 @@ export type Dialog =
   | { kind: "none" }
   | { kind: "new-session"; provider?: string; cwd?: string }
   | { kind: "import" }
-  | { kind: "settings"; tab?: "general" | "keymap" | "providers" | "groups" }
+  | { kind: "settings"; tab?: "general" | "keymap" | "providers" | "prompts" | "groups" }
   | { kind: "search" }
   | { kind: "inbox" }
   | { kind: "diff"; sessionId: string; path?: string }
   | { kind: "rename"; sessionId: string }
+  | { kind: "system-prompt"; sessionId: string }
   | { kind: "session-links"; sessionId: string }
   | { kind: "pr-watch"; repo: string; number: number }
   | { kind: "group"; sessionId: string }

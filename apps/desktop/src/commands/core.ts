@@ -76,6 +76,7 @@ export const coreCommands: Command[] = [
   { id: "help.open", title: "Keyboard shortcuts help", group: "Aura", run: () => st().openDialog({ kind: "help" }) },
   { id: "settings.open", title: "Settings", group: "Aura", run: () => st().openDialog({ kind: "settings" }) },
   { id: "settings.groups", title: "Manage groups…", group: "Aura", keywords: ["delete group"], run: () => st().openDialog({ kind: "settings", tab: "groups" }) },
+  { id: "settings.prompts", title: "System prompts…", group: "Aura", keywords: ["global prompt", "agent prompt", "instructions"], run: () => st().openDialog({ kind: "settings", tab: "prompts" }) },
   { id: "search.open", title: "Search across sessions", group: "Aura", run: () => st().openDialog({ kind: "search" }) },
   { id: "inbox.open", title: "Approvals inbox", group: "Aura", run: () => st().openDialog({ kind: "inbox" }) },
   { id: "import.open", title: "Import existing CLI sessions", group: "Session", run: () => st().openDialog({ kind: "import" }) },
@@ -161,6 +162,7 @@ export const coreCommands: Command[] = [
   { id: "session.clear-all-notices", title: "Clear warnings in all sessions", group: "Session", run: async () => { await client().clearNotices(); st().toast("Cleared warnings in all sessions"); } },
   { id: "session.fork", title: "Fork session", group: "Session", when: "hasSelection", run: async () => { const s = await client().fork(selected().id); st().select(s.id); } },
   { id: "session.rename", title: "Rename session…", group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "rename", sessionId: selected().id }) },
+  { id: "session.system-prompt", title: "Session system prompt…", group: "Session", keywords: ["instructions"], when: "hasSelection", run: () => st().openDialog({ kind: "system-prompt", sessionId: selected().id }) },
   { id: "session.links", title: "Edit issue & PR…", keywords: ["GitHub", "pull request", "links"], group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "session-links", sessionId: selected().id }) },
   { id: "session.plan.toggle", title: "Show / hide session plan", group: "Session", when: "hasSelection", run: () => {
     const id = selected().id;

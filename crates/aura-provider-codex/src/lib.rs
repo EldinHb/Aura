@@ -208,6 +208,10 @@ impl Provider for CodexProvider {
         if let Some(sb) = &session.sandbox_mode {
             params.insert("sandbox".into(), json!(sb));
         }
+        // Accepted by thread/start, thread/resume and thread/fork alike.
+        if let Some(i) = &session.instructions {
+            params.insert("developerInstructions".into(), json!(i));
+        }
         let (method, thread_hint) = match (&session.native_id, fork) {
             (Some(id), true) => {
                 params.insert("threadId".into(), json!(id));
@@ -272,10 +276,15 @@ impl Provider for CodexProvider {
     }
 
     fn terminal_command(&self, session: &Session) -> Vec<String> {
-        match &session.native_id {
-            Some(id) => vec![self.binary(), "resume".into(), id.clone()],
-            None => vec![self.binary()],
+        let mut argv = vec![self.binary()];
+        if let Some(id) = &session.native_id {
+            argv.extend(["resume".into(), id.clone()]);
         }
+        if let Some(i) = &session.instructions {
+            // `-c` values are TOML; a JSON string is a valid TOML string.
+            argv.extend(["-c".into(), format!("developer_instructions={}", serde_json::to_string(i).unwrap_or_default())]);
+        }
+        argv
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {

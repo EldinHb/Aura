@@ -47,15 +47,28 @@ pub fn validate_result(r: &ReviewResult) -> Result<()> {
     Ok(())
 }
 pub type Progress = Arc<dyn Fn(String) + Send + Sync>;
+pub struct RunOutput {
+    pub result: ReviewResult,
+    /// The exact model that ran, when the agent reports it.
+    pub model_id: Option<String>,
+}
 #[async_trait]
 pub trait ReviewRunner: Send + Sync {
-    async fn run(&self, review: &PreReview, cwd: &Path, progress: Progress)
-        -> Result<ReviewResult>;
+    async fn run(&self, review: &PreReview, cwd: &Path, progress: Progress) -> Result<RunOutput>;
+}
+/// The model that did most of the work in Claude's `modelUsage`; small models
+/// can show up there for side tasks.
+pub fn claude_model(output: &Value) -> Option<String> {
+    let usage = output.get("modelUsage")?.as_object()?;
+    usage
+        .iter()
+        .max_by_key(|(_, u)| u.get("outputTokens").and_then(Value::as_u64).unwrap_or(0))
+        .map(|(id, _)| id.clone())
 }
 pub struct CliRunner;
 #[async_trait]
 impl ReviewRunner for CliRunner {
-    async fn run(&self, r: &PreReview, cwd: &Path, progress: Progress) -> Result<ReviewResult> {
+    async fn run(&self, r: &PreReview, cwd: &Path, progress: Progress) -> Result<RunOutput> {
         let provider = r.config.provider.as_str();
         let bin = aura_core::which::find_binary(
             provider,
@@ -184,24 +197,27 @@ impl ReviewRunner for CliRunner {
             Ok::<_, anyhow::Error>(out)
         };
         let out = capture.await?;
-        let value = if provider == "codex" {
-            serde_json::from_str::<Value>(
+        let (value, model_id) = if provider == "codex" {
+            let v = serde_json::from_str::<Value>(
                 &tokio::fs::read_to_string(output_path)
                     .await
                     .context("Agent did not produce structured output")?,
-            )?
+            )?;
+            (v, None)
         } else {
             let v: Value = serde_json::from_str(&out)?;
             if v["is_error"] == true {
                 bail!("Claude reported an error: {}", v["result"]);
             }
-            v.get("structured_output")
+            let structured = v
+                .get("structured_output")
                 .cloned()
-                .context("Claude did not return schema-constrained output")?
+                .context("Claude did not return schema-constrained output")?;
+            (structured, claude_model(&v))
         };
         let result: ReviewResult = serde_json::from_value(value)?;
         validate_result(&result)?;
-        Ok(result)
+        Ok(RunOutput { result, model_id })
     }
 }
 #[cfg(test)]
@@ -215,6 +231,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(instructions(&c).unwrap(), "Focus on migrations");
+    }
+    #[test]
+    fn claude_model_is_the_one_that_wrote_most() {
+        let v = json!({"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":40},"claude-opus-5-5":{"outputTokens":900}}});
+        assert_eq!(claude_model(&v).as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(claude_model(&json!({})), None);
     }
     #[test]
     fn invalid_output_fails() {
