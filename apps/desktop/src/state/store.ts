@@ -61,6 +61,7 @@ export type Dialog =
   | { kind: "permission"; sessionId: string }
   | { kind: "sandbox"; sessionId: string }
   | { kind: "slash"; sessionId: string }
+  | { kind: "steps"; sessionId: string; groupId: string }
   | { kind: "confirm"; title: string; message: string; onConfirm: () => void; danger?: boolean }
   | { kind: "help" };
 

@@ -79,7 +79,7 @@ export function registerTranscriptCommands() {
     { id: "transcript.scroll-bottom", title: "Scroll to latest output", group: "Transcript", run: () => handle?.scrollToBottom() },
     {
       id: "transcript.toggle-reasoning",
-      title: "Show / hide reasoning",
+      title: "Show / hide reasoning in steps",
       group: "Transcript",
       run: () => st().setSettings({ showReasoning: !st().settings.showReasoning }),
     },

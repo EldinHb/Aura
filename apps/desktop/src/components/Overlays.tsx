@@ -20,6 +20,7 @@ import { DiffDialog } from "./dialogs/DiffDialog";
 import { SearchDialog } from "./dialogs/SearchDialog";
 import { InboxDialog } from "./dialogs/InboxDialog";
 import { SettingsDialog } from "./dialogs/SettingsDialog";
+import { StepsDialog } from "../views/transcript/Steps";
 import { getDialog, onDialogsChanged } from "./dialogRegistry";
 
 function CurrentDialog() {
@@ -56,6 +57,8 @@ function CurrentDialog() {
       return <SlashDialog sessionId={dialog.sessionId} />;
     case "diff":
       return <DiffDialog key={`${dialog.sessionId}-${dialog.path ?? ""}`} sessionId={dialog.sessionId} path={dialog.path} />;
+    case "steps":
+      return <StepsDialog key={dialog.groupId} sessionId={dialog.sessionId} groupId={dialog.groupId} />;
     case "search":
       return <SearchDialog />;
     case "inbox":

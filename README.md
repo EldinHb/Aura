@@ -31,7 +31,9 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
   left it: output, history and pending approvals included.
 - **One transcript for every agent.** Claude Code and Codex sessions are shown in the
   same structured view: messages, reasoning, tool calls, command output, file changes,
-  approvals, questions and token usage.
+  approvals, questions and token usage. The work behind each reply (reasoning, tool
+  calls, commands, edits) folds into one row under your message, so the chat stays
+  your messages and the agent's answers; open the row to see every step.
 - **Other agents through ACP.** Gemini CLI, GitHub Copilot, OpenCode, goose, Cursor,
   Qwen Code and any other agent that speaks the
   [Agent Client Protocol](https://agentclientprotocol.com) get the same structured view.

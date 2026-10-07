@@ -100,7 +100,7 @@ function GeneralTab() {
         <input type="checkbox" checked={settings.confirmDelete} onChange={(e) => set("confirmDelete", e.target.checked)} /> Confirm before deleting a session
       </label>
       <label className="check-row">
-        <input type="checkbox" checked={settings.showReasoning} onChange={(e) => set("showReasoning", e.target.checked)} /> Show reasoning items in transcripts
+        <input type="checkbox" checked={settings.showReasoning} onChange={(e) => set("showReasoning", e.target.checked)} /> Include reasoning in each reply's steps
       </label>
       <div className="field">
         <label>Default provider</label>

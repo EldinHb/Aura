@@ -8,6 +8,8 @@ import { registerTranscriptCommands, setTranscriptHandle } from "../commands/tra
 import { ItemRow } from "./transcript/ItemRow";
 import { ApprovalCard } from "./transcript/ApprovalCard";
 import { UserInputCard } from "./transcript/UserInputCard";
+import { StepsButton, openSteps } from "./transcript/Steps";
+import { replySteps, type StepGroup } from "./transcript/replySteps";
 import { durationMs, fmtDuration, fmtTokens, fmtUsd, isCardKind, lastBoundaryIndex } from "./transcript/format";
 
 let commandsRegistered: (() => void) | null = null;
@@ -16,6 +18,7 @@ let mounted = 0;
 type Row =
   | { kind: "turn"; turn: Turn; key: string }
   | { kind: "item"; item: Item; key: string; nested: boolean; stale: boolean }
+  | { kind: "steps"; group: StepGroup; key: string; stale: boolean }
   | { kind: "approval"; id: string; key: string }
   | { kind: "input"; id: string; key: string }
   | { kind: "notice"; key: string; level: string; message: string }
@@ -72,22 +75,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     };
   }, []);
 
-  const rows = useMemo<Row[]>(() => {
-    if (!t) return [];
+  // `stepOf` maps every item folded into a steps row, subagent children included, to that row's key.
+  const { rows, stepOf } = useMemo(() => {
     const out: Row[] = [];
-    const items = t.order.map((id) => t.items[id]).filter((x): x is Item => !!x);
-    const byParent = new Map<string, Item[]>();
-    const top: Item[] = [];
-    for (const it of items) {
-      if (it.parent_id && t.items[it.parent_id]) {
-        // flatten deeper nesting to the first subagent ancestor
-        let p = it.parent_id;
-        let guard = 0;
-        while (t.items[p]?.parent_id && t.items[t.items[p].parent_id!] && guard++ < 8) p = t.items[p].parent_id!;
-        if (!byParent.has(p)) byParent.set(p, []);
-        byParent.get(p)!.push(it);
-      } else top.push(it);
-    }
+    const stepOf = new Map<string, string>();
+    if (!t) return { rows: out, stepOf };
+    const { top, byParent, groups } = replySteps(t.order, t.items, showReasoning);
     const turnsById = new Map(t.turns.map((x) => [x.id, x]));
     let lastTurn: string | null | undefined;
     const approvalsByItem = new Map<string, string[]>();
@@ -104,11 +97,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       if (r.item_id && t.items[r.item_id]) (inputsByItem.get(r.item_id) ?? inputsByItem.set(r.item_id, []).get(r.item_id)!).push(r.id);
       else looseInputs.push(r.id);
     }
+    const pushPending = (it: Item) => {
+      for (const id of approvalsByItem.get(it.id) ?? []) out.push({ kind: "approval", id, key: `approval:${id}` });
+      for (const id of inputsByItem.get(it.id) ?? []) out.push({ kind: "input", id, key: `input:${id}` });
+    };
     const pushItem = (it: Item, nested: boolean, stale: boolean) => {
       if (it.kind === "reasoning" && !showReasoning) return;
       out.push({ kind: "item", item: it, key: it.id, nested, stale });
-      for (const id of approvalsByItem.get(it.id) ?? []) out.push({ kind: "approval", id, key: `approval:${id}` });
-      for (const id of inputsByItem.get(it.id) ?? []) out.push({ kind: "input", id, key: `input:${id}` });
+      pushPending(it);
     };
     // Items above the latest clear or compaction are no longer in the agent's context.
     const boundary = lastBoundaryIndex(top);
@@ -117,6 +113,20 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         lastTurn = it.turn_id;
         const turn = it.turn_id ? turnsById.get(it.turn_id) : undefined;
         if (turn && turn.status !== "running") out.push({ kind: "turn", turn, key: `turn:${turn.id}` });
+      }
+      const group = groups.get(it.id);
+      if (group) {
+        // The whole group sits where its first step was; approvals and questions
+        // for any of its steps stay in the chat right below it.
+        const key = `steps:${group.id}`;
+        if (group.id === it.id) out.push({ kind: "steps", group, key, stale: i < boundary });
+        stepOf.set(it.id, key);
+        pushPending(it);
+        for (const child of byParent.get(it.id) ?? []) {
+          stepOf.set(child.id, key);
+          pushPending(child);
+        }
+        continue;
       }
       pushItem(it, false, i < boundary);
       for (const child of byParent.get(it.id) ?? []) pushItem(child, true, i < boundary);
@@ -127,18 +137,22 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (running) out.push({ kind: "turn", turn: running, key: `turn:${running.id}` });
     for (const n of t.notices.slice(-5)) out.push({ kind: "notice", key: `notice:${n.id}`, level: n.level, message: n.message });
     if (t.notices.length > 0) out.push({ kind: "notices-clear", key: "notices-clear" });
-    return out;
+    return { rows: out, stepOf };
   }, [t, showReasoning]);
 
-  const navigable = useMemo(() => rows.filter((r) => r.kind === "item" || r.kind === "approval" || r.kind === "input").map((r) => r.key), [rows]);
+  const navigable = useMemo(() => rows.filter((r) => r.kind === "item" || r.kind === "steps" || r.kind === "approval" || r.kind === "input").map((r) => r.key), [rows]);
 
   const toggle = useCallback(
     (id: string) => {
+      if (id.startsWith("steps:")) {
+        openSteps(sessionId, id.slice(6));
+        return;
+      }
       const it = t?.items[id];
       const def = it ? (it.kind === "reasoning" ? false : isCardKind(it.kind) ? it.status !== "completed" : false) : false;
       setExpanded((e) => ({ ...e, [id]: !(e[id] ?? def) }));
     },
-    [t],
+    [t, sessionId],
   );
 
   const scrollToBottom = useCallback(() => {
@@ -160,15 +174,16 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       scrollToBottom,
       copyCursor: async () => {
         const id = useStore.getState().cursorItemId;
-        const it = id ? t?.items[id] : null;
-        if (!it) return;
-        const text = it.kind === "command_exec" ? `$ ${it.data.command ?? ""}\n${it.data.output ?? ""}` : it.text || JSON.stringify(it.data, null, 2);
+        const group = id?.startsWith("steps:") ? rows.find((r) => r.key === id) : undefined;
+        const its = group?.kind === "steps" ? group.group.items : id && t?.items[id] ? [t.items[id]] : [];
+        if (its.length === 0) return;
+        const text = its.map((it) => (it.kind === "command_exec" ? `$ ${it.data.command ?? ""}\n${it.data.output ?? ""}` : it.text || JSON.stringify(it.data, null, 2))).join("\n\n");
         await navigator.clipboard.writeText(text);
         toast("Copied");
       },
     });
     return () => setTranscriptHandle(null);
-  }, [navigable, toggle, scrollToBottom, t, toast]);
+  }, [navigable, toggle, scrollToBottom, t, toast, rows]);
 
   // sticky bottom
   const count = rows.length;
@@ -185,16 +200,27 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     setAtBottom(near);
   };
 
+  // A jump to a step (search, inspector) lands on the row that holds it.
+  const cursorKey = cursorItemId ? (stepOf.get(cursorItemId) ?? cursorItemId) : null;
+
   // scroll cursor into view
   useEffect(() => {
-    if (!cursorItemId) return;
-    const sel = cursorItemId.startsWith("approval:") ? `[data-approval-id="${cursorItemId.slice(9)}"]` : cursorItemId.startsWith("input:") ? `[data-input-id="${cursorItemId.slice(6)}"]` : `[data-item-id="${cursorItemId}"]`;
+    if (!cursorKey) return;
+    // Move the cursor itself onto the row, so j/k continue from there.
+    if (cursorKey !== useStore.getState().cursorItemId) setCursorItem(cursorKey);
+    const sel = cursorKey.startsWith("approval:")
+      ? `[data-approval-id="${cursorKey.slice(9)}"]`
+      : cursorKey.startsWith("input:")
+        ? `[data-input-id="${cursorKey.slice(6)}"]`
+        : cursorKey.startsWith("steps:")
+          ? `[data-steps-id="${cursorKey.slice(6)}"]`
+          : `[data-item-id="${cursorKey}"]`;
     const el = rootRef.current?.querySelector<HTMLElement>(sel);
     if (el) {
       el.scrollIntoView({ block: "nearest" });
-      if (cursorItemId.startsWith("input:")) el.focus();
+      if (cursorKey.startsWith("input:")) el.focus();
     }
-  }, [cursorItemId]);
+  }, [cursorKey, setCursorItem]);
 
   const onCursor = useCallback((id: string) => setCursorItem(id), [setCursorItem]);
 
@@ -232,6 +258,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
                   stale={r.stale}
                 />
               );
+            case "steps":
+              return <StepsButton key={r.key} group={r.group} sessionId={sessionId} cursor={cursorKey === r.key} stale={r.stale} onCursor={onCursor} />;
             case "approval": {
               const a = t!.approvals[r.id];
               return a ? <ApprovalCard key={r.key} approval={a} sessionId={sessionId} cursor={cursorItemId === r.key} /> : null;
