@@ -413,6 +413,37 @@ impl ReviewService {
                 self.changed(&pr);
                 v
             }
+            "pulls.merge" => {
+                let pr = self.lookup(&p).await?;
+                let method = required(&p, "method")?;
+                if !pr.merge_methods.iter().any(|m| m == method) {
+                    bail!("This repository does not allow {method} merges");
+                }
+                if let Some(reason) = pr.merge_blocker() {
+                    bail!("{reason}");
+                }
+                // Merge what was on screen, not commits pushed since.
+                if required(&p, "sha")? != pr.head_sha {
+                    bail!("New commits were pushed since you opened this pull request. Refresh and check them before merging.");
+                }
+                let delete = p["delete_branch"].as_bool().unwrap_or(false) && pr.can_delete_branch;
+                let merged = aura_github::merge(&*self.gh, &pr.account, &pr, method).await;
+                if merged.is_err() {
+                    // A failed request may still have merged; resyncing is harmless either way.
+                    self.changed(&pr);
+                }
+                merged?;
+                let branch_error = if delete {
+                    aura_github::delete_branch(&*self.gh, &pr.account, &pr)
+                        .await
+                        .err()
+                        .map(|e| format!("Merged, but the branch was not deleted: {e:#}"))
+                } else {
+                    None
+                };
+                self.changed(&pr);
+                json!({"branch_deleted": delete && branch_error.is_none(), "branch_error": branch_error})
+            }
             "pulls.setField" => {
                 let pr = self.lookup(&p).await?;
                 let projects = aura_github::projects(&*self.gh, &pr).await?;

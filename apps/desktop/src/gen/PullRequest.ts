@@ -9,4 +9,32 @@ my_review: SubmittedReview | null,
 /**
  * When your review, or a team's, was last requested.
  */
-review_requested_at: string | null, };
+review_requested_at: string | null, 
+/**
+ * GitHub's `mergeStateStatus`: `CLEAN` when nothing blocks a merge.
+ */
+merge_state: string, 
+/**
+ * Merge methods the repository allows: `merge`, `squash` and `rebase`.
+ */
+merge_methods: Array<string>, 
+/**
+ * The method GitHub preselects for you in this repository.
+ */
+default_merge_method: string, 
+/**
+ * You have write access to the base repository.
+ */
+can_merge: boolean, 
+/**
+ * The head branch lives in the base repository, so a merge can delete it.
+ */
+can_delete_branch: boolean, 
+/**
+ * The repository deletes head branches itself once they are merged.
+ */
+auto_delete_branch: boolean, 
+/**
+ * [`PullRequest::merge_blocker`] when the PR was read; None when it could be merged.
+ */
+merge_blocked_by: string | null, };

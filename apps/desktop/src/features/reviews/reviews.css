@@ -69,3 +69,8 @@
 .pr-finding>textarea { display:block; margin-bottom:8px; }
 .pr-save-state { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .pr-save-state>.pr-error { padding:0; flex-basis:100%; }
+.pr-merge .chip.ok, .pr-merged strong { color:var(--ok); }
+.pr-merge .chip.ok { border-color:color-mix(in srgb, var(--ok) 40%, transparent); }
+.pr-merge select { max-width:220px; }
+.pr-check { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+.pr-merged { border-color:color-mix(in srgb, var(--ok) 40%, var(--border)); }

@@ -70,6 +70,9 @@ struct MockGithub {
     uncertain: AtomicBool,
     reject: AtomicBool,
     posted: Mutex<Vec<Value>>,
+    merge_state: Mutex<String>,
+    /// Merges and branch deletions, as `METHOD path`.
+    writes: Mutex<Vec<String>>,
 }
 impl Default for MockGithub {
     fn default() -> Self {
@@ -80,6 +83,8 @@ impl Default for MockGithub {
             uncertain: AtomicBool::new(false),
             reject: AtomicBool::new(false),
             posted: Mutex::new(vec![]),
+            merge_state: Mutex::new("CLEAN".into()),
+            writes: Mutex::new(vec![]),
         }
     }
 }
@@ -114,13 +119,20 @@ impl Github for MockGithub {
                 .map(|_| json!({"state":"COMMENTED","submittedAt":"2026-10-05T10:00:00Z","commit":{"oid":"a".repeat(40)}}))
                 .collect();
             return Ok(
-                json!({"data":{"repository":{"pullRequest":{"viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","commits":{"nodes":[]},"reviews":{"nodes":reviews}}}}}),
+                json!({"data":{"repository":{"viewerPermission":"WRITE","mergeCommitAllowed":false,"squashMergeAllowed":true,"rebaseMergeAllowed":true,"viewerDefaultMergeMethod":"SQUASH","deleteBranchOnMerge":false,"pullRequest":{"viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":*self.merge_state.lock(),"isCrossRepository":false,"commits":{"nodes":[]},"reviews":{"nodes":reviews}}}}}),
             );
         }
         if path == "repos/o/r/pulls/1" {
             return Ok(
                 json!({"title":"PR","state":"open","head":{"sha":*self.head.lock(),"ref":"feature"},"base":{"sha":"b".repeat(40),"ref":"main"},"user":{"login":"bob"}}),
             );
+        }
+        if (method == "PUT" && path == "repos/o/r/pulls/1/merge") || method == "DELETE" {
+            self.writes.lock().push(format!("{method} {path}"));
+            if method == "PUT" {
+                assert_eq!(body.unwrap(), json!({"merge_method":"squash","sha":"a".repeat(40)}));
+            }
+            return Ok(json!({"merged":true}));
         }
         if method == "POST" && path.ends_with("/reviews") {
             self.posts.fetch_add(1, Ordering::SeqCst);
@@ -508,4 +520,43 @@ async fn missing_review_diff_does_not_fetch_new_head_under_old_findings() {
     let preview = svc.preview("review-1").await.unwrap();
     assert!(preview.comments.is_empty());
     assert!(preview.body.contains("Additional notes"));
+}
+#[tokio::test]
+async fn merges_the_shown_head_and_deletes_the_branch() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    let merge = |method: &str, sha: String, delete: bool| {
+        json!({"repo":"o/r","number":1,"account":"github.com:alice","method":method,"sha":sha,"delete_branch":delete})
+    };
+    let pr = svc.lookup(&json!({"repo":"o/r","number":1})).await.unwrap();
+    assert_eq!(pr.merge_methods, ["squash", "rebase"]);
+    assert_eq!(pr.default_merge_method, "squash");
+    assert!(pr.can_merge && pr.can_delete_branch);
+    assert_eq!(pr.merge_blocked_by, None);
+
+    let err = svc.handle("pulls.merge", merge("merge", "a".repeat(40), true)).await.unwrap_err();
+    assert!(err.to_string().contains("does not allow merge"), "{err}");
+    let err = svc.handle("pulls.merge", merge("squash", "c".repeat(40), true)).await.unwrap_err();
+    assert!(err.to_string().contains("New commits"), "{err}");
+    *gh.merge_state.lock() = "BLOCKED".into();
+    let err = svc.handle("pulls.merge", merge("squash", "a".repeat(40), true)).await.unwrap_err();
+    assert_eq!(err.to_string(), "A review is required");
+    assert!(gh.writes.lock().is_empty(), "nothing is sent while a merge is refused");
+
+    *gh.merge_state.lock() = "CLEAN".into();
+    let v = svc.handle("pulls.merge", merge("squash", "a".repeat(40), true)).await.unwrap().unwrap();
+    assert_eq!(v["branch_deleted"], true);
+    assert_eq!(*gh.writes.lock(), ["PUT repos/o/r/pulls/1/merge", "DELETE repos/o/r/git/refs/heads/feature"]);
+}
+#[tokio::test]
+async fn keeps_the_branch_unless_asked() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    let v = svc
+        .handle("pulls.merge", json!({"repo":"o/r","number":1,"method":"squash","sha":"a".repeat(40),"delete_branch":false}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(v["branch_deleted"], false);
+    assert_eq!(*gh.writes.lock(), ["PUT repos/o/r/pulls/1/merge"]);
 }

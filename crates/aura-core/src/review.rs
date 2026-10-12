@@ -38,6 +38,63 @@ pub struct PullRequest {
     /// When your review, or a team's, was last requested.
     #[serde(default)]
     pub review_requested_at: Option<String>,
+    /// GitHub's `mergeStateStatus`: `CLEAN` when nothing blocks a merge.
+    #[serde(default)]
+    pub merge_state: String,
+    /// Merge methods the repository allows: `merge`, `squash` and `rebase`.
+    #[serde(default)]
+    pub merge_methods: Vec<String>,
+    /// The method GitHub preselects for you in this repository.
+    #[serde(default)]
+    pub default_merge_method: String,
+    /// You have write access to the base repository.
+    #[serde(default)]
+    pub can_merge: bool,
+    /// The head branch lives in the base repository, so a merge can delete it.
+    #[serde(default)]
+    pub can_delete_branch: bool,
+    /// The repository deletes head branches itself once they are merged.
+    #[serde(default)]
+    pub auto_delete_branch: bool,
+    /// [`PullRequest::merge_blocker`] when the PR was read; None when it could be merged.
+    #[serde(default)]
+    pub merge_blocked_by: Option<String>,
+}
+
+impl PullRequest {
+    /// Why this PR cannot be merged from Aura yet, or None when GitHub reports it
+    /// ready and no check is failing or still running.
+    pub fn merge_blocker(&self) -> Option<&'static str> {
+        if self.state != "open" {
+            return Some("This pull request is not open");
+        }
+        if !self.can_merge {
+            return Some("You do not have permission to merge this pull request");
+        }
+        if self.draft || self.merge_state == "DRAFT" {
+            return Some("Draft pull requests cannot be merged");
+        }
+        if self.merge_methods.is_empty() {
+            return Some("The repository allows no merge method");
+        }
+        match self.checks.as_str() {
+            "FAILURE" | "ERROR" => return Some("Checks have failed"),
+            "PENDING" | "EXPECTED" => return Some("Checks are still running"),
+            _ => {}
+        }
+        match self.merge_state.as_str() {
+            "CLEAN" | "HAS_HOOKS" => None,
+            "DIRTY" => Some("The branch has merge conflicts"),
+            "BEHIND" => Some("The branch is out of date with the base branch"),
+            "UNSTABLE" => Some("Some checks are not passing"),
+            "BLOCKED" => Some(match self.review_decision.as_str() {
+                "CHANGES_REQUESTED" => "Changes were requested",
+                "REVIEW_REQUIRED" => "A review is required",
+                _ => "Blocked by the base branch's rules",
+            }),
+            _ => Some("GitHub is still checking whether this can be merged"),
+        }
+    }
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -242,4 +299,39 @@ pub struct BranchPull {
     /// APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED; empty when no review is required.
     pub review_decision: String,
     pub head_sha: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ready() -> PullRequest {
+        PullRequest {
+            state: "open".into(),
+            can_merge: true,
+            merge_state: "CLEAN".into(),
+            merge_methods: vec!["squash".into()],
+            checks: "SUCCESS".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn merges_only_when_github_reports_ready_and_checks_pass() {
+        assert_eq!(ready().merge_blocker(), None);
+        assert_eq!(PullRequest { checks: String::new(), ..ready() }.merge_blocker(), None, "a PR without checks has none failing");
+        for (pr, why) in [
+            (PullRequest { checks: "PENDING".into(), ..ready() }, "Checks are still running"),
+            (PullRequest { checks: "FAILURE".into(), ..ready() }, "Checks have failed"),
+            (PullRequest { merge_state: "DIRTY".into(), ..ready() }, "The branch has merge conflicts"),
+            (PullRequest { merge_state: "BLOCKED".into(), review_decision: "REVIEW_REQUIRED".into(), ..ready() }, "A review is required"),
+            (PullRequest { merge_state: "UNKNOWN".into(), ..ready() }, "GitHub is still checking whether this can be merged"),
+            (PullRequest { draft: true, ..ready() }, "Draft pull requests cannot be merged"),
+            (PullRequest { can_merge: false, ..ready() }, "You do not have permission to merge this pull request"),
+            (PullRequest { merge_methods: vec![], ..ready() }, "The repository allows no merge method"),
+            (PullRequest { state: "merged".into(), ..ready() }, "This pull request is not open"),
+        ] {
+            assert_eq!(pr.merge_blocker(), Some(why));
+        }
+    }
 }

@@ -56,6 +56,8 @@ export type Dialog =
   | { kind: "system-prompt"; sessionId: string }
   | { kind: "session-links"; sessionId: string }
   | { kind: "pr-watch"; repo: string; number: number }
+  /** Clean up local branches of the repository at `cwd`, or of the one whose GitHub remote is `repo`. */
+  | { kind: "git-cleanup"; cwd?: string; repo?: string }
   | { kind: "group"; sessionId: string }
   | { kind: "models"; sessionId: string }
   | { kind: "effort"; sessionId: string }
@@ -147,6 +149,10 @@ export type UiSettings = {
   summonShortcut: string;
   /** Rules that hide matching pull requests from the sidebar; see `pullFilter`. */
   pullFilters: string[];
+  /** Last chosen merge method; empty uses the repository's default. */
+  mergeMethod: string;
+  /** Last choice of deleting the head branch when merging. */
+  deleteBranchAfterMerge: boolean;
 };
 
 export const defaultSettings: UiSettings = {
@@ -162,6 +168,8 @@ export const defaultSettings: UiSettings = {
   showReasoning: true,
   summonShortcut: "CmdOrCtrl+Shift+A",
   pullFilters: ["author:dependabot"],
+  mergeMethod: "",
+  deleteBranchAfterMerge: true,
 };
 
 export function emptyTranscript(): Transcript {

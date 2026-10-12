@@ -6,6 +6,7 @@ import { defaultSettings, selectSelected, useStore } from "../../state/store";
 import { ReviewSettings } from "./ReviewSettings";
 import { ReviewSubmit } from "./ReviewEditor";
 import { ReviewSidebar } from "./ReviewSidebar";
+import { MergeCard } from "./PullWorkspace";
 import { editDraft, ensureDraft, flushDraft, openPull, pullFilter, pullFilterError, useReviewDrafts, useReviews } from "./state";
 import { inboxFixture, pullFixture, reviewFixture } from "./fixtures";
 vi.hoisted(() => {
@@ -141,4 +142,36 @@ it("shows your verdict on a PR you already reviewed in this round", () => {
   expect(row.textContent).toContain("you requested changes");
   expect(row.textContent).not.toContain("re-review requested");
   expect(row.closest(".pr-sidebar-row")!.className).not.toContain("rerequested");
+});
+const mergeable = { ...pullFixture, can_merge: true, can_delete_branch: true, merge_state: "CLEAN", merge_blocked_by: null, merge_methods: ["merge", "squash"], default_merge_method: "merge" };
+it("keeps merging disabled with GitHub's reason until the PR is ready", () => {
+  render(<MergeCard pull={{ ...mergeable, merge_state: "BLOCKED", merge_blocked_by: "A review is required" }} busy={false} onMerged={() => {}} />);
+  expect(screen.getByText("A review is required")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Create a merge commit" }).hasAttribute("disabled")).toBe(true);
+});
+it("merges the shown head with the remembered method and branch choice", async () => {
+  useStore.setState({ settings: { ...defaultSettings, mergeMethod: "squash", deleteBranchAfterMerge: true } });
+  call.mockResolvedValue({ branch_deleted: false, branch_error: null });
+  const onMerged = vi.fn();
+  render(<MergeCard pull={mergeable} busy={false} onMerged={onMerged} />);
+  expect((screen.getByLabelText("Merge method") as HTMLSelectElement).value).toBe("squash");
+  fireEvent.click(screen.getByRole("checkbox"));
+  expect(useStore.getState().settings.deleteBranchAfterMerge).toBe(false);
+  fireEvent.change(screen.getByLabelText("Merge method"), { target: { value: "merge" } });
+  expect(useStore.getState().settings.mergeMethod).toBe("merge");
+  fireEvent.click(screen.getByRole("button", { name: "Create a merge commit" }));
+  expect(call).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Confirm create a merge commit" }));
+  await waitFor(() => expect(onMerged).toHaveBeenCalled());
+  expect(call).toHaveBeenCalledWith("pulls.merge", { repo: "acme/widget", number: 42, account: pullFixture.account, method: "merge", sha: pullFixture.head_sha, delete_branch: false });
+});
+it("falls back to the repository's default when the remembered method is not allowed", () => {
+  useStore.setState({ settings: { ...defaultSettings, mergeMethod: "rebase" } });
+  render(<MergeCard pull={mergeable} busy={false} onMerged={() => {}} />);
+  expect((screen.getByLabelText("Merge method") as HTMLSelectElement).value).toBe("merge");
+});
+it("labels mergeable PRs in the sidebar", () => {
+  useReviews.setState({ inbox: { ...inboxFixture, pulls: [mergeable] } });
+  render(<ReviewSidebar />);
+  expect(screen.getByText("ready to merge")).toBeTruthy();
 });

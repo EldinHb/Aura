@@ -89,6 +89,9 @@ export function pullStatus(pull: Pick<PullRequest, "draft" | "checks" | "review_
   const review = ({ APPROVED: { label: "approved", tone: "ok" }, CHANGES_REQUESTED: { label: "changes requested", tone: "err" }, REVIEW_REQUIRED: { label: "review required" } } as const)[pull.review_decision as "APPROVED"];
   return [...(pull.draft ? [{ label: "draft" }] : []), checks ?? { label: "no checks" }, ...(review ? [review] : [])];
 }
+/** "ready to merge" for an open PR you may merge and GitHub reports nothing blocking. */
+export const mergeStatus = (pull: Pick<PullRequest, "state" | "can_merge" | "merge_blocked_by">): { label: string; tone?: "ok" }[] =>
+  pull.state === "open" && pull.can_merge && !pull.merge_blocked_by ? [{ label: "ready to merge", tone: "ok" }] : [];
 const verdict: Record<string, string> = { APPROVED: "you approved", CHANGES_REQUESTED: "you requested changes", COMMENTED: "you commented", DISMISSED: "your review was dismissed" };
 /** True when your review was requested again after your latest review was submitted. */
 export const isRerequested = (pull: Pick<PullRequest, "my_review" | "review_requested_at">) =>

@@ -392,10 +392,62 @@ pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Re
             commit_sha: s(&review["commit"], "oid"),
         });
     p.review_requested_at = requested_at(&d["timelineItems"]["nodes"], login);
+    let r = &q["data"]["repository"];
+    p.merge_state = s(d, "mergeStateStatus");
+    p.merge_methods = [("merge", "mergeCommitAllowed"), ("squash", "squashMergeAllowed"), ("rebase", "rebaseMergeAllowed")]
+        .into_iter()
+        .filter(|(_, allowed)| r[*allowed] == true)
+        .map(|(method, _)| method.to_string())
+        .collect();
+    p.default_merge_method = s(r, "viewerDefaultMergeMethod").to_lowercase();
+    p.can_merge = matches!(r["viewerPermission"].as_str(), Some("WRITE" | "MAINTAIN" | "ADMIN"));
+    p.can_delete_branch = p.can_merge && d["isCrossRepository"] == false;
+    p.auto_delete_branch = r["deleteBranchOnMerge"] == true;
+    p.merge_blocked_by = p.merge_blocker().map(String::from);
     Ok(p)
 }
-/// Your latest review and recent review requests ride along with the capability query.
-const PULL: &str = r#"query($owner:String!,$name:String!,$number:Int!,$login:String!){repository(owner:$owner,name:$name){pullRequest(number:$number){viewerCanUpdate reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}}}}}"#;
+/// Merge `p` with `method` as `account`. GitHub refuses when the head moved past
+/// `p.head_sha`, so only the commits that were shown are merged.
+pub async fn merge(gh: &dyn Github, account: &str, p: &PullRequest, method: &str) -> Result<Value> {
+    validate_repo(&p.repo)?;
+    validate_sha(&p.head_sha)?;
+    gh.request_for(
+        account,
+        "PUT",
+        &format!("repos/{}/pulls/{}/merge", p.repo, p.number),
+        Some(json!({"merge_method": method, "sha": p.head_sha})),
+    )
+    .await
+}
+
+/// Delete the head branch of a merged `p`. A branch that is already gone, for
+/// example because the repository deletes merged branches itself, counts as deleted.
+pub async fn delete_branch(gh: &dyn Github, account: &str, p: &PullRequest) -> Result<()> {
+    validate_repo(&p.repo)?;
+    let path = format!("repos/{}/git/refs/heads/{}", p.repo, ref_path(&p.head_ref)?);
+    match gh.request_for(account, "DELETE", &path, None).await {
+        Ok(_) => Ok(()),
+        Err(e) if format!("{e:#}").contains("Reference does not exist") => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// A branch name as a REST path: each segment percent-encoded, `/` kept.
+fn ref_path(branch: &str) -> Result<String> {
+    if branch.is_empty() || branch.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
+        bail!("Invalid branch name");
+    }
+    Ok(branch
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect())
+}
+/// Your latest review, recent review requests and what a merge may do ride along with the
+/// capability query.
+const PULL: &str = r#"query($owner:String!,$name:String!,$number:Int!,$login:String!){repository(owner:$owner,name:$name){viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod deleteBranchOnMerge pullRequest(number:$number){viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}}}}}"#;
 /// The latest request addressed to `login` or to a team. Team membership is not
 /// resolved, so a request to any team counts.
 fn requested_at(events: &Value, login: &str) -> Option<String> {
@@ -656,6 +708,14 @@ mod tests {
         assert!(!is_read("POST", "repos/o/r/pulls/1/reviews", Some(&json!({}))));
         assert!(is_read("POST", "graphql", Some(&json!({"query": PULL}))));
         assert!(!is_read("POST", "graphql", Some(&json!({"query": " mutation($id:ID!){x}"}))));
+    }
+    #[test]
+    fn branch_paths_keep_slashes_and_encode_the_rest() {
+        assert_eq!(ref_path("feat/login").unwrap(), "feat/login");
+        assert_eq!(ref_path("fix/#12 a%b").unwrap(), "fix/%2312%20a%25b");
+        for bad in ["", "a//b", "../main", "a/./b", "/a"] {
+            assert!(ref_path(bad).is_err(), "{bad}");
+        }
     }
     #[test]
     fn rejects_unsafe_repository_paths() {

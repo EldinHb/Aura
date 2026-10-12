@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import type { PullRequest } from "../../gen";
 import { useStore } from "../../state/store";
-import { hidePull, isPullHidden, isRerequested, openHistory, openPull, pullFilter, pullStatus, report, reviewRound, useReviews, visiblePulls } from "./state";
+import { hidePull, isPullHidden, isRerequested, mergeStatus, openHistory, openPull, pullFilter, pullStatus, report, reviewRound, useReviews, visiblePulls } from "./state";
 
 export function ReviewSidebar() {
   const state = useReviews();
@@ -53,7 +53,7 @@ function PullGroup({ title, all, shown, collapsed, onToggle, empty, mine = false
         <button className="pr-row-main" data-hint onClick={() => openPull(pull)} title={pull.title}>
           <span className="title">{pull.draft ? "◌" : "⑂"} {pull.title}</span>
           <span className="sub">{pull.repo}#{pull.number}{!mine && ` · ${pull.author}`}{rule && ` · hidden by ${rule}`}</span>
-          <span className="pr-status">{[...(mine ? [] : reviewRound(pull)), ...pullStatus(pull)].map((s) => <span key={s.label} className={`chip ${s.tone ?? ""}`}>{s.label}</span>)}</span>
+          <span className="pr-status">{[...(mine ? [] : reviewRound(pull)), ...pullStatus(pull), ...mergeStatus(pull)].map((s) => <span key={s.label} className={`chip ${s.tone ?? ""}`}>{s.label}</span>)}</span>
           {review && <span className={`chip ${review.status === "failed" ? "err" : ""}`}>{review.status}{earlier ? " · earlier round" : review.reviewed_sha && review.reviewed_sha !== pull.head_sha ? " · PR changed" : ""}</span>}
         </button>
         <button className="btn small" data-hint title={pull.hidden ? "Restore PR" : "Hide PR"} onClick={() => void hidePull(pull, !pull.hidden).catch(report)}>{pull.hidden ? "↶" : "×"}</button>

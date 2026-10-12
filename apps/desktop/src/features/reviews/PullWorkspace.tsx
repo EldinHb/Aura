@@ -35,6 +35,7 @@ function PullDetail({ pull: initial }: { pull: PullRequest }) {
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(initial.title);
   const [body, setBody] = useState(initial.body);
+  const [merged, setMerged] = useState<MergeResult | null>(null);
   const inbox = useReviews((s) => s.inbox);
   const reviews = inbox?.reviews.filter((r) => r.pull.id === initial.id && r.pull.account === initial.account && r.status !== "discarded");
   const pull = detail?.pull ?? initial;
@@ -71,6 +72,8 @@ function PullDetail({ pull: initial }: { pull: PullRequest }) {
     {error && <div className="pr-error" role="alert">{error}{detail && " · Showing cached data."}</div>}
     {tab === "files" ? <div className="pr-detail-scroll">{diff ? <><div className="pr-revision">Current PR diff · {diff.sha.slice(0, 10)}</div><ReviewDiff diff={diff.diff} /></> : <p className="pr-padding">Loading diff…</p>}</div>
       : <div className="pr-detail-scroll pr-overview"><main>
+        {merged && <div className="pr-card pr-merged" role="status"><strong>Merged.</strong> {merged.branch_deleted ? `Deleted ${pull.head_ref} on GitHub.` : ""}{merged.branch_error && <span className="err-text"> {merged.branch_error}</span>} <button className="btn small" data-hint data-command="git.cleanup" onClick={() => useStore.getState().openDialog({ kind: "git-cleanup", repo: pull.repo })}>Clean up local branches…</button></div>}
+        {!merged && pull.state === "open" && pull.can_merge && <MergeCard pull={pull} busy={busy} onMerged={(result) => { setMerged(result); void load(); void useReviews.getState().refresh(); }} />}
         <section className="pr-card"><header className="pr-toolbar"><strong>Description</strong>{pull.can_edit && <button className="btn small" data-hint onClick={() => editing ? setEditing(false) : edit()}>{editing ? "Cancel edit" : "Edit"}</button>}</header>
           {editing ? <div className="pr-form"><label>Title<input value={title} onChange={(e) => setTitle(e.target.value)} /></label><label>Description<textarea rows={12} value={body} onChange={(e) => setBody(e.target.value)} /></label><button className="btn" data-hint disabled={busy || !title.trim()} onClick={() => void mutate("pulls.update", { patch: { title, body } }).then((ok) => { if (ok) setEditing(false); })}>Save description</button></div> : <Markdown text={pull.body || "No description."} />}
         </section>
@@ -88,6 +91,38 @@ function PullDetail({ pull: initial }: { pull: PullRequest }) {
         {!!reviews?.length && <><h3>Previous pre-reviews</h3>{reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => useReviews.setState({ reviewId: r.id })}>{r.status} · {new Date(r.created_at).toLocaleString()}</button>)}</>}
       </aside></div>}
   </div>;
+}
+type MergeResult = { branch_deleted: boolean; branch_error: string | null };
+const MERGE_LABELS: Record<string, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
+/** Merge controls, enabled once GitHub reports the PR ready and no check failed. Method and branch choice persist. */
+export function MergeCard({ pull, busy, onMerged }: { pull: PullRequest; busy: boolean; onMerged: (result: MergeResult) => void }) {
+  const saved = useStore((s) => s.settings.mergeMethod);
+  const deleteBranch = useStore((s) => s.settings.deleteBranchAfterMerge);
+  const setSettings = useStore((s) => s.setSettings);
+  const [confirming, setConfirming] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const method = [saved, pull.default_merge_method].find((m) => pull.merge_methods.includes(m)) ?? pull.merge_methods[0];
+  const deletes = pull.auto_delete_branch || (pull.can_delete_branch && deleteBranch);
+  const blocked = pull.merge_blocked_by;
+  const merge = async () => {
+    setMerging(true); setError(null);
+    try { onMerged(await rpc<MergeResult>("pulls.merge", { repo: pull.repo, number: pull.number, account: pull.account, method, sha: pull.head_sha, delete_branch: deletes })); }
+    catch (e) { setError(String(e)); setConfirming(false); }
+    finally { setMerging(false); }
+  };
+  return <section className="pr-card pr-merge" aria-label="Merge">
+    <header className="pr-toolbar"><strong>Merge</strong><span className={`chip ${blocked ? "" : "ok"}`}>{blocked ?? "Ready to merge"}</span></header>
+    <div className="pr-toolbar">
+      <select aria-label="Merge method" value={method} disabled={merging || confirming} onChange={(e) => setSettings({ mergeMethod: e.target.value })}>{pull.merge_methods.map((m) => <option key={m} value={m}>{MERGE_LABELS[m] ?? m}</option>)}</select>
+      <label className="pr-check" title={pull.auto_delete_branch ? "The repository deletes merged branches itself" : pull.can_delete_branch ? undefined : "The branch is in another repository"}><input type="checkbox" checked={deletes} disabled={merging || confirming || pull.auto_delete_branch || !pull.can_delete_branch} onChange={(e) => setSettings({ deleteBranchAfterMerge: e.target.checked })} />Delete branch <code>{pull.head_ref}</code></label>
+      <span className="spacer" />
+      {confirming ? <><button className="btn" data-hint disabled={merging} onClick={() => setConfirming(false)}>Cancel</button><button className="btn primary" data-hint data-command="pulls.merge.confirm" disabled={merging} onClick={() => void merge()}>{merging ? "Merging…" : `Confirm ${(MERGE_LABELS[method] ?? method).toLowerCase()}`}</button></>
+        : <button className="btn primary" data-hint data-command="pulls.merge" disabled={busy || !!blocked || !method} onClick={() => setConfirming(true)}>{MERGE_LABELS[method] ?? "Merge"}</button>}
+    </div>
+    {confirming && <p className="pr-muted">Merges {pull.head_sha.slice(0, 7)} into <code>{pull.base_ref}</code>{deletes ? ` and deletes ${pull.head_ref}` : ""}. GitHub refuses if new commits were pushed since.</p>}
+    {error && <p className="err-text" role="alert">{error}</p>}
+  </section>;
 }
 function ProjectFieldControl({ value, disabled, item, mutate }: { value: ProjectField; disabled: boolean; item: ProjectItem; mutate: (method: string, params: object) => Promise<boolean> }) {
   const field = value.field!;
