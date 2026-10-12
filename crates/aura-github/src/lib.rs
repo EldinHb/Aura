@@ -53,8 +53,112 @@ impl Default for GhCli {
         }
     }
 }
+/// Concurrent gh calls across the daemon. GitHub's secondary rate limit punishes
+/// bursts, and a refresh fans out over every listed PR.
+const MAX_CONCURRENT: usize = 4;
+/// How long GitHub is left alone after it reports a rate limit; its docs ask for at least a minute.
+const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(60);
+/// Waits before retrying a read that failed with a GitHub server error.
+const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
+
+/// Paces every gh call. Shared by all [`GhCli`]s, since they spend one account's limits.
+struct Gate {
+    slots: tokio::sync::Semaphore,
+    paused_until: std::sync::Mutex<Option<std::time::Instant>>,
+    pause: Duration,
+    retry_delays: &'static [Duration],
+}
+static GATE: Gate = Gate::new(MAX_CONCURRENT, RATE_LIMIT_PAUSE, &RETRY_DELAYS);
+
+impl Gate {
+    const fn new(slots: usize, pause: Duration, retry_delays: &'static [Duration]) -> Self {
+        Self {
+            slots: tokio::sync::Semaphore::const_new(slots),
+            paused_until: std::sync::Mutex::new(None),
+            pause,
+            retry_delays,
+        }
+    }
+
+    /// Run `call`, retrying server errors when `retry` says the request is safe to
+    /// repeat. After a rate limit every request is refused unsent until the pause ends.
+    async fn run<F, Fut>(&self, retry: bool, mut call: F) -> Result<String>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<String>>,
+    {
+        let mut attempt = 0;
+        loop {
+            if let Some(until) = *self.paused_until.lock().unwrap() {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                if !left.is_zero() {
+                    let at = chrono::Local::now() + left;
+                    return Err(RejectedRequest(format!(
+                        "GitHub rate limit reached; Aura resumes GitHub requests at {}",
+                        at.format("%H:%M:%S")
+                    ))
+                    .into());
+                }
+            }
+            let result = {
+                let _slot = self.slots.acquire().await?;
+                call().await
+            };
+            let Err(e) = &result else { return result };
+            let message = format!("{e:#}");
+            if is_rate_limited(&message) {
+                *self.paused_until.lock().unwrap() = Some(std::time::Instant::now() + self.pause);
+                return result;
+            }
+            match self.retry_delays.get(attempt) {
+                Some(delay) if retry && is_server_error(&message) => {
+                    tracing::debug!("GitHub server error, retrying in {delay:?}: {message}");
+                    tokio::time::sleep(*delay).await;
+                    attempt += 1;
+                }
+                _ => return result,
+            }
+        }
+    }
+}
+
+/// gh reports primary, secondary and GraphQL limits with these words.
+fn is_rate_limited(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("rate limit")
+}
+
+fn is_server_error(message: &str) -> bool {
+    ["HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504"]
+        .iter()
+        .any(|status| message.contains(status))
+}
+
+/// Reads can be repeated. A write that failed with a server error may still have
+/// been applied, so it is never retried.
+fn is_read(method: &str, path: &str, body: Option<&Value>) -> bool {
+    if path == "graphql" {
+        return !body
+            .and_then(|b| b["query"].as_str())
+            .is_some_and(|q| q.trim_start().starts_with("mutation"));
+    }
+    method.eq_ignore_ascii_case("GET")
+}
+
 impl GhCli {
     async fn invoke(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        diff: bool,
+        token: Option<&str>,
+    ) -> Result<String> {
+        let retry = is_read(method, path, body.as_ref());
+        GATE.run(retry, || self.invoke_once(method, path, body.clone(), diff, token))
+            .await
+    }
+
+    async fn invoke_once(
         &self,
         method: &str,
         path: &str,
@@ -496,6 +600,62 @@ mod tests {
         );
         assert_eq!(requested_at(&json!([events[1]]), "alice"), None);
         assert_eq!(requested_at(&Value::Null, "alice"), None);
+    }
+    fn counting<'a>(
+        calls: &'a AtomicUsize,
+        failures: usize,
+        message: &'static str,
+    ) -> impl FnMut() -> std::future::Ready<Result<String>> + 'a {
+        move || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(if n < failures {
+                Err(anyhow::anyhow!(message))
+            } else {
+                Ok("ok".into())
+            })
+        }
+    }
+    const NO_WAIT: [Duration; 2] = [Duration::ZERO, Duration::ZERO];
+    #[tokio::test]
+    async fn retries_reads_that_hit_a_server_error() {
+        let gate = Gate::new(4, Duration::from_secs(60), &NO_WAIT);
+        let calls = AtomicUsize::new(0);
+        let r = gate.run(true, counting(&calls, 2, "gh: HTTP 504")).await;
+        assert_eq!(r.unwrap(), "ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        let calls = AtomicUsize::new(0);
+        assert!(gate.run(true, counting(&calls, 9, "gh: HTTP 502")).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "gives up after the last delay");
+    }
+    #[tokio::test]
+    async fn never_retries_writes_or_client_errors() {
+        let gate = Gate::new(4, Duration::from_secs(60), &NO_WAIT);
+        let calls = AtomicUsize::new(0);
+        assert!(gate.run(false, counting(&calls, 1, "gh: HTTP 504")).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let calls = AtomicUsize::new(0);
+        assert!(gate.run(true, counting(&calls, 1, "gh: Not Found (HTTP 404)")).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn pauses_every_request_after_a_rate_limit() {
+        let gate = Gate::new(4, Duration::from_millis(50), &NO_WAIT);
+        let calls = AtomicUsize::new(0);
+        let msg = "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)";
+        assert!(gate.run(true, counting(&calls, 1, msg)).await.is_err());
+        let refused = gate.run(true, counting(&calls, 0, "")).await.unwrap_err();
+        assert!(refused.downcast_ref::<RejectedRequest>().is_some(), "refused unsent: {refused}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "nothing reaches GitHub while paused");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(gate.run(true, counting(&calls, 0, "")).await.unwrap(), "ok");
+    }
+    #[test]
+    fn only_reads_count_as_repeatable() {
+        assert!(is_read("GET", "repos/o/r/pulls/1", None));
+        assert!(!is_read("POST", "repos/o/r/pulls/1/reviews", Some(&json!({}))));
+        assert!(is_read("POST", "graphql", Some(&json!({"query": PULL}))));
+        assert!(!is_read("POST", "graphql", Some(&json!({"query": " mutation($id:ID!){x}"}))));
     }
     #[test]
     fn rejects_unsafe_repository_paths() {

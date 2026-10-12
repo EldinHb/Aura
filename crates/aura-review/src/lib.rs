@@ -216,6 +216,7 @@ impl ReviewService {
         }
         .await;
         if let Err(e) = &result {
+            tracing::warn!("pull request refresh failed: {e:#}");
             self.state.lock().error = Some(format!("{e:#}"));
         }
         self.persist_inbox()?;
