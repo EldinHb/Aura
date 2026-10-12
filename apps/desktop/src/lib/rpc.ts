@@ -25,6 +25,8 @@ import type {
   DiffStat,
   LogEntry,
   Worktree,
+  CleanupReport,
+  CleanupResult,
   Approval,
   UserInputRequest,
   DaemonInfo,
@@ -375,6 +377,16 @@ export class RpcClient {
   }
   gitWorktrees(cwd: string) {
     return this.call<Worktree[]>("git.worktrees", { cwd });
+  }
+  gitMainRepoRoot(cwd: string) {
+    return this.call<string | null>("git.main_repo_root", { cwd });
+  }
+  /** Stale local branches; `fetch` prunes deleted remote branches first, which takes a network round trip. */
+  gitCleanupCandidates(cwd: string, fetch = true) {
+    return this.call<CleanupReport>("git.cleanup_candidates", { cwd, fetch });
+  }
+  gitCleanup(cwd: string, branches: string[], prune_worktrees: boolean) {
+    return this.call<CleanupResult>("git.cleanup", { cwd, branches, prune_worktrees });
   }
 }
 

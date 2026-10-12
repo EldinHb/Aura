@@ -241,6 +241,16 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
                 Some(serde_json::to_value(ops::log(&cwd, limit)?)?)
             }
             "git.worktrees" => Some(serde_json::to_value(ops::worktrees(&cwd)?)?),
+            "git.main_repo_root" => Some(json!(ops::main_repo_root(&cwd)?)),
+            "git.cleanup_candidates" => {
+                let fetch = p.get("fetch").and_then(|v| v.as_bool()).unwrap_or(true);
+                Some(serde_json::to_value(aura_git::cleanup::candidates(&cwd, fetch)?)?)
+            }
+            "git.cleanup" => {
+                let branches: Vec<String> = serde_json::from_value(p.get("branches").cloned().unwrap_or_default()).context("branches must be a list of names")?;
+                let prune = p.get("prune_worktrees").and_then(|v| v.as_bool()).unwrap_or(false);
+                Some(serde_json::to_value(aura_git::cleanup::clean(&cwd, &branches, prune)?)?)
+            }
             _ => None,
         })
     })

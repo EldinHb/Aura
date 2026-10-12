@@ -42,6 +42,12 @@ export function registerGitCommands(): () => void {
       },
     },
     {
+      id: "git.cleanup",
+      title: "Git: clean up local branches…",
+      group: "Git",
+      run: () => st().openDialog({ kind: "git-cleanup", cwd: selectSelected(st())?.cwd }),
+    },
+    {
       id: "git.copy-diff",
       title: "Git: copy diff to clipboard",
       group: "Git",

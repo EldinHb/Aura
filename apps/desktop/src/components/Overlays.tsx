@@ -21,6 +21,7 @@ import { DiffDialog } from "./dialogs/DiffDialog";
 import { SearchDialog } from "./dialogs/SearchDialog";
 import { InboxDialog } from "./dialogs/InboxDialog";
 import { SettingsDialog } from "./dialogs/SettingsDialog";
+import { GitCleanupDialog } from "./dialogs/GitCleanupDialog";
 import { StepsDialog } from "../views/transcript/Steps";
 import { getDialog, onDialogsChanged } from "./dialogRegistry";
 
@@ -43,6 +44,8 @@ function CurrentDialog() {
       return <SystemPromptDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "pr-watch":
       return <WatchDialog key={`${dialog.repo}#${dialog.number}`} target={{ repo: dialog.repo, number: dialog.number }} />;
+    case "git-cleanup":
+      return <GitCleanupDialog key={`${dialog.cwd ?? ""}-${dialog.repo ?? ""}`} cwd={dialog.cwd} repo={dialog.repo} />;
     case "session-links":
       return <SessionLinksDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "group":

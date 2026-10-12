@@ -7,6 +7,7 @@ use aura_core::{WorktreeBackend, WorktreeInfo, WorktreeOpts};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod cleanup;
 pub mod ops;
 
 const WORKTREES_DIR: &str = ".aura-worktrees";
