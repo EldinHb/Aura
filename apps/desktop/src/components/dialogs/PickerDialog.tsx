@@ -61,7 +61,9 @@ export function PickerDialog({ kind, sessionId }: { kind: PickerKind; sessionId:
         return (models ?? []).map((m) => ({ value: m.id, label: m.display_name || m.id, description: m.description, current: session.model === m.id || session.model === m.display_name, isDefault: m.is_default }));
       case "effort": {
         const current = (models ?? []).find((m) => m.id === session.model || m.display_name === session.model);
-        const fromModel = current?.efforts?.length ? current.efforts : (models ?? []).find((m) => m.is_default)?.efforts;
+        // A listed model with no efforts does not support effort; only an unknown one borrows the default's.
+        if (current && !current.efforts.length) return [];
+        const fromModel = current ? current.efforts : (models ?? []).find((m) => m.is_default)?.efforts;
         const fallback = session.provider === "codex" ? ["low", "medium", "high", "xhigh"] : ["low", "medium", "high", "xhigh", "max"];
         return (fromModel?.length ? fromModel : fallback).map((e) => ({ value: e, label: e, current: session.effort === e, isDefault: current?.default_effort === e }));
       }

@@ -4,6 +4,7 @@
 //! Protocol notes and a real traffic capture live in `docs/protocol/claude/`.
 
 pub mod driver;
+pub mod models;
 pub mod native;
 pub mod parser;
 pub mod provider;
