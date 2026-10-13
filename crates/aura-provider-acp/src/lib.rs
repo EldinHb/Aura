@@ -194,6 +194,12 @@ fn explain(err: anyhow::Error, stderr: &Stderr) -> anyhow::Error {
     }
 }
 
+/// The session's MCP servers in ACP's shape. Stdio servers are the kind every
+/// ACP agent must support.
+fn mcp_servers(session: &Session) -> Value {
+    session.mcp_servers.iter().map(|m| json!({ "name": m.name, "command": m.command, "args": m.args, "env": [] })).collect()
+}
+
 async fn with_timeout<T>(what: &str, fut: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(STARTUP_TIMEOUT, fut).await.map_err(|_| anyhow!("{what}: the agent did not answer within {}s", STARTUP_TIMEOUT.as_secs()))?
 }
@@ -317,7 +323,7 @@ impl AcpDriver {
         let native = session.native_id.clone();
 
         if let Some(id) = native.as_ref().filter(|_| can_resume || can_load) {
-            let params = json!({ "sessionId": id, "cwd": cwd, "mcpServers": [] });
+            let params = json!({ "sessionId": id, "cwd": cwd, "mcpServers": mcp_servers(session) });
             let method = if can_resume { "session/resume" } else { "session/load" };
             let res = if can_resume {
                 with_timeout(method, conn.request(method, params)).await
@@ -342,7 +348,7 @@ impl AcpDriver {
                 message: format!("{} cannot resume sessions, so this is a new conversation. The transcript above is Aura's copy; the agent does not remember it.", spec.display_name),
             });
         }
-        let res = with_timeout("session/new", conn.request("session/new", json!({ "cwd": cwd, "mcpServers": [] }))).await.map_err(|e| failed("session/new", e))?;
+        let res = with_timeout("session/new", conn.request("session/new", json!({ "cwd": cwd, "mcpServers": mcp_servers(session) }))).await.map_err(|e| failed("session/new", e))?;
         let id = res.get("sessionId").and_then(Value::as_str).ok_or_else(|| anyhow!("session/new returned no sessionId"))?.to_string();
         let _ = sink.send(Event::NativeId { session_id: session.id.clone(), native_id: id.clone() });
         for ev in mapper.lock().session_state(&res) {

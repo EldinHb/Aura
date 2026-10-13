@@ -35,6 +35,21 @@ fn parse_version(stdout: &str) -> Option<String> {
     Some(v.strip_prefix("codex-cli ").unwrap_or(v).to_string())
 }
 
+/// Aura's `wait_for_sessions` tool blocks for up to an hour; Codex would
+/// otherwise give up on a tool call after a minute.
+const MCP_TOOL_TIMEOUT_SECS: u64 = 3700;
+
+/// One `mcp_servers.<name>` entry of Codex's config. Aura's own tools are
+/// approved up front: the user chose to make the session an orchestrator.
+fn mcp_server_config(m: &McpServer) -> Value {
+    json!({
+        "command": m.command,
+        "args": m.args,
+        "tool_timeout_sec": MCP_TOOL_TIMEOUT_SECS,
+        "default_tools_approval_mode": "approve",
+    })
+}
+
 fn sandbox_policy(mode: &str) -> Value {
     match mode {
         "read-only" => json!({ "type": "readOnly" }),
@@ -212,6 +227,11 @@ impl Provider for CodexProvider {
         if let Some(i) = &session.instructions {
             params.insert("developerInstructions".into(), json!(i));
         }
+        if !session.mcp_servers.is_empty() {
+            let config: serde_json::Map<String, Value> =
+                session.mcp_servers.iter().map(|m| (format!("mcp_servers.{}", m.name), mcp_server_config(m))).collect();
+            params.insert("config".into(), Value::Object(config));
+        }
         let (method, thread_hint) = match (&session.native_id, fork) {
             (Some(id), true) => {
                 params.insert("threadId".into(), json!(id));
@@ -283,6 +303,19 @@ impl Provider for CodexProvider {
         if let Some(i) = &session.instructions {
             // `-c` values are TOML; a JSON string is a valid TOML string.
             argv.extend(["-c".into(), format!("developer_instructions={}", serde_json::to_string(i).unwrap_or_default())]);
+        }
+        for m in &session.mcp_servers {
+            // A JSON object is not TOML, so the table is written inline field by field.
+            let args: Vec<String> = m.args.iter().map(|a| serde_json::to_string(a).unwrap_or_default()).collect();
+            argv.extend([
+                "-c".into(),
+                format!(
+                    "mcp_servers.{}={{command={},args=[{}],tool_timeout_sec={MCP_TOOL_TIMEOUT_SECS},default_tools_approval_mode=\"approve\"}}",
+                    m.name,
+                    serde_json::to_string(&m.command).unwrap_or_default(),
+                    args.join(",")
+                ),
+            ]);
         }
         argv
     }
@@ -706,6 +739,25 @@ mod tests {
         let (id, res) = mapper.input_reply(&UserInputResponse { request_id: req.id, answers }).unwrap();
         assert_eq!(id, json!(9));
         assert_eq!(res, json!({ "answers": { "q1": { "answers": ["Red"] } } }));
+    }
+
+    #[test]
+    fn mcp_servers_are_approved_up_front_in_both_modes() {
+        let m = McpServer { name: "aura".into(), command: "/bin/aura".into(), args: vec!["mcp".into(), "--orchestrator".into(), "x".into()] };
+        assert_eq!(
+            mcp_server_config(&m),
+            json!({ "command": "/bin/aura", "args": ["mcp", "--orchestrator", "x"], "tool_timeout_sec": MCP_TOOL_TIMEOUT_SECS, "default_tools_approval_mode": "approve" })
+        );
+        let mut s = Session::new(&CreateSessionOpts { provider: ProviderKind::Codex, cwd: "/tmp".into(), ..Default::default() });
+        s.mcp_servers = vec![m];
+        let argv = CodexProvider::new().terminal_command(&s);
+        assert_eq!(
+            argv[argv.len() - 2..],
+            [
+                "-c".to_string(),
+                format!("mcp_servers.aura={{command=\"/bin/aura\",args=[\"mcp\",\"--orchestrator\",\"x\"],tool_timeout_sec={MCP_TOOL_TIMEOUT_SECS},default_tools_approval_mode=\"approve\"}}"),
+            ]
+        );
     }
 
     #[test]

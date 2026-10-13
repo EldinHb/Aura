@@ -430,9 +430,12 @@ export function mergeOrder(order: string[], list: Session[]): string[] {
   return [...kept, ...added];
 }
 
-/** Sessions can only be reordered among their own group, and pinned among pinned. */
+/**
+ * Sessions can only be reordered among their own group, pinned among pinned,
+ * and workers among the workers of the same orchestrator.
+ */
 export function canReorder(a: Session, b: Session): boolean {
-  return (a.group ?? "") === (b.group ?? "") && a.pinned === b.pinned;
+  return (a.group ?? "") === (b.group ?? "") && a.pinned === b.pinned && (a.orchestrator_id ?? null) === (b.orchestrator_id ?? null);
 }
 
 function loadOrder(): string[] {
@@ -502,7 +505,23 @@ export function selectSessionSections(st: AppState): [string, Session[]][] {
   }
   return [...sections]
     .filter(([, list]) => list.length > 0)
-    .map(([g, list]) => [g, [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)]]);
+    .map(([g, list]) => [g, nestWorkers([...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)])]);
+}
+
+/** Whether `s` is shown under its orchestrator: both in the same section. */
+export function isNestedWorker(s: Session, list: Session[]): boolean {
+  return !!s.orchestrator_id && list.some((o) => o.id === s.orchestrator_id);
+}
+
+/** Workers follow their orchestrator, in their own order. */
+function nestWorkers(list: Session[]): Session[] {
+  const out: Session[] = [];
+  for (const s of list) {
+    if (isNestedWorker(s, list)) continue;
+    out.push(s);
+    for (const w of list) if (w.orchestrator_id === s.id) out.push(w);
+  }
+  return out;
 }
 
 /** Visible sessions in the order the sidebar shows them; ⌘1–9 index into this. */

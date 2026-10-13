@@ -1,7 +1,7 @@
 import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useStore, selectVisibleSessions, canReorder } from "../state/store";
+import { useStore, selectVisibleSessions, canReorder, isNestedWorker } from "../state/store";
 import type { BranchPull, Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
 import { registerCommands } from "../lib/commands";
@@ -217,6 +217,7 @@ export function Sidebar() {
                     s.id === selectedId && "selected",
                     s.id === cursor && cursor !== selectedId && "cursor",
                     s.archived && "archived",
+                    isNestedWorker(s, list) && "worker",
                     s.id === dragging && "drag-source",
                     dropTarget?.id === s.id && (dropTarget.below ? "drop-below" : "drop-above"),
                   )}
@@ -244,6 +245,7 @@ export function Sidebar() {
                   </div>
                   <div className="meta">
                     {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
+                    {s.orchestrator && <span className="chip orchestrator" title="Orchestrator: starts and directs the sessions under it">orch</span>}
                     <span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>
                     {idx < 9 && <kbd>{idx + 1}</kbd>}
                     <span>{relTime(s.last_activity)}</span>

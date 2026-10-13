@@ -31,4 +31,12 @@ fork: boolean,
 /**
  * This session's own system prompt (see [`Session::system_prompt`]).
  */
-system_prompt: string | null, };
+system_prompt: string | null, 
+/**
+ * See [`Session::orchestrator`].
+ */
+orchestrator: boolean, 
+/**
+ * See [`Session::orchestrator_id`].
+ */
+orchestrator_id: string | null, };

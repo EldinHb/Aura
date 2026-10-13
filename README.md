@@ -40,6 +40,10 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
   See [ACP agents](#acp-agents).
 - **Any CLI works.** Anything else runs in a real terminal with saved scrollback. A
   Claude Code or Codex session can also switch to the agent's own TUI and back.
+- **Orchestrators.** Make a session an orchestrator and talk to it alone: it starts
+  worker sessions with any agent (Claude Code, Codex, ACP agents, mixed as it likes),
+  hands them tasks and hears back when they finish. Every worker is a normal session
+  you can open and message yourself. See [Orchestrators](#orchestrators).
 - **An inbox for approvals.** See every session waiting on you, and approve or decline
   with a single key.
 - **Git worktrees built in.** Start a session in its own worktree so parallel agents do
@@ -138,6 +142,41 @@ as developer instructions, in Aura's view and in their own TUI. ACP has no syste
 prompt, so ACP agents receive it at the start of the first message of a new
 conversation. After a change, an idle agent restarts with the new prompt on your next
 message; one that is working keeps its prompt until it next starts.
+
+## Orchestrators
+
+An orchestrator is a session that owns a project: you talk to it, and it splits the
+work over worker sessions that it starts and directs. Tick **Orchestrator** in the
+new-session dialog, or turn an existing session into one with **Orchestrate** in the
+inspector (`⌘K` → Make orchestrator). From the command line:
+`aura new -p claude --orchestrator --prompt "…"`.
+
+- **Any agent, both ways.** The orchestrator can be Claude Code, Codex or an ACP
+  agent, and each worker can be any of them too, so a Claude Code orchestrator can
+  have Codex implement and Claude review, or the other way round.
+- **Workers are normal sessions.** They show up indented under their orchestrator in
+  the sidebar, in its group. Open one to read along, message it, approve its
+  commands, or switch it to the agent's TUI.
+- **Reports come back by themselves.** When a worker stops (done, failed, or waiting
+  for your approval or answer), Aura sends the orchestrator a short report with the
+  worker's last reply as soon as the orchestrator is idle. It does not have to poll,
+  so it can hand out work, end its turn, and continue when the reports come in.
+- **Approvals stay with you.** Workers ask you, not the orchestrator, to approve
+  commands; the orchestrator is told which worker is waiting. A worker running the
+  same agent as its orchestrator starts with the orchestrator's permission and
+  sandbox mode; other agents start with their defaults.
+- **Parallel work in worktrees.** The orchestrator can give each worker its own git
+  worktree, so workers changing the same repository do not overwrite each other.
+
+The orchestrator gets its tools from `aura mcp`, a small MCP server that comes with
+Aura. Aura hands it to Claude Code (`--mcp-config`, with the tools allowed), Codex
+(config override, with the tools approved) and ACP agents (`mcpServers`). The tools
+are `list_agents`, `start_session`, `send_message`, `list_sessions`, `read_session`,
+`wait_for_sessions`, `interrupt_session` and `stop_session`, and they only reach the
+orchestrator's own workers. ACP agents decide themselves whether to ask before an
+MCP tool call; if yours does, the requests show up as approvals like any other.
+Deleting an orchestrator, or turning it back into a regular session, leaves its
+workers as regular sessions.
 
 ## ACP agents
 

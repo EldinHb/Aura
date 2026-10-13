@@ -131,6 +131,7 @@ impl Provider for ClaudeProvider {
         if let Some(i) = &session.instructions {
             argv.extend(["--append-system-prompt".into(), i.clone()]);
         }
+        argv.extend(crate::driver::mcp_args(session));
         argv
     }
 

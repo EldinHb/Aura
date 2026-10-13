@@ -252,6 +252,10 @@ export class RpcClient {
   rename(id: string, title: string) {
     return this.call<Session>("session.rename", { id, title });
   }
+  /** Make a session an orchestrator, or a regular session again. */
+  setOrchestrator(id: string, on: boolean) {
+    return this.call<Session>("session.set_orchestrator", { id, on });
+  }
   /** This session's own system prompt; `null` removes it. */
   setSystemPrompt(id: string, prompt: string | null) {
     return this.call<Session>("session.set_system_prompt", { id, prompt });

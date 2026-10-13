@@ -84,6 +84,11 @@ async fn main() -> Result<()> {
     }
 
     let manager = Manager::new(store.clone(), providers, Some(Arc::new(aura_git::Git)));
+    // Orchestrators get their tools from `aura mcp`, installed next to aurad.
+    match std::env::current_exe().map(|exe| exe.with_file_name(if cfg!(windows) { "aura.exe" } else { "aura" })) {
+        Ok(aura) if aura.exists() => manager.enable_orchestration(aura, std::fs::canonicalize(&data_dir).unwrap_or_else(|_| data_dir.clone())),
+        _ => tracing::warn!("`aura` not found next to aurad; orchestrators will have no tools"),
+    }
     let restored = manager.restore()?;
     tracing::info!(restored, "sessions restored");
 

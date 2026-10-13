@@ -66,6 +66,43 @@ pub struct SystemPrompts {
     pub agents: BTreeMap<String, String>,
 }
 
+/// Added to an orchestrator's system prompt. `tools` says whether Aura could
+/// hand it the `aura` MCP server.
+pub fn orchestrator_prompt(session_id: &str, tools: bool) -> String {
+    let mut p = format!("## You are an orchestrator
+
+The user made this session (Aura session id `{session_id}`) an orchestrator. The user talks to you; you plan the work and hand it to worker sessions that you start and direct with the tools of the `aura` MCP server:
+
+- `list_agents`: the agents you can start (Claude Code, Codex and any installed ACP agent).
+- `start_session`: start a worker with an agent and a first task.
+- `send_message`: give one of your workers a follow-up task or an answer.
+- `list_sessions`: your workers, their status and last reply.
+- `read_session`: a worker's recent conversation and what it did.
+- `wait_for_sessions`: block until workers stop working.
+- `interrupt_session` and `stop_session`.
+
+How to work:
+
+- Pick the agent per task and mix them when that helps, for example one agent implements and another reviews.
+- A worker does not see this conversation. Give each one a complete brief: the goal, the relevant files and paths, constraints, how to verify the result and what to report back.
+- Workers that change files in the same repository at the same time should each get their own git worktree (`branch` on `start_session`), so they do not overwrite each other's work.
+- When a worker stops (its task is done, it failed, or it waits for the user's approval or answer), Aura sends you a message that starts with `[Aura] Worker report`. You do not have to poll: after handing out work you can end your turn and continue when the reports come in. Use `wait_for_sessions` when you need a result before you can go on; workers it returns are not reported again.
+- Workers ask the user, not you, to approve commands and answer questions. When a report says a worker is waiting on the user, tell the user which worker and what it needs.
+- The user sees every worker as a normal session and may message them directly.
+- Coordinate and check the work yourself. Leave the implementation to workers unless a task is trivial.");
+    if !tools {
+        p.push_str("\n\nAura could not give you the `aura` tools in this session (the `aura` command-line tool was not found next to the daemon). Tell the user, and do not pretend to start workers.");
+    }
+    p
+}
+
+/// Added to a worker's system prompt.
+pub fn worker_prompt(orchestrator_title: &str) -> String {
+    format!("## You are a worker
+
+Another agent, the orchestrator session \"{orchestrator_title}\", started this session and sends you tasks. The user can read along and may also message you directly. Your final message of each turn is forwarded to the orchestrator, so end every task with a short report: what you did, which files you changed, how you verified it, and anything that is still open or blocking.")
+}
+
 /// Global, agent and session prompts joined with blank lines, placeholders
 /// filled in. `None` when all three are empty.
 pub fn compose(

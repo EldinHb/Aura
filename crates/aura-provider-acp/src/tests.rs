@@ -468,3 +468,15 @@ async fn live_round_trip() {
     assert_eq!(std::fs::read_to_string(work.path().join("hello.txt")).unwrap().trim(), "hi");
     driver.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn new_sessions_get_the_mcp_servers() {
+    let (pipe, mut agent) = link();
+    let mut s = session(None, None);
+    s.mcp_servers = vec![McpServer { name: "aura".into(), command: "/bin/aura".into(), args: vec!["mcp".into()] }];
+    let (_handle, _rx) = connect(pipe, s);
+    let (id, _) = agent.expect("initialize").await;
+    agent.respond(id, init_result(json!({}))).await;
+    let (_, params) = agent.expect("session/new").await;
+    assert_eq!(params["mcpServers"], json!([{ "name": "aura", "command": "/bin/aura", "args": ["mcp"], "env": [] }]));
+}

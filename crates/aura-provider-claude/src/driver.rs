@@ -24,6 +24,25 @@ pub struct ClaudeDriver {
     exit_rx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Option<i32>>>>,
 }
 
+/// Flags that hand Claude Code the session's MCP servers, with their tools
+/// allowed so they never wait for an approval. `=` keeps the variadic options
+/// from swallowing the flags after them.
+pub(crate) fn mcp_args(session: &Session) -> Vec<String> {
+    if session.mcp_servers.is_empty() {
+        return vec![];
+    }
+    let servers: serde_json::Map<String, Value> = session
+        .mcp_servers
+        .iter()
+        .map(|m| (m.name.clone(), json!({ "type": "stdio", "command": m.command, "args": m.args })))
+        .collect();
+    let allowed: Vec<String> = session.mcp_servers.iter().map(|m| format!("mcp__{}", m.name)).collect();
+    vec![
+        format!("--mcp-config={}", json!({ "mcpServers": servers })),
+        format!("--allowedTools={}", allowed.join(",")),
+    ]
+}
+
 impl ClaudeDriver {
     pub async fn spawn(
         binary: &str,
@@ -66,6 +85,7 @@ impl ClaudeDriver {
         if let Some(i) = &session.instructions {
             cmd.args(["--append-system-prompt", i]);
         }
+        cmd.args(mcp_args(session));
         cmd.current_dir(&session.cwd);
         cmd.env("AURA_SESSION_ID", &session.id);
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -317,5 +337,21 @@ impl Drop for ClaudeDriver {
     fn drop(&mut self) {
         // Ensure the child does not outlive the driver if `stop` was never called.
         let _ = self.kill_tx.send(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_servers_are_passed_with_their_tools_allowed() {
+        let mut s = Session::new(&CreateSessionOpts { provider: ProviderKind::Claude, cwd: "/tmp".into(), ..Default::default() });
+        assert!(mcp_args(&s).is_empty());
+        s.mcp_servers = vec![McpServer { name: "aura".into(), command: "/bin/aura".into(), args: vec!["mcp".into(), "--orchestrator".into(), "x".into()] }];
+        let args = mcp_args(&s);
+        let config: Value = serde_json::from_str(args[0].strip_prefix("--mcp-config=").unwrap()).unwrap();
+        assert_eq!(config, json!({ "mcpServers": { "aura": { "type": "stdio", "command": "/bin/aura", "args": ["mcp", "--orchestrator", "x"] } } }));
+        assert_eq!(args[1], "--allowedTools=mcp__aura");
     }
 }

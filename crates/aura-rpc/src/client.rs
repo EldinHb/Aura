@@ -76,6 +76,8 @@ impl RpcClient {
                     _ => {}
                 }
             }
+            // Fail the calls still waiting instead of letting them run into their timeout.
+            p2.lock().clear();
         });
         Ok(Self { out, pending, next_id: Arc::new(AtomicU64::new(1)), events, pty, notifications })
     }
@@ -87,12 +89,17 @@ impl RpcClient {
     }
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_with_timeout(method, params, std::time::Duration::from_secs(120)).await
+    }
+
+    /// `call` for methods that may take longer than the default two minutes.
+    pub async fn call_with_timeout(&self, method: &str, params: Value, timeout: std::time::Duration) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id, tx);
         let req = Request { id: Some(Value::from(id)), method: method.into(), params };
         self.out.send(Message::Text(serde_json::to_string(&req)?)).await.map_err(|_| anyhow!("connection closed"))?;
-        let resp = tokio::time::timeout(std::time::Duration::from_secs(120), rx)
+        let resp = tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| anyhow!("rpc timeout for {method}"))?
             .map_err(|_| anyhow!("connection closed"))?;

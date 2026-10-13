@@ -33,6 +33,17 @@ impl Driver for FakeDriver {
             session_id: self.session_id.clone(),
             turn: turn.clone(),
         });
+        // Like the real providers, the user's message is an item of the turn.
+        let _ = self.sink.send(Event::ItemCompleted {
+            session_id: self.session_id.clone(),
+            item: Item::new(
+                &self.session_id,
+                Some(turn.id.clone()),
+                ItemKind::UserMessage,
+            )
+            .with_text(input.text.clone())
+            .completed(),
+        });
         let item = Item::new(
             &self.session_id,
             Some(turn.id.clone()),
@@ -134,6 +145,8 @@ struct FakeProvider {
     starts: Starts,
     /// The system prompt each start was given.
     prompts: Arc<Mutex<Vec<Option<String>>>>,
+    /// The MCP servers each start was given.
+    mcp: Arc<Mutex<Vec<Vec<McpServer>>>>,
 }
 
 #[async_trait::async_trait]
@@ -168,6 +181,7 @@ impl Provider for FakeProvider {
     ) -> anyhow::Result<Box<dyn Driver>> {
         self.starts.lock().push((session.native_id.clone(), fork));
         self.prompts.lock().push(session.instructions.clone());
+        self.mcp.lock().push(session.mcp_servers.clone());
         let _ = sink.send(Event::NativeId {
             session_id: session.id.clone(),
             native_id: format!("native-{}", if fork { "fork" } else { "1" }),
@@ -212,6 +226,7 @@ fn setup() -> (Manager, Calls, Starts, Arc<MemoryStore>) {
         calls: calls.clone(),
         starts: starts.clone(),
         prompts: Default::default(),
+        mcp: Default::default(),
     });
     let m = Manager::new(store.clone(), vec![provider], None);
     (m, calls, starts, store)
@@ -224,6 +239,7 @@ async fn agents_start_with_the_global_agent_and_session_prompts() {
         calls: calls.clone(),
         starts: Default::default(),
         prompts: Default::default(),
+        mcp: Default::default(),
     });
     let prompts = provider.prompts.clone();
     let m = Manager::new(Arc::new(MemoryStore::default()), vec![provider], None);
@@ -467,6 +483,7 @@ async fn mode_switch_and_restore() {
             calls: Default::default(),
             starts: Default::default(),
             prompts: Default::default(),
+            mcp: Default::default(),
         })],
         None,
     );
@@ -658,6 +675,7 @@ async fn groups_are_remembered_with_their_repositories() {
         calls: Default::default(),
         starts: Default::default(),
         prompts: Default::default(),
+        mcp: Default::default(),
     });
     let m = Manager::new(store.clone(), vec![provider], Some(Arc::new(DirRepos)));
     let a = tempfile::tempdir().unwrap();
@@ -750,4 +768,261 @@ async fn restore_registers_groups_of_existing_sessions() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].repos[0].path, cwd);
     assert_eq!(groups[0].repos[0].last_used, s.last_activity);
+}
+
+fn orchestrator_setup() -> (Manager, Calls, Arc<FakeProvider>) {
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: Default::default(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+    });
+    let m = Manager::new(
+        Arc::new(MemoryStore::default()),
+        vec![provider.clone()],
+        None,
+    );
+    (m, provider.calls.clone(), provider)
+}
+
+fn sent_reports(calls: &Calls) -> Vec<String> {
+    calls
+        .lock()
+        .iter()
+        .filter(|c| c.starts_with("send:[Aura] Worker report"))
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn orchestrators_get_tools_and_workers_report_back() {
+    let (m, calls, provider) = orchestrator_setup();
+    m.enable_orchestration("/opt/aura/aura".into(), "/data".into());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let orch = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            title: Some("Lead".into()),
+            group: Some("proj".into()),
+            permission_mode: Some("acceptEdits".into()),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The orchestrator starts with the tools and is told how to use them.
+    let mcp = provider.mcp.lock()[0].clone();
+    assert_eq!(mcp.len(), 1);
+    assert_eq!(mcp[0].command, "/opt/aura/aura");
+    assert_eq!(
+        mcp[0].args,
+        vec![
+            "mcp",
+            "--data-dir",
+            "/data",
+            "--orchestrator",
+            orch.id.as_str()
+        ]
+    );
+    let prompt = provider.prompts.lock()[0].clone().unwrap();
+    assert!(prompt.contains("You are an orchestrator"), "{prompt}");
+    assert!(prompt.contains(&orch.id), "{prompt}");
+
+    // Only orchestrators start workers.
+    let plain = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(m
+        .start_worker(
+            &plain.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "x".into(),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
+
+    let worker = m
+        .start_worker(
+            &orch.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "build it".into(),
+                title: Some("Builder".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(worker.orchestrator_id.as_deref(), Some(orch.id.as_str()));
+    assert_eq!(
+        worker.group.as_deref(),
+        Some("proj"),
+        "workers join the orchestrator's group"
+    );
+    assert_eq!(
+        worker.permission_mode.as_deref(),
+        Some("acceptEdits"),
+        "same agent inherits the mode"
+    );
+    assert!(calls.lock().iter().any(|c| c == "send:build it"));
+    // Workers get no tools and know who they work for.
+    assert!(provider.mcp.lock().last().unwrap().is_empty());
+    let wprompt = provider.prompts.lock().last().cloned().flatten().unwrap();
+    assert!(
+        wprompt.contains("You are a worker") && wprompt.contains("\"Lead\""),
+        "{wprompt}"
+    );
+
+    // The worker's turn ends; the idle orchestrator is told, with the reply.
+    wait_status(&m, &worker.id, SessionStatus::Idle).await;
+    for _ in 0..100 {
+        if !sent_reports(&calls).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let reports = sent_reports(&calls);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        reports[0].contains("Builder")
+            && reports[0].contains(&worker.id)
+            && reports[0].contains("hello"),
+        "{}",
+        reports[0]
+    );
+
+    // Workers are found by id prefix or title, and only among one's own.
+    assert_eq!(m.worker(&orch.id, &worker.id[..6]).unwrap().id, worker.id);
+    assert_eq!(m.worker(&orch.id, "Builder").unwrap().id, worker.id);
+    assert!(m.worker(&orch.id, &plain.id).is_err());
+    let transcript = m.worker_transcript(&orch.id, "Builder", 1).unwrap();
+    assert!(
+        transcript.contains("build it") && transcript.contains("hello"),
+        "{transcript}"
+    );
+    let listed = m.worker_reports(&orch.id).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].last_reply.as_deref(), Some("hello"));
+
+    // Deleting the orchestrator leaves the worker as a plain session.
+    m.delete(&orch.id, false).await.unwrap();
+    assert_eq!(m.get_session(&worker.id).unwrap().orchestrator_id, None);
+}
+
+#[tokio::test]
+async fn a_busy_orchestrator_gets_reports_once_it_is_free_and_not_for_what_it_waited_on() {
+    let (m, calls, _provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let orch = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Without the `aura` binary there are no tools, and the prompt says so.
+    let prompt = m.instructions_for(&orch).unwrap().unwrap();
+    assert!(
+        prompt.contains("could not give you the `aura` tools"),
+        "{prompt}"
+    );
+
+    // The orchestrator is mid-turn (the fake waits on an approval).
+    m.send(
+        &orch.id,
+        Input {
+            text: "please approve".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &orch.id, SessionStatus::WaitingApproval).await;
+
+    let a = m
+        .start_worker(
+            &orch.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "task a".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let waited = m
+        .wait_workers(&orch.id, std::slice::from_ref(&a.id), false, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!waited.timed_out);
+    assert_eq!(waited.workers[0].last_reply.as_deref(), Some("hello"));
+
+    let b = m
+        .start_worker(
+            &orch.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "task b".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    wait_status(&m, &b.id, SessionStatus::Idle).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        sent_reports(&calls).is_empty(),
+        "nothing is delivered while the orchestrator works"
+    );
+
+    // Its turn ends: one report, for the worker it did not wait on.
+    m.respond_approval(
+        &orch.id,
+        "ap1",
+        ApprovalDecision {
+            option: ApprovalOption::Accept,
+            updated_input: None,
+            message: None,
+        },
+    )
+    .await
+    .unwrap();
+    for _ in 0..100 {
+        if !sent_reports(&calls).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let reports = sent_reports(&calls);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        reports[0].contains(&b.id) && !reports[0].contains(&a.id),
+        "{}",
+        reports[0]
+    );
+
+    // Waiting on a worker that is done returns at once; a timeout is reported.
+    let r = m
+        .wait_workers(&orch.id, &[], true, Duration::from_millis(50))
+        .await
+        .unwrap();
+    assert!(!r.timed_out && r.workers.len() == 2);
+
+    // Turning orchestration off detaches the workers.
+    let off = m.set_orchestrator(&orch.id, false).await.unwrap();
+    assert!(!off.orchestrator);
+    assert_eq!(m.get_session(&a.id).unwrap().orchestrator_id, None);
 }

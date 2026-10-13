@@ -114,12 +114,32 @@ pub struct Session {
     /// per-agent prompts. Takes effect the next time the agent starts.
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// This session orchestrates other sessions: it gets Aura's orchestration
+    /// tools and receives a report whenever one of its workers stops.
+    #[serde(default)]
+    pub orchestrator: bool,
+    /// The orchestrator that started this session, if any.
+    #[serde(default)]
+    pub orchestrator_id: Option<SessionId>,
     /// The complete system prompt Aura hands the agent when it starts: global,
     /// per-agent and per-session prompts with their placeholders filled in.
     /// Set by the manager just before `Provider::start`; never stored or sent.
     #[serde(skip)]
     #[ts(skip)]
     pub instructions: Option<String>,
+    /// MCP servers Aura hands the agent when it starts (the orchestration
+    /// tools). Set by the manager next to `instructions`; never stored or sent.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub mcp_servers: Vec<McpServer>,
+}
+
+/// A stdio MCP server an agent is started with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
 }
 
 /// A session group the user created. Kept after its last session is deleted,
@@ -506,6 +526,10 @@ pub struct CreateSessionOpts {
     pub fork: bool,
     /// This session's own system prompt (see [`Session::system_prompt`]).
     pub system_prompt: Option<String>,
+    /// See [`Session::orchestrator`].
+    pub orchestrator: bool,
+    /// See [`Session::orchestrator_id`].
+    pub orchestrator_id: Option<SessionId>,
 }
 
 impl Session {
@@ -548,7 +572,10 @@ impl Session {
             pending_count: 0,
             exit_code: None,
             system_prompt: opts.system_prompt.clone().filter(|p| !p.trim().is_empty()),
+            orchestrator: opts.orchestrator,
+            orchestrator_id: opts.orchestrator_id.clone(),
             instructions: None,
+            mcp_servers: vec![],
         }
     }
 }

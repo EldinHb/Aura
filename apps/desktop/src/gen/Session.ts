@@ -35,4 +35,13 @@ exit_code: number | null,
  * The user's system prompt for this session, added after the global and
  * per-agent prompts. Takes effect the next time the agent starts.
  */
-system_prompt: string | null, };
+system_prompt: string | null, 
+/**
+ * This session orchestrates other sessions: it gets Aura's orchestration
+ * tools and receives a report whenever one of its workers stops.
+ */
+orchestrator: boolean, 
+/**
+ * The orchestrator that started this session, if any.
+ */
+orchestrator_id: string | null, };

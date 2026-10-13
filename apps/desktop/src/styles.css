@@ -107,6 +107,9 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .statusbar-branch { display: inline-flex; gap: 6px; align-items: baseline; min-width: 0; white-space: nowrap; }
 .statusbar-pull { color: var(--accent-2); text-decoration: none; }
 .statusbar-pull:hover { text-decoration: underline; }
+/* A worker sits indented under its orchestrator, with a guide line. */
+.session-row.worker { padding-left: 26px; position: relative; }
+.session-row.worker::before { content: ""; position: absolute; left: 16px; top: 0; bottom: 0; border-left: 1px solid var(--border); }
 .session-row .meta { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--fg-dim); }
 .session-list.dragging { user-select: none; cursor: grabbing; }
 .session-row.drag-source { opacity: 0.5; }
@@ -119,6 +122,7 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .chip.codex { border-color: #6fbf9a55; color: #8fd9b5; }
 .chip.terminal { border-color: #7f8cff55; color: #a8b1ff; }
 .chip.acp { border-color: #c79bf055; color: #d8b7f5; }
+.chip.orchestrator { border-color: var(--accent); color: var(--accent-2); }
 .group-title { display: flex; align-items: center; gap: 6px; }
 
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--fg-dim); gap: 8px; }

@@ -97,6 +97,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [branch, setBranch] = useState("");
   const [prompt, setPrompt] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [orchestrator, setOrchestrator] = useState(false);
   const [issue, setIssue] = useState<PickedIssue | null>(null);
   const [busy, setBusy] = useState(false);
   const dirInput = useRef<HTMLInputElement>(null);
@@ -229,6 +230,8 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         worktree: worktree && repoRoot && branch.trim() ? { branch: branch.trim(), base: null, path: null } : null,
         initial_prompt: mode === "structured" && prompt.trim() ? prompt.trim() : null,
         system_prompt: provider !== "terminal" && systemPrompt.trim() ? systemPrompt : null,
+        orchestrator: provider !== "terminal" && orchestrator,
+        orchestrator_id: null,
       });
       pushRecentDir(cwd);
       if (issue) {
@@ -243,7 +246,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, issue, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrator, issue, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -420,6 +423,16 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
           </label>
           {worktree && <input type="text" value={branch} onChange={(e) => setBranch(hyphenateSpaces(e.target))} placeholder="branch name" spellCheck={false} />}
           {worktree && <span className="dim" style={{ fontSize: 11 }}>Worktree under {repoRoot}/.aura-worktrees/</span>}
+        </div>
+      )}
+
+      {provider !== "terminal" && (
+        <div className="field">
+          <label>
+            <input type="checkbox" checked={orchestrator} onChange={(e) => setOrchestrator(e.target.checked)} style={{ marginRight: 6 }} />
+            Orchestrator: starts and directs other sessions
+          </label>
+          {orchestrator && <span className="dim" style={{ fontSize: 11 }}>You talk to this agent; it hands work to worker sessions of any agent, which show up under it.</span>}
         </div>
       )}
 

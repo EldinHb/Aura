@@ -56,4 +56,23 @@ describe("session order", () => {
     useStore.getState().setSessions([session("a", { group: "z" }), session("b", { group: "a" })]);
     expect(visible()).toEqual(["a", "b"]);
   });
+
+  it("shows workers under their orchestrator and reorders them only among each other", () => {
+    useStore.getState().setSessions([
+      session("a", { orchestrator: true }),
+      session("b"),
+      session("c", { orchestrator_id: "a" }),
+      session("d", { orchestrator_id: "a" }),
+      session("e", { orchestrator_id: "z" }),
+    ]);
+    // An orchestrator that is not shown leaves its worker where it is.
+    expect(visible()).toEqual(["a", "c", "d", "b", "e"]);
+    useStore.getState().moveSessionBy("d", -1);
+    expect(visible()).toEqual(["a", "d", "c", "b", "e"]);
+    useStore.getState().moveSessionTo("c", "b");
+    expect(visible()).toEqual(["a", "d", "c", "b", "e"]);
+    // Moving the orchestrator takes its workers along.
+    useStore.getState().moveSessionTo("b", "a");
+    expect(visible()).toEqual(["b", "a", "d", "c", "e"]);
+  });
 });

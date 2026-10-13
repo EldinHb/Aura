@@ -10,6 +10,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
+mod orchestrator;
+pub use orchestrator::{describe_workers, report_message, WaitResult, WorkerReport, WorkerSpec};
+
 /// Git worktree creation is provided by `aura-git`; the manager only needs this.
 pub trait WorktreeBackend: Send + Sync {
     fn create(&self, cwd: &str, opts: &WorktreeOpts) -> Result<WorktreeInfo>;
@@ -49,6 +52,7 @@ struct Inner {
     sink: mpsc::UnboundedSender<Event>,
     /// Serialises read-modify-write updates of the group registry.
     groups: Mutex<()>,
+    orchestration: Mutex<orchestrator::State>,
 }
 
 #[derive(Clone)]
@@ -75,6 +79,7 @@ impl Manager {
             pty_out,
             sink,
             groups: Mutex::new(()),
+            orchestration: Mutex::new(Default::default()),
         });
         let m = Self { inner };
         m.spawn_event_loop(sink_rx);
@@ -305,18 +310,27 @@ impl Manager {
             (_, Some(i)) => i.display_name.clone(),
             (_, None) => s.provider.as_str().to_string(),
         };
-        Ok(crate::prompts::compose(
+        let composed = crate::prompts::compose(
             global,
             stored.agents.get(&key).map(String::as_str),
             s,
             &name,
-        ))
+        );
+        Ok(match self.orchestration_prompt(s) {
+            Some(extra) => Some(match composed {
+                Some(c) => format!("{c}\n\n{extra}"),
+                None => extra,
+            }),
+            None => composed,
+        })
     }
 
-    /// The session as handed to its provider: with the system prompt to start with.
+    /// The session as handed to its provider: with the system prompt and MCP
+    /// servers to start with.
     fn with_instructions(&self, s: &Session) -> Result<Session> {
         let mut s = s.clone();
         s.instructions = self.instructions_for(&s)?;
+        s.mcp_servers = self.mcp_servers_for(&s);
         Ok(s)
     }
 
@@ -470,6 +484,10 @@ impl Manager {
             resume_native_id: Some(native),
             fork: true,
             system_prompt: s.system_prompt.clone(),
+            // A fork of an orchestrator still expects its tools; a fork of a
+            // worker was not started by the orchestrator, so it reports to no one.
+            orchestrator: s.orchestrator,
+            orchestrator_id: None,
         })
         .await
     }
@@ -763,6 +781,7 @@ impl Manager {
         self.inner.runtimes.lock().remove(id);
         self.inner.sessions.lock().remove(id);
         self.inner.store.delete_session(id)?;
+        self.forget_orchestrator(id);
         if remove_worktree {
             if let (Some(wt), Some(backend)) = (&s.worktree, &self.inner.worktrees) {
                 if let Err(e) = backend.remove(wt) {
@@ -1158,6 +1177,7 @@ impl Manager {
                 _ => {}
             }
         });
+        self.on_orchestration_event(&ev);
         self.broadcast(ev);
     }
 }

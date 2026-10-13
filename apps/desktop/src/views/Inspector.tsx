@@ -50,6 +50,48 @@ type RateLimits = {
   rateLimits?: { primary?: { usedPercent?: number; resetsAt?: number; windowDurationMins?: number }; secondary?: { usedPercent?: number; resetsAt?: number } | null };
 };
 
+function statusDot(s: Session): string {
+  return s.status === "running" ? "info pulse" : s.status.startsWith("waiting") ? "warn pulse" : s.status === "error" ? "err" : s.status === "exited" ? "" : "ok";
+}
+
+/** An orchestrator's workers, or the orchestrator a worker reports to. */
+function OrchestrationSection({ s }: { s: Session }) {
+  const sessions = useStore((st) => st.sessions);
+  const select = useStore((st) => st.select);
+  const workers = useMemo(
+    () => Object.values(sessions).filter((w) => w.orchestrator_id === s.id).sort((a, b) => a.created_at.localeCompare(b.created_at)),
+    [sessions, s.id],
+  );
+  const lead = s.orchestrator_id ? sessions[s.orchestrator_id] : undefined;
+  if (!s.orchestrator && !lead) return null;
+  const row = (w: Session) => (
+    <button key={w.id} className="list-item" data-command="session.select" onClick={() => select(w.id)} title={w.cwd}>
+      <span className={clsx("dot", statusDot(w))} />
+      <span className="grow">{w.title}</span>
+      <span className={clsx("chip", w.provider)}>{w.agent ?? w.provider}</span>
+    </button>
+  );
+  return (
+    <div className="inspector-section">
+      <h4>{s.orchestrator ? "Orchestrator" : "Worker"}</h4>
+      {s.orchestrator ? (
+        <>
+          <div className="dim" style={{ marginBottom: 6 }}>Starts and directs the sessions below and hears back when each one stops.</div>
+          <div className="list">
+            {workers.length === 0 && <span className="dim">No workers yet</span>}
+            {workers.map(row)}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="dim" style={{ marginBottom: 6 }}>Started by this orchestrator, which hears back when this session stops.</div>
+          <div className="list">{lead && row(lead)}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AcpSection({ s, info }: { s: Session; info: Record<string, unknown> }) {
   const acp = acpSessionInfo(info);
   if (!acp) return null;
@@ -157,12 +199,13 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
             onEdit={() => openDialog({ kind: "session-links", sessionId: s.id })} />
           {pr && <WatchSection target={pr} />}
           <PlanSection sessionId={s.id} />
+          <OrchestrationSection s={s} />
           <div className="inspector-section">
             <h4>Session</h4>
             <div className="kv">
               <KV k="title" v={s.title} title={s.title} />
               <KV k="provider" v={<span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>} />
-              <KV k="status" v={<><span className={clsx("dot", s.status === "running" ? "info pulse" : s.status.startsWith("waiting") ? "warn pulse" : s.status === "error" ? "err" : s.status === "exited" ? "" : "ok")} /> {s.status}{s.pending_count ? ` (${s.pending_count} pending)` : ""}</>} />
+              <KV k="status" v={<><span className={clsx("dot", statusDot(s))} /> {s.status}{s.pending_count ? ` (${s.pending_count} pending)` : ""}</>} />
               <KV k="mode" v={s.mode} />
               <KV k="cwd" v={s.cwd} mono title={s.cwd} />
               {s.worktree && <KV k="worktree" v={`⎇ ${s.worktree.branch}`} title={s.worktree.path} />}
@@ -252,6 +295,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
               {caps?.fork && s.native_id && <Action cmd="session.fork" label="Fork" />}
               <Action cmd="session.rename" label="Rename" />
               {s.provider !== "terminal" && <Action cmd="session.system-prompt" label="Prompt" />}
+              {s.provider !== "terminal" && <Action cmd="session.toggle-orchestrator" label={s.orchestrator ? "Stop orchestrating" : "Orchestrate"} />}
               {caps?.terminal_mode && s.provider !== "terminal" && <Action cmd="session.toggle-mode" label={s.mode === "terminal" ? "Structured" : "Terminal"} />}
               {s.mode === "terminal" && s.status === "exited" && <Action cmd="session.restart" label="Restart" />}
               <Action cmd="git.diff" label="Diff" />

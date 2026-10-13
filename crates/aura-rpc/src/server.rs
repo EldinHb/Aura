@@ -403,6 +403,83 @@ async fn dispatch(
             m.clear_notices(id.as_deref())?;
             ok(true)
         }
+        "session.set_orchestrator" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                on: bool,
+            }
+            let P { id, on } = params(p)?;
+            ok(m.set_orchestrator(&id, on).await?)
+        }
+        "orchestrator.start" => {
+            #[derive(Deserialize)]
+            struct P {
+                orchestrator: String,
+                #[serde(flatten)]
+                spec: WorkerSpec,
+            }
+            let P { orchestrator, spec } = params(p)?;
+            ok(m.start_worker(&orchestrator, spec).await?)
+        }
+        "orchestrator.send" => {
+            #[derive(Deserialize)]
+            struct P {
+                orchestrator: String,
+                worker: String,
+                text: String,
+            }
+            let P { orchestrator, worker, text } = params(p)?;
+            ok(m.message_worker(&orchestrator, &worker, text).await?)
+        }
+        "orchestrator.workers" => {
+            #[derive(Deserialize)]
+            struct P {
+                orchestrator: String,
+            }
+            let P { orchestrator } = params(p)?;
+            ok(m.worker_reports(&orchestrator)?)
+        }
+        "orchestrator.read" => {
+            #[derive(Deserialize)]
+            struct P {
+                orchestrator: String,
+                worker: String,
+                #[serde(default)]
+                turns: Option<usize>,
+            }
+            let P { orchestrator, worker, turns } = params(p)?;
+            ok(m.worker_transcript(&orchestrator, &worker, turns.unwrap_or(1))?)
+        }
+        "orchestrator.wait" => {
+            #[derive(Deserialize)]
+            struct P {
+                orchestrator: String,
+                #[serde(default)]
+                workers: Vec<String>,
+                #[serde(default)]
+                any: bool,
+                #[serde(default)]
+                timeout_secs: Option<u64>,
+            }
+            let P { orchestrator, workers, any, timeout_secs } = params(p)?;
+            let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(600).clamp(1, 3600));
+            ok(m.wait_workers(&orchestrator, &workers, any, timeout).await?)
+        }
+        "orchestrator.interrupt" | "orchestrator.stop" => {
+            #[derive(Deserialize)]
+            struct P {
+                orchestrator: String,
+                worker: String,
+            }
+            let P { orchestrator, worker } = params(p)?;
+            if req.method == "orchestrator.stop" {
+                m.stop_worker(&orchestrator, &worker).await?;
+            } else {
+                m.interrupt_worker(&orchestrator, &worker).await?;
+            }
+            ok(true)
+        }
         "session.rename" => {
             #[derive(Deserialize)]
             struct P {

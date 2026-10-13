@@ -163,6 +163,19 @@ export const coreCommands: Command[] = [
   { id: "session.fork", title: "Fork session", group: "Session", when: "hasSelection", run: async () => { const s = await client().fork(selected().id); st().select(s.id); } },
   { id: "session.rename", title: "Rename session…", group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "rename", sessionId: selected().id }) },
   { id: "session.system-prompt", title: "Session system prompt…", group: "Session", keywords: ["instructions"], when: "hasSelection", run: () => st().openDialog({ kind: "system-prompt", sessionId: selected().id }) },
+  {
+    id: "session.toggle-orchestrator",
+    title: "Make orchestrator / regular session",
+    group: "Session",
+    keywords: ["orchestrator", "workers", "multi-agent"],
+    when: "hasSelection",
+    run: async () => {
+      const s = selected();
+      if (s.provider === "terminal") return st().toast("Terminal sessions cannot orchestrate", "error");
+      const updated = await client().setOrchestrator(s.id, !s.orchestrator);
+      st().toast(updated.orchestrator ? `“${s.title}” is an orchestrator from its next message` : `“${s.title}” is a regular session again; its workers are on their own`);
+    },
+  },
   { id: "session.links", title: "Edit issue & PR…", keywords: ["GitHub", "pull request", "links"], group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "session-links", sessionId: selected().id }) },
   { id: "session.plan.toggle", title: "Show / hide session plan", group: "Session", when: "hasSelection", run: () => {
     const id = selected().id;

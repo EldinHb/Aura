@@ -7,6 +7,8 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::io::Write;
 
+mod mcp;
+
 #[derive(Parser, Debug)]
 #[command(name = "aura", version, about = "Aura: keyboard-first manager for AI coding CLI sessions")]
 struct Cli {
@@ -50,6 +52,9 @@ enum Cmd {
         /// Create a git worktree on this branch
         #[arg(long)]
         branch: Option<String>,
+        /// Make the session an orchestrator that starts and directs other sessions
+        #[arg(long)]
+        orchestrator: bool,
         /// Resume this native session id
         #[arg(long)]
         resume: Option<String>,
@@ -96,6 +101,12 @@ enum Cmd {
     },
     /// List providers
     Providers,
+    /// Serve an orchestrator's tools over MCP on stdin/stdout (Aura starts this itself)
+    Mcp {
+        /// The orchestrator session the tools act for
+        #[arg(long)]
+        orchestrator: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -110,6 +121,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let data_dir = cli.data_dir.clone().unwrap_or_else(aura_rpc::default_data_dir);
     if let Cmd::Daemon { cmd } = &cli.cmd { return daemon_cmd(&data_dir, cmd).await }
+    if let Cmd::Mcp { orchestrator } = cli.cmd { return mcp::run(data_dir, orchestrator).await }
     let client = connect_or_start(&data_dir).await?;
     match cli.cmd {
         Cmd::Ls { all } => {
@@ -134,7 +146,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::New { provider, agent, cwd, title, group, prompt, system_prompt, branch, resume, attach, command } => {
+        Cmd::New { provider, agent, cwd, title, group, prompt, system_prompt, branch, orchestrator, resume, attach, command } => {
             let mut provider = ProviderKind::parse(&provider).ok_or_else(|| anyhow!("unknown provider {provider}"))?;
             if agent.is_some() {
                 if !matches!(provider, ProviderKind::Acp | ProviderKind::Terminal) {
@@ -154,6 +166,7 @@ async fn main() -> Result<()> {
                 system_prompt,
                 resume_native_id: resume,
                 worktree: branch.map(|b| WorktreeOpts { branch: b, base: None, path: None }),
+                orchestrator,
                 ..Default::default()
             };
             let s: Session = client.call_as("session.create", serde_json::to_value(opts)?).await?;
@@ -232,7 +245,7 @@ async fn main() -> Result<()> {
             let v = client.call("provider.list", json!({})).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
-        Cmd::Daemon { .. } => unreachable!(),
+        Cmd::Daemon { .. } | Cmd::Mcp { .. } => unreachable!(),
     }
     Ok(())
 }
