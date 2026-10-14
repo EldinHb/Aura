@@ -22,7 +22,8 @@ function selected() {
 export function focusRegionEl(region: string) {
   const el = document.querySelector<HTMLElement>(`[data-region="${region}"]`);
   if (!el) return;
-  const target = el.querySelector<HTMLElement>("[data-autofocus]") ?? el;
+  // A question waiting on the user takes the keyboard before the transcript does.
+  const target = (region === "main" ? el.querySelector<HTMLElement>("[data-input-id]") : null) ?? el.querySelector<HTMLElement>("[data-autofocus]") ?? el;
   if (region === "main" && st().sessions[st().selectedId ?? ""]?.mode === "terminal") {
     const xt = el.querySelector<HTMLElement>(".xterm-helper-textarea");
     if (xt) {
@@ -95,7 +96,10 @@ export const coreCommands: Command[] = [
       // from composer -> main; from main -> sidebar stays
       if (s.focus === "composer") setFocus("main");
       else if (document.activeElement instanceof HTMLElement && !document.activeElement.closest(".terminal-wrap")) {
+        // Leaving a question card goes to the transcript; the region focus would land back on the card.
+        const transcript = document.activeElement.closest("[data-input-id]")?.closest<HTMLElement>(".transcript");
         document.activeElement.blur();
+        if (transcript) return transcript.focus();
         focusRegionEl(s.focus);
       }
     },

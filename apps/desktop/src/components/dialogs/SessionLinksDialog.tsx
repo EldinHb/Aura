@@ -51,7 +51,7 @@ function LinkList({ kind, chosen, onChange, candidates, automatic, disabled, onE
           {chosen.map((url) => (
             <div key={url} className="link-list-row">
               <span className="grow" title={url}>{label(url)}</span>
-              <button type="button" className="btn small" aria-label={`Remove ${label(url)}`} disabled={disabled}
+              <button type="button" className="btn small" data-hint aria-label={`Remove ${label(url)}`} disabled={disabled}
                 onClick={() => onChange(chosen.filter((other) => other !== url))}>Remove</button>
             </div>
           ))}
@@ -75,7 +75,7 @@ function LinkList({ kind, chosen, onChange, candidates, automatic, disabled, onE
                   event.stopPropagation();
                   if (add(url)) { setUrl(""); setPasting(false); }
                 }} />
-              <button type="button" className="btn small" disabled={disabled} onClick={() => { if (add(url)) { setUrl(""); setPasting(false); } }}>Add</button>
+              <button type="button" className="btn small" data-hint disabled={disabled} onClick={() => { if (add(url)) { setUrl(""); setPasting(false); } }}>Add</button>
             </div>
           )}
         </>
