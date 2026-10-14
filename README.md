@@ -44,6 +44,10 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
   worker sessions with any agent (Claude Code, Codex, ACP agents, mixed as it likes),
   hands them tasks and hears back when they finish. Every worker is a normal session
   you can open and message yourself. See [Orchestrators](#orchestrators).
+- **Agents follow up on reviews.** Link a session to several issues and PRs; new
+  reviews and comments on your PRs go to its agent, which fixes and pushes, and
+  you are told when they arrive and when the agent is done.
+  See [Agents follow up on reviews](#agents-follow-up-on-reviews).
 - **An inbox for approvals.** See every session waiting on you, and approve or decline
   with a single key.
 - **Git worktrees built in.** Start a session in its own worktree so parallel agents do
@@ -387,6 +391,33 @@ you; automatic bot reviews such as Copilot's do not count unless you pick the bo
 Watches keep running in the daemon while the window is closed, and their results
 are waiting in the inspector when you come back. **Check watched PRs for reviews
 now** and **Stop watching PR for reviews** are in the palette too.
+
+### Linking issues and PRs to a session
+
+A session can be linked to any number of issues and pull requests. By default
+Aura follows the conversation: the issue you ask the agent to work on and the PR
+it opens. **Edit issues & PRs…** in the inspector (or the palette) turns that
+off per kind and lets you add links mentioned in the session or paste URLs, and
+remove them again. The new-session dialog takes several issues up front.
+
+### Agents follow up on reviews
+
+Every minute the daemon also looks at the open PRs you authored that are linked
+to a session, with or without a watch. New reviews, inline review comments and
+conversation comments go to that session's agent as a message from Aura, as soon
+as it is idle. The agent fixes what needs fixing and pushes to the PR's branch;
+it leaves the rest, and posting on GitHub, to you unless you told it otherwise.
+You get a toast (and a desktop notification when Aura is in the background) when
+the activity arrives, and another with the agent's summary when its turn ends.
+
+- Activity that existed before Aura first looked at the PR is not handed over.
+- Your own account's reviews and comments are skipped, since agents post as you.
+  Conversation comments by bots (CI, coverage) are skipped; bot reviews count.
+- An approval without a comment is announced but does not wake the agent.
+- When several sessions are linked to the same PR, an orchestrator takes it over
+  from its own workers; otherwise the session active last gets it.
+- Untick **Hand new reviews and comments on these PRs to this session** in
+  **Edit issues & PRs…** to stop it for a session.
 
 ---
 

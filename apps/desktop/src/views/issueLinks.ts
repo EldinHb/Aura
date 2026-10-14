@@ -81,7 +81,12 @@ function commandLinks(command: string, output: string, includeReadOnly = false):
   return linksIn(`https://github.com/${repo}/${kind === "PR" ? "pull" : "issues"}/${target}`);
 }
 
-export type LinkPreferences = { issue?: string | null; pr?: string | null };
+/**
+ * Links the user chose for a session. A missing list follows the conversation
+ * (automatic); a list, empty or not, is fixed until the user changes it.
+ * `reviews: false` stops Aura handing review activity on the PRs to the session.
+ */
+export type LinkPreferences = { issues?: string[]; prs?: string[]; reviews?: boolean };
 
 export function parseSessionLink(value: string, kind: SessionLink["kind"]): SessionLink | undefined {
   try {
@@ -115,10 +120,9 @@ export function mentionedSessionLinks(items: Record<string, Item>, title = "", r
 
 export function selectedSessionLinks(automatic: SessionLink[], preferences: LinkPreferences = {}): SessionLink[] {
   return (["Issue", "PR"] as const).flatMap((kind) => {
-    const value = preferences[kind === "Issue" ? "issue" : "pr"];
-    if (value === undefined) return automatic.filter((link) => link.kind === kind);
-    const link = value === null ? undefined : parseSessionLink(value, kind);
-    return link ? [link] : [];
+    const chosen = preferences[kind === "Issue" ? "issues" : "prs"];
+    if (!chosen) return automatic.filter((link) => link.kind === kind);
+    return chosen.flatMap((url) => parseSessionLink(url, kind) ?? []);
   });
 }
 

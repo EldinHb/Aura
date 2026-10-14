@@ -20,7 +20,10 @@ export function SessionLinks({ items, title, repo, preferences, onEdit, loading,
         </ExternalLink>
       ))}
       {!loading && !error && links.length === 0 && <p className="dim">No issue or PR selected</p>}
-      {onEdit && <button className="btn small" data-command="session.links" onClick={onEdit}>Edit issue &amp; PR…</button>}
+      {!loading && !error && links.some((link) => link.kind === "PR") && (
+        <p className="dim">{preferences?.reviews === false ? "Reviews on these PRs are not handed to this session" : "New reviews on your PRs here go to this session"}</p>
+      )}
+      {onEdit && <button className="btn small" data-command="session.links" onClick={onEdit}>Edit issues &amp; PRs…</button>}
     </div>
   );
 }

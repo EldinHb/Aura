@@ -23,11 +23,11 @@ function detail(issue: RepoIssue): string {
 }
 
 /**
- * Optional issue to link to a new session. Lists open issues of the folder's
+ * Optional issues to link to a new session. Lists open issues of the folder's
  * GitHub repository, starting with the current sprint; a pasted URL or an
  * issue number also works.
  */
-export function IssuePicker({ cwd, value, onChange }: { cwd: string; value: PickedIssue | null; onChange: (issue: PickedIssue | null) => void }) {
+export function IssuePicker({ cwd, value, onChange }: { cwd: string; value: PickedIssue[]; onChange: (issues: PickedIssue[]) => void }) {
   const client = useStore((s) => s.client);
   const repo = useGithubRepo(cwd || undefined);
   const [issues, setIssues] = useState<{ repo: string; list: RepoIssue[] } | null>(null);
@@ -80,11 +80,12 @@ export function IssuePicker({ cwd, value, onChange }: { cwd: string; value: Pick
     const local = loaded.filter((i) => (scope === "all" || i.sprint) && (!needle || i.title.toLowerCase().includes(needle)));
     const remote = searchable && found?.query === query ? found.list : [];
     const seen = new Set<number>();
+    const picked = new Set(value.map((issue) => issue.url.toLowerCase()));
     return [...local, ...remote]
-      .filter((i) => !seen.has(i.number) && !!seen.add(i.number))
+      .filter((i) => !seen.has(i.number) && !!seen.add(i.number) && !picked.has(i.url.toLowerCase()))
       .slice(0, MAX_ISSUE_ROWS)
       .map((i) => ({ link: toLink(repo, i), title: i.title, detail: detail(i) }));
-  }, [repo, query, loaded, scope, searchable, found]);
+  }, [repo, query, loaded, scope, searchable, found, value]);
 
   useEffect(() => setIndex(0), [rows]);
   useEffect(() => {
@@ -92,27 +93,15 @@ export function IssuePicker({ cwd, value, onChange }: { cwd: string; value: Pick
   }, [index, rows]);
 
   const pick = (row: Row) => {
-    onChange({ ...row.link, title: row.title });
+    if (!value.some((issue) => issue.url.toLowerCase() === row.link.url.toLowerCase())) onChange([...value, { ...row.link, title: row.title }]);
     setText("");
   };
-
-  if (value) {
-    return (
-      <div className="field">
-        <label>Issue (optional)</label>
-        <div className="issue-picked">
-          <span className="grow" title={value.url}>{value.repo} #{value.number}{value.title ? ` — ${value.title}` : ""}</span>
-          <button type="button" className="btn small" data-command="new-session.issue-clear" onClick={() => onChange(null)}>Remove</button>
-        </div>
-      </div>
-    );
-  }
 
   const loading = !!repo && !loaded && !error;
   return (
     <div className="field">
       <div className="issue-head">
-        <label htmlFor="new-session-issue">Issue (optional)</label>
+        <label htmlFor="new-session-issue">Issues (optional)</label>
         {repo && (
           <div className="radio-row" role="radiogroup" aria-label="Issues to list">
             {(["sprint", "all"] as Scope[]).map((s) => (
@@ -123,12 +112,19 @@ export function IssuePicker({ cwd, value, onChange }: { cwd: string; value: Pick
           </div>
         )}
       </div>
+      {value.map((issue) => (
+        <div key={issue.url} className="issue-picked">
+          <span className="grow" title={issue.url}>{issue.repo} #{issue.number}{issue.title ? ` — ${issue.title}` : ""}</span>
+          <button type="button" className="btn small" data-command="new-session.issue-clear" aria-label={`Remove ${issue.repo} #${issue.number}`}
+            onClick={() => onChange(value.filter((other) => other.url !== issue.url))}>Remove</button>
+        </div>
+      ))}
       <input
         id="new-session-issue"
         type="text"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={repo ? `Search ${repo}, #number or paste a URL` : "Paste a GitHub issue URL"}
+        placeholder={value.length ? "Add another issue" : repo ? `Search ${repo}, #number or paste a URL` : "Paste a GitHub issue URL"}
         spellCheck={false}
         autoComplete="off"
         onKeyDown={(e) => {

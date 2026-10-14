@@ -6,7 +6,7 @@ import { useStore } from "../../state/store";
 import { useLinkPreferencesStore } from "../../state/sessionLinkPreferences";
 import { WatchDialog, people } from "./WatchDialog";
 import { WatchSection } from "./WatchSection";
-import { currentWatchTarget, useWatchSync, useWatches, type Candidates } from "./state";
+import { currentWatchTarget, isHandlingReview, useWatchSync, useWatches, type Candidates } from "./state";
 
 const candidates: Candidates = {
   title: "Add watch", url: "https://github.com/o/r/pull/7", author: "me", state: "open",
@@ -57,8 +57,30 @@ it("announces reviews the daemon reports", () => {
   expect(useStore.getState().toasts.at(-1)?.message).toBe("alice commented on o/r#7: Looks off");
 });
 
+it("announces review activity handed to a session once, and how the session handled it", () => {
+  function Sync() { useWatchSync(true); return null; }
+  render(<Sync />);
+  const review = { id: 50, reviewer: "bob", state: "CHANGES_REQUESTED", body: "Rename it", url: "", submitted_at: "" };
+  notify?.("watches.review", { watch, review });
+  notify?.("follows.activity", {
+    pr: { repo: "o/r", number: 7, title: "Add watch", url: "" },
+    items: [
+      { kind: "review", id: 50, author: "bob", state: "CHANGES_REQUESTED", body: "Rename it", url: "", path: null, line: null },
+      { kind: "comment", id: 60, author: "bob", state: "", body: "Typo here", url: "", path: "a.rs", line: 3 },
+    ],
+    session: { id: "s", title: "Feature" },
+  });
+  const messages = () => useStore.getState().toasts.map((t) => t.message);
+  expect(messages().at(-1)).toBe("bob commented on o/r#7: Typo here — for “Feature”");
+  expect(isHandlingReview("s")).toBe(false);
+  notify?.("follows.started", { session: { id: "s", title: "Feature" }, prs: [] });
+  expect(isHandlingReview("s")).toBe(true);
+  notify?.("follows.handled", { session: { id: "s", title: "Feature" }, prs: [{ repo: "o/r", number: 7, title: "", url: "" }], status: "completed", reply: "Renamed it and pushed." });
+  expect(messages().at(-1)).toBe("“Feature” handled the review on o/r#7: Renamed it and pushed.");
+});
+
 it("targets the selected session's saved PR link", () => {
   useStore.setState({ selectedId: "s", sessions: { s: { id: "s", title: "work" } as Session }, transcripts: {} });
-  useLinkPreferencesStore.setState({ entries: { s: { preferences: { pr: "https://github.com/o/r/pull/7" } } } });
+  useLinkPreferencesStore.setState({ entries: { s: { preferences: { prs: ["https://github.com/o/r/pull/7", "https://github.com/o/r/pull/8"] } } } });
   expect(currentWatchTarget()).toEqual({ repo: "o/r", number: 7 });
 });

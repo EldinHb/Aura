@@ -178,10 +178,11 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
   const openDialog = useStore((st) => st.openDialog);
   const setCursorItem = useStore((st) => st.setCursorItem);
 
-  const pr = useMemo(() => {
-    if (!s || !linkPreferences) return null;
-    const link = selectedSessionLinks(sessionLinks(t?.items ?? {}, s.title, repo), linkPreferences.preferences).find((l) => l.kind === "PR");
-    return link ? { repo: link.repo, number: Number(link.number) } : null;
+  const prs = useMemo(() => {
+    if (!s || !linkPreferences) return [];
+    return selectedSessionLinks(sessionLinks(t?.items ?? {}, s.title, repo), linkPreferences.preferences)
+      .filter((l) => l.kind === "PR")
+      .map((l) => ({ repo: l.repo, number: Number(l.number) }));
   }, [s, t?.items, repo, linkPreferences]);
 
   const jump = (key: string) => {
@@ -197,7 +198,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
           <SessionLinks items={t?.items ?? {}} title={s.title} repo={repo} preferences={linkPreferences?.preferences}
             loading={!linkPreferences} error={linkPreferences?.error}
             onEdit={() => openDialog({ kind: "session-links", sessionId: s.id })} />
-          {pr && <WatchSection target={pr} />}
+          {prs.map((pr) => <WatchSection key={`${pr.repo}#${pr.number}`} target={pr} showTarget={prs.length > 1} />)}
           <PlanSection sessionId={s.id} />
           <OrchestrationSection s={s} />
           <div className="inspector-section">

@@ -98,7 +98,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [prompt, setPrompt] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [orchestrator, setOrchestrator] = useState(false);
-  const [issue, setIssue] = useState<PickedIssue | null>(null);
+  const [issues, setIssues] = useState<PickedIssue[]>([]);
   const [busy, setBusy] = useState(false);
   const dirInput = useRef<HTMLInputElement>(null);
   const dirBrowser = useRef<HTMLDivElement>(null);
@@ -234,9 +234,9 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         orchestrator_id: null,
       });
       pushRecentDir(cwd);
-      if (issue) {
-        await saveLinkPreferences(client, s.id, { issue: issue.url }).catch((e) =>
-          toast(`Session created, but linking ${issue.repo} #${issue.number} failed: ${e instanceof Error ? e.message : e}`, "error"));
+      if (issues.length) {
+        await saveLinkPreferences(client, s.id, { issues: issues.map((issue) => issue.url) }).catch((e) =>
+          toast(`Session created, but linking ${issues.map((issue) => `${issue.repo} #${issue.number}`).join(", ")} failed: ${e instanceof Error ? e.message : e}`, "error"));
       }
       select(s.id);
       closeDialog();
@@ -246,7 +246,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrator, issue, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrator, issues, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -358,7 +358,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       </div>
 
-      <IssuePicker cwd={expandedDir.replace(/\/+$/, "")} value={issue} onChange={setIssue} />
+      <IssuePicker cwd={expandedDir.replace(/\/+$/, "")} value={issues} onChange={setIssues} />
 
       {isAcp ? (
         <div className="field">

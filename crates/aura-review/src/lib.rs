@@ -1,5 +1,6 @@
 //! Daemon-owned review jobs. All state transitions are serialized and persisted before publication.
 pub mod diff;
+pub mod follow;
 pub mod runner;
 pub mod watch;
 use anyhow::{bail, Context, Result};

@@ -94,8 +94,11 @@ async fn main() -> Result<()> {
 
     let reviews = aura_review::ReviewService::new(store.clone(), Arc::new(aura_github::GhCli::default()), Arc::new(aura_review::runner::CliRunner), manager.clone(), data_dir.join("review-workspaces"))?;
     reviews.launch();
-    let watches = aura_review::watch::WatchService::new(store, Arc::new(aura_github::GhCli::default()), reviews.events.clone())?;
+    let watches = aura_review::watch::WatchService::new(store.clone(), Arc::new(aura_github::GhCli::default()), reviews.events.clone())?;
     watches.launch();
+    // Review activity on a session's own PRs goes to that session's agent.
+    let follows = aura_review::follow::FollowService::new(store, Arc::new(aura_github::GhCli::default()), manager.clone(), reviews.events.clone())?;
+    follows.launch();
     let service = reviews.clone();
     let github: Arc<dyn aura_github::Github> = Arc::new(aura_github::GhCli::default());
     let ext: ExtHandler = Arc::new(move |method: String, params: Value| {

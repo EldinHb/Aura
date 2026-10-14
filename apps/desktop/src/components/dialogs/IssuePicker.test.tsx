@@ -35,7 +35,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 const rows = () => [...document.querySelectorAll(".issue-list .list-item .grow")].map((el) => el.textContent);
-const issueInput = () => screen.getByLabelText("Issue (optional)") as HTMLInputElement;
+const issueInput = () => screen.getByLabelText("Issues (optional)") as HTMLInputElement;
 
 it("lists the current sprint by default and all open issues on request", async () => {
   render(<NewSessionDialog cwd="/repo" />);
@@ -63,14 +63,17 @@ it("filters by title and searches GitHub beyond the loaded issues", async () => 
   expect(githubIssues).toHaveBeenCalledWith("owner/repo", "login");
 });
 
-it("links the picked issue to the created session", async () => {
+it("links every picked issue to the created session", async () => {
   render(<NewSessionDialog cwd="/repo" />);
   await waitFor(() => expect(rows()).toHaveLength(2));
   fireEvent.keyDown(issueInput(), { key: "ArrowDown" });
   fireEvent.keyDown(issueInput(), { key: "Enter" });
   expect(screen.getByText("owner/repo #3 — Export CSV")).toBeTruthy();
+  expect(rows()).toEqual(["Fix login"]);
+  fireEvent.keyDown(issueInput(), { key: "Enter" });
+  expect(screen.getByText("owner/repo #1 — Fix login")).toBeTruthy();
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: /Create/ })); });
-  await waitFor(() => expect(setSetting).toHaveBeenCalledWith("session.links.v1.new", JSON.stringify({ issue: "https://github.com/owner/repo/issues/3" })));
+  await waitFor(() => expect(setSetting).toHaveBeenCalledWith("session.links.v1.new", JSON.stringify({ issues: ["https://github.com/owner/repo/issues/3", "https://github.com/owner/repo/issues/1"] })));
   expect(createSession).toHaveBeenCalled();
 });
 
@@ -82,8 +85,9 @@ it("accepts an issue number or a pasted URL, and can be removed", async () => {
   fireEvent.change(issueInput(), { target: { value: "https://github.com/other/repo/issues/5" } });
   expect(rows()).toEqual(["other/repo"]);
   fireEvent.keyDown(issueInput(), { key: "Enter" });
-  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
   expect(issueInput().value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: "Remove other/repo #5" }));
+  expect(screen.queryByText("other/repo #5")).toBeNull();
 });
 
 it("only takes a pasted URL outside a GitHub repository", async () => {

@@ -1,6 +1,6 @@
 import { PullWorkspace } from "./features/reviews/PullWorkspace";
 import { registerReviewCommands } from "./features/reviews/state";
-import { registerWatchCommands, useWatchSync } from "./features/watches/state";
+import { isHandlingReview, registerWatchCommands, useWatchSync } from "./features/watches/state";
 import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
@@ -211,6 +211,8 @@ async function notifyIfNeeded(ev: Event) {
   if (ev.type === "turn_completed" && ev.turn.status !== "completed") return;
   const focused = document.hasFocus();
   if (focused && ev.type === "turn_completed") return;
+  // A turn on review activity Aura handed over gets its own notification.
+  if (ev.type === "turn_completed" && isHandlingReview(ev.session_id)) return;
   const now = Date.now();
   if (now - lastNotified < 1500) return;
   lastNotified = now;

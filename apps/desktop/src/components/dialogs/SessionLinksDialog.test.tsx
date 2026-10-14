@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Item } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
@@ -24,42 +24,59 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it("lists mentions, saves chosen links, and restores them on reopening", async () => {
+const pr2 = "https://github.com/other/repo/pull/9";
+const automaticOff = (name: "Issues" | "Pull requests") =>
+  fireEvent.click(within(screen.getByRole("group", { name })).getByRole("checkbox", { name: "Automatic" }));
+
+it("adds several mentioned and pasted links, saves them, and restores them on reopening", async () => {
   const { unmount } = render(<SessionLinksDialog sessionId="session" />);
-  fireEvent.change(await screen.findByLabelText("Issue"), { target: { value: issue } });
-  fireEvent.change(screen.getByLabelText("Pull request"), { target: { value: pr } });
+  await screen.findByRole("group", { name: "Issues" });
+  automaticOff("Issues");
+  fireEvent.change(screen.getByLabelText("Add issue"), { target: { value: issue } });
+  automaticOff("Pull requests");
+  fireEvent.change(screen.getByLabelText("Add pull request"), { target: { value: pr } });
+  fireEvent.change(screen.getByLabelText("Add pull request"), { target: { value: "paste" } });
+  fireEvent.change(screen.getByLabelText("PR URL"), { target: { value: pr2 } });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(screen.getByText("other/repo #9")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(setSetting).toHaveBeenCalledWith("session.links.v1.session", JSON.stringify({ issue, pr })));
+  await waitFor(() => expect(setSetting).toHaveBeenCalledWith("session.links.v1.session", JSON.stringify({ issues: [issue], prs: [pr, pr2] })));
   await waitFor(() => expect(useStore.getState().dialog.kind).toBe("none"));
   unmount();
   useLinkPreferencesStore.setState({ entries: {} });
-  getSetting.mockResolvedValue(JSON.stringify({ issue, pr }));
+  getSetting.mockResolvedValue(JSON.stringify({ issues: [issue], prs: [pr, pr2] }));
   render(<SessionLinksDialog sessionId="session" />);
-  expect((await screen.findByLabelText("Issue") as HTMLSelectElement).value).toBe(issue);
-  expect((screen.getByLabelText("Pull request") as HTMLSelectElement).value).toBe(pr);
+  expect(await screen.findByText("owner/repo #1")).toBeTruthy();
+  expect(screen.getByText("owner/repo #2")).toBeTruthy();
+  expect(screen.getByText("other/repo #9")).toBeTruthy();
 });
 
-it("validates pasted URLs, permits None, and retains edits on save failure", async () => {
+it("validates pasted URLs, removes links, turns review follow-ups off, and retains edits on save failure", async () => {
+  getSetting.mockResolvedValue(JSON.stringify({ prs: [pr] }));
   render(<SessionLinksDialog sessionId="session" />);
-  fireEvent.change(await screen.findByLabelText("Issue"), { target: { value: "none" } });
-  fireEvent.change(screen.getByLabelText("Pull request"), { target: { value: "custom" } });
+  await screen.findByText("owner/repo #2");
+  automaticOff("Issues");
+  fireEvent.change(screen.getByLabelText("Add pull request"), { target: { value: "paste" } });
   fireEvent.change(screen.getByLabelText("PR URL"), { target: { value: issue } });
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
   expect(screen.getByRole("alert").textContent).toContain("valid GitHub pull request URL");
-  expect(setSetting).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByLabelText("PR URL"), { target: { value: `${pr}#discussion` } });
+  fireEvent.change(screen.getByLabelText("PR URL"), { target: { value: `${pr2}#discussion` } });
+  fireEvent.keyDown(screen.getByLabelText("PR URL"), { key: "Enter" });
+  fireEvent.click(screen.getByRole("button", { name: "Remove owner/repo #2" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Hand new reviews/ }));
   setSetting.mockRejectedValueOnce(new Error("offline"));
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("offline"));
   expect(useStore.getState().dialog.kind).toBe("session-links");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(useStore.getState().dialog.kind).toBe("none"));
-  expect(setSetting).toHaveBeenLastCalledWith("session.links.v1.session", JSON.stringify({ issue: null, pr }));
+  expect(setSetting).toHaveBeenLastCalledWith("session.links.v1.session", JSON.stringify({ issues: [], prs: [pr2], reviews: false }));
 });
 
 it("cancels without persisting changes", async () => {
   render(<SessionLinksDialog sessionId="session" />);
-  fireEvent.change(await screen.findByLabelText("Issue"), { target: { value: "none" } });
+  await screen.findByRole("group", { name: "Issues" });
+  automaticOff("Issues");
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(setSetting).not.toHaveBeenCalled();
   expect(useStore.getState().dialog.kind).toBe("none");
@@ -67,7 +84,7 @@ it("cancels without persisting changes", async () => {
 
 it("exposes the editor in the command palette", () => {
   const command = coreCommands.find((entry) => entry.id === "session.links");
-  expect(command?.title).toBe("Edit issue & PR…");
+  expect(command?.title).toBe("Edit issues & PRs…");
   expect(command?.when).toBe("hasSelection");
   expect(command?.hidden).not.toBe(true);
 });

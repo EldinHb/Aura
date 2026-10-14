@@ -31,8 +31,8 @@ describe("session issue and PR links", () => {
 
   it("keeps explicit selections and None despite new automatic targets", () => {
     const automatic = sessionLinks({ a: item("Created PR: https://github.com/owner/repo/pull/2") }, "https://github.com/owner/repo/issues/3");
-    const preferences = { pr: "https://github.com/owner/repo/pull/1", issue: null };
-    expect(selectedSessionLinks(automatic, preferences).map((link) => link.url)).toEqual([preferences.pr]);
+    const preferences = { prs: ["https://github.com/owner/repo/pull/1", "https://github.com/owner/repo/pull/5"], issues: [] };
+    expect(selectedSessionLinks(automatic, preferences).map((link) => link.url)).toEqual(preferences.prs);
     expect(selectedSessionLinks(automatic, {})).toEqual(automatic);
   });
   it("restores Claude's issue request and heredoc PR creation from saved history", () => {

@@ -1026,3 +1026,55 @@ async fn a_busy_orchestrator_gets_reports_once_it_is_free_and_not_for_what_it_wa
     assert!(!off.orchestrator);
     assert_eq!(m.get_session(&a.id).unwrap().orchestrator_id, None);
 }
+
+#[tokio::test]
+async fn aura_messages_wait_until_the_session_is_free() {
+    let (m, calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Waiting on an approval, it is not free.
+    m.send(
+        &s.id,
+        Input {
+            text: "please approve".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &s.id, SessionStatus::WaitingApproval).await;
+    assert!(!m.send_when_free(&s.id, "from aura".into()).await.unwrap());
+    assert!(!calls.lock().iter().any(|c| c == "send:from aura"));
+
+    m.respond_approval(
+        &s.id,
+        "ap1",
+        ApprovalDecision {
+            option: ApprovalOption::Accept,
+            updated_input: None,
+            message: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &s.id, SessionStatus::Idle).await;
+    assert!(m.send_when_free(&s.id, "from aura".into()).await.unwrap());
+    assert!(calls.lock().iter().any(|c| c == "send:from aura"));
+    let mut reply = None;
+    for _ in 0..100 {
+        reply = m.last_reply(&s.id);
+        if reply.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(reply.as_deref(), Some("hello"));
+    assert!(m.send_when_free("nope", "x".into()).await.is_err());
+}

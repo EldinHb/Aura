@@ -458,17 +458,7 @@ impl Manager {
                 }
             }
         }
-        let last_reply = self.items(&s.id).ok().and_then(|items| {
-            let last_user = items
-                .iter()
-                .rposition(|i| i.kind == ItemKind::UserMessage)
-                .map_or(0, |n| n + 1);
-            items[last_user..]
-                .iter()
-                .rev()
-                .find(|i| i.kind == ItemKind::AgentMessage && !i.text.trim().is_empty())
-                .map(|i| tail(i.text.trim(), REPLY_LIMIT))
-        });
+        let last_reply = self.last_reply(&s.id);
         WorkerReport {
             id: s.id.clone(),
             title: s.title.clone(),
@@ -560,6 +550,67 @@ impl Manager {
         }
     }
 
+    /// Free to take a message from Aura: a structured session that is not
+    /// working and not waiting on the user. Whether one is already being sent
+    /// is checked when claiming the `delivering` gate.
+    fn takes_aura_message(&self, s: &Session) -> bool {
+        let busy = self
+            .inner
+            .runtimes
+            .lock()
+            .get(&s.id)
+            .is_some_and(|r| r.current_turn.is_some());
+        !s.archived
+            && s.mode == SessionMode::Structured
+            && matches!(s.status, SessionStatus::Idle | SessionStatus::Error)
+            && !busy
+    }
+
+    /// Send a message from Aura (not the user) to a session if it is free to
+    /// take it now. Returns false, sending nothing, when it is not. Shares the
+    /// gate with worker reports, so the two never start two turns at once.
+    pub async fn send_when_free(&self, id: &str, text: String) -> Result<bool> {
+        let s = self.get_session(id)?;
+        // Checked and claimed under one lock, so a worker report cannot slip in.
+        if !self.takes_aura_message(&s)
+            || !self
+                .inner
+                .orchestration
+                .lock()
+                .delivering
+                .insert(id.to_string())
+        {
+            return Ok(false);
+        }
+        let result = self
+            .send(
+                id,
+                Input {
+                    text,
+                    ..Default::default()
+                },
+            )
+            .await;
+        if result.is_err() {
+            self.inner.orchestration.lock().delivering.remove(id);
+        }
+        result.map(|_| true)
+    }
+
+    /// The session's last reply since the last message it was sent.
+    pub fn last_reply(&self, id: &str) -> Option<String> {
+        let items = self.items(id).ok()?;
+        let last_user = items
+            .iter()
+            .rposition(|i| i.kind == ItemKind::UserMessage)
+            .map_or(0, |n| n + 1);
+        items[last_user..]
+            .iter()
+            .rev()
+            .find(|i| i.kind == ItemKind::AgentMessage && !i.text.trim().is_empty())
+            .map(|i| tail(i.text.trim(), REPLY_LIMIT))
+    }
+
     /// Send the orchestrator its queued reports, if it is free to take them.
     fn flush_reports(&self, orchestrator: &str) {
         let Ok(o) = self.get_session(orchestrator) else {
@@ -578,13 +629,18 @@ impl Manager {
         if o.mode != SessionMode::Structured || o.status != SessionStatus::Idle || busy {
             return;
         }
+        // Claim the gate in the same lock that checks it, so a message from
+        // `send_when_free` cannot start a second turn at the same time.
         let workers = {
             let mut st = self.inner.orchestration.lock();
             if st.delivering.contains(orchestrator) {
                 return;
             }
             match st.queued.remove(orchestrator) {
-                Some(q) if !q.is_empty() => q,
+                Some(q) if !q.is_empty() => {
+                    st.delivering.insert(orchestrator.to_string());
+                    q
+                }
                 _ => return,
             }
         };
@@ -594,13 +650,13 @@ impl Manager {
             .map(|s| self.report(&s))
             .collect();
         if reports.is_empty() {
+            self.inner
+                .orchestration
+                .lock()
+                .delivering
+                .remove(orchestrator);
             return;
         }
-        self.inner
-            .orchestration
-            .lock()
-            .delivering
-            .insert(orchestrator.to_string());
         let text = report_message(&reports);
         let me = self.clone();
         let id = orchestrator.to_string();

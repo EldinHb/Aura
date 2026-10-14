@@ -10,19 +10,27 @@ export const useLinkPreferencesStore = create<{ entries: Record<string, Entry> }
 const revisions = new Map<string, number>();
 export const linkPreferencesKey = (id: string) => `session.links.v1.${id}`;
 
+/** Reads the current form and the older one, which held one issue and one PR (null for none). */
 function decode(raw: string | null): LinkPreferences {
   if (!raw) return {};
-  const value = JSON.parse(raw) as LinkPreferences;
-  if (!value || typeof value !== "object") throw new Error("Invalid saved issue and PR selection");
+  const value = JSON.parse(raw) as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid saved issue and PR selection");
   const preferences: LinkPreferences = {};
-  for (const key of ["issue", "pr"] as const) {
-    if (value[key] === undefined) continue;
-    if (value[key] === null) preferences[key] = null;
-    else if (typeof value[key] === "string") {
-      const link = parseSessionLink(value[key], key === "issue" ? "Issue" : "PR");
+  for (const [key, old, kind] of [["issues", "issue", "Issue"], ["prs", "pr", "PR"]] as const) {
+    const list = value[key] ?? (value[old] === undefined ? undefined : value[old] === null ? [] : [value[old]]);
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) throw new Error("Invalid saved issue or PR selection");
+    const urls: string[] = [];
+    for (const url of list) {
+      const link = typeof url === "string" ? parseSessionLink(url, kind) : undefined;
       if (!link) throw new Error("Invalid saved issue or PR URL");
-      preferences[key] = link.url;
-    } else throw new Error("Invalid saved issue or PR selection");
+      if (!urls.some((other) => other.toLowerCase() === link.url.toLowerCase())) urls.push(link.url);
+    }
+    preferences[key] = urls;
+  }
+  if (value.reviews !== undefined) {
+    if (typeof value.reviews !== "boolean") throw new Error("Invalid saved review follow-up setting");
+    if (!value.reviews) preferences.reviews = false;
   }
   return preferences;
 }

@@ -393,6 +393,13 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .issue-empty { padding: 6px 10px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
 .issue-picked { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
 .issue-picked .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-list { display: flex; flex-direction: column; gap: 4px; border: 0; padding: 0; margin: 0 0 10px; min-width: 0; }
+.link-list-head { display: flex; align-items: center; justify-content: space-between; }
+.link-list-head .label { font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.link-list-head .check-row { margin: 0; font-size: 12px; }
+.link-list-row { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.link-list-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-list-row input.grow { border: 0; padding: 2px 0; background: transparent; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .chips .chip { cursor: pointer; }
 .tabs.inline { border-bottom: none; padding: 0; gap: 4px; }
