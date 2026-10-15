@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { Keymap, chordFromEvent, type Binding } from "../lib/keymap";
+import { Keymap, chordFromEvent, formatKeys, type Binding } from "../lib/keymap";
 import { runCommand } from "../lib/commands";
 import { useStore } from "../state/store";
 import { defaultBindings, groupLabels, vimExtraBindings } from "../keymap/default";
@@ -9,6 +9,21 @@ import { currentCommandContext, isActivatableEl } from "./useCommandContext";
 let activeKeymap: Keymap | null = null;
 export function getKeymap(): Keymap | null {
   return activeKeymap;
+}
+
+/**
+ * How to reach `command` from the keyboard, as shown next to it: its shortest
+ * binding, one without the leader first. Null when nothing is bound to it.
+ * Follows changes to the keymap.
+ */
+export function useShortcut(command: string): string | null {
+  useStore((s) => s.settings.keymapPreset);
+  useStore((s) => s.settings.keymapOverrides);
+  useStore((s) => s.settings.leader);
+  const seqs = activeKeymap?.bindingsFor(command) ?? [];
+  const rank = (seq: string) => [seq.split(" ").includes("leader") ? 1 : 0, seq.split(" ").length];
+  const best = [...seqs].sort((a, b) => rank(a)[0] - rank(b)[0] || rank(a)[1] - rank(b)[1])[0];
+  return best ? formatKeys(best, isMac) : null;
 }
 
 export function buildBindings(preset: string, overrides: Binding[]): Binding[] {

@@ -42,6 +42,10 @@ struct Runtime {
     replaying: bool,
     /// Images sent with messages whose user message item has not completed.
     staged: attachments::Staged,
+    /// The user (or an orchestrator) asked the process to stop: its exit is
+    /// not a failure, even when a provider had to kill it. Reset when a new
+    /// process starts.
+    stopping: bool,
 }
 
 struct Inner {
@@ -750,35 +754,19 @@ impl Manager {
         if !url.starts_with("https://") || !url.contains("/pull/") || url.len() > 512 {
             bail!("not a pull request URL: {url}");
         }
-        let updated = {
-            let mut sessions = self.inner.sessions.lock();
-            let s = sessions
-                .get_mut(id)
-                .ok_or_else(|| anyhow!("unknown session {id}"))?;
+        self.change_session(id, false, |s| {
             if s.pulls.iter().any(|p| p.eq_ignore_ascii_case(url)) {
-                return Ok(s.clone());
+                return false;
             }
             s.pulls.push(url.to_string());
-            s.clone()
-        };
-        self.save_session(updated)
+            true
+        })
     }
 
     /// The user opened the session: forget what it wanted them to see.
     /// Not activity either, and a session without attention is left alone.
     pub fn mark_seen(&self, id: &str) -> Result<Session> {
-        let updated = {
-            let mut sessions = self.inner.sessions.lock();
-            let s = sessions
-                .get_mut(id)
-                .ok_or_else(|| anyhow!("unknown session {id}"))?;
-            if s.attention.is_none() {
-                return Ok(s.clone());
-            }
-            s.attention = None;
-            s.clone()
-        };
-        self.save_session(updated)
+        self.change_session(id, false, |s| s.attention.take().is_some())
     }
 
     pub async fn set_archived(&self, id: &str, archived: bool) -> Result<Session> {
@@ -794,6 +782,9 @@ impl Manager {
         let (driver, pty) = {
             let mut rt = self.inner.runtimes.lock();
             let rt = rt.entry(id.to_string()).or_default();
+            if rt.driver.is_some() || rt.pty.is_some() {
+                rt.stopping = true;
+            }
             (rt.driver.take(), rt.pty.take())
         };
         if let Some(d) = driver {
@@ -934,6 +925,7 @@ impl Manager {
             .runtimes
             .lock()
             .entry(id.to_string())
+            .and_modify(|rt| rt.stopping = false)
             .or_default()
             .pty = Some(handle.clone());
         self.update_session(id, |x| {
@@ -1021,6 +1013,7 @@ impl Manager {
             let mut rts = self.inner.runtimes.lock();
             let rt = rts.entry(id.to_string()).or_default();
             rt.replaying = resuming;
+            rt.stopping = false;
         }
         let s = self.with_instructions(&s)?;
         let driver: Arc<dyn Driver> =
@@ -1059,20 +1052,36 @@ impl Manager {
         });
     }
 
+    /// Change a session as activity (it moves up and its age resets).
     fn update_session(&self, id: &str, f: impl FnOnce(&mut Session)) -> Result<Session> {
-        let updated = {
-            let mut sessions = self.inner.sessions.lock();
-            let s = sessions
-                .get_mut(id)
-                .ok_or_else(|| anyhow!("unknown session {id}"))?;
+        self.change_session(id, true, |s| {
             f(s);
-            s.last_activity = crate::now();
-            s.clone()
-        };
-        self.save_session(updated)
+            true
+        })
     }
 
-    fn save_session(&self, updated: Session) -> Result<Session> {
+    /// Change a session, then store and announce it. `f` returns whether it
+    /// changed anything; if not, nothing is stored or announced. The sessions
+    /// lock is held until the change is stored and broadcast, so two changes
+    /// at once (an RPC and the event loop) are stored and announced in the
+    /// order they were made, and neither overwrites the other with a stale copy.
+    fn change_session(
+        &self,
+        id: &str,
+        activity: bool,
+        f: impl FnOnce(&mut Session) -> bool,
+    ) -> Result<Session> {
+        let mut sessions = self.inner.sessions.lock();
+        let s = sessions
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("unknown session {id}"))?;
+        if !f(s) {
+            return Ok(s.clone());
+        }
+        if activity {
+            s.last_activity = crate::now();
+        }
+        let updated = s.clone();
         self.inner.store.upsert_session(&updated)?;
         self.broadcast(Event::SessionUpdated {
             session: updated.clone(),
@@ -1100,6 +1109,17 @@ impl Manager {
             }
             self.broadcast(ev);
             return;
+        }
+        // An exit the user asked for is clean, even when the process had to be
+        // killed, and wants no attention.
+        let mut requested = false;
+        if let Event::ProcessExited { message, .. } = &mut ev {
+            let mut rts = self.inner.runtimes.lock();
+            let rt = rts.entry(sid.clone()).or_default();
+            requested = std::mem::take(&mut rt.stopping);
+            if requested {
+                *message = None;
+            }
         }
         let replaying = {
             let mut rts = self.inner.runtimes.lock();
@@ -1187,8 +1207,14 @@ impl Manager {
         let _ = self.update_session(&sid, |s| {
             s.pending_count = pending;
             // A resumed session replays turns the user has already seen.
-            if let Some(a) = attention_for(&ev, s.mode, pending).filter(|_| !replaying) {
-                s.attention = Some(a);
+            if !replaying && !requested {
+                if let Some(a) = attention_for(&ev, s.mode, pending) {
+                    s.attention = Some(merge_attention(s.attention, a));
+                }
+            }
+            // It is running again: what finished before is no longer news.
+            if matches!(ev, Event::TurnStarted { .. }) && s.attention == Some(Attention::Done) {
+                s.attention = None;
             }
             // Answered, from the inbox say: a turn that goes on asks again when it
             // ends, one that already ended (it can before the answer is recorded) is done.
@@ -1282,6 +1308,15 @@ fn attention_for(ev: &Event, mode: SessionMode, pending: u32) -> Option<Attentio
             })
         }
         _ => None,
+    }
+}
+
+/// The marker after `new` happens to a session marked `old` that the user has
+/// not seen: a failure stays until seen, unless the agent then waits on them.
+fn merge_attention(old: Option<Attention>, new: Attention) -> Attention {
+    match (old, new) {
+        (Some(Attention::Failed), Attention::Done) => Attention::Failed,
+        _ => new,
     }
 }
 

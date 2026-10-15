@@ -65,7 +65,7 @@ function HiddenWorkers({ hidden }: { hidden: Session[] }) {
   return (
     <span className={clsx("chip", "workers", hidden.some((w) => w.pending_count > 0) && "warn")} title={lines.join("\n")}>
       +{hidden.length}
-      {attention && <span className={clsx("attention", ATTENTION[attention].className)} />}
+      {attention && <span className={clsx("attention", ATTENTION[attention].className)} role="img" aria-label={`Hidden workers: ${ATTENTION[attention].label.toLowerCase()}`} />}
     </span>
   );
 }

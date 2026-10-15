@@ -1,9 +1,15 @@
-import { act, cleanup, render, renderHook } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { PullChange, Session } from "../gen";
 import type { RpcClient } from "../lib/rpc";
 import { usePullChanges } from "../features/reviews/changes";
 import { Sidebar } from "../components/Sidebar";
+import { InboxButton } from "../components/InboxButton";
+import { StatusBar } from "../components/StatusBar";
+import { useKeyboard } from "../hooks/useKeyboard";
+import { registerCoreCommands } from "../commands/core";
+import { formatKeys, normalizeChord } from "../lib/keymap";
+import { isMac } from "../lib/platform";
 import { inboxCount, useInboxCount, useMarkViewedSeen } from "./attention";
 import { defaultSettings, useStore } from "./store";
 
@@ -20,15 +26,23 @@ function change(id: string, patch: Partial<PullChange> = {}): PullChange {
 
 const markSeen = vi.fn(async (id: string) => session(id));
 let focused = true;
+let visibility: DocumentVisibilityState = "visible";
 const marker = (id: string) => document.querySelector<HTMLElement>(`[data-session-id="${id}"] .title-line .attention`);
 const setFocused = (on: boolean) => act(() => {
   focused = on;
   window.dispatchEvent(new Event(on ? "focus" : "blur"));
 });
 
+const setVisible = (on: boolean) => act(() => {
+  visibility = on ? "visible" : "hidden";
+  document.dispatchEvent(new Event("visibilitychange"));
+});
+
 beforeEach(() => {
   focused = true;
+  visibility = "visible";
   vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
   Element.prototype.scrollIntoView = vi.fn();
   markSeen.mockClear();
   usePullChanges.setState({ changes: [] });
@@ -43,6 +57,7 @@ beforeEach(() => {
     },
     sessionOrder: ["done", "failed", "waiting", "quiet"], transcripts: {}, sidebarFilter: "", showArchived: false,
     collapsedOrchestras: [], selectedId: null, sidebarCursor: null, prSelection: null, reviewHistoryOpen: false, settings: defaultSettings,
+    dialog: { kind: "none" }, paletteOpen: false,
   });
 });
 afterEach(() => {
@@ -116,6 +131,7 @@ it("marks the hidden-workers chip of a collapsed orchestrator with the most urge
   render(<Sidebar />);
   const chip = document.querySelector<HTMLElement>('[data-session-id="lead"] .chip.workers');
   expect(chip?.querySelector(".attention")?.className).toBe("attention waiting");
+  expect(chip?.querySelector(".attention")?.getAttribute("aria-label")).toBe("Hidden workers: waiting on you since you last looked");
   expect(chip?.title).toBe("w1 · finished since you last looked\nw2 · waiting on you since you last looked");
 });
 
@@ -131,4 +147,81 @@ it("counts what the inbox lists: waiting approvals and questions, and unread unm
   expect(result.current).toBe(1);
   act(() => usePullChanges.setState({ changes: [] }));
   expect(result.current).toBe(0);
+});
+
+it("does not count a session as looked at while the window is hidden", () => {
+  renderHook(() => useMarkViewedSeen());
+  setVisible(false);
+  act(() => useStore.getState().select("done"));
+  expect(markSeen).not.toHaveBeenCalled();
+  setVisible(true);
+  expect(markSeen).toHaveBeenCalledWith("done");
+});
+
+it("does not count a session as looked at while a dialog or the palette covers it", () => {
+  renderHook(() => useMarkViewedSeen());
+  render(<Sidebar />);
+  act(() => useStore.setState({ dialog: { kind: "inbox" } }));
+  act(() => useStore.getState().select("done"));
+  expect(markSeen).not.toHaveBeenCalled();
+  expect(marker("done")).not.toBeNull();
+  act(() => useStore.setState({ dialog: { kind: "none" }, paletteOpen: true }));
+  expect(markSeen).not.toHaveBeenCalled();
+  act(() => useStore.setState({ paletteOpen: false }));
+  expect(markSeen).toHaveBeenCalledWith("done");
+  expect(marker("done")).toBeNull();
+});
+
+it("warns when the daemon could not mark a session seen", async () => {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  markSeen.mockRejectedValueOnce(new Error("gone"));
+  renderHook(() => useMarkViewedSeen());
+  act(() => useStore.getState().select("done"));
+  await act(async () => {});
+  expect(warn).toHaveBeenCalledWith("Could not mark session done seen:", expect.any(Error));
+});
+
+/** A default binding as the app shows it. */
+const keys = (chord: string) => formatKeys(normalizeChord(chord, isMac, defaultSettings.leader), isMac);
+
+/** The top bar's button as the app shows it, with the keymap installed. */
+function TopBar() {
+  useKeyboard();
+  return <InboxButton />;
+}
+
+it("keeps the inbox button in the top bar and badges it with what the inbox lists", async () => {
+  const unregister = registerCoreCommands();
+  useStore.setState({ sessions: { quiet: session("quiet") }, sessionOrder: ["quiet"] });
+  render(<TopBar />);
+  const button = screen.getByRole("button", { name: "Inbox" });
+  expect(button.querySelector(".badge")).toBeNull();
+  expect(button.title).toBe(`Inbox: nothing waiting (${keys("mod+i")})`);
+
+  // Approvals waiting in a session and an unread pull request change.
+  act(() => {
+    useStore.getState().upsertSession(session("waiting", { pending_count: 2 }));
+    usePullChanges.setState({ changes: [change("c1"), change("c2", { read: true })] });
+  });
+  expect(button.getAttribute("aria-label")).toBe("Inbox, 3 items");
+  expect(button.querySelector(".badge")?.textContent).toBe("3");
+  expect(button.title).toBe(`Inbox: 3 waiting on you or unread (${keys("mod+i")})`);
+  await act(async () => { fireEvent.click(button); });
+  expect(useStore.getState().dialog).toEqual({ kind: "inbox" });
+  unregister();
+});
+
+it("shows the shortcuts the keymap has, also after they are rebound", () => {
+  function Bars() {
+    useKeyboard();
+    return <><InboxButton /><StatusBar /></>;
+  }
+  useStore.setState({ sessions: { waiting: session("waiting", { pending_count: 1 }) }, sessionOrder: ["waiting"] });
+  render(<Bars />);
+  const statusbar = document.querySelector(".statusbar")!;
+  const kbds = () => [...statusbar.querySelectorAll("kbd")].map((k) => k.textContent);
+  expect(kbds()).toEqual([keys("mod+i"), keys("ctrl+space"), keys("mod+k"), "?"]);
+  act(() => useStore.getState().setSettings({ keymapOverrides: [{ keys: "mod+i", command: "" }, { keys: "mod+shift+i", command: "inbox.open" }] }));
+  expect(kbds()[0]).toBe(keys("mod+shift+i"));
+  expect(screen.getByRole("button", { name: /^Inbox/ }).title).toContain(keys("mod+shift+i"));
 });

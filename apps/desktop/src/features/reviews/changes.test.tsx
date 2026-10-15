@@ -107,6 +107,17 @@ it("announces new changes, and a click on the notification opens the PR", async 
   expect(shown.length).toBe(1);
 });
 
+it("keeps a detached session window's changes current for its inbox count, without announcing them again", async () => {
+  function Quiet() { usePullChangeSync(false); return null; }
+  render(<Quiet />);
+  await waitFor(() => expect(usePullChanges.getState().changes.map((c) => c.id)).toEqual(["change-1"]));
+  notify?.("pulls.activity", { changes: [change({ id: "change-2" })] });
+  expect(useStore.getState().toasts).toEqual([]);
+  changes = [change(), change({ id: "change-2" })];
+  notify?.("pulls.changes.changed", {});
+  await waitFor(() => expect(usePullChanges.getState().changes).toHaveLength(2));
+});
+
 it("reads entries from an older or newer daemon", () => {
   expect(normalizePullChanges(undefined)).toEqual([]);
   const [c] = normalizePullChanges([{ id: "x", events: [{ kind: "comment" }] }]);

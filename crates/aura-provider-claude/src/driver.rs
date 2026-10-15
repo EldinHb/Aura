@@ -8,6 +8,7 @@ use base64::Engine;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
@@ -22,6 +23,21 @@ pub struct ClaudeDriver {
     kill_tx: tokio::sync::mpsc::UnboundedSender<()>,
     /// Resolves with the exit code once the child is gone.
     exit_rx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Option<i32>>>>,
+    /// Set once Aura asks the process to stop: its exit is then no failure,
+    /// even when it is killed after the grace period.
+    stopping: Arc<AtomicBool>,
+}
+
+/// Why the process ended, when that was a failure: a non-zero or missing exit
+/// code that nobody asked for. Uses the stderr tail when there is one.
+fn exit_message(code: Option<i32>, stopping: bool, stderr_tail: &str) -> Option<String> {
+    if stopping || code == Some(0) {
+        None
+    } else if stderr_tail.trim().is_empty() {
+        Some(format!("claude exited with code {code:?}"))
+    } else {
+        Some(stderr_tail.to_string())
+    }
 }
 
 /// Flags that hand Claude Code the session's MCP servers, with their tools
@@ -116,6 +132,7 @@ impl ClaudeDriver {
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             kill_tx,
             exit_rx: tokio::sync::Mutex::new(Some(exit_rx)),
+            stopping: Arc::new(AtomicBool::new(false)),
         };
 
         // stderr -> debug log, keep a tail for error reporting.
@@ -185,6 +202,7 @@ impl ClaudeDriver {
             let sink = sink.clone();
             let sid = session.id.clone();
             let tail = stderr_tail.clone();
+            let stopping = driver.stopping.clone();
             tokio::spawn(async move {
                 let code = tokio::select! {
                     status = child.wait() => status.ok().and_then(|s| s.code()),
@@ -196,16 +214,11 @@ impl ClaudeDriver {
                 // Give the stdout task a moment to flush the last lines.
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 let mut evs = parser.lock().drain_open_items();
-                let message = if code.map(|c| c != 0).unwrap_or(true) {
-                    let t = tail.lock().join("\n");
-                    if t.trim().is_empty() {
-                        Some(format!("claude exited with code {:?}", code))
-                    } else {
-                        Some(t)
-                    }
-                } else {
-                    None
-                };
+                let message = exit_message(
+                    code,
+                    stopping.load(Ordering::SeqCst),
+                    &tail.lock().join("\n"),
+                );
                 evs.push(Event::ProcessExited {
                     session_id: sid.clone(),
                     exit_code: code,
@@ -348,6 +361,7 @@ impl Driver for ClaudeDriver {
     }
 
     async fn stop(&self) -> Result<()> {
+        self.stopping.store(true, Ordering::SeqCst);
         // Closing stdin makes claude finish the current turn and exit.
         {
             let mut guard = self.stdin.lock().await;
@@ -386,6 +400,7 @@ fn guess_media_type(path: &str) -> String {
 impl Drop for ClaudeDriver {
     fn drop(&mut self) {
         // Ensure the child does not outlive the driver if `stop` was never called.
+        self.stopping.store(true, Ordering::SeqCst);
         let _ = self.kill_tx.send(());
     }
 }
@@ -393,6 +408,22 @@ impl Drop for ClaudeDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_exit_aura_asked_for_is_no_failure_even_when_killed() {
+        // Killed after the grace period of a stop: no exit code (a signal).
+        assert_eq!(exit_message(None, true, "Killed"), None);
+        assert_eq!(exit_message(Some(1), true, ""), None);
+        assert_eq!(exit_message(Some(0), false, "noise"), None);
+        assert_eq!(
+            exit_message(None, false, ""),
+            Some("claude exited with code None".into())
+        );
+        assert_eq!(
+            exit_message(Some(1), false, "API error"),
+            Some("API error".into())
+        );
+    }
 
     #[test]
     fn mcp_servers_are_passed_with_their_tools_allowed() {

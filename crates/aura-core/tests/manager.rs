@@ -14,7 +14,22 @@ struct FakeDriver {
     sink: EventSink,
     session_id: String,
     calls: Calls,
+    knobs: Knobs,
 }
+
+/// What a test makes the fake provider do besides the usual.
+#[derive(Default)]
+struct Knob {
+    /// The sink of the last driver started, for tests that send events in their own order.
+    sink: Option<EventSink>,
+    /// `stop` ends with the process killed and this message, like Claude after its grace period.
+    exit_on_stop: Option<String>,
+    /// Starting an agent fails.
+    fail_start: bool,
+    /// A resumed agent replays a failed turn from its history.
+    replay_failed_turn: bool,
+}
+type Knobs = Arc<Mutex<Knob>>;
 
 #[async_trait::async_trait]
 impl Driver for FakeDriver {
@@ -63,7 +78,19 @@ impl Driver for FakeDriver {
             item_id: item.id.clone(),
             delta: ItemDelta::Text { text: "lo".into() },
         });
-        if input.text.contains("crash") {
+        if input.text.contains("question") {
+            let _ = self.sink.send(Event::UserInputRequested {
+                session_id: self.session_id.clone(),
+                request: UserInputRequest {
+                    id: "q1".into(),
+                    session_id: self.session_id.clone(),
+                    turn_id: Some(turn.id.clone()),
+                    item_id: None,
+                    questions: vec![],
+                    created_at: now(),
+                },
+            });
+        } else if input.text.contains("crash") {
             let _ = self.sink.send(Event::ProcessExited {
                 session_id: self.session_id.clone(),
                 exit_code: Some(1),
@@ -152,6 +179,13 @@ impl Driver for FakeDriver {
     }
     async fn stop(&self) -> anyhow::Result<()> {
         self.calls.lock().push("stop".into());
+        if let Some(message) = self.knobs.lock().exit_on_stop.clone() {
+            let _ = self.sink.send(Event::ProcessExited {
+                session_id: self.session_id.clone(),
+                exit_code: None,
+                message: Some(message),
+            });
+        }
         Ok(())
     }
 }
@@ -163,6 +197,7 @@ struct FakeProvider {
     prompts: Arc<Mutex<Vec<Option<String>>>>,
     /// The MCP servers each start was given.
     mcp: Arc<Mutex<Vec<Vec<McpServer>>>>,
+    knobs: Knobs,
 }
 
 #[async_trait::async_trait]
@@ -195,6 +230,9 @@ impl Provider for FakeProvider {
         fork: bool,
         sink: EventSink,
     ) -> anyhow::Result<Box<dyn Driver>> {
+        if self.knobs.lock().fail_start {
+            anyhow::bail!("agent not found");
+        }
         self.starts.lock().push((session.native_id.clone(), fork));
         self.prompts.lock().push(session.instructions.clone());
         self.mcp.lock().push(session.mcp_servers.clone());
@@ -202,10 +240,18 @@ impl Provider for FakeProvider {
             session_id: session.id.clone(),
             native_id: format!("native-{}", if fork { "fork" } else { "1" }),
         });
+        if self.knobs.lock().replay_failed_turn && session.native_id.is_some() && !fork {
+            let _ = sink.send(Event::TurnCompleted {
+                session_id: session.id.clone(),
+                turn: turn(&session.id, "replayed", TurnStatus::Failed),
+            });
+        }
+        self.knobs.lock().sink = Some(sink.clone());
         Ok(Box::new(FakeDriver {
             sink,
             session_id: session.id.clone(),
             calls: self.calls.clone(),
+            knobs: self.knobs.clone(),
         }))
     }
     fn terminal_command(&self, _s: &Session) -> Vec<String> {
@@ -256,9 +302,51 @@ fn setup() -> (Manager, Calls, Starts, Arc<MemoryStore>) {
         starts: starts.clone(),
         prompts: Default::default(),
         mcp: Default::default(),
+        knobs: Default::default(),
     });
     let m = Manager::new(store.clone(), vec![provider], None);
     (m, calls, starts, store)
+}
+
+/// Like [`setup`], with the provider's knobs in hand.
+fn setup_with_knobs() -> (Manager, Knobs) {
+    let knobs: Knobs = Default::default();
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: Default::default(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: knobs.clone(),
+    });
+    let m = Manager::new(Arc::new(MemoryStore::default()), vec![provider], None);
+    (m, knobs)
+}
+
+fn turn(session_id: &str, id: &str, status: TurnStatus) -> Turn {
+    Turn {
+        id: id.into(),
+        session_id: session_id.into(),
+        status,
+        started_at: now(),
+        ended_at: (status != TurnStatus::Running).then(now),
+        usage: None,
+        error: (status == TurnStatus::Failed).then(|| "overloaded".into()),
+    }
+}
+
+fn approval(session_id: &str, id: &str) -> Approval {
+    Approval {
+        id: id.into(),
+        session_id: session_id.into(),
+        turn_id: None,
+        item_id: None,
+        kind: ApprovalKind::Command,
+        title: "ls".into(),
+        description: None,
+        payload: serde_json::json!({"command": "ls"}),
+        options: vec![ApprovalOption::Accept, ApprovalOption::Decline],
+        created_at: now(),
+    }
 }
 
 #[tokio::test]
@@ -269,6 +357,7 @@ async fn agents_start_with_the_global_agent_and_session_prompts() {
         starts: Default::default(),
         prompts: Default::default(),
         mcp: Default::default(),
+        knobs: Default::default(),
     });
     let prompts = provider.prompts.clone();
     let m = Manager::new(Arc::new(MemoryStore::default()), vec![provider], None);
@@ -513,6 +602,7 @@ async fn mode_switch_and_restore() {
             starts: Default::default(),
             prompts: Default::default(),
             mcp: Default::default(),
+            knobs: Default::default(),
         })],
         None,
     );
@@ -585,6 +675,7 @@ impl Provider for AcpLike {
             sink,
             session_id: session.id.clone(),
             calls: Default::default(),
+            knobs: Default::default(),
         }))
     }
     fn terminal_command(&self, _session: &Session) -> Vec<String> {
@@ -816,6 +907,7 @@ async fn sessions_want_attention_when_they_stop_until_they_are_seen() {
             starts: Default::default(),
             prompts: Default::default(),
             mcp: Default::default(),
+            knobs: Default::default(),
         })],
         None,
     );
@@ -864,6 +956,374 @@ fn sessions_saved_before_attention_still_load() {
     assert_eq!(old.attention, None);
 }
 
+/// A structured session with a running fake agent, and a way to send it events in any order.
+async fn session_with_sink(m: &Manager, knobs: &Knobs) -> (String, impl Fn(Event)) {
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let sink = knobs.lock().sink.clone().unwrap();
+    (s.id, move |ev| sink.send(ev).unwrap())
+}
+
+#[tokio::test]
+async fn an_answer_recorded_after_its_turn_ended_leaves_the_session_done() {
+    let (m, knobs) = setup_with_knobs();
+    let (id, send) = session_with_sink(&m, &knobs).await;
+    let session_id = id.clone();
+    let resolved = |approval_id: &str| Event::ApprovalResolved {
+        session_id: session_id.clone(),
+        approval_id: approval_id.into(),
+        decision: ApprovalDecision {
+            option: ApprovalOption::Decline,
+            updated_input: None,
+            message: None,
+        },
+    };
+
+    // The turn ends before the answer is recorded.
+    send(Event::TurnStarted {
+        session_id: id.clone(),
+        turn: turn(&id, "t1", TurnStatus::Running),
+    });
+    send(Event::ApprovalRequested {
+        session_id: id.clone(),
+        approval: approval(&id, "a1"),
+    });
+    wait_attention(&m, &id, Some(Attention::Waiting)).await;
+    send(Event::TurnCompleted {
+        session_id: id.clone(),
+        turn: turn(&id, "t1", TurnStatus::Completed),
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        m.get_session(&id).unwrap().attention,
+        Some(Attention::Waiting)
+    );
+    send(resolved("a1"));
+    wait_attention(&m, &id, Some(Attention::Done)).await;
+
+    // The answer comes while the turn goes on: nothing to see until it ends.
+    m.mark_seen(&id).unwrap();
+    send(Event::TurnStarted {
+        session_id: id.clone(),
+        turn: turn(&id, "t2", TurnStatus::Running),
+    });
+    send(Event::ApprovalRequested {
+        session_id: id.clone(),
+        approval: approval(&id, "a2"),
+    });
+    wait_attention(&m, &id, Some(Attention::Waiting)).await;
+    send(resolved("a2"));
+    wait_attention(&m, &id, None).await;
+    send(Event::TurnCompleted {
+        session_id: id.clone(),
+        turn: turn(&id, "t2", TurnStatus::Completed),
+    });
+    wait_attention(&m, &id, Some(Attention::Done)).await;
+}
+
+#[tokio::test]
+async fn a_failure_stays_until_seen_and_a_running_session_is_not_done() {
+    let (m, knobs) = setup_with_knobs();
+    let (id, send) = session_with_sink(&m, &knobs).await;
+    let started = |t: &str| Event::TurnStarted {
+        session_id: id.clone(),
+        turn: turn(&id, t, TurnStatus::Running),
+    };
+    let ended = |t: &str, status| Event::TurnCompleted {
+        session_id: id.clone(),
+        turn: turn(&id, t, status),
+    };
+
+    send(started("t1"));
+    send(ended("t1", TurnStatus::Failed));
+    wait_attention(&m, &id, Some(Attention::Failed)).await;
+    // Another turn, even a good one, does not hide the failure.
+    send(started("t2"));
+    send(ended("t2", TurnStatus::Completed));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        m.get_session(&id).unwrap().attention,
+        Some(Attention::Failed)
+    );
+    // Waiting on the user does.
+    send(Event::ApprovalRequested {
+        session_id: id.clone(),
+        approval: approval(&id, "a1"),
+    });
+    wait_attention(&m, &id, Some(Attention::Waiting)).await;
+
+    // Done is over once the session runs again.
+    m.stop(&id).await.unwrap();
+    m.mark_seen(&id).unwrap();
+    m.send(
+        &id,
+        Input {
+            text: "hi".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_attention(&m, &id, Some(Attention::Done)).await;
+    let sink = knobs.lock().sink.clone().unwrap();
+    sink.send(Event::TurnStarted {
+        session_id: id.clone(),
+        turn: turn(&id, "t3", TurnStatus::Running),
+    })
+    .unwrap();
+    wait_attention(&m, &id, None).await;
+}
+
+#[tokio::test]
+async fn questions_wait_and_stopping_ends_the_wait() {
+    let (m, _calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    m.send(
+        &s.id,
+        Input {
+            text: "a question".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &s.id, SessionStatus::WaitingInput).await;
+    wait_attention(&m, &s.id, Some(Attention::Waiting)).await;
+    m.stop(&s.id).await.unwrap();
+    assert_eq!(m.get_session(&s.id).unwrap().attention, None);
+
+    m.send(
+        &s.id,
+        Input {
+            text: "please approve".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_attention(&m, &s.id, Some(Attention::Waiting)).await;
+    m.stop(&s.id).await.unwrap();
+    assert_eq!(m.get_session(&s.id).unwrap().attention, None);
+}
+
+#[tokio::test]
+async fn turns_a_resumed_agent_replays_are_not_news() {
+    let (m, knobs) = setup_with_knobs();
+    knobs.lock().replay_failed_turn = true;
+    let (id, _send) = session_with_sink(&m, &knobs).await;
+    m.send(
+        &id,
+        Input {
+            text: "hi".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_attention(&m, &id, Some(Attention::Done)).await;
+    m.stop(&id).await.unwrap();
+    m.mark_seen(&id).unwrap();
+    // Resuming replays the failed turn first; counted, it would outlast the new one.
+    m.send(
+        &id,
+        Input {
+            text: "again".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_attention(&m, &id, Some(Attention::Done)).await;
+}
+
+#[tokio::test]
+async fn an_agent_that_fails_to_start_is_marked_failed() {
+    let (m, knobs) = setup_with_knobs();
+    knobs.lock().fail_start = true;
+    let dir = tempfile::tempdir().unwrap();
+    let err = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await;
+    assert!(err.is_err());
+    let s = &m.list_sessions()[0];
+    assert_eq!(
+        (s.status, s.attention),
+        (SessionStatus::Error, Some(Attention::Failed))
+    );
+}
+
+#[tokio::test]
+async fn an_agent_killed_because_it_was_asked_to_stop_has_not_failed() {
+    let (m, knobs) = setup_with_knobs();
+    knobs.lock().exit_on_stop = Some("killed after the grace period".into());
+    let (id, _send) = session_with_sink(&m, &knobs).await;
+    m.send(
+        &id,
+        Input {
+            text: "hi".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_attention(&m, &id, Some(Attention::Done)).await;
+    m.mark_seen(&id).unwrap();
+    m.stop(&id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let s = m.get_session(&id).unwrap();
+    assert_eq!(
+        (s.status, s.attention, s.last_error),
+        (SessionStatus::Idle, None, None)
+    );
+    // The flag is used up: a crash of the next agent is a failure again.
+    m.send(
+        &id,
+        Input {
+            text: "crash".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_attention(&m, &id, Some(Attention::Failed)).await;
+}
+
+/// A store that takes its time writing sessions, so overlapping writes interleave.
+#[derive(Default)]
+struct SlowStore {
+    inner: MemoryStore,
+    writes: std::sync::atomic::AtomicU64,
+}
+
+impl Store for SlowStore {
+    fn upsert_session(&self, session: &Session) -> anyhow::Result<()> {
+        let n = self
+            .writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_micros(300 * (n % 3)));
+        self.inner.upsert_session(session)
+    }
+    fn delete_session(&self, id: &str) -> anyhow::Result<()> {
+        self.inner.delete_session(id)
+    }
+    fn list_sessions(&self) -> anyhow::Result<Vec<Session>> {
+        self.inner.list_sessions()
+    }
+    fn append_event(&self, session_id: &str, event: &Event) -> anyhow::Result<u64> {
+        self.inner.append_event(session_id, event)
+    }
+    fn events(
+        &self,
+        session_id: &str,
+        after_seq: u64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<StoredEvent>> {
+        self.inner.events(session_id, after_seq, limit)
+    }
+    fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.inner.search(query, limit)
+    }
+    fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {
+        self.inner.get_setting(key)
+    }
+    fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.inner.set_setting(key, value)
+    }
+    fn save_scrollback(&self, session_id: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.inner.save_scrollback(session_id, data)
+    }
+    fn load_scrollback(&self, session_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        self.inner.load_scrollback(session_id)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_made_at_once_are_all_stored_and_announced_in_order() {
+    let store = Arc::new(SlowStore::default());
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: Default::default(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: Default::default(),
+    });
+    let m = Manager::new(store.clone(), vec![provider], None);
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut rx = m.subscribe();
+    for round in 0..20 {
+        // Activity (rename) and bookkeeping (record_pull) at the same moment.
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let threads: Vec<_> = (0..2)
+            .map(|t| {
+                let (m, id, barrier) = (m.clone(), s.id.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    if t == 0 {
+                        m.rename(&id, &format!("title {round}")).unwrap();
+                    } else {
+                        m.record_pull(&id, &format!("https://github.com/o/r/pull/{round}"))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let live = m.get_session(&s.id).unwrap();
+        assert_eq!(
+            (live.title.clone(), live.pulls.len()),
+            (format!("title {round}"), round + 1)
+        );
+        let stored = store
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == s.id)
+            .unwrap();
+        assert_eq!(stored, live, "round {round}: the store holds a stale copy");
+        let mut announced = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::SessionUpdated { session } = ev {
+                announced = Some(session);
+            }
+        }
+        assert_eq!(
+            announced.as_ref(),
+            Some(&live),
+            "round {round}: the app was told a stale copy"
+        );
+    }
+}
+
 /// Every directory is its own repository, except `not-a-repo` directories.
 struct DirRepos;
 
@@ -887,6 +1347,7 @@ async fn groups_are_remembered_with_their_repositories() {
         starts: Default::default(),
         prompts: Default::default(),
         mcp: Default::default(),
+        knobs: Default::default(),
     });
     let m = Manager::new(store.clone(), vec![provider], Some(Arc::new(DirRepos)));
     let a = tempfile::tempdir().unwrap();
@@ -987,6 +1448,7 @@ fn orchestrator_setup() -> (Manager, Calls, Arc<FakeProvider>) {
         starts: Default::default(),
         prompts: Default::default(),
         mcp: Default::default(),
+        knobs: Default::default(),
     });
     let m = Manager::new(
         Arc::new(MemoryStore::default()),

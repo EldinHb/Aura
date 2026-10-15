@@ -68,7 +68,7 @@ export async function openPullChange(change: Target) {
   }
 }
 
-function announce(change: PullChange) {
+function announceChange(change: PullChange) {
   const app = useStore.getState();
   // A review a watch or a session's follow-up already announced is not announced again.
   const events = shownEvents(change, app.settings.pullChangesMuted).filter((e) => e.kind !== "review" || !e.review_id || !announcedReviews.has(e.review_id));
@@ -83,26 +83,30 @@ function announce(change: PullChange) {
   }
 }
 
-/** Keep the changes current, announce new ones, and open the PR of a clicked notification. Mount once, in the main window. */
-export function usePullChangeSync(enabled: boolean) {
+/**
+ * Keep the changes current, for the inbox and its count, in every window. With
+ * `announce` (the main window only, or each would say it) also announce new ones
+ * and open the PR of a clicked notification.
+ */
+export function usePullChangeSync(announce: boolean) {
   const client = useStore((s) => s.client);
   useEffect(() => {
-    if (!enabled) return;
+    if (!announce) return;
     return onNotificationClick((target) => {
       if (target.kind !== "pull-change") return;
       useStore.getState().closeDialog();
       void openPullChange(target as unknown as Target);
     });
-  }, [enabled]);
+  }, [announce]);
   useEffect(() => {
-    if (!client || !enabled) return;
+    if (!client) return;
     const refresh = () => void usePullChanges.getState().refresh();
     refresh();
     const off = client.onNotification((method, params) => {
-      if (method === "pulls.activity") normalizePullChanges((params as { changes?: unknown })?.changes).forEach(announce);
+      if (method === "pulls.activity" && announce) normalizePullChanges((params as { changes?: unknown })?.changes).forEach(announceChange);
       else if (method === "pulls.changes.changed") refresh();
     });
     const offState = client.onState((s) => { if (s === "open") refresh(); });
     return () => { off(); offState(); };
-  }, [client, enabled]);
+  }, [client, announce]);
 }

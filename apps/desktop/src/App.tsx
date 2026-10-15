@@ -11,9 +11,10 @@ import { connectDaemon, isTauri } from "./lib/connection";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
 import { registerGitCommands } from "./commands/git";
-import { runCommand, setCommandErrorHandler } from "./lib/commands";
+import { setCommandErrorHandler } from "./lib/commands";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
+import { InboxButton } from "./components/InboxButton";
 import { TerminalView } from "./views/TerminalView";
 import { Transcript } from "./views/Transcript";
 import { Composer } from "./views/Composer";
@@ -32,6 +33,7 @@ export default function App() {
   useKeyboard();
   // Detached session windows would announce every review a second time.
   useWatchSync(windowMode !== "session");
+  // Every window keeps the changes for its inbox count; only the main one announces them.
   usePullChangeSync(windowMode !== "session");
   useDetectedLinksSync();
   useMarkViewedSeen();
@@ -144,19 +146,21 @@ export default function App() {
       });
   }, [selectedId, connection]);
 
-  // Badge with pending count.
-  const pending = useStore((s) => Object.values(s.sessions).reduce((n, x) => n + x.pending_count, 0));
+  // The Dock badge (the title in a browser) counts what the inbox lists, like the top bar.
+  // The main window owns the badge.
   useEffect(() => {
     if (!isTauri()) {
-      document.title = pending > 0 ? `(${pending}) Aura` : "Aura";
+      document.title = inbox > 0 ? `(${inbox}) Aura` : "Aura";
       return;
     }
-    import("@tauri-apps/api/core").then(({ invoke }) => invoke("set_badge", { count: pending })).catch(() => {});
-  }, [pending]);
+    if (windowMode === "session") return;
+    import("@tauri-apps/api/core").then(({ invoke }) => invoke("set_badge", { count: inbox })).catch(() => {});
+  }, [inbox]);
 
-  // Global summon from the tray hotkey opens the inbox when something waits.
+  // Global summon from the tray hotkey opens the inbox when something waits. The
+  // hotkey brings up the main window, so only the main window answers it.
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri() || windowMode === "session") return;
     let un: (() => void) | undefined;
     import("@tauri-apps/api/event").then(({ listen }) =>
       listen("aura://summon", () => {
@@ -174,19 +178,7 @@ export default function App() {
         <span className="title">Aura</span>
         {selected && <span style={{ color: "var(--fg-dim)" }}>› {selected.title}</span>}
         <span className="spacer" />
-        <button
-          type="button"
-          className="titlebar-inbox"
-          data-hint
-          data-command="inbox.open"
-          title={inbox > 0 ? `Inbox: ${inbox} waiting on you or unread (⌘I)` : "Inbox: nothing waiting (⌘I)"}
-          aria-label={inbox > 0 ? `Inbox, ${inbox} items` : "Inbox"}
-          onClick={() => void runCommand("inbox.open")}
-        >
-          <span className="inbox-icon" aria-hidden />
-          Inbox
-          {inbox > 0 && <span className="badge">{inbox}</span>}
-        </button>
+        <InboxButton />
         <span className="conn">
           <span className={`dot ${connection === "open" ? "ok" : connection === "connecting" ? "warn pulse" : "err"}`} />
           {connection}

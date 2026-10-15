@@ -31,10 +31,13 @@ export function useWindowFocused(): boolean {
   return useSyncExternalStore(subscribeFocus, () => document.visibilityState === "visible" && document.hasFocus());
 }
 
-/** The session the user is looking at: selected, shown, in a focused window. */
+/** Whether something of Aura's own covers the session: a dialog (the inbox among them) or the command palette. */
+export const selectCovered = (s: AppState) => s.dialog.kind !== "none" || s.paletteOpen;
+
+/** The session the user is looking at: selected, shown, nothing over it, in a focused window. */
 export function useViewedSessionId(): string | null {
   const focused = useWindowFocused();
-  const selected = useStore((s) => (s.prSelection || s.reviewHistoryOpen ? null : s.selectedId));
+  const selected = useStore((s) => (s.prSelection || s.reviewHistoryOpen || selectCovered(s) ? null : s.selectedId));
   return focused ? selected : null;
 }
 
@@ -48,7 +51,7 @@ export function useMarkViewedSeen() {
     const session = st.sessions[viewed];
     // Cleared right away so the marker does not linger for the round trip.
     if (session) st.upsertSession({ ...session, attention: null });
-    st.client?.markSeen(viewed).catch(() => {});
+    st.client?.markSeen(viewed).catch((error: unknown) => console.warn(`Could not mark session ${viewed} seen:`, error));
   }, [viewed, attention]);
 }
 
