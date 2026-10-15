@@ -2,9 +2,11 @@
 //! that session's agent, and the user hears about it twice: when it arrives,
 //! and when the agent's turn on it ends.
 //!
-//! Once a minute the daemon reads the PRs each session is linked to (the
-//! links the user chose, else the ones the desktop app detected in the
-//! conversation) and, for each open PR the user authored, collects reviews,
+//! Once a minute the daemon reads the PRs each session follows: the ones it
+//! is linked to (the links the user chose, else the ones the desktop app
+//! detected in the conversation) and the ones opened from its branch
+//! (`Session::pulls`; for a worktree the daemon looks its branch's PR up
+//! itself). For each open PR the user authored it collects reviews,
 //! inline review comments and conversation comments newer than the last look.
 //! The first look only records where things stand: older activity is history.
 //!
@@ -29,6 +31,8 @@ const NAMESPACE: &str = "pr-follows";
 const PENDING_NAMESPACE: &str = "pr-follow-pending";
 /// A hand-over whose turn has not started by then is given up on.
 const START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// A worktree whose branch has no PR yet is looked up again after this long.
+const BRANCH_LOOKUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 /// The desktop app's per-session link settings (see `sessionLinkPreferences.ts`).
 pub const LINKS_KEY: &str = "session.links.v1.";
 pub const DETECTED_KEY: &str = "session.links.detected.v1.";
@@ -117,6 +121,8 @@ pub struct FollowService {
     handling: Mutex<HashMap<SessionId, Handling>>,
     poll_gate: tokio::sync::Mutex<()>,
     events: broadcast::Sender<Value>,
+    /// Session id -> when its worktree branch was last looked up without a PR found.
+    branch_lookups: Mutex<HashMap<SessionId, std::time::Instant>>,
 }
 
 fn pr_id(repo: &str, number: u32) -> String {
@@ -149,6 +155,7 @@ impl FollowService {
             handling: Mutex::new(HashMap::new()),
             poll_gate: tokio::sync::Mutex::new(()),
             events,
+            branch_lookups: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -327,7 +334,7 @@ impl FollowService {
                 return;
             }
         };
-        let sessions: Vec<Session> = self
+        let mut sessions: Vec<Session> = self
             .manager
             .list_sessions()
             .into_iter()
@@ -354,9 +361,12 @@ impl FollowService {
         self.handling
             .lock()
             .retain(|_, h| h.started || h.since.elapsed() < START_TIMEOUT);
+        for s in &mut sessions {
+            self.find_branch_pull(s).await;
+        }
         let mut linked: BTreeMap<String, (String, u32, Vec<Session>)> = BTreeMap::new();
         for s in &sessions {
-            for (repo, number) in linked_prs(&*self.store, &s.id) {
+            for (repo, number) in followed_prs(&*self.store, s) {
                 linked
                     .entry(pr_id(&repo, number))
                     .or_insert_with(|| (repo, number, vec![]))
@@ -399,6 +409,57 @@ impl FollowService {
         let waiting: Vec<SessionId> = self.pending.lock().keys().cloned().collect();
         for sid in waiting {
             self.flush(&sid).await;
+        }
+    }
+
+    /// Record the PR of a worktree session's branch when it has none yet
+    /// (see [`Session::pulls`]); the app does the same for the sessions it
+    /// shows, and this covers workers no window looked at. A branch without a
+    /// PR is asked about again after [`BRANCH_LOOKUP_INTERVAL`].
+    async fn find_branch_pull(&self, s: &mut Session) {
+        let Some(worktree) = &s.worktree else { return };
+        if !s.pulls.is_empty() || !follows_reviews(&*self.store, &s.id) {
+            return;
+        }
+        if self
+            .branch_lookups
+            .lock()
+            .get(&s.id)
+            .is_some_and(|at| at.elapsed() < BRANCH_LOOKUP_INTERVAL)
+        {
+            return;
+        }
+        self.branch_lookups
+            .lock()
+            .insert(s.id.clone(), std::time::Instant::now());
+        let cwd = s.cwd.clone();
+        // As the app: the folder's GitHub repository, and its upstream's for a fork.
+        let repos = tokio::task::spawn_blocking(move || -> Result<Option<(String, String)>> {
+            let Some(repo) = aura_git::ops::github_repo(&cwd)? else {
+                return Ok(None);
+            };
+            let head = aura_git::ops::branch_status(&cwd)?
+                .and_then(|b| b.upstream_repo)
+                .unwrap_or_else(|| repo.clone());
+            Ok(Some((repo, head)))
+        })
+        .await;
+        let (repo, head) = match repos {
+            Ok(Ok(Some(repos))) => repos,
+            Ok(Ok(None)) => return,
+            Ok(Err(e)) => return tracing::debug!("branch of session {}: {e:#}", s.id),
+            Err(e) => return tracing::debug!("branch of session {}: {e}", s.id),
+        };
+        match aura_github::branch::branch_pull(&*self.gh, &repo, &head, &worktree.branch).await {
+            Ok(Some(pull)) => match self.manager.record_pull(&s.id, &pull.url) {
+                Ok(updated) => {
+                    self.branch_lookups.lock().remove(&s.id);
+                    *s = updated;
+                }
+                Err(e) => tracing::warn!("record {} on session {}: {e:#}", pull.url, s.id),
+            },
+            Ok(None) => {}
+            Err(e) => tracing::debug!("PR of {} in {repo}: {e:#}", worktree.branch),
         }
     }
 
@@ -507,9 +568,10 @@ fn activity(kind: &str, row: &Value, state: String) -> Activity {
     }
 }
 
-/// The session that takes a PR's activity: of the sessions linked to it,
-/// skip workers whose orchestrator is linked too (the orchestrator decides),
-/// then take the one active last.
+/// The session that takes a PR's activity, so it goes to one session only:
+/// of the sessions that follow it (linked to it or on its branch alike, all
+/// unarchived), skip workers whose orchestrator follows it too (the
+/// orchestrator decides), then take the one active last.
 fn target(linking: &[Session]) -> Option<&Session> {
     let ids: HashSet<&str> = linking.iter().map(|s| s.id.as_str()).collect();
     linking
@@ -522,17 +584,44 @@ fn target(linking: &[Session]) -> Option<&Session> {
         .max_by_key(|s| s.last_activity)
 }
 
+fn read_setting(store: &dyn Store, key: &str) -> Value {
+    store
+        .get_setting(key)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// Whether review activity may go to the session: the user can turn it off
+/// per session in the app's links dialog.
+pub fn follows_reviews(store: &dyn Store, session: &str) -> bool {
+    read_setting(store, &format!("{LINKS_KEY}{session}"))["reviews"] != false
+}
+
+/// The PRs whose activity may go to a session, unless the user turned
+/// follow-ups off for it: the ones it is linked to, and the ones opened from
+/// its branch, which is usually where the session wrote the code.
+pub fn followed_prs(store: &dyn Store, session: &Session) -> Vec<(String, u32)> {
+    if !follows_reviews(store, &session.id) {
+        return vec![];
+    }
+    let mut out = linked_prs(store, &session.id);
+    for (repo, number) in session.pulls.iter().filter_map(|url| parse_pr_url(url)) {
+        if !out
+            .iter()
+            .any(|(r, n)| r.eq_ignore_ascii_case(&repo) && *n == number)
+        {
+            out.push((repo, number));
+        }
+    }
+    out
+}
+
 /// The PRs a session is linked to, unless the user turned follow-ups off for
 /// it: the links the user chose, else the ones detected in the conversation.
 pub fn linked_prs(store: &dyn Store, session: &str) -> Vec<(String, u32)> {
-    let read = |key: String| -> Value {
-        store
-            .get_setting(&key)
-            .ok()
-            .flatten()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or(Value::Null)
-    };
+    let read = |key: String| read_setting(store, &key);
     let prefs = read(format!("{LINKS_KEY}{session}"));
     if prefs["reviews"] == false {
         return vec![];
@@ -641,6 +730,8 @@ mod tests {
         comments: Mutex<Vec<Value>>,
         conversation: Mutex<Vec<Value>>,
         author: Mutex<String>,
+        /// The branches whose PR was asked for.
+        heads: Mutex<Vec<String>>,
     }
     fn row(id: u64, login: &str, body: &str) -> Value {
         json!({"id": id, "user": {"login": login, "type": if login.ends_with("[bot]") { "Bot" } else { "User" }}, "body": body, "html_url": format!("https://github.com/o/r/pull/1#x-{id}")})
@@ -653,9 +744,24 @@ mod tests {
         async fn diff(&self, _: &str, _: &str, _: &str) -> Result<String> {
             unreachable!()
         }
-        async fn request(&self, method: &str, path: &str, _: Option<Value>) -> Result<Value> {
+        async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
             let author = self.author.lock().clone();
             match (method, path) {
+                ("POST", "graphql") => {
+                    let head = body.unwrap_or_default()["variables"]["head"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    self.heads.lock().push(head.clone());
+                    let nodes = if head == "feature" {
+                        vec![json!({"number": 1, "title": "PR", "url": "https://github.com/o/r/pull/1", "state": "OPEN",
+                            "isDraft": false, "reviewDecision": "", "headRefOid": "abc", "author": {"login": "me"},
+                            "headRepository": {"nameWithOwner": "o/r"}, "commits": {"nodes": []}})]
+                    } else {
+                        vec![]
+                    };
+                    Ok(json!({"data": {"repository": {"pullRequests": {"nodes": nodes}}}}))
+                }
                 ("GET", "user") => Ok(json!({"login": "me"})),
                 ("GET", "repos/o/r/pulls/1") => Ok(
                     json!({"title": "PR", "html_url": "https://github.com/o/r/pull/1", "state": "open", "merged_at": null, "user": {"login": if author.is_empty() { "me" } else { &author }}}),
@@ -709,6 +815,43 @@ mod tests {
         let other = session("other", None, 9);
         assert_eq!(target(&[worker.clone(), other]).unwrap().id, "other");
         assert_eq!(target(&[worker]).unwrap().id, "worker");
+    }
+
+    #[test]
+    fn a_session_follows_its_links_and_its_branch_pulls_unless_turned_off() {
+        let store = MemoryStore::default();
+        let mut s = session("a", None, 0);
+        s.pulls = vec![
+            "https://github.com/O/R/pull/3".into(),
+            "https://github.com/o/r/pull/8".into(),
+        ];
+        store
+            .set_setting(
+                &format!("{LINKS_KEY}a"),
+                r#"{"prs":["https://github.com/o/r/pull/3"]}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            followed_prs(&store, &s),
+            vec![("o/r".to_string(), 3), ("o/r".to_string(), 8)]
+        );
+        store
+            .set_setting(&format!("{LINKS_KEY}a"), r#"{"prs":[],"reviews":false}"#)
+            .unwrap();
+        assert!(followed_prs(&store, &s).is_empty(), "follow-ups turned off");
+        assert!(!follows_reviews(&store, "a"));
+        assert!(follows_reviews(&store, "b"));
+    }
+
+    #[test]
+    fn a_session_on_the_branch_and_a_linked_one_get_the_same_rule() {
+        // The worker wrote the code on the PR's branch; its orchestrator links the PR.
+        let lead = session("lead", None, 1);
+        let mut worker = session("worker", Some("lead"), 5);
+        worker.pulls = vec!["https://github.com/o/r/pull/1".into()];
+        assert_eq!(target(&[worker.clone(), lead]).unwrap().id, "lead");
+        let linked = session("linked", None, 2);
+        assert_eq!(target(&[worker, linked]).unwrap().id, "worker");
     }
 
     #[test]
@@ -986,6 +1129,63 @@ mod tests {
             "{}",
             sent[0]
         );
+    }
+
+    #[tokio::test]
+    async fn activity_reaches_the_session_on_the_branch_and_skips_archived_and_muted_ones() {
+        let gh = Arc::new(Fake::default());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let manager = Manager::new(store.clone(), vec![Arc::new(Agent(Default::default()))], None);
+        // A worktree whose remote is o/r, on the PR's branch; another whose branch has no PR.
+        let repo = |name: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let git = |args: &[&str]| {
+                assert!(std::process::Command::new("git").args(args).current_dir(dir.path()).output().unwrap().status.success());
+            };
+            git(&["init", "-q", "-b", name]);
+            git(&["remote", "add", "origin", "https://github.com/o/r.git"]);
+            dir
+        };
+        let (feature, other) = (repo("feature"), repo("other"));
+        let stored = |id: &str, minutes: u64, dir: Option<(&tempfile::TempDir, &str)>, pulls: &[&str], archived: bool| {
+            let mut s = session(id, None, minutes);
+            if let Some((dir, branch)) = dir {
+                s.cwd = dir.path().to_string_lossy().to_string();
+                s.worktree = Some(WorktreeInfo { repo_root: s.cwd.clone(), path: s.cwd.clone(), branch: branch.into() });
+            }
+            s.pulls = pulls.iter().map(|p| p.to_string()).collect();
+            s.archived = archived;
+            store.upsert_session(&s).unwrap();
+        };
+        let url = "https://github.com/o/r/pull/1";
+        stored("coder", 1, Some((&feature, "feature")), &[], false);
+        stored("idle-worktree", 1, Some((&other, "other")), &[], false);
+        stored("old", 30, None, &[url], true);
+        stored("muted", 20, None, &[url], false);
+        store
+            .set_setting(&format!("{LINKS_KEY}muted"), r#"{"reviews":false}"#)
+            .unwrap();
+        manager.restore().unwrap();
+        let (events, mut rx) = broadcast::channel(64);
+        let svc = FollowService::new(store, gh.clone(), manager.clone(), events).unwrap();
+
+        svc.poll().await;
+        assert_eq!(manager.get_session("coder").unwrap().pulls, vec![url], "the worktree's PR is recorded");
+        gh.reviews.lock().push(review(2, "alice", "CHANGES_REQUESTED", "Rename this"));
+        svc.poll().await;
+        let activity = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let v = rx.recv().await.unwrap();
+                if v["method"] == "follows.activity" {
+                    break v;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(activity["params"]["session"]["id"], "coder");
+        // The PR was found once; the branch without one waits before it is asked again.
+        assert_eq!(gh.heads.lock().clone(), vec!["feature", "other"]);
     }
 
     fn pr(items: Vec<Activity>) -> PrActivity {

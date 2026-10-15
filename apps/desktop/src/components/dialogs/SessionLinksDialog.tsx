@@ -134,7 +134,7 @@ function Editor({ sessionId, preferences }: { sessionId: string; preferences: Li
         automatic={automatic.filter((link) => link.kind === "PR")} disabled={saving} onError={setError} />
       <label className="check-row">
         <input type="checkbox" checked={reviews} disabled={saving} onChange={(event) => setReviews(event.target.checked)} />
-        Hand new reviews and comments on these PRs to this session
+        Hand new reviews and comments on these PRs, and on the PRs of this session's branch, to this session
       </label>
       <p className="dim">For open PRs you authored, Aura checks GitHub every minute. The agent fixes what needs fixing and pushes; you are notified when activity arrives and when the agent is done.</p>
       {transcript?.loading && <p className="dim">Loading links from session history…</p>}
