@@ -100,6 +100,8 @@ export type AppState = {
   cursorItemId: string | null;
   /** highlighted session row in sidebar (may differ from selected) */
   sidebarCursor: string | null;
+  /** Orchestrators whose workers the sidebar hides. Saved across restarts. */
+  collapsedOrchestras: string[];
   settings: UiSettings;
   // actions
   setClient: (c: RpcClient | null) => void;
@@ -131,6 +133,7 @@ export type AppState = {
   setShowArchived: (v: boolean) => void;
   setCursorItem: (id: string | null) => void;
   setSidebarCursor: (id: string | null) => void;
+  setOrchestraCollapsed: (id: string, collapsed: boolean) => void;
   setSettings: (patch: Partial<UiSettings>) => void;
   setTurnDiff: (sessionId: string, diff: string) => void;
 };
@@ -284,6 +287,7 @@ function applyToTranscript(t: Transcript, ev: Event): Transcript {
 
 const ORDER_KEY = "aura.session-order.v1";
 const SETTINGS_KEY = "aura.settings.v1";
+const COLLAPSED_KEY = "aura.sidebar-collapsed.v1";
 
 export const useStore = create<AppState>((set, get) => ({
   client: null,
@@ -310,6 +314,7 @@ export const useStore = create<AppState>((set, get) => ({
   showArchived: false,
   cursorItemId: null,
   sidebarCursor: null,
+  collapsedOrchestras: loadCollapsed(),
   settings: loadSettings(),
 
   setClient: (client) => set({ client }),
@@ -318,7 +323,11 @@ export const useStore = create<AppState>((set, get) => ({
   setSessions: (list) => {
     const sessions: Record<string, Session> = {};
     for (const s of list) sessions[s.id] = s;
-    set({ sessions, sessionOrder: saveOrder(mergeOrder(get().sessionOrder, list)) });
+    set({
+      sessions,
+      sessionOrder: saveOrder(mergeOrder(get().sessionOrder, list)),
+      collapsedOrchestras: saveCollapsed(get().collapsedOrchestras.filter((c) => sessions[c])),
+    });
   },
   upsertSession: (s) => {
     const sessions = { ...get().sessions, [s.id]: s };
@@ -345,11 +354,16 @@ export const useStore = create<AppState>((set, get) => ({
     set({ sessionOrder: saveOrder(order) });
   },
   moveSessionBy: (id, delta) => {
+    // Step over the rows it cannot swap with, such as the workers under an orchestrator.
     const list = selectVisibleSessions(get());
-    const target = list[list.findIndex((s) => s.id === id) + delta];
-    if (target) get().moveSessionTo(id, target.id);
+    const from = list.findIndex((s) => s.id === id);
+    if (from < 0) return;
+    for (let i = from + delta; i >= 0 && i < list.length; i += delta) {
+      if (canReorder(list[from], list[i])) return get().moveSessionTo(id, list[i].id);
+    }
   },
-  select: (id) => set({ prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id }),
+  // Selecting a worker of a collapsed orchestrator, from a report or a link, opens its group.
+  select: (id) => set({ prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id, collapsedOrchestras: revealIn(get(), id) }),
   ensureTranscript: (id) => {
     if (!get().transcripts[id]) set({ transcripts: { ...get().transcripts, [id]: emptyTranscript() } });
   },
@@ -405,6 +419,10 @@ export const useStore = create<AppState>((set, get) => ({
   setShowArchived: (showArchived) => set({ showArchived }),
   setCursorItem: (cursorItemId) => set({ cursorItemId }),
   setSidebarCursor: (sidebarCursor) => set({ sidebarCursor }),
+  setOrchestraCollapsed: (id, collapsed) => {
+    const rest = get().collapsedOrchestras.filter((c) => c !== id);
+    set({ collapsedOrchestras: saveCollapsed(collapsed ? [...rest, id] : rest) });
+  },
   setSettings: (patch) => {
     const settings = { ...get().settings, ...patch };
     saveSettings(settings);
@@ -466,6 +484,41 @@ if (typeof window !== "undefined") {
   });
 }
 
+function loadCollapsed(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
+    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCollapsed(ids: string[]): string[] {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(ids));
+  } catch {
+    /* ignore */
+  }
+  return ids;
+}
+
+/** The collapsed orchestrators without the ones `id` is nested under. */
+function revealIn(st: AppState, id: string | null): string[] {
+  const ancestors = new Set<string>();
+  for (let s = id ? st.sessions[id] : undefined; s?.orchestrator_id && !ancestors.has(s.orchestrator_id); s = st.sessions[s.orchestrator_id]) {
+    ancestors.add(s.orchestrator_id);
+  }
+  const kept = st.collapsedOrchestras.filter((c) => !ancestors.has(c));
+  return kept.length === st.collapsedOrchestras.length ? st.collapsedOrchestras : saveCollapsed(kept);
+}
+
+// Another window collapsed or expanded an orchestrator; follow it.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === COLLAPSED_KEY) useStore.setState({ collapsedOrchestras: loadCollapsed() });
+  });
+}
+
 function loadSettings(): UiSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -489,9 +542,10 @@ function saveSettings(s: UiSettings) {
 /**
  * The sidebar's sections, top to bottom: ungrouped sessions first, then each
  * group in the order its first session appears. Within a section, pinned
- * sessions come first, then the saved order.
+ * sessions come first, then the saved order. Workers of a collapsed
+ * orchestrator are left out, unless `withCollapsed` or a filter is set.
  */
-export function selectSessionSections(st: AppState): [string, Session[]][] {
+export function selectSessionSections(st: AppState, withCollapsed = false): [string, Session[]][] {
   const q = st.sidebarFilter.trim().toLowerCase();
   const sections = new Map<string, Session[]>([["", []]]);
   for (const id of st.sessionOrder) {
@@ -504,7 +558,12 @@ export function selectSessionSections(st: AppState): [string, Session[]][] {
   }
   return [...sections]
     .filter(([, list]) => list.length > 0)
-    .map(([g, list]) => [g, nestWorkers([...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)])]);
+    .map(([g, list]) => {
+      const rows = nestWorkers([...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)]);
+      if (withCollapsed || q || st.collapsedOrchestras.length === 0) return [g, rows];
+      const collapsed = new Set(st.collapsedOrchestras);
+      return [g, rows.filter((s) => !orchestratorsOf(s, rows).some((o) => collapsed.has(o.id)))];
+    });
 }
 
 /** Whether `s` is shown under its orchestrator: both in the same section. */
@@ -512,15 +571,46 @@ export function isNestedWorker(s: Session, list: Session[]): boolean {
   return !!s.orchestrator_id && list.some((o) => o.id === s.orchestrator_id);
 }
 
-/** Workers follow their orchestrator, in their own order. */
+/**
+ * Workers follow their orchestrator, in their own order, and a worker that
+ * orchestrates in turn is followed by its own workers.
+ */
 function nestWorkers(list: Session[]): Session[] {
   const out: Session[] = [];
-  for (const s of list) {
-    if (isNestedWorker(s, list)) continue;
+  const placed = new Set<string>();
+  const place = (s: Session) => {
+    if (placed.has(s.id)) return;
+    placed.add(s.id);
     out.push(s);
-    for (const w of list) if (w.orchestrator_id === s.id) out.push(w);
-  }
+    for (const w of list) if (w.orchestrator_id === s.id) place(w);
+  };
+  for (const s of list) if (!isNestedWorker(s, list)) place(s);
+  // Orchestrators that point at each other have no top; keep them, last.
+  for (const s of list) place(s);
   return out;
+}
+
+/** The orchestrators `s` is nested under in `list`, nearest first. */
+export function orchestratorsOf(s: Session, list: Session[]): Session[] {
+  const out: Session[] = [];
+  for (let o = list.find((l) => l.id === s.orchestrator_id); o && o !== s && !out.includes(o); o = list.find((l) => l.id === o!.orchestrator_id)) out.push(o);
+  return out;
+}
+
+/**
+ * The orchestra `id` belongs to as the sidebar shows it: its top orchestrator
+ * and every visible worker under it. Null when `id` has no orchestra there,
+ * which includes an orchestrator whose workers are collapsed.
+ */
+export function selectOrchestra(st: AppState, id: string): Session[] | null {
+  for (const [, list] of selectSessionSections(st)) {
+    const s = list.find((l) => l.id === id);
+    if (!s) continue;
+    const top = orchestratorsOf(s, list).at(-1) ?? s;
+    const members = list.filter((l) => l === top || orchestratorsOf(l, list).includes(top));
+    return members.length > 1 ? members : null;
+  }
+  return null;
 }
 
 /** Visible sessions in the order the sidebar shows them; ⌘1–9 index into this. */

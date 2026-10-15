@@ -1,7 +1,7 @@
 import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useStore, selectVisibleSessions, canReorder, isNestedWorker } from "../state/store";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, canReorder, isNestedWorker, orchestratorsOf, type AppState } from "../state/store";
 import type { BranchPull, Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
 import { registerCommands } from "../lib/commands";
@@ -13,6 +13,18 @@ import { selectedSessionLinks, sessionLinks } from "../views/issueLinks";
 import { useGithubRepo } from "../state/githubRepos";
 import { useSessionBranch } from "../state/branchStatus";
 import { BranchPullChip, GitCounts, branchName } from "./BranchStatus";
+
+/** Every session row in sidebar order, the workers of collapsed orchestrators included. */
+const selectAllRows = (st: AppState) => selectSessionSections(st, true).flatMap(([, list]) => list);
+
+/** The session the sidebar keyboard acts on, or the orchestrator showing it when it is collapsed away. */
+function sidebarCurrent(st: AppState, sessions: Session[]): Session | undefined {
+  const id = st.sidebarCursor ?? st.selectedId;
+  const s = sessions.find((v) => v.id === id);
+  if (s || !id || !st.sessions[id]) return s;
+  const section = selectSessionSections(st, true).find(([, list]) => list.some((l) => l.id === id))?.[1] ?? [];
+  return orchestratorsOf(st.sessions[id], section).find((o) => sessions.includes(o));
+}
 
 function statusClass(s: Session): string {
   switch (s.status) {
@@ -76,6 +88,9 @@ function SessionRowLinks({ session, branchPull }: { session: Session; branchPull
 
 export function Sidebar() {
   const sessions = useStore(useShallow(selectVisibleSessions));
+  const rows = useStore(useShallow(selectAllRows));
+  const collapsedOrchestras = useStore((s) => s.collapsedOrchestras);
+  const setOrchestraCollapsed = useStore((s) => s.setOrchestraCollapsed);
   const selectedId = useStore((s) => s.prSelection || s.reviewHistoryOpen ? null : s.selectedId);
   const cursor = useStore((s) => s.sidebarCursor);
   const filter = useStore((s) => s.sidebarFilter);
@@ -87,17 +102,18 @@ export function Sidebar() {
   const listRef = useRef<HTMLDivElement>(null);
   useSidebarLinks(useMemo(() => sessions.map((s) => s.id), [sessions]));
 
-  // Visible sessions are already in section order; split them without re-sorting
-  // so the rows read top to bottom in ⌘1–9 order.
+  // Rows are already in section order; split them without re-sorting so they
+  // read top to bottom in ⌘1–9 order. Collapsed workers stay in to count them.
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
-    for (const s of sessions) {
+    for (const s of rows) {
       const g = s.group ?? "";
       if (!m.has(g)) m.set(g, []);
       m.get(g)!.push(s);
     }
     return [...m.entries()];
-  }, [sessions]);
+  }, [rows]);
+  const visibleIds = useMemo(() => new Set(sessions.map((s) => s.id)), [sessions]);
 
   // Drag a row onto another row of the same group to reorder.
   const drag = useRef<{ id: string; startY: number; active: boolean } | null>(null);
@@ -149,25 +165,53 @@ export function Sidebar() {
 
   // navigation commands scoped to the sidebar
   useEffect(() => {
+    const go = (id: string) => { setCursor(id); select(id); };
     const move = (delta: number) => {
       const st = useStore.getState();
       if (st.focus !== "sidebar") return false;
-      const sessions = selectVisibleSessions(st);
+      const all = selectVisibleSessions(st);
+      const current = st.prSelection ? undefined : sidebarCurrent(st, all);
+      // Inside an open orchestra the keys stay among its orchestrator and workers.
+      const orchestra = current && selectOrchestra(st, current.id);
+      const sessions = orchestra ?? all;
       const { review, mine } = visiblePulls(useReviews.getState());
-      const pulls = [...review, ...mine];
+      const pulls = orchestra ? [] : [...review, ...mine];
       const count = sessions.length + pulls.length;
       if (!count) return true;
-      const cur = st.prSelection ? sessions.length + pulls.findIndex((p) => p.id === st.prSelection?.id) : sessions.findIndex((s) => s.id === (st.sidebarCursor ?? st.selectedId));
+      const cur = st.prSelection ? sessions.length + pulls.findIndex((p) => p.id === st.prSelection?.id) : current ? sessions.indexOf(current) : -1;
       const next = Math.max(0, Math.min(count - 1, cur < 0 ? 0 : cur + delta));
-      if (next < sessions.length) { setCursor(sessions[next].id); select(sessions[next].id); }
+      if (next < sessions.length) go(sessions[next].id);
       else { openPull(pulls[next - sessions.length]); useStore.getState().setFocus("sidebar"); }
       return true;
+    };
+    // Tree keys: right opens an orchestrator, then steps to its first worker;
+    // left closes it, or steps from a worker up to its orchestrator.
+    const tree = (dir: -1 | 1) => {
+      const st = useStore.getState();
+      if (st.focus !== "sidebar" || st.prSelection) return;
+      const current = sidebarCurrent(st, selectVisibleSessions(st));
+      const section = current && selectSessionSections(st, true).find(([, list]) => list.includes(current))?.[1];
+      if (!current || !section) return;
+      const workers = section.filter((w) => w.orchestrator_id === current.id && w !== current);
+      const collapsed = st.collapsedOrchestras.includes(current.id);
+      if (dir > 0) {
+        if (workers.length && collapsed) st.setOrchestraCollapsed(current.id, false);
+        else if (workers.length) go(workers[0].id);
+      } else if (workers.length && !collapsed) {
+        st.setOrchestraCollapsed(current.id, true);
+        go(current.id);
+      } else {
+        const parent = orchestratorsOf(current, section)[0];
+        if (parent) go(parent.id);
+      }
     };
     return registerCommands([
       { id: "sidebar.nav.down", title: "Sidebar: next", group: "Navigation", hidden: true, run: () => void move(1) },
       { id: "sidebar.nav.up", title: "Sidebar: previous", group: "Navigation", hidden: true, run: () => void move(-1) },
       { id: "sidebar.nav.first", title: "Sidebar: first", group: "Navigation", hidden: true, run: () => void move(-1e9) },
       { id: "sidebar.nav.last", title: "Sidebar: last", group: "Navigation", hidden: true, run: () => void move(1e9) },
+      { id: "sidebar.nav.collapse", title: "Sidebar: collapse orchestrator / go to orchestrator", group: "Navigation", hidden: true, run: () => tree(-1) },
+      { id: "sidebar.nav.expand", title: "Sidebar: expand orchestrator / go to first worker", group: "Navigation", hidden: true, run: () => tree(1) },
       { id: "sidebar.toggle-archived", title: "Show / hide archived sessions", group: "View", run: () => useStore.getState().setShowArchived(!useStore.getState().showArchived) },
     ]);
   }, [select, setCursor]);
@@ -208,7 +252,12 @@ export function Sidebar() {
           <div key={group || "__none"}>
             {group && <div className="section-title group-title">{group}</div>}
             {list.map((s) => {
+              if (!visibleIds.has(s.id)) return null;
               const idx = sessions.indexOf(s);
+              const depth = orchestratorsOf(s, list).length;
+              const workers = list.filter((w) => w.orchestrator_id === s.id && w !== s);
+              const collapsed = workers.length > 0 && collapsedOrchestras.includes(s.id);
+              const hidden = collapsed ? list.filter((l) => !visibleIds.has(l.id) && orchestratorsOf(l, list).includes(s)) : [];
               return (
                 <div
                   key={s.id}
@@ -218,10 +267,12 @@ export function Sidebar() {
                     s.id === cursor && cursor !== selectedId && "cursor",
                     s.archived && "archived",
                     isNestedWorker(s, list) && "worker",
+                    hidden.some((w) => w.id === selectedId || w.id === cursor) && "cursor",
                     s.id === dragging && "drag-source",
                     dropTarget?.id === s.id && (dropTarget.below ? "drop-below" : "drop-above"),
                   )}
                   data-session-id={s.id}
+                  style={depth > 1 ? ({ "--depth": depth } as CSSProperties) : undefined}
                   data-hint
                   data-command="session.select"
                   onPointerDown={(e) => {
@@ -237,6 +288,20 @@ export function Sidebar() {
                   <span className={clsx("dot", statusClass(s))} />
                   <div style={{ minWidth: 0 }}>
                     <div className="title">
+                      {workers.length > 0 && (
+                        <button
+                          className={clsx("orchestra-toggle", collapsed && "collapsed")}
+                          data-hint
+                          aria-expanded={!collapsed}
+                          aria-label={`${collapsed ? "Show" : "Hide"} the workers of ${s.title}`}
+                          title={collapsed ? "Show workers" : "Hide workers"}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOrchestraCollapsed(s.id, !collapsed);
+                          }}
+                        />
+                      )}
                       {s.pinned && <span title="pinned">📌 </span>}
                       {s.title}
                       {s.archived && <span className="chip" style={{ marginLeft: 6 }}>archived</span>}
@@ -246,6 +311,11 @@ export function Sidebar() {
                   <div className="meta">
                     {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
                     {s.orchestrator && <span className="chip orchestrator" title="Orchestrator: starts and directs the sessions under it">orch</span>}
+                    {hidden.length > 0 && (
+                      <span className={clsx("chip", hidden.some((w) => w.pending_count > 0) && "warn")} title={hidden.map((w) => w.title).join("\n")}>
+                        +{hidden.length}
+                      </span>
+                    )}
                     <span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>
                     {idx < 9 && <kbd>{idx + 1}</kbd>}
                     <span>{relTime(s.last_activity)}</span>

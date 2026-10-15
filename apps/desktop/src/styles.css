@@ -116,8 +116,12 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .statusbar-pull { color: var(--accent-2); text-decoration: none; }
 .statusbar-pull:hover { text-decoration: underline; }
 /* A worker sits indented under its orchestrator, with a guide line. */
-.session-row.worker { padding-left: 26px; position: relative; }
-.session-row.worker::before { content: ""; position: absolute; left: 16px; top: 0; bottom: 0; border-left: 1px solid var(--border); }
+.session-row.worker { padding-left: calc(12px + 14px * var(--depth, 1)); position: relative; }
+.session-row.worker::before { content: ""; position: absolute; left: calc(2px + 14px * var(--depth, 1)); top: 0; bottom: 0; border-left: 1px solid var(--border); }
+.orchestra-toggle { display: inline-block; width: 14px; height: 14px; margin: 0 2px 0 -2px; padding: 0; vertical-align: -2px; border: 0; border-radius: 3px; cursor: pointer; background: var(--chevron) no-repeat center / 9px 6px; transition: transform 0.1s; }
+.orchestra-toggle:hover { background-color: var(--bg-hover); }
+.orchestra-toggle.collapsed { transform: rotate(-90deg); }
+.session-row .chip.warn { border-color: var(--warn); color: var(--warn); }
 .session-row .meta { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--fg-dim); }
 .session-list.dragging { user-select: none; cursor: grabbing; }
 .session-row.drag-source { opacity: 0.5; }

@@ -91,6 +91,8 @@ export const defaultBindings: Binding[] = [
   { keys: "o", command: "nav.toggle", when: "!inputFocused,focus:main" },
   { keys: "i", command: "focus.composer", when: "!inputFocused" },
   { keys: "a", command: "focus.composer", when: "!inputFocused" },
+  { keys: "left", command: "sidebar.nav.collapse", when: "!inputFocused,focus:sidebar" },
+  { keys: "right", command: "sidebar.nav.expand", when: "!inputFocused,focus:sidebar" },
   { keys: "slash", command: "sidebar.filter", when: "!inputFocused,focus:sidebar" },
   { keys: "f", command: "hints.enter", when: "!inputFocused" },
   { keys: "question", command: "help.open", when: "!inputFocused" },
@@ -123,4 +125,6 @@ export const vimExtraBindings: Binding[] = [
   { keys: "ctrl+u", command: "nav.page-up", when: "!inputFocused" },
   { keys: "shift+j", command: "session.next", when: "!inputFocused" },
   { keys: "shift+k", command: "session.prev", when: "!inputFocused" },
+  { keys: "h", command: "sidebar.nav.collapse", when: "!inputFocused,focus:sidebar" },
+  { keys: "l", command: "sidebar.nav.expand", when: "!inputFocused,focus:sidebar" },
 ];

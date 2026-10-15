@@ -189,7 +189,10 @@ inspector (`⌘K` → Make orchestrator). From the command line:
   have Codex implement and Claude review, or the other way round.
 - **Workers are normal sessions.** They show up indented under their orchestrator in
   the sidebar, in its group. Open one to read along, message it, approve its
-  commands, or switch it to the agent's TUI.
+  commands, or switch it to the agent's TUI. The chevron on the orchestrator (or `←`
+  / `→` in the sidebar) hides and shows its workers; Aura remembers that per
+  orchestrator. While the workers are shown, `j` / `k` in the sidebar stay among the
+  orchestrator and its workers.
 - **Reports come back by themselves.** When a worker stops (done, failed, or waiting
   for your approval or answer), Aura sends the orchestrator a short report with the
   worker's last reply as soon as the orchestrator is idle. It does not have to poll,
@@ -278,6 +281,7 @@ Shortcuts are shown with macOS keys; use `Ctrl` for `⌘` on Windows and Linux.
 | `⌘1…9`, `⌘[` `⌘]` | Jump between sessions |
 | `Ctrl+H/J/K/L` | Move focus between sidebar, transcript, composer, inspector |
 | `j` `k` `gg` `G` `Enter` | Navigate lists and transcript items |
+| `←` `→` | In the sidebar: hide / show an orchestrator's workers, step between it and them |
 | `y` `Y` `n` `e` | Accept / accept for session / decline / edit the oldest pending approval |
 | `⌘I` | Approvals inbox across all sessions |
 | `⌘T` | Toggle structured view and the provider's own TUI |

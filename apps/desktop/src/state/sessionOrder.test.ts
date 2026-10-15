@@ -13,7 +13,7 @@ Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
 
 beforeEach(() => {
   localStorage.clear();
-  useStore.setState({ sessions: {}, sessionOrder: [], sidebarFilter: "", showArchived: false });
+  useStore.setState({ sessions: {}, sessionOrder: [], sidebarFilter: "", showArchived: false, collapsedOrchestras: [] });
 });
 
 describe("session order", () => {
@@ -74,5 +74,35 @@ describe("session order", () => {
     // Moving the orchestrator takes its workers along.
     useStore.getState().moveSessionTo("b", "a");
     expect(visible()).toEqual(["b", "a", "d", "c", "e"]);
+  });
+
+  it("shows the workers of a worker that orchestrates in turn", () => {
+    useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" }), session("c", { orchestrator_id: "b" }), session("d")]);
+    expect(visible()).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("keeps orchestrators that point at each other, below the others", () => {
+    useStore.getState().setSessions([session("a", { orchestrator_id: "b" }), session("b", { orchestrator_id: "a" }), session("c")]);
+    expect(visible()).toEqual(["c", "a", "b"]);
+  });
+
+  it("moves a session up and down past a whole orchestra", () => {
+    useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" }), session("c", { orchestrator_id: "a" }), session("d")]);
+    useStore.getState().moveSessionBy("d", -1);
+    expect(visible()).toEqual(["d", "a", "b", "c"]);
+    useStore.getState().moveSessionBy("d", 1);
+    expect(visible()).toEqual(["a", "b", "c", "d"]);
+    // The last worker has no worker of its orchestrator below it.
+    useStore.getState().moveSessionBy("c", 1);
+    expect(visible()).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("forgets collapsed orchestrators that no longer exist", () => {
+    useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" })]);
+    useStore.getState().setOrchestraCollapsed("a", true);
+    useStore.getState().setOrchestraCollapsed("z", true);
+    expect(visible()).toEqual(["a"]);
+    useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" })]);
+    expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed.v1")!)).toEqual(["a"]);
   });
 });
