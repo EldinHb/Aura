@@ -29,7 +29,7 @@ pub struct RpcClient {
 /// it first, for instance as an orchestrator's MCP server.
 pub fn version_mismatch(daemon: &str, client: &str) -> Option<String> {
     (daemon != client).then(|| {
-        format!("aurad {daemon} is running, but this is aura {client}. Restart the daemon from the app (\"Restart daemon\" in the command palette) to run {client}.")
+        format!("aurad {daemon} is running, but this is aura {client}. Restart the daemon from the app (\"Restart daemon\" in the command palette), or run `aura daemon stop` and the next aura command starts {client}.")
     })
 }
 
