@@ -19,6 +19,18 @@ pub struct RpcClient {
     events: broadcast::Sender<aura_core::Event>,
     pty: broadcast::Sender<(String, Vec<u8>)>,
     notifications: broadcast::Sender<Notification>,
+    /// Set when the daemon runs another version than this client; see [`version_mismatch`].
+    mismatch: Option<Arc<str>>,
+}
+
+/// What to tell the user when the daemon runs version `daemon` and the client
+/// `client`, or None when they match. An app update leaves the previous daemon
+/// running until the app replaces it, and `aura` from the new bundle may reach
+/// it first, for instance as an orchestrator's MCP server.
+pub fn version_mismatch(daemon: &str, client: &str) -> Option<String> {
+    (daemon != client).then(|| {
+        format!("aurad {daemon} is running, but this is aura {client}. Restart the daemon from the app (\"Restart daemon\" in the command palette) to run {client}.")
+    })
 }
 
 impl RpcClient {
@@ -79,13 +91,20 @@ impl RpcClient {
             // Fail the calls still waiting instead of letting them run into their timeout.
             p2.lock().clear();
         });
-        Ok(Self { out, pending, next_id: Arc::new(AtomicU64::new(1)), events, pty, notifications })
+        Ok(Self { out, pending, next_id: Arc::new(AtomicU64::new(1)), events, pty, notifications, mismatch: None })
     }
 
-    /// Connect using `<data_dir>/daemon.json`.
+    /// Connect using `<data_dir>/daemon.json`, noting whether the daemon runs this version.
     pub async fn connect_from_dir(data_dir: &std::path::Path) -> Result<Self> {
         let info = read_daemon_info(data_dir).ok_or_else(|| anyhow!("daemon not running (no daemon.json)"))?;
-        Self::connect(info.port, &info.token).await
+        let mut client = Self::connect(info.port, &info.token).await?;
+        client.mismatch = version_mismatch(&info.version, env!("CARGO_PKG_VERSION")).map(Into::into);
+        Ok(client)
+    }
+
+    /// Why the daemon may not understand this client: it runs another version.
+    pub fn mismatch(&self) -> Option<&str> {
+        self.mismatch.as_deref()
     }
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
@@ -104,13 +123,21 @@ impl RpcClient {
             .map_err(|_| anyhow!("rpc timeout for {method}"))?
             .map_err(|_| anyhow!("connection closed"))?;
         if let Some(e) = resp.error {
+            // A method or parameters only one side knows: the version difference is the cause.
+            if let Some(why) = self.mismatch.as_deref().filter(|_| e.code == ERR_METHOD || e.code == ERR_PARAMS) {
+                bail!("{} ({}). {why}", e.message, e.code);
+            }
             bail!("{} ({})", e.message, e.code);
         }
         Ok(resp.result.unwrap_or(Value::Null))
     }
 
     pub async fn call_as<T: serde::de::DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
-        Ok(serde_json::from_value(self.call(method, params).await?)?)
+        let value = self.call(method, params).await?;
+        serde_json::from_value(value).map_err(|e| match self.mismatch.as_deref() {
+            Some(why) => anyhow!("could not read the reply to {method}: {e}. {why}"),
+            None => e.into(),
+        })
     }
 
     pub async fn pty_input(&self, session_id: &str, data: &[u8]) -> Result<()> {

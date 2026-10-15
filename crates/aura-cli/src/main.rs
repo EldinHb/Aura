@@ -290,6 +290,9 @@ async fn daemon_cmd(data_dir: &std::path::Path, cmd: &DaemonCmd) -> Result<()> {
         },
         DaemonCmd::Status => match RpcClient::connect_from_dir(data_dir).await {
             Ok(c) => {
+                if let Some(why) = c.mismatch() {
+                    eprintln!("warning: {why}");
+                }
                 let v = c.call("daemon.info", json!({})).await?;
                 println!("{}", serde_json::to_string_pretty(&v)?);
             }
@@ -349,13 +352,22 @@ async fn wait_for_daemon(data_dir: &std::path::Path) -> Result<()> {
     bail!("daemon did not come up within 10s")
 }
 
+/// Connect, starting the daemon when none runs. A daemon of another version is
+/// used as it is, with a warning: replacing it would stop every session on it,
+/// including the orchestrator `aura mcp` may be serving.
 async fn connect_or_start(data_dir: &std::path::Path) -> Result<RpcClient> {
-    if let Ok(c) = RpcClient::connect_from_dir(data_dir).await {
-        return Ok(c);
+    let c = match RpcClient::connect_from_dir(data_dir).await {
+        Ok(c) => c,
+        Err(_) => {
+            spawn_daemon(data_dir)?;
+            wait_for_daemon(data_dir).await?;
+            RpcClient::connect_from_dir(data_dir).await?
+        }
+    };
+    if let Some(why) = c.mismatch() {
+        eprintln!("warning: {why}");
     }
-    spawn_daemon(data_dir)?;
-    wait_for_daemon(data_dir).await?;
-    RpcClient::connect_from_dir(data_dir).await
+    Ok(c)
 }
 
 /// Raw-mode passthrough to a terminal session.

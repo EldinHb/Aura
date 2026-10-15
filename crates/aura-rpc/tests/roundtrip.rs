@@ -120,3 +120,36 @@ async fn terminal_session_roundtrip_over_ws() {
     assert!(home.is_some());
     let _ = server.shutdown.send(());
 }
+
+#[test]
+fn names_both_versions_and_the_fix_on_a_mismatch() {
+    assert_eq!(aura_rpc::client::version_mismatch("0.2.9", "0.2.9"), None);
+    let why = aura_rpc::client::version_mismatch("0.2.8", "0.2.9").unwrap();
+    assert!(why.contains("aurad 0.2.8") && why.contains("aura 0.2.9") && why.contains("Restart the daemon from the app"), "{why}");
+}
+
+/// A daemon of another version stays usable; only what it cannot answer fails, saying why.
+#[tokio::test]
+async fn explains_errors_from_a_daemon_of_another_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let manager = Manager::new(store, vec![Arc::new(TerminalOnly)], None);
+    let server = RpcServer::start(manager, dir.path(), None).await.unwrap();
+
+    let same = RpcClient::connect_from_dir(dir.path()).await.unwrap();
+    assert_eq!(same.mismatch(), None);
+    let err = same.call("pulls.newer_method", json!({})).await.unwrap_err().to_string();
+    assert!(!err.contains("Restart the daemon"), "{err}");
+
+    aura_rpc::server::write_daemon_info(dir.path(), &aura_rpc::DaemonInfo { version: "0.0.1".into(), ..server.info.clone() }).unwrap();
+    let other = RpcClient::connect_from_dir(dir.path()).await.unwrap();
+    assert!(other.mismatch().unwrap().contains("aurad 0.0.1"));
+    let pong: String = other.call_as("daemon.ping", json!({})).await.unwrap();
+    assert_eq!(pong, "pong");
+    let err = other.call("pulls.newer_method", json!({})).await.unwrap_err().to_string();
+    assert!(err.contains("unknown method pulls.newer_method") && err.contains("aurad 0.0.1") && err.contains("Restart the daemon from the app"), "{err}");
+    let err = other.call("session.get", json!({})).await.unwrap_err().to_string();
+    assert!(err.contains("Restart the daemon from the app"), "{err}");
+    let err = other.call_as::<Vec<Session>>("daemon.ping", json!({})).await.unwrap_err().to_string();
+    assert!(err.contains("could not read the reply to daemon.ping") && err.contains("aurad 0.0.1"), "{err}");
+}
