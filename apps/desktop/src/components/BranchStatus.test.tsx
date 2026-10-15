@@ -30,7 +30,7 @@ function status(extra: Partial<BranchStatus> = {}): BranchStatus {
 
 function pull(extra: Partial<BranchPull> = {}): BranchPull {
   return { repo: "owner/repo", number: 42, title: "Add hours page", url: pr, state: "open", draft: false,
-    checks: "SUCCESS", review_decision: "APPROVED", head_sha: "1234567890abcdef", ...extra };
+    checks: "SUCCESS", review_decision: "APPROVED", head_sha: "1234567890abcdef", reviews: [], ...extra };
 }
 
 const rowText = (id: string, part: string) => document.querySelector(`[data-session-id="${id}"] ${part}`)?.textContent;
@@ -102,6 +102,13 @@ it("shows merged and draft pull requests", async () => {
   pullResult = pull({ draft: true, checks: "PENDING", review_decision: "REVIEW_REQUIRED" });
   render(<Sidebar />);
   await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 draft …"]));
+});
+
+it("counts a comment-only review as reviewed in the row", async () => {
+  git.set("/work/a", status());
+  pullResult = pull({ review_decision: "REVIEW_REQUIRED", reviews: [{ reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: "1234567890abcdef" }] });
+  render(<Sidebar />);
+  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ commented"]));
 });
 
 it("shows the selected session's branch and pull request in the status bar", async () => {

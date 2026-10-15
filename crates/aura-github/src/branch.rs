@@ -1,10 +1,14 @@
 //! The pull request opened from a branch, with its check and review state.
-use crate::{s, validate_repo, Github};
+use crate::{reviews_by_others, s, validate_repo, Github};
 use anyhow::{bail, Context, Result};
 use aura_core::BranchPull;
 use serde_json::{json, Value};
 
-const QUERY: &str = r#"query($owner:String!,$name:String!,$head:String!){repository(owner:$owner,name:$name){pullRequests(headRefName:$head,first:20,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number title url state isDraft reviewDecision headRefOid headRepository{nameWithOwner} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}"#;
+const QUERY: &str = concat!(
+    r#"query($owner:String!,$name:String!,$head:String!){repository(owner:$owner,name:$name){pullRequests(headRefName:$head,first:20,orderBy:{field:CREATED_AT,direction:DESC}){nodes{number title url state isDraft reviewDecision headRefOid author{login} headRepository{nameWithOwner} commits(last:1){nodes{commit{statusCheckRollup{state}}}} "#,
+    reviews_query!(),
+    "}}}}"
+);
 
 /// The pull request into `repo` from `branch` of `head_repo`: the open one, or
 /// else the most recently created. None when the branch has no pull request.
@@ -40,6 +44,7 @@ fn pull(repo: &str, node: &Value) -> Option<BranchPull> {
         checks: s(&node["commits"]["nodes"][0]["commit"]["statusCheckRollup"], "state"),
         review_decision: s(node, "reviewDecision"),
         head_sha: s(node, "headRefOid"),
+        reviews: reviews_by_others(node, &[&s(&node["author"], "login")]),
     })
 }
 
@@ -69,7 +74,7 @@ mod tests {
     fn node(number: u32, state: &str, head_repo: &str) -> Value {
         json!({"number": number, "title": format!("PR {number}"), "url": format!("https://github.com/owner/repo/pull/{number}"),
             "state": state, "isDraft": false, "reviewDecision": "APPROVED", "headRefOid": "abc",
-            "headRepository": {"nameWithOwner": head_repo},
+            "author": {"login": "me"}, "headRepository": {"nameWithOwner": head_repo},
             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}})
     }
     fn fake(nodes: Vec<Value>) -> Fake {
@@ -83,6 +88,18 @@ mod tests {
         assert_eq!((pull.number, pull.state.as_str(), pull.checks.as_str(), pull.review_decision.as_str()), (2, "open", "SUCCESS", "APPROVED"));
         let body = &gh.bodies.lock().unwrap()[0];
         assert_eq!(body["variables"], json!({"owner": "owner", "name": "repo", "head": "feature"}));
+    }
+
+    #[tokio::test]
+    async fn reports_comment_only_reviews_by_others() {
+        let mut open = node(2, "OPEN", "owner/repo");
+        open["reviewDecision"] = json!("REVIEW_REQUIRED");
+        open["latestReviews"] = json!({"nodes": [
+            {"state": "COMMENTED", "submittedAt": "2026-10-05T10:00:00Z", "author": {"__typename": "User", "login": "alice"}, "commit": {"oid": "abc"}},
+            {"state": "COMMENTED", "submittedAt": "2026-10-05T11:00:00Z", "author": {"__typename": "User", "login": "me"}, "commit": {"oid": "abc"}},
+        ]});
+        let pull = branch_pull(&fake(vec![open]), "owner/repo", "owner/repo", "feature").await.unwrap().unwrap();
+        assert_eq!(pull.reviews.iter().map(|r| (r.reviewer.as_str(), r.state.as_str())).collect::<Vec<_>>(), vec![("alice", "COMMENTED")]);
     }
 
     #[tokio::test]

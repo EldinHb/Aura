@@ -5,7 +5,7 @@ import { ExternalLink } from "../../components/ExternalLink";
 import { Markdown } from "../../views/transcript/MarkdownView";
 import { ReviewDiff } from "./ReviewDiff";
 import { ReviewEditor } from "./ReviewEditor";
-import { isRerequested, openPull, rpc, startReview, useReviews } from "./state";
+import { isRerequested, openPull, reviewStatus, rpc, startReview, useReviews } from "./state";
 
 type Conversation = { id: number; body: string; html_url: string; created_at?: string; submitted_at?: string; state?: string; path?: string; line?: number; user: { login: string } };
 type ProjectField = { text?: string; number?: number; date?: string; name?: string; title?: string; optionId?: string; iterationId?: string; field?: { id: string; name: string; dataType: string; options?: { id: string; name: string }[]; configuration?: { iterations: { id: string; title: string }[]; completedIterations: { id: string; title: string }[] } } };
@@ -63,7 +63,7 @@ function PullDetail({ pull: initial }: { pull: PullRequest }) {
   return <div className="pr-workspace" data-keynav>
     <header className="pr-detail-header"><div className="pr-toolbar"><span className="chip">{pull.state}{pull.draft ? " · draft" : ""}</span><span>{pull.repo}#{pull.number}</span><span className="spacer" /><button className="btn small" data-hint disabled={busy} onClick={() => void load()}>Refresh</button><ExternalLink href={pull.url}>Open on GitHub ↗</ExternalLink></div>
       <h2>{pull.title}</h2><p className="pr-muted">{pull.author} · opened {new Date(pull.created_at).toLocaleDateString()} · updated {new Date(pull.updated_at).toLocaleString()}</p>
-      <div className="pr-toolbar"><code>{pull.head_ref} → {pull.base_ref}</code><span className="pr-add">+{pull.additions}</span><span className="pr-del">−{pull.deletions}</span><span className="pr-muted">{pull.changed_files} files</span><span className="chip">{pull.checks || "No checks"}</span><span className="chip">{pull.review_decision.replaceAll("_", " ") || "No review decision"}</span></div>
+      <div className="pr-toolbar"><code>{pull.head_ref} → {pull.base_ref}</code><span className="pr-add">+{pull.additions}</span><span className="pr-del">−{pull.deletions}</span><span className="pr-muted">{pull.changed_files} files</span><span className="chip">{pull.checks || "No checks"}</span><span className="chip">{reviewStatus(pull)?.label ?? "No reviews"}</span></div>
       <div className="pr-toolbar"><button className={`btn ${tab === "overview" ? "active" : ""}`} data-hint onClick={() => setTab("overview")}>Overview</button><button className={`btn ${tab === "files" ? "active" : ""}`} data-hint onClick={() => setTab("files")}>Files changed</button><span className="spacer" />
         {latest && <button className="btn" data-hint onClick={() => useReviews.setState({ reviewId: latest.id })}>Open pre-review · {latest.status}</button>}
         <button className="btn primary" data-command="reviews.start" disabled={busy || !!error || pull.state !== "open" || latest?.status === "running" || latest?.status === "queued"} onClick={() => startReview(pull, latest)}>{latest ? "Pre-review again…" : "Pre-review…"}</button></div>

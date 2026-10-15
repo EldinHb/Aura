@@ -35,6 +35,10 @@ pub struct PullRequest {
     /// Your latest submitted review of this PR on GitHub.
     #[serde(default)]
     pub my_review: Option<SubmittedReview>,
+    /// The latest submitted review of each other person, comment-only ones included;
+    /// the author's replies and bots are left out.
+    #[serde(default)]
+    pub reviews: Vec<SubmittedReview>,
     /// When your review, or a team's, was last requested.
     #[serde(default)]
     pub review_requested_at: Option<String>,
@@ -99,6 +103,9 @@ impl PullRequest {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SubmittedReview {
+    /// Login of whoever submitted it.
+    #[serde(default)]
+    pub reviewer: String,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
     pub state: String,
     pub submitted_at: String,
@@ -299,6 +306,9 @@ pub struct BranchPull {
     /// APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED; empty when no review is required.
     pub review_decision: String,
     pub head_sha: String,
+    /// As [`PullRequest::reviews`].
+    #[serde(default)]
+    pub reviews: Vec<SubmittedReview>,
 }
 
 #[cfg(test)]

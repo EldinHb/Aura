@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import type { BranchPull, BranchStatus, Session } from "../gen";
-import { pullStatus } from "../features/reviews/state";
+import { pullStatus, reviewStatus } from "../features/reviews/state";
 import { useSessionBranch } from "../state/branchStatus";
 import { ExternalLink } from "./ExternalLink";
 
@@ -29,12 +29,12 @@ export function branchPullLabels(pull: BranchPull): Label[] {
   return [{ label: "open" }, ...pullStatus(pull)];
 }
 
-/** The shortest form, for a sidebar row: merged/closed, or draft plus a checks mark and the review decision. */
+/** The shortest form, for a sidebar row: merged/closed, or draft plus a checks mark and the review state once someone reviewed. */
 function compactLabels(pull: BranchPull): Label[] {
   if (pull.state !== "open") return branchPullLabels(pull);
   const checks = ({ SUCCESS: { label: "✓", tone: "ok" }, FAILURE: { label: "✗", tone: "err" }, ERROR: { label: "✗", tone: "err" }, PENDING: { label: "…" }, EXPECTED: { label: "…" } } as const)[pull.checks as "SUCCESS"];
-  const review = ({ APPROVED: { label: "approved", tone: "ok" }, CHANGES_REQUESTED: { label: "changes requested", tone: "err" } } as const)[pull.review_decision as "APPROVED"];
-  return [...(pull.draft ? [{ label: "draft" }] : []), ...(checks ? [checks] : []), ...(review ? [review] : [])];
+  const review = reviewStatus(pull);
+  return [...(pull.draft ? [{ label: "draft" }] : []), ...(checks ? [checks] : []), ...(review && review.label !== "review required" ? [review] : [])];
 }
 
 const describe = (pull: BranchPull) => `${pull.repo}#${pull.number} · ${branchPullLabels(pull).map((l) => l.label).join(" · ")}\n${pull.title}`;

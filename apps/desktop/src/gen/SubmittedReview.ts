@@ -2,6 +2,10 @@
 
 export type SubmittedReview = { 
 /**
+ * Login of whoever submitted it.
+ */
+reviewer: string, 
+/**
  * `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
  */
 state: string, submitted_at: string, commit_sha: string, };

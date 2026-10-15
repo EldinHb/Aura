@@ -7,6 +7,11 @@ export type PullRequest = { id: string, account: string, repo: string, number: n
  */
 my_review: SubmittedReview | null, 
 /**
+ * The latest submitted review of each other person, comment-only ones included;
+ * the author's replies and bots are left out.
+ */
+reviews: Array<SubmittedReview>, 
+/**
  * When your review, or a team's, was last requested.
  */
 review_requested_at: string | null, 

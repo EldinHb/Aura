@@ -83,10 +83,25 @@ export function visiblePulls(s: ReviewState, rules = useStore.getState().setting
   const shown = (pulls: PullRequest[] | undefined, collapsed: boolean) => s.hidden || collapsed ? [] : (pulls ?? []).filter((p) => s.showHidden || !isPullHidden(p, rules));
   return { review: shown(s.inbox?.pulls, s.collapsed), mine: shown(s.inbox?.mine, s.mineCollapsed) };
 }
+/**
+ * Where reviews stand: GitHub's decision when it made one, else what other people's latest
+ * reviews say. GitHub only decides on approvals and change requests, but a comment-only
+ * review counts as reviewed, as it does on GitHub.
+ */
+export function reviewStatus(pull: Pick<PullRequest, "review_decision" | "reviews">): { label: string; tone?: "ok" | "err" } | undefined {
+  if (pull.review_decision === "APPROVED") return { label: "approved", tone: "ok" };
+  if (pull.review_decision === "CHANGES_REQUESTED") return { label: "changes requested", tone: "err" };
+  const states = pull.reviews.map((r) => r.state);
+  if (states.includes("CHANGES_REQUESTED")) return { label: "changes requested", tone: "err" };
+  // Without a decision nothing more is needed; with one, the approvals do not suffice yet.
+  if (states.includes("APPROVED")) return pull.review_decision ? { label: "approved, review required" } : { label: "approved", tone: "ok" };
+  if (states.includes("COMMENTED")) return { label: "commented" };
+  return pull.review_decision === "REVIEW_REQUIRED" ? { label: "review required" } : undefined;
+}
 /** Draft, check and review state as short labels; `tone` marks the ones that need attention or are done. */
-export function pullStatus(pull: Pick<PullRequest, "draft" | "checks" | "review_decision">): { label: string; tone?: "ok" | "err" }[] {
+export function pullStatus(pull: Pick<PullRequest, "draft" | "checks" | "review_decision" | "reviews">): { label: string; tone?: "ok" | "err" }[] {
   const checks = ({ SUCCESS: { label: "checks pass", tone: "ok" }, FAILURE: { label: "checks fail", tone: "err" }, ERROR: { label: "checks fail", tone: "err" }, PENDING: { label: "checks running" }, EXPECTED: { label: "checks running" } } as const)[pull.checks as "SUCCESS"];
-  const review = ({ APPROVED: { label: "approved", tone: "ok" }, CHANGES_REQUESTED: { label: "changes requested", tone: "err" }, REVIEW_REQUIRED: { label: "review required" } } as const)[pull.review_decision as "APPROVED"];
+  const review = reviewStatus(pull);
   return [...(pull.draft ? [{ label: "draft" }] : []), checks ?? { label: "no checks" }, ...(review ? [review] : [])];
 }
 /** "ready to merge" for an open PR you may merge and GitHub reports nothing blocking. */

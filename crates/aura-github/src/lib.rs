@@ -7,6 +7,13 @@ use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command};
 
+/// Each reviewer's latest review and their latest approval or change request, as a
+/// GraphQL selection on a pull request; read with [`reviews_by_others`].
+macro_rules! reviews_query {
+    () => {
+        "latestReviews(first:100){nodes{state submittedAt author{__typename login} commit{oid}}} latestOpinionatedReviews(first:100){nodes{state author{login}}}"
+    };
+}
 pub mod branch;
 pub mod issues;
 
@@ -387,10 +394,12 @@ pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Re
     p.my_review = review["submittedAt"]
         .as_str()
         .map(|submitted_at| SubmittedReview {
+            reviewer: login.into(),
             state: s(review, "state"),
             submitted_at: submitted_at.into(),
             commit_sha: s(&review["commit"], "oid"),
         });
+    p.reviews = reviews_by_others(d, &[&p.author, login]);
     p.review_requested_at = requested_at(&d["timelineItems"]["nodes"], login);
     let r = &q["data"]["repository"];
     p.merge_state = s(d, "mergeStateStatus");
@@ -447,7 +456,42 @@ fn ref_path(branch: &str) -> Result<String> {
 }
 /// Your latest review, recent review requests and what a merge may do ride along with the
 /// capability query.
-const PULL: &str = r#"query($owner:String!,$name:String!,$number:Int!,$login:String!){repository(owner:$owner,name:$name){viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod deleteBranchOnMerge pullRequest(number:$number){viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}}}}}"#;
+const PULL: &str = concat!(r#"query($owner:String!,$name:String!,$number:Int!,$login:String!){repository(owner:$owner,name:$name){viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod deleteBranchOnMerge pullRequest(number:$number){viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} "#,
+    reviews_query!(),
+    r#" timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}}}}}"#);
+/// Who has reviewed the PR in `pull` (GraphQL, queried with `reviews_query!()`), skipping `skip`
+/// (the author, whose replies to threads are comment-only reviews too) and bots. A
+/// reviewer's verdict is their latest approval or change request, else a comment.
+pub fn reviews_by_others(pull: &Value, skip: &[&str]) -> Vec<SubmittedReview> {
+    const RESPONSES: [&str; 3] = ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"];
+    let opinion = |login: &str| {
+        pull["latestOpinionatedReviews"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|n| n["author"]["login"].as_str().is_some_and(|l| l.eq_ignore_ascii_case(login)))
+            .map(|n| s(n, "state"))
+            .filter(|state| RESPONSES.contains(&state.as_str()))
+    };
+    pull["latestReviews"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|n| RESPONSES.contains(&n["state"].as_str().unwrap_or_default()) && n["author"]["__typename"] != "Bot")
+        .filter_map(|n| {
+            let reviewer = s(&n["author"], "login");
+            if reviewer.is_empty() || reviewer.ends_with("[bot]") || skip.iter().any(|l| l.eq_ignore_ascii_case(&reviewer)) {
+                return None;
+            }
+            Some(SubmittedReview {
+                state: opinion(&reviewer).unwrap_or_else(|| s(n, "state")),
+                submitted_at: s(n, "submittedAt"),
+                commit_sha: s(&n["commit"], "oid"),
+                reviewer,
+            })
+        })
+        .collect()
+}
 /// The latest request addressed to `login` or to a team. Team membership is not
 /// resolved, so a request to any team counts.
 fn requested_at(events: &Value, login: &str) -> Option<String> {
@@ -728,5 +772,28 @@ mod tests {
             assert!(validate_repo(repo).is_err());
         }
         assert!(validate_repo("owner/repo.name").is_ok());
+    }
+
+    #[test]
+    fn comment_only_reviews_count_and_an_approval_outranks_a_later_comment() {
+        let review = |login: &str, kind: &str, state: &str| json!({"state": state, "submittedAt": "2026-10-05T10:00:00Z", "author": {"__typename": kind, "login": login}, "commit": {"oid": "c1"}});
+        let pull = json!({
+            "latestReviews": {"nodes": [
+                review("alice", "User", "COMMENTED"),
+                review("bob", "User", "COMMENTED"),
+                review("me", "User", "COMMENTED"),
+                review("copilot-pull-request-reviewer", "Bot", "COMMENTED"),
+                review("carol", "User", "PENDING"),
+                review("dave", "User", "DISMISSED"),
+            ]},
+            "latestOpinionatedReviews": {"nodes": [{"state": "APPROVED", "author": {"login": "Bob"}}]},
+        });
+        let reviews = reviews_by_others(&pull, &["Me"]);
+        assert_eq!(
+            reviews.iter().map(|r| (r.reviewer.as_str(), r.state.as_str(), r.commit_sha.as_str())).collect::<Vec<_>>(),
+            vec![("alice", "COMMENTED", "c1"), ("bob", "APPROVED", "c1")],
+            "the author's own replies, bots, drafts and dismissed reviews are skipped"
+        );
+        assert!(reviews_by_others(&json!({}), &[]).is_empty());
     }
 }
