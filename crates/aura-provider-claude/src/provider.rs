@@ -35,8 +35,15 @@ impl ClaudeProvider {
     /// Detects the `claude` binary and its version. Cheap enough for daemon startup;
     /// re-detected later by `Provider::refresh` when the cached probe goes stale.
     pub fn new() -> Self {
-        let extra: Vec<PathBuf> = dirs::home_dir().map(|h| vec![h.join(".claude/local/claude")]).unwrap_or_default();
-        Self::from_probe(aura_core::which::BinaryProbe::search("claude", "AURA_CLAUDE_BIN", extra, parse_version))
+        let extra: Vec<PathBuf> = dirs::home_dir()
+            .map(|h| vec![h.join(".claude/local/claude")])
+            .unwrap_or_default();
+        Self::from_probe(aura_core::which::BinaryProbe::search(
+            "claude",
+            "AURA_CLAUDE_BIN",
+            extra,
+            parse_version,
+        ))
     }
 
     pub fn with_binary(binary: impl Into<String>) -> Self {
@@ -45,7 +52,11 @@ impl ClaudeProvider {
 
     fn from_probe(probe: aura_core::which::BinaryProbe) -> Self {
         probe.probe_blocking();
-        Self { probe, commands: Arc::new(Mutex::new(vec![])), models: tokio::sync::Mutex::new(None) }
+        Self {
+            probe,
+            commands: Arc::new(Mutex::new(vec![])),
+            models: tokio::sync::Mutex::new(None),
+        }
     }
 
     pub fn binary(&self) -> Option<String> {
@@ -57,10 +68,17 @@ impl ClaudeProvider {
             structured: true,
             models: true,
             effort: true,
-            permission_modes: ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            permission_modes: [
+                "default",
+                "acceptEdits",
+                "plan",
+                "dontAsk",
+                "auto",
+                "bypassPermissions",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
             sandbox_modes: vec![],
             fork: true,
             steer: false,
@@ -113,12 +131,21 @@ impl Provider for ClaudeProvider {
     }
 
     async fn list_native(&self) -> Result<Vec<NativeSession>> {
-        let Some(dir) = crate::native::projects_dir() else { return Ok(vec![]) };
+        let Some(dir) = crate::native::projects_dir() else {
+            return Ok(vec![]);
+        };
         Ok(tokio::task::spawn_blocking(move || crate::native::scan(&dir, 200)).await?)
     }
 
-    async fn start(&self, session: &Session, fork: bool, sink: EventSink) -> Result<Box<dyn Driver>> {
-        let Some(bin) = self.probe.binary() else { bail!("claude binary not found; install Claude Code or set AURA_CLAUDE_BIN") };
+    async fn start(
+        &self,
+        session: &Session,
+        fork: bool,
+        sink: EventSink,
+    ) -> Result<Box<dyn Driver>> {
+        let Some(bin) = self.probe.binary() else {
+            bail!("claude binary not found; install Claude Code or set AURA_CLAUDE_BIN")
+        };
         let driver = ClaudeDriver::spawn(&bin, session, fork, sink, self.commands.clone()).await?;
         Ok(Box::new(driver))
     }
@@ -139,7 +166,9 @@ impl Provider for ClaudeProvider {
         // Re-detect first, so an upgraded CLI is asked again rather than served from cache.
         self.probe.refresh().await;
         let detected = self.probe.cached();
-        let Some(bin) = detected.binary.clone() else { return Ok(fallback_models()) };
+        let Some(bin) = detected.binary.clone() else {
+            return Ok(fallback_models());
+        };
         let mut cache = self.models.lock().await;
         if let Some(c) = cache.as_ref().filter(|c| c.detected == detected) {
             if c.failed_at.is_none_or(|at| at.elapsed() < MODELS_RETRY) {
@@ -153,7 +182,11 @@ impl Provider for ClaudeProvider {
                 (fallback_models(), Some(Instant::now()))
             }
         };
-        *cache = Some(ModelCache { detected, models: models.clone(), failed_at });
+        *cache = Some(ModelCache {
+            detected,
+            models: models.clone(),
+            failed_at,
+        });
         Ok(models)
     }
 
@@ -163,16 +196,26 @@ impl Provider for ClaudeProvider {
             return Ok(live);
         }
         // Before any session has reported its catalogue, offer the built-ins.
-        Ok(["compact", "clear", "model", "effort", "config", "context", "cost", "init", "mcp", "memory", "review", "status", "usage"]
-            .iter()
-            .map(|n| SlashCommand { name: n.to_string(), description: None, source: Some("builtin".into()) })
-            .collect())
+        Ok([
+            "compact", "clear", "model", "effort", "config", "context", "cost", "init", "mcp",
+            "memory", "review", "status", "usage",
+        ]
+        .iter()
+        .map(|n| SlashCommand {
+            name: n.to_string(),
+            description: None,
+            source: Some("builtin".into()),
+        })
+        .collect())
     }
 }
 
 /// Offered when the CLI cannot be asked: aliases every Claude Code version accepts.
 fn fallback_models() -> Vec<ModelInfo> {
-    let efforts: Vec<String> = ["low", "medium", "high", "xhigh", "max"].iter().map(|s| s.to_string()).collect();
+    let efforts: Vec<String> = ["low", "medium", "high", "xhigh", "max"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let mk = |id: &str, name: &str, desc: &str, default: bool| ModelInfo {
         id: id.into(),
         display_name: name.into(),
@@ -187,8 +230,18 @@ fn fallback_models() -> Vec<ModelInfo> {
         mk("opus", "Opus", "Highly capable, slower", false),
         mk("sonnet", "Sonnet", "Balanced speed and capability", false),
         mk("haiku", "Haiku", "Fastest and cheapest", false),
-        mk("best", "Best", "Best available model for the account", false),
-        mk("opusplan", "Opus plan", "Opus for planning, Sonnet for execution", false),
+        mk(
+            "best",
+            "Best",
+            "Best available model for the account",
+            false,
+        ),
+        mk(
+            "opusplan",
+            "Opus plan",
+            "Opus for planning, Sonnet for execution",
+            false,
+        ),
     ]
 }
 
@@ -223,7 +276,8 @@ mod tests {
         let cli = dir.path().join("claude");
         write_cli(&cli, "2.1.0", Some("claude-fable-5-1"));
         let p = ClaudeProvider::from_probe(
-            aura_core::which::BinaryProbe::pinned(cli.to_str().unwrap(), parse_version).with_ttl(Duration::from_millis(1)),
+            aura_core::which::BinaryProbe::pinned(cli.to_str().unwrap(), parse_version)
+                .with_ttl(Duration::from_millis(1)),
         );
         assert_eq!(ids(&p.list_models().await.unwrap()), ["claude-fable-5-1"]);
 
@@ -234,7 +288,11 @@ mod tests {
 
         write_cli(&cli, "2.1.1", Some("claude-mythos-5-1"));
         tokio::time::sleep(Duration::from_millis(5)).await;
-        assert_eq!(ids(&p.list_models().await.unwrap()), ["claude-mythos-5-1"], "upgrade picked up");
+        assert_eq!(
+            ids(&p.list_models().await.unwrap()),
+            ["claude-mythos-5-1"],
+            "upgrade picked up"
+        );
     }
 
     #[tokio::test]
@@ -243,7 +301,10 @@ mod tests {
         let cli = dir.path().join("claude");
         write_cli(&cli, "2.1.0", None);
         let p = ClaudeProvider::with_binary(cli.to_str().unwrap());
-        assert_eq!(ids(&p.list_models().await.unwrap()), ids(&fallback_models()));
+        assert_eq!(
+            ids(&p.list_models().await.unwrap()),
+            ids(&fallback_models())
+        );
     }
 }
 
@@ -258,5 +319,8 @@ async fn lists_the_installed_clis_models() {
     for m in &models {
         println!("{:<32} {:<24} {:?}", m.id, m.display_name, m.efforts);
     }
-    assert!(!models.iter().any(|m| m.id == "opusplan"), "got the fallback list, not the CLI's");
+    assert!(
+        !models.iter().any(|m| m.id == "opusplan"),
+        "got the fallback list, not the CLI's"
+    );
 }

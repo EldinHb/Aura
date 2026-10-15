@@ -82,7 +82,10 @@ pub fn decode_pty_frame(frame: &[u8]) -> Option<(u8, String, &[u8])> {
         return None;
     }
     let kind = frame[0];
-    let id = std::str::from_utf8(&frame[1..1 + SESSION_ID_LEN]).ok()?.trim_end().to_string();
+    let id = std::str::from_utf8(&frame[1..1 + SESSION_ID_LEN])
+        .ok()?
+        .trim_end()
+        .to_string();
     Some((kind, id, &frame[1 + SESSION_ID_LEN..]))
 }
 
@@ -91,7 +94,9 @@ pub fn default_data_dir() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("AURA_DATA_DIR") {
         return std::path::PathBuf::from(p);
     }
-    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(".aura")
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".aura")
 }
 
 /// Take the single-instance lock on a data directory. `Ok(None)` means another
@@ -114,7 +119,9 @@ pub fn lock_data_dir(data_dir: &std::path::Path) -> anyhow::Result<Option<std::f
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(e)) => Err(anyhow::Error::from(e).context(format!("lock {}", path.display()))),
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(anyhow::Error::from(e).context(format!("lock {}", path.display())))
+        }
     }
 }
 
@@ -152,10 +159,16 @@ mod lock_tests {
         let first = lock_data_dir(dir.path()).unwrap();
         assert!(first.is_some(), "first caller takes the lock");
 
-        assert!(lock_data_dir(dir.path()).unwrap().is_none(), "second caller is refused while the first holds it");
+        assert!(
+            lock_data_dir(dir.path()).unwrap().is_none(),
+            "second caller is refused while the first holds it"
+        );
 
         drop(first);
-        assert!(lock_data_dir(dir.path()).unwrap().is_some(), "lock is available again once the holder goes away");
+        assert!(
+            lock_data_dir(dir.path()).unwrap().is_some(),
+            "lock is available again once the holder goes away"
+        );
     }
 
     #[test]
@@ -165,7 +178,13 @@ mod lock_tests {
         let dir = tempfile::tempdir().unwrap();
         let held = lock_data_dir(dir.path()).unwrap();
         assert!(held.is_some());
-        assert!(read_daemon_info(dir.path()).is_none(), "no daemon.json in play");
-        assert!(lock_data_dir(dir.path()).unwrap().is_none(), "still refused without daemon.json");
+        assert!(
+            read_daemon_info(dir.path()).is_none(),
+            "no daemon.json in play"
+        );
+        assert!(
+            lock_data_dir(dir.path()).unwrap().is_none(),
+            "still refused without daemon.json"
+        );
     }
 }

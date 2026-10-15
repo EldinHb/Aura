@@ -70,7 +70,10 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(session_id: &str) -> Self {
-        Self { session_id: session_id.to_string(), ..Default::default() }
+        Self {
+            session_id: session_id.to_string(),
+            ..Default::default()
+        }
     }
 
     fn sid(&self) -> String {
@@ -93,12 +96,21 @@ impl Parser {
             };
             self.current_turn = Some(turn.clone());
             self.interrupt_requested = false;
-            out.push(Event::TurnStarted { session_id: self.sid(), turn });
+            out.push(Event::TurnStarted {
+                session_id: self.sid(),
+                turn,
+            });
         }
         let turn_id = self.current_turn.as_ref().map(|t| t.id.clone());
         let item = Item::new(&self.session_id, turn_id, ItemKind::UserMessage).with_text(text);
-        out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
-        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+        out.push(Event::ItemStarted {
+            session_id: self.sid(),
+            item: item.clone(),
+        });
+        out.push(Event::ItemCompleted {
+            session_id: self.sid(),
+            item: item.completed(),
+        });
         self.sent_texts.push(text.to_string());
         self.last_command = slash_name(text);
         out.extend(self.setting_from_slash(text));
@@ -133,7 +145,10 @@ impl Parser {
             }
             _ => return None,
         };
-        Some(Event::SettingChanged { session_id: self.sid(), setting })
+        Some(Event::SettingChanged {
+            session_id: self.sid(),
+            setting,
+        })
     }
 
     pub fn note_outbound(&mut self, request_id: &str, kind: OutboundControl) {
@@ -169,7 +184,10 @@ impl Parser {
                 if let Some(o) = info.as_object_mut() {
                     o.insert("kind".into(), json!("rate_limit"));
                 }
-                out.push(Event::ProviderInfo { session_id: self.sid(), info });
+                out.push(Event::ProviderInfo {
+                    session_id: self.sid(),
+                    info,
+                });
             }
             other => tracing::debug!("claude: ignoring message type {other}"),
         }
@@ -185,18 +203,27 @@ impl Parser {
                 if let Some(id) = v.get("session_id").and_then(Value::as_str) {
                     if self.native_id.as_deref() != Some(id) {
                         self.native_id = Some(id.to_string());
-                        out.push(Event::NativeId { session_id: self.sid(), native_id: id.to_string() });
+                        out.push(Event::NativeId {
+                            session_id: self.sid(),
+                            native_id: id.to_string(),
+                        });
                     }
                 }
                 let mut info = v.clone();
                 if let Some(o) = info.as_object_mut() {
                     o.insert("kind".into(), json!("init"));
                 }
-                out.push(Event::ProviderInfo { session_id: self.sid(), info });
+                out.push(Event::ProviderInfo {
+                    session_id: self.sid(),
+                    info,
+                });
                 if let Some(m) = v.get("model").and_then(Value::as_str) {
                     if self.model.as_deref() != Some(m) {
                         self.model = Some(m.to_string());
-                        out.push(Event::SettingChanged { session_id: self.sid(), setting: Setting::Model(m.into()) });
+                        out.push(Event::SettingChanged {
+                            session_id: self.sid(),
+                            setting: Setting::Model(m.into()),
+                        });
                     }
                 }
                 if let Some(p) = v.get("permissionMode").and_then(Value::as_str) {
@@ -213,7 +240,11 @@ impl Parser {
                         self.commands = list
                             .iter()
                             .filter_map(Value::as_str)
-                            .map(|n| SlashCommand { name: n.to_string(), description: None, source: None })
+                            .map(|n| SlashCommand {
+                                name: n.to_string(),
+                                description: None,
+                                source: None,
+                            })
                             .collect();
                     }
                 }
@@ -230,7 +261,11 @@ impl Parser {
                                     .and_then(Value::as_str)
                                     .filter(|s| !s.is_empty())
                                     .map(String::from),
-                                source: c.get("argumentHint").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from),
+                                source: c
+                                    .get("argumentHint")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                                    .map(String::from),
                             })
                         })
                         .collect();
@@ -250,7 +285,11 @@ impl Parser {
                     self.start_compacting(out);
                 }
                 if v.get("compact_result").and_then(Value::as_str) == Some("failed") {
-                    let err = v.get("compact_error").and_then(Value::as_str).unwrap_or("unknown error").to_string();
+                    let err = v
+                        .get("compact_error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown error")
+                        .to_string();
                     self.fail_compacting(&err, out);
                 }
             }
@@ -273,7 +312,8 @@ impl Parser {
                     message: format!("Permission denied for {tool}"),
                 });
             }
-            "hook_started" | "hook_response" | "hook_progress" | "thinking_tokens" | "plugin_install" => {}
+            "hook_started" | "hook_response" | "hook_progress" | "thinking_tokens"
+            | "plugin_install" => {}
             other => tracing::debug!("claude: ignoring system/{other}"),
         }
     }
@@ -283,7 +323,10 @@ impl Parser {
     fn handle_stream_event(&mut self, v: &Value, out: &mut Vec<Event>) {
         let Some(ev) = v.get("event") else { return };
         let ev_type = ev.get("type").and_then(Value::as_str).unwrap_or("");
-        let parent = v.get("parent_tool_use_id").and_then(Value::as_str).map(String::from);
+        let parent = v
+            .get("parent_tool_use_id")
+            .and_then(Value::as_str)
+            .map(String::from);
         match ev_type {
             "message_start" => {
                 if let Some(id) = ev.pointer("/message/id").and_then(Value::as_str) {
@@ -291,20 +334,34 @@ impl Parser {
                 }
             }
             "content_block_start" => {
-                let Some(msg_id) = self.stream_message_id(&parent) else { return };
+                let Some(msg_id) = self.stream_message_id(&parent) else {
+                    return;
+                };
                 let index = ev.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let Some(block) = ev.get("content_block") else { return };
+                let Some(block) = ev.get("content_block") else {
+                    return;
+                };
                 let item = self.item_for_block(block, parent.clone());
                 let Some(item) = item else { return };
                 self.blocks.insert((msg_id.clone(), index), item.id.clone());
-                self.message_items.entry(msg_id).or_default().push(item.id.clone());
+                self.message_items
+                    .entry(msg_id)
+                    .or_default()
+                    .push(item.id.clone());
                 self.items.insert(item.id.clone(), item.clone());
-                out.push(Event::ItemStarted { session_id: self.sid(), item });
+                out.push(Event::ItemStarted {
+                    session_id: self.sid(),
+                    item,
+                });
             }
             "content_block_delta" => {
-                let Some(msg_id) = self.stream_message_id(&parent) else { return };
+                let Some(msg_id) = self.stream_message_id(&parent) else {
+                    return;
+                };
                 let index = ev.get("index").and_then(Value::as_u64).unwrap_or(0);
-                let Some(item_id) = self.blocks.get(&(msg_id, index)).cloned() else { return };
+                let Some(item_id) = self.blocks.get(&(msg_id, index)).cloned() else {
+                    return;
+                };
                 let Some(delta) = ev.get("delta") else { return };
                 let dt = delta.get("type").and_then(Value::as_str).unwrap_or("");
                 let text = match dt {
@@ -319,7 +376,9 @@ impl Parser {
                     out.push(Event::ItemDelta {
                         session_id: self.sid(),
                         item_id,
-                        delta: ItemDelta::Text { text: text.to_string() },
+                        delta: ItemDelta::Text {
+                            text: text.to_string(),
+                        },
                     });
                 }
             }
@@ -361,28 +420,38 @@ impl Parser {
             self.handle_local_command_output(v, msg, out);
             return;
         }
-        let msg_id = msg.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-        let parent = v.get("parent_tool_use_id").and_then(Value::as_str).map(String::from);
-        let Some(content) = msg.get("content").and_then(Value::as_array) else { return };
+        let msg_id = msg
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let parent = v
+            .get("parent_tool_use_id")
+            .and_then(Value::as_str)
+            .map(String::from);
+        let Some(content) = msg.get("content").and_then(Value::as_array) else {
+            return;
+        };
         for block in content {
             let bt = block.get("type").and_then(Value::as_str).unwrap_or("");
             match bt {
                 "text" | "thinking" => {
-                    let kind = if bt == "text" { ItemKind::AgentMessage } else { ItemKind::Reasoning };
+                    let kind = if bt == "text" {
+                        ItemKind::AgentMessage
+                    } else {
+                        ItemKind::Reasoning
+                    };
                     let full = block
                         .get(if bt == "text" { "text" } else { "thinking" })
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
                     // Find the first live item of this kind for this message.
-                    let existing = self
-                        .message_items
-                        .get(&msg_id)
-                        .and_then(|ids| {
-                            ids.iter()
-                                .find(|id| self.items.get(*id).map(|i| i.kind == kind).unwrap_or(false))
-                                .cloned()
-                        });
+                    let existing = self.message_items.get(&msg_id).and_then(|ids| {
+                        ids.iter()
+                            .find(|id| self.items.get(*id).map(|i| i.kind == kind).unwrap_or(false))
+                            .cloned()
+                    });
                     let mut item = match existing {
                         Some(id) => {
                             if let Some(ids) = self.message_items.get_mut(&msg_id) {
@@ -395,7 +464,10 @@ impl Parser {
                         None => {
                             // Synthetic messages (e.g. `/model`) have no stream events.
                             let item = Item::new(&self.session_id, self.turn_id(), kind);
-                            out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
+                            out.push(Event::ItemStarted {
+                                session_id: self.sid(),
+                                item: item.clone(),
+                            });
                             item
                         }
                     };
@@ -407,10 +479,15 @@ impl Parser {
                     }
                     let item = item.completed();
                     self.blocks.retain(|_, id| id != &item.id);
-                    out.push(Event::ItemCompleted { session_id: self.sid(), item });
+                    out.push(Event::ItemCompleted {
+                        session_id: self.sid(),
+                        item,
+                    });
                 }
                 "tool_use" => {
-                    let Some(id) = block.get("id").and_then(Value::as_str) else { continue };
+                    let Some(id) = block.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
                     let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                     let input = block.get("input").cloned().unwrap_or(json!({}));
                     let sid = self.sid();
@@ -422,12 +499,20 @@ impl Parser {
                             item.parent_id = parent.clone();
                         }
                         let data = item.data.clone();
-                        out.push(Event::ItemDelta { session_id: sid, item_id: id.to_string(), delta: ItemDelta::Data { data } });
+                        out.push(Event::ItemDelta {
+                            session_id: sid,
+                            item_id: id.to_string(),
+                            delta: ItemDelta::Data { data },
+                        });
                     } else {
-                        let mut item = tool_item(&self.session_id, self.turn_id(), id, name, &input);
+                        let mut item =
+                            tool_item(&self.session_id, self.turn_id(), id, name, &input);
                         item.parent_id = parent.clone();
                         self.items.insert(id.to_string(), item.clone());
-                        out.push(Event::ItemStarted { session_id: self.sid(), item });
+                        out.push(Event::ItemStarted {
+                            session_id: self.sid(),
+                            item,
+                        });
                     }
                 }
                 _ => {}
@@ -439,7 +524,10 @@ impl Parser {
 
     fn handle_user(&mut self, v: &Value, out: &mut Vec<Event>) {
         let Some(msg) = v.get("message") else { return };
-        let parent = v.get("parent_tool_use_id").and_then(Value::as_str).map(String::from);
+        let parent = v
+            .get("parent_tool_use_id")
+            .and_then(Value::as_str)
+            .map(String::from);
         let is_replay = v.get("isReplay").and_then(Value::as_bool).unwrap_or(false);
         let content = msg.get("content");
         // String content: plain user text.
@@ -447,7 +535,9 @@ impl Parser {
             self.note_user_text(text, is_replay, parent, out);
             return;
         }
-        let Some(blocks) = content.and_then(Value::as_array) else { return };
+        let Some(blocks) = content.and_then(Value::as_array) else {
+            return;
+        };
         for block in blocks {
             let bt = block.get("type").and_then(Value::as_str).unwrap_or("");
             match bt {
@@ -456,23 +546,39 @@ impl Parser {
                     self.note_user_text(text, is_replay, parent.clone(), out);
                 }
                 "tool_result" => {
-                    let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
-                    let is_error = block.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     let result_text = content_to_text(block.get("content"));
                     let tur = v.get("tool_use_result");
                     let mut item = match self.items.remove(tool_use_id) {
                         Some(i) => i,
                         None => {
-                            let mut i = Item::new(&self.session_id, self.turn_id(), ItemKind::ToolCall)
-                                .with_id(tool_use_id);
+                            let mut i =
+                                Item::new(&self.session_id, self.turn_id(), ItemKind::ToolCall)
+                                    .with_id(tool_use_id);
                             i.parent_id = parent.clone();
-                            out.push(Event::ItemStarted { session_id: self.sid(), item: i.clone() });
+                            out.push(Event::ItemStarted {
+                                session_id: self.sid(),
+                                item: i.clone(),
+                            });
                             i
                         }
                     };
-                    let data = item.data.as_object_mut().map(|o| o.clone()).unwrap_or_default();
+                    let data = item
+                        .data
+                        .as_object_mut()
+                        .map(|o| o.clone())
+                        .unwrap_or_default();
                     let mut data = data;
-                    data.insert("result".into(), block.get("content").cloned().unwrap_or(json!(result_text)));
+                    data.insert(
+                        "result".into(),
+                        block.get("content").cloned().unwrap_or(json!(result_text)),
+                    );
                     data.insert("is_error".into(), json!(is_error));
                     if item.kind == ItemKind::CommandExec {
                         let mut output = String::new();
@@ -480,13 +586,21 @@ impl Parser {
                             if let Some(s) = t.get("stdout").and_then(Value::as_str) {
                                 output.push_str(s);
                             }
-                            if let Some(s) = t.get("stderr").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                            if let Some(s) = t
+                                .get("stderr")
+                                .and_then(Value::as_str)
+                                .filter(|s| !s.is_empty())
+                            {
                                 if !output.is_empty() && !output.ends_with('\n') {
                                     output.push('\n');
                                 }
                                 output.push_str(s);
                             }
-                            if let Some(code) = t.get("exitCode").or(t.get("exit_code")).and_then(Value::as_i64) {
+                            if let Some(code) = t
+                                .get("exitCode")
+                                .or(t.get("exit_code"))
+                                .and_then(Value::as_i64)
+                            {
                                 data.insert("exit_code".into(), json!(code));
                             }
                             if t.get("interrupted").and_then(Value::as_bool) == Some(true) {
@@ -502,15 +616,28 @@ impl Parser {
                         }
                     }
                     item.data = Value::Object(data);
-                    let item = if is_error { item.failed() } else { item.completed() };
-                    out.push(Event::ItemCompleted { session_id: self.sid(), item });
+                    let item = if is_error {
+                        item.failed()
+                    } else {
+                        item.completed()
+                    };
+                    out.push(Event::ItemCompleted {
+                        session_id: self.sid(),
+                        item,
+                    });
                 }
                 _ => {}
             }
         }
     }
 
-    fn note_user_text(&mut self, text: &str, is_replay: bool, parent: Option<String>, out: &mut Vec<Event>) {
+    fn note_user_text(
+        &mut self,
+        text: &str,
+        is_replay: bool,
+        parent: Option<String>,
+        out: &mut Vec<Event>,
+    ) {
         if text == "[Request interrupted by user]" {
             self.interrupt_requested = true;
             return;
@@ -524,10 +651,17 @@ impl Parser {
         }
         if parent.is_some() {
             // Subagent prompt: show it as a user message nested under the subagent.
-            let mut item = Item::new(&self.session_id, self.turn_id(), ItemKind::UserMessage).with_text(text);
+            let mut item =
+                Item::new(&self.session_id, self.turn_id(), ItemKind::UserMessage).with_text(text);
             item.parent_id = parent;
-            out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
-            out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+            out.push(Event::ItemStarted {
+                session_id: self.sid(),
+                item: item.clone(),
+            });
+            out.push(Event::ItemCompleted {
+                session_id: self.sid(),
+                item: item.completed(),
+            });
         }
     }
 
@@ -536,7 +670,10 @@ impl Parser {
     fn handle_result(&mut self, v: &Value, out: &mut Vec<Event>) {
         let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
         let subtype = v.get("subtype").and_then(Value::as_str).unwrap_or("");
-        let terminal = v.get("terminal_reason").and_then(Value::as_str).unwrap_or("");
+        let terminal = v
+            .get("terminal_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let interrupted = self.interrupt_requested || terminal == "aborted_streaming";
         let status = if interrupted {
             TurnStatus::Interrupted
@@ -557,7 +694,10 @@ impl Parser {
         if let Some(id) = v.get("session_id").and_then(Value::as_str) {
             if self.native_id.as_deref() != Some(id) {
                 self.native_id = Some(id.to_string());
-                out.push(Event::NativeId { session_id: self.sid(), native_id: id.to_string() });
+                out.push(Event::NativeId {
+                    session_id: self.sid(),
+                    native_id: id.to_string(),
+                });
             }
         }
         // Any items still open belong to the finished turn; close them.
@@ -565,17 +705,32 @@ impl Parser {
         self.blocks.clear();
         self.message_items.clear();
         for item in open {
-            let item = if interrupted || is_error { item.failed() } else { item.completed() };
-            out.push(Event::ItemCompleted { session_id: self.sid(), item });
+            let item = if interrupted || is_error {
+                item.failed()
+            } else {
+                item.completed()
+            };
+            out.push(Event::ItemCompleted {
+                session_id: self.sid(),
+                item,
+            });
         }
         let error = if is_error && !interrupted {
             let errs = v
                 .get("errors")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; "))
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
                 .filter(|s| !s.is_empty());
             Some(errs.unwrap_or_else(|| {
-                v.get("result").and_then(Value::as_str).map(String::from).unwrap_or_else(|| subtype.to_string())
+                v.get("result")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .unwrap_or_else(|| subtype.to_string())
             }))
         } else {
             None
@@ -592,32 +747,61 @@ impl Parser {
         turn.status = status;
         turn.ended_at = Some(aura_core::now());
         // A local command made no model call, so its zero usage is noise.
-        turn.usage = if local_command.is_none() { usage.clone() } else { None };
+        turn.usage = if local_command.is_none() {
+            usage.clone()
+        } else {
+            None
+        };
         turn.error = error;
         self.interrupt_requested = false;
         if let Some(usage) = usage {
-            out.push(Event::Usage { session_id: self.sid(), usage });
+            out.push(Event::Usage {
+                session_id: self.sid(),
+                usage,
+            });
         }
-        out.push(Event::TurnCompleted { session_id: self.sid(), turn });
+        out.push(Event::TurnCompleted {
+            session_id: self.sid(),
+            turn,
+        });
     }
 
     // ------------------------------------------------------- control_request
 
     fn handle_control_request(&mut self, v: &Value, out: &mut Vec<Event>) {
-        let Some(request_id) = v.get("request_id").and_then(Value::as_str) else { return };
+        let Some(request_id) = v.get("request_id").and_then(Value::as_str) else {
+            return;
+        };
         let Some(req) = v.get("request") else { return };
         let sub = req.get("subtype").and_then(Value::as_str).unwrap_or("");
         if sub != "can_use_tool" {
             tracing::debug!("claude: unhandled control_request subtype {sub}");
             return;
         }
-        let tool_name = req.get("tool_name").and_then(Value::as_str).unwrap_or("tool").to_string();
-        let display = req.get("display_name").and_then(Value::as_str).unwrap_or(&tool_name).to_string();
+        let tool_name = req
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or("tool")
+            .to_string();
+        let display = req
+            .get("display_name")
+            .and_then(Value::as_str)
+            .unwrap_or(&tool_name)
+            .to_string();
         let input = req.get("input").cloned().unwrap_or(json!({}));
-        let suggestions: Vec<Value> =
-            req.get("permission_suggestions").and_then(Value::as_array).cloned().unwrap_or_default();
-        let tool_use_id = req.get("tool_use_id").and_then(Value::as_str).map(String::from);
-        let description = req.get("description").and_then(Value::as_str).map(String::from);
+        let suggestions: Vec<Value> = req
+            .get("permission_suggestions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let tool_use_id = req
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .map(String::from);
+        let description = req
+            .get("description")
+            .and_then(Value::as_str)
+            .map(String::from);
 
         if tool_name == "AskUserQuestion" {
             let questions: Vec<Question> = input
@@ -627,9 +811,17 @@ impl Parser {
                     qs.iter()
                         .enumerate()
                         .map(|(i, q)| {
-                            let text = q.get("question").and_then(Value::as_str).unwrap_or("").to_string();
+                            let text = q
+                                .get("question")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
                             Question {
-                                id: if text.is_empty() { i.to_string() } else { text.clone() },
+                                id: if text.is_empty() {
+                                    i.to_string()
+                                } else {
+                                    text.clone()
+                                },
                                 header: q.get("header").and_then(Value::as_str).map(String::from),
                                 question: text,
                                 options: q
@@ -638,7 +830,11 @@ impl Parser {
                                     .map(|os| {
                                         os.iter()
                                             .map(|o| QuestionOption {
-                                                label: o.get("label").and_then(Value::as_str).unwrap_or("").to_string(),
+                                                label: o
+                                                    .get("label")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("")
+                                                    .to_string(),
                                                 description: o
                                                     .get("description")
                                                     .and_then(Value::as_str)
@@ -647,7 +843,10 @@ impl Parser {
                                             .collect()
                                     })
                                     .unwrap_or_default(),
-                                multi_select: q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+                                multi_select: q
+                                    .get("multiSelect")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false),
                                 allow_free_text: true,
                             }
                         })
@@ -681,14 +880,19 @@ impl Parser {
         let (kind, mut payload) = approval_payload(&tool_name, &input);
         if let Some(o) = payload.as_object_mut() {
             if !suggestions.is_empty() {
-                o.insert("permission_suggestions".into(), Value::Array(suggestions.clone()));
+                o.insert(
+                    "permission_suggestions".into(),
+                    Value::Array(suggestions.clone()),
+                );
             }
             if let Some(bp) = req.get("blocked_path") {
                 o.insert("blocked_path".into(), bp.clone());
             }
             o.insert("tool_name".into(), json!(tool_name));
         }
-        let has_rules = suggestions.iter().any(|s| s.get("type").and_then(Value::as_str) == Some("addRules"));
+        let has_rules = suggestions
+            .iter()
+            .any(|s| s.get("type").and_then(Value::as_str) == Some("addRules"));
         let mut options = vec![ApprovalOption::Accept];
         if has_rules {
             options.push(ApprovalOption::AcceptForSession);
@@ -723,16 +927,27 @@ impl Parser {
     }
 
     fn handle_control_response(&mut self, v: &Value, out: &mut Vec<Event>) {
-        let Some(resp) = v.get("response") else { return };
-        let Some(request_id) = resp.get("request_id").and_then(Value::as_str) else { return };
+        let Some(resp) = v.get("response") else {
+            return;
+        };
+        let Some(request_id) = resp.get("request_id").and_then(Value::as_str) else {
+            return;
+        };
         let Some(kind) = self.outbound.remove(request_id) else {
             // Echo of our own control_response; nothing to do.
             return;
         };
         let sub = resp.get("subtype").and_then(Value::as_str).unwrap_or("");
         if sub == "error" {
-            let msg = resp.get("error").and_then(Value::as_str).unwrap_or("control request failed");
-            out.push(Event::Notice { session_id: self.sid(), level: NoticeLevel::Error, message: msg.to_string() });
+            let msg = resp
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("control request failed");
+            out.push(Event::Notice {
+                session_id: self.sid(),
+                level: NoticeLevel::Error,
+                message: msg.to_string(),
+            });
             return;
         }
         if let OutboundControl::SetPermissionMode(_) = kind {
@@ -740,11 +955,20 @@ impl Parser {
                 .pointer("/response/mode")
                 .and_then(Value::as_str)
                 .map(String::from)
-                .or_else(|| if let OutboundControl::SetPermissionMode(m) = &kind { Some(m.clone()) } else { None });
+                .or_else(|| {
+                    if let OutboundControl::SetPermissionMode(m) = &kind {
+                        Some(m.clone())
+                    } else {
+                        None
+                    }
+                });
             if let Some(mode) = mode {
                 if self.permission_mode.as_deref() != Some(mode.as_str()) {
                     self.permission_mode = Some(mode.clone());
-                    out.push(Event::SettingChanged { session_id: self.sid(), setting: Setting::PermissionMode(mode) });
+                    out.push(Event::SettingChanged {
+                        session_id: self.sid(),
+                        setting: Setting::PermissionMode(mode),
+                    });
                 }
             }
         }
@@ -763,16 +987,27 @@ impl Parser {
         }
         // Name it after what was typed: Claude reports aliases by their target
         // (`/cost` runs as `usage`), and some outputs do not name a command.
-        let command = self
-            .last_command
-            .clone()
-            .or_else(|| v.pointer("/local_command_run/command").and_then(Value::as_str).map(String::from));
+        let command = self.last_command.clone().or_else(|| {
+            v.pointer("/local_command_run/command")
+                .and_then(Value::as_str)
+                .map(String::from)
+        });
         let mut item = Item::new(&self.session_id, self.turn_id(), ItemKind::System)
             .with_text(text)
             .with_data(json!({ "command": command }));
-        item.title = Some(command.map(|c| format!("/{c}")).unwrap_or_else(|| "Command output".into()));
-        out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
-        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+        item.title = Some(
+            command
+                .map(|c| format!("/{c}"))
+                .unwrap_or_else(|| "Command output".into()),
+        );
+        out.push(Event::ItemStarted {
+            session_id: self.sid(),
+            item: item.clone(),
+        });
+        out.push(Event::ItemCompleted {
+            session_id: self.sid(),
+            item: item.completed(),
+        });
     }
 
     /// `/clear`: Claude starts a new conversation. The transcript keeps the
@@ -781,8 +1016,14 @@ impl Parser {
         let item = Item::new(&self.session_id, self.turn_id(), ItemKind::System)
             .with_title("Context cleared")
             .with_data(json!({ "boundary": "clear", "message": "Context cleared" }));
-        out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
-        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+        out.push(Event::ItemStarted {
+            session_id: self.sid(),
+            item: item.clone(),
+        });
+        out.push(Event::ItemCompleted {
+            session_id: self.sid(),
+            item: item.completed(),
+        });
     }
 
     fn start_compacting(&mut self, out: &mut Vec<Event>) {
@@ -794,7 +1035,10 @@ impl Parser {
             .with_data(json!({ "boundary": "compact", "message": "Compacting context" }));
         self.compacting = Some(item.id.clone());
         self.items.insert(item.id.clone(), item.clone());
-        out.push(Event::ItemStarted { session_id: self.sid(), item });
+        out.push(Event::ItemStarted {
+            session_id: self.sid(),
+            item,
+        });
     }
 
     fn take_compacting(&mut self) -> Item {
@@ -810,15 +1054,26 @@ impl Parser {
         item.title = Some(message.clone());
         item.data = json!({ "boundary": "compact", "message": message });
         self.compact_error = Some(err.trim().to_string());
-        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.failed() });
+        out.push(Event::ItemCompleted {
+            session_id: self.sid(),
+            item: item.failed(),
+        });
     }
 
     fn handle_compact_boundary(&mut self, v: &Value, out: &mut Vec<Event>) {
         let meta = v.get("compact_metadata").cloned().unwrap_or(json!({}));
-        let trigger = meta.get("trigger").and_then(Value::as_str).unwrap_or("manual").to_string();
+        let trigger = meta
+            .get("trigger")
+            .and_then(Value::as_str)
+            .unwrap_or("manual")
+            .to_string();
         let pre = meta.get("pre_tokens").and_then(Value::as_u64);
         let post = meta.get("post_tokens").and_then(Value::as_u64);
-        let message = if trigger == "auto" { "Context compacted automatically" } else { "Context compacted" };
+        let message = if trigger == "auto" {
+            "Context compacted automatically"
+        } else {
+            "Context compacted"
+        };
         let mut item = self.take_compacting();
         item.title = Some(message.into());
         item.data = json!({
@@ -832,13 +1087,23 @@ impl Parser {
         self.preserved = meta
             .pointer("/preserved_messages/uuids")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_default();
-        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+        out.push(Event::ItemCompleted {
+            session_id: self.sid(),
+            item: item.completed(),
+        });
     }
 
     fn is_preserved(&mut self, v: &Value) -> bool {
-        v.get("uuid").and_then(Value::as_str).is_some_and(|u| self.preserved.remove(u))
+        v.get("uuid")
+            .and_then(Value::as_str)
+            .is_some_and(|u| self.preserved.remove(u))
     }
 
     /// Session usage after a local command. Its own result reports zeros, so
@@ -850,7 +1115,10 @@ impl Parser {
             "clear" => {
                 self.last_usage = None;
                 self.compacted_to = None;
-                Some(Usage { total_cost_usd: cost, ..usage_from_result(v, self.model.as_deref()) })
+                Some(Usage {
+                    total_cost_usd: cost,
+                    ..usage_from_result(v, self.model.as_deref())
+                })
             }
             _ => {
                 let mut usage = self.last_usage.clone()?;
@@ -868,7 +1136,11 @@ impl Parser {
 
     /// Build the `control_response` payload for an approval decision, removing
     /// the pending entry. Returns None when the id is unknown.
-    pub fn approval_response(&mut self, approval_id: &str, decision: &ApprovalDecision) -> Option<Value> {
+    pub fn approval_response(
+        &mut self,
+        approval_id: &str,
+        decision: &ApprovalDecision,
+    ) -> Option<Value> {
         let pending = self.pending_approvals.remove(approval_id)?;
         let inner = match decision.option {
             ApprovalOption::Accept => json!({"behavior": "allow", "updatedInput": pending.input}),
@@ -908,9 +1180,21 @@ impl Parser {
         // Map question ids (question text) back to labels.
         if let Some(qs) = pending.input.get("questions").and_then(Value::as_array) {
             for (i, q) in qs.iter().enumerate() {
-                let text = q.get("question").and_then(Value::as_str).unwrap_or("").to_string();
-                let key = if text.is_empty() { i.to_string() } else { text.clone() };
-                if let Some(vals) = response.answers.get(&key).or_else(|| response.answers.get(&i.to_string())) {
+                let text = q
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let key = if text.is_empty() {
+                    i.to_string()
+                } else {
+                    text.clone()
+                };
+                if let Some(vals) = response
+                    .answers
+                    .get(&key)
+                    .or_else(|| response.answers.get(&i.to_string()))
+                {
                     answers.insert(text, json!(vals.join(", ")));
                 }
             }
@@ -938,7 +1222,10 @@ impl Parser {
         let mut out = vec![];
         let sid = self.sid();
         for (_, item) in self.items.drain() {
-            out.push(Event::ItemCompleted { session_id: sid.clone(), item: item.failed() });
+            out.push(Event::ItemCompleted {
+                session_id: sid.clone(),
+                item: item.failed(),
+            });
         }
         self.blocks.clear();
         self.message_items.clear();
@@ -946,27 +1233,48 @@ impl Parser {
             turn.status = TurnStatus::Failed;
             turn.ended_at = Some(aura_core::now());
             turn.error = Some("process exited".into());
-            out.push(Event::TurnCompleted { session_id: self.sid(), turn });
+            out.push(Event::TurnCompleted {
+                session_id: self.sid(),
+                turn,
+            });
         }
         out
     }
 }
 
-fn tool_item(session_id: &str, turn_id: Option<String>, id: &str, name: &str, input: &Value) -> Item {
+fn tool_item(
+    session_id: &str,
+    turn_id: Option<String>,
+    id: &str,
+    name: &str,
+    input: &Value,
+) -> Item {
     let (kind, title, data) = classify_tool(name, input);
-    let mut item = Item::new(session_id, turn_id, kind).with_id(id).with_data(data);
+    let mut item = Item::new(session_id, turn_id, kind)
+        .with_id(id)
+        .with_data(data);
     item.title = Some(title);
     item
 }
 
 /// Map a Claude tool call to an item kind, title and structured data.
 pub fn classify_tool(name: &str, input: &Value) -> (ItemKind, String, Value) {
-    let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let s = |k: &str| {
+        input
+            .get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     match name {
         "Bash" => {
             let cmd = s("command");
             let desc = s("description");
-            let title = if desc.is_empty() { cmd.clone() } else { desc.clone() };
+            let title = if desc.is_empty() {
+                cmd.clone()
+            } else {
+                desc.clone()
+            };
             (
                 ItemKind::CommandExec,
                 title,
@@ -975,13 +1283,26 @@ pub fn classify_tool(name: &str, input: &Value) -> (ItemKind, String, Value) {
         }
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
             let changes = file_changes(name, input);
-            let path = changes.first().and_then(|c| c.get("path")).and_then(Value::as_str).unwrap_or("").to_string();
-            (ItemKind::FileChange, format!("{name} {path}"), json!({"changes": changes, "tool_name": name, "input": input}))
+            let path = changes
+                .first()
+                .and_then(|c| c.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            (
+                ItemKind::FileChange,
+                format!("{name} {path}"),
+                json!({"changes": changes, "tool_name": name, "input": input}),
+            )
         }
         "Task" | "Agent" => {
             let desc = s("description");
             let prompt = s("prompt");
-            let title = if desc.is_empty() { prompt.chars().take(80).collect() } else { desc.clone() };
+            let title = if desc.is_empty() {
+                prompt.chars().take(80).collect()
+            } else {
+                desc.clone()
+            };
             (
                 ItemKind::Subagent,
                 title,
@@ -989,28 +1310,54 @@ pub fn classify_tool(name: &str, input: &Value) -> (ItemKind, String, Value) {
             )
         }
         "WebSearch" | "WebFetch" => {
-            let q = if name == "WebSearch" { s("query") } else { s("url") };
-            (ItemKind::WebSearch, q.clone(), json!({"query": q, "tool_name": name, "input": input}))
+            let q = if name == "WebSearch" {
+                s("query")
+            } else {
+                s("url")
+            };
+            (
+                ItemKind::WebSearch,
+                q.clone(),
+                json!({"query": q, "tool_name": name, "input": input}),
+            )
         }
         n if n.starts_with("mcp__") => {
             let mut parts = n.splitn(3, "__");
             parts.next();
             let server = parts.next().unwrap_or("").to_string();
             let tool = parts.next().unwrap_or("").to_string();
-            (ItemKind::McpCall, format!("{server}: {tool}"), json!({"server": server, "tool": tool, "input": input, "tool_name": name}))
+            (
+                ItemKind::McpCall,
+                format!("{server}: {tool}"),
+                json!({"server": server, "tool": tool, "input": input, "tool_name": name}),
+            )
         }
-        _ => (ItemKind::ToolCall, name.to_string(), json!({"tool_name": name, "input": input})),
+        _ => (
+            ItemKind::ToolCall,
+            name.to_string(),
+            json!({"tool_name": name, "input": input}),
+        ),
     }
 }
 
 fn file_changes(name: &str, input: &Value) -> Vec<Value> {
-    let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let s = |k: &str| {
+        input
+            .get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     match name {
         "Write" => {
             let path = s("file_path");
             let content = s("content");
             let exists = std::path::Path::new(&path).exists();
-            let old = if exists { std::fs::read_to_string(&path).unwrap_or_default() } else { String::new() };
+            let old = if exists {
+                std::fs::read_to_string(&path).unwrap_or_default()
+            } else {
+                String::new()
+            };
             vec![json!({
                 "path": path,
                 "kind": if exists { "modify" } else { "add" },
@@ -1019,7 +1366,9 @@ fn file_changes(name: &str, input: &Value) -> Vec<Value> {
         }
         "Edit" => {
             let path = s("file_path");
-            vec![json!({"path": path, "kind": "modify", "diff": unified_diff(&s("old_string"), &s("new_string"), &path)})]
+            vec![
+                json!({"path": path, "kind": "modify", "diff": unified_diff(&s("old_string"), &s("new_string"), &path)}),
+            ]
         }
         "MultiEdit" => {
             let path = s("file_path");
@@ -1035,15 +1384,25 @@ fn file_changes(name: &str, input: &Value) -> Vec<Value> {
         }
         "NotebookEdit" => {
             let path = s("notebook_path");
-            vec![json!({"path": path, "kind": "modify", "diff": unified_diff("", &s("new_source"), &path)})]
+            vec![
+                json!({"path": path, "kind": "modify", "diff": unified_diff("", &s("new_source"), &path)}),
+            ]
         }
         _ => vec![],
     }
 }
 
 pub fn unified_diff(old: &str, new: &str, path: &str) -> String {
-    let old_n = if old.is_empty() || old.ends_with('\n') { old.to_string() } else { format!("{old}\n") };
-    let new_n = if new.is_empty() || new.ends_with('\n') { new.to_string() } else { format!("{new}\n") };
+    let old_n = if old.is_empty() || old.ends_with('\n') {
+        old.to_string()
+    } else {
+        format!("{old}\n")
+    };
+    let new_n = if new.is_empty() || new.ends_with('\n') {
+        new.to_string()
+    } else {
+        format!("{new}\n")
+    };
     let diff = similar::TextDiff::from_lines(&old_n, &new_n);
     let mut out = String::new();
     out.push_str(&format!("--- a/{path}\n+++ b/{path}\n"));
@@ -1052,23 +1411,37 @@ pub fn unified_diff(old: &str, new: &str, path: &str) -> String {
 }
 
 fn approval_payload(tool_name: &str, input: &Value) -> (ApprovalKind, Value) {
-    let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let s = |k: &str| {
+        input
+            .get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     match tool_name {
         "Bash" => (
             ApprovalKind::Command,
             json!({"command": s("command"), "description": s("description"), "cwd": Value::Null, "input": input}),
         ),
-        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
-            (ApprovalKind::FileChange, json!({"changes": file_changes(tool_name, input), "input": input}))
-        }
-        "ExitPlanMode" => (ApprovalKind::Generic, json!({"plan": input.get("plan").cloned().unwrap_or(Value::Null), "input": input})),
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => (
+            ApprovalKind::FileChange,
+            json!({"changes": file_changes(tool_name, input), "input": input}),
+        ),
+        "ExitPlanMode" => (
+            ApprovalKind::Generic,
+            json!({"plan": input.get("plan").cloned().unwrap_or(Value::Null), "input": input}),
+        ),
         _ => (ApprovalKind::Tool, json!({"input": input})),
     }
 }
 
 /// `"/compact keep it short"` -> `"compact"`.
 fn slash_name(text: &str) -> Option<String> {
-    let name = text.trim_start().strip_prefix('/')?.split_whitespace().next()?;
+    let name = text
+        .trim_start()
+        .strip_prefix('/')?
+        .split_whitespace()
+        .next()?;
     (!name.is_empty() && !name.contains('/')).then(|| name.to_string())
 }
 
@@ -1097,7 +1470,10 @@ fn usage_from_result(v: &Value, model: Option<&str>) -> Usage {
             context_window = m.get("contextWindow").and_then(Value::as_u64);
         }
         if context_window.is_none() {
-            context_window = mu.values().filter_map(|m| m.get("contextWindow").and_then(Value::as_u64)).max();
+            context_window = mu
+                .values()
+                .filter_map(|m| m.get("contextWindow").and_then(Value::as_u64))
+                .max();
         }
     }
     let context_used = u
@@ -1106,7 +1482,10 @@ fn usage_from_result(v: &Value, model: Option<&str>) -> Usage {
         .and_then(|it| it.last())
         .map(|last| {
             let f = |k: &str| last.get(k).and_then(Value::as_u64).unwrap_or(0);
-            f("input_tokens") + f("cache_read_input_tokens") + f("cache_creation_input_tokens") + f("output_tokens")
+            f("input_tokens")
+                + f("cache_read_input_tokens")
+                + f("cache_creation_input_tokens")
+                + f("output_tokens")
         })
         .filter(|n| *n > 0);
     Usage {

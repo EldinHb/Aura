@@ -52,7 +52,9 @@ fn find_daemon_binary() -> Option<PathBuf> {
 
 fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|p| p.join(name)).find(|p| p.exists())
+    std::env::split_paths(&path)
+        .map(|p| p.join(name))
+        .find(|p| p.exists())
 }
 
 async fn daemon_alive(port: u16) -> bool {
@@ -65,7 +67,10 @@ async fn daemon_alive(port: u16) -> bool {
     else {
         return false;
     };
-    if s.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await.is_err() {
+    if s.write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .await
+        .is_err()
+    {
         return false;
     }
     let mut buf = vec![0u8; 256];
@@ -79,7 +84,9 @@ fn spawn_daemon(dir: &Path) -> Result<()> {
     let bin = find_daemon_binary().ok_or_else(|| anyhow!("aurad binary not found"))?;
     let mut cmd = std::process::Command::new(&bin);
     cmd.arg("--data-dir").arg(dir);
-    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -98,7 +105,8 @@ fn spawn_daemon(dir: &Path) -> Result<()> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x00000008 | 0x00000200);
     }
-    cmd.spawn().with_context(|| format!("spawn {}", bin.display()))?;
+    cmd.spawn()
+        .with_context(|| format!("spawn {}", bin.display()))?;
     Ok(())
 }
 
@@ -213,11 +221,15 @@ fn open_session_window(app: AppHandle, session_id: String) -> Result<(), String>
         let _ = w.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(format!("index.html?session={session_id}&window=session").into()))
-        .title("Aura")
-        .inner_size(1000.0, 700.0)
-        .build()
-        .map_err(|e| e.to_string())?;
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("index.html?session={session_id}&window=session").into()),
+    )
+    .title("Aura")
+    .inner_size(1000.0, 700.0)
+    .build()
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -230,7 +242,12 @@ const MAX_WAITING: usize = 24;
 /// `aura://notification-clicked` with `target`. The notification plugin cannot:
 /// on desktop it shows the notification and drops the handle that reports clicks.
 #[tauri::command]
-fn notify_with_target(app: AppHandle, title: String, body: String, target: serde_json::Value) -> Result<(), String> {
+fn notify_with_target(
+    app: AppHandle,
+    title: String,
+    body: String,
+    target: serde_json::Value,
+) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     let mut n = notify_rust::Notification::new();
     n.summary(&title).body(&body);
@@ -238,7 +255,11 @@ fn notify_with_target(app: AppHandle, title: String, body: String, target: serde
     #[cfg(target_os = "macos")]
     {
         // An app run outside its bundle cannot post as itself (as the plugin does).
-        let _ = notify_rust::set_application(if tauri::is_dev() { "com.apple.Terminal" } else { &identifier });
+        let _ = notify_rust::set_application(if tauri::is_dev() {
+            "com.apple.Terminal"
+        } else {
+            &identifier
+        });
     }
     #[cfg(windows)]
     {
@@ -264,7 +285,11 @@ fn notify_with_target(app: AppHandle, title: String, body: String, target: serde
             let shown = n.show().map_err(|e| e.to_string()).and_then(|handle| {
                 handle
                     .wait_for_response(|response: &notify_rust::NotificationResponse| {
-                        if matches!(response, notify_rust::NotificationResponse::Default | notify_rust::NotificationResponse::Action(_)) {
+                        if matches!(
+                            response,
+                            notify_rust::NotificationResponse::Default
+                                | notify_rust::NotificationResponse::Action(_)
+                        ) {
                             focus_main(&app);
                             let _ = app.emit("aura://notification-clicked", target);
                         }
@@ -294,7 +319,9 @@ fn focus_main(app: &AppHandle) {
 }
 
 pub fn run() {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
@@ -315,13 +342,26 @@ pub fn run() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![connect_daemon, restart_daemon, set_badge, open_session_window, show_main, notify_with_target])
+        .invoke_handler(tauri::generate_handler![
+            connect_daemon,
+            restart_daemon,
+            set_badge,
+            open_session_window,
+            show_main,
+            notify_with_target
+        ])
         .setup(|app| {
             // Tray. Built here rather than via the `trayIcon` config block: Tauri
             // creates one tray per source and keeps them in a list, so declaring it
             // in both places put two identical icons in the menu bar.
             let show = MenuItem::with_id(app, "show", "Show Aura", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Aura (daemon keeps running)", true, None::<&str>)?;
+            let quit = MenuItem::with_id(
+                app,
+                "quit",
+                "Quit Aura (daemon keeps running)",
+                true,
+                None::<&str>,
+            )?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("icon"))
@@ -335,7 +375,11 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
+                    if let TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
                         focus_main(tray.app_handle());
                     }
                 })
@@ -343,7 +387,11 @@ pub fn run() {
 
             // Global summon hotkey (configurable later from the UI via re-register).
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
-            let shortcut = if cfg!(target_os = "macos") { "Cmd+Shift+A" } else { "Ctrl+Shift+A" };
+            let shortcut = if cfg!(target_os = "macos") {
+                "Cmd+Shift+A"
+            } else {
+                "Ctrl+Shift+A"
+            };
             if let Err(e) = app.global_shortcut().register(shortcut) {
                 tracing::warn!("global shortcut not registered: {e}");
             }
@@ -364,7 +412,11 @@ pub fn run() {
             // The main window hides when closed; reopening the app (its Dock icon, a
             // notification) shows it again.
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = event
+            {
                 focus_main(app);
             }
             #[cfg(not(target_os = "macos"))]
@@ -386,7 +438,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aura-replace-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("AURA_DATA_DIR", &dir);
-        let mut old = std::process::Command::new(old).arg("--data-dir").arg(&dir).arg("--providers").arg("terminal").spawn().unwrap();
+        let mut old = std::process::Command::new(old)
+            .arg("--data-dir")
+            .arg(&dir)
+            .arg("--providers")
+            .arg("terminal")
+            .spawn()
+            .unwrap();
         let mut info = None;
         for _ in 0..100 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -396,7 +454,9 @@ mod tests {
             }
         }
         let info = info.expect("old daemon started");
-        let c = aura_rpc::client::RpcClient::connect(info.port, &info.token).await.unwrap();
+        let c = aura_rpc::client::RpcClient::connect(info.port, &info.token)
+            .await
+            .unwrap();
         let session = c
             .call("session.create", serde_json::json!({"provider": "terminal", "cwd": dir, "command": ["sleep", "600"]}))
             .await
@@ -406,8 +466,13 @@ mod tests {
         assert_eq!(conn.version, VERSION);
         assert_ne!(conn.daemon_pid, info.pid);
         assert!(old.try_wait().unwrap().is_some(), "old daemon exited");
-        let c = aura_rpc::client::RpcClient::connect(conn.port, &conn.token).await.unwrap();
-        let after = c.call("session.get", serde_json::json!({"id": session["id"]})).await.unwrap();
+        let c = aura_rpc::client::RpcClient::connect(conn.port, &conn.token)
+            .await
+            .unwrap();
+        let after = c
+            .call("session.get", serde_json::json!({"id": session["id"]}))
+            .await
+            .unwrap();
         assert_eq!(after["status"], "exited", "{after}");
         let _ = c.call("daemon.shutdown", serde_json::json!({})).await;
         let _ = std::fs::remove_dir_all(&dir);

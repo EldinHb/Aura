@@ -71,7 +71,12 @@ impl CodexProvider {
     /// usual install directories (Homebrew, npm/volta/bun globals, `~/.local/bin`).
     /// Re-detected later by `Provider::refresh` when the cached probe goes stale.
     pub fn new() -> Self {
-        Self::from_probe(aura_core::which::BinaryProbe::search("codex", "AURA_CODEX_BIN", vec![], parse_version))
+        Self::from_probe(aura_core::which::BinaryProbe::search(
+            "codex",
+            "AURA_CODEX_BIN",
+            vec![],
+            parse_version,
+        ))
     }
 
     pub fn with_binary(binary: &str) -> Self {
@@ -80,7 +85,10 @@ impl CodexProvider {
 
     fn from_probe(probe: aura_core::which::BinaryProbe) -> Self {
         probe.probe_blocking();
-        Self { probe, client: tokio::sync::Mutex::new(None) }
+        Self {
+            probe,
+            client: tokio::sync::Mutex::new(None),
+        }
     }
 
     /// The detected path, or the bare name so error messages stay readable.
@@ -102,7 +110,10 @@ impl CodexProvider {
             }
         }
         if !self.is_available() {
-            bail!("codex CLI not found (looked for `{}`); install Codex or set AURA_CODEX_BIN", self.binary());
+            bail!(
+                "codex CLI not found (looked for `{}`); install Codex or set AURA_CODEX_BIN",
+                self.binary()
+            );
         }
         let client = Client::spawn(&self.binary()).await?;
         let init = client
@@ -115,7 +126,12 @@ impl CodexProvider {
             )
             .await
             .context("codex initialize")?;
-        tracing::info!("codex app-server ready: {}", init.get("userAgent").and_then(|u| u.as_str()).unwrap_or("?"));
+        tracing::info!(
+            "codex app-server ready: {}",
+            init.get("userAgent")
+                .and_then(|u| u.as_str())
+                .unwrap_or("?")
+        );
         client.notify("initialized", json!({})).await?;
         let mut global = client.set_global();
         tokio::spawn(async move {
@@ -188,29 +204,52 @@ impl Provider for CodexProvider {
 
     async fn list_native(&self) -> Result<Vec<NativeSession>> {
         let client = self.client().await?;
-        let res = client.request("thread/list", json!({ "limit": 100 })).await?;
+        let res = client
+            .request("thread/list", json!({ "limit": 100 }))
+            .await?;
         let mut out = vec![];
-        for t in res.get("data").and_then(|d| d.as_array()).into_iter().flatten() {
+        for t in res
+            .get("data")
+            .and_then(|d| d.as_array())
+            .into_iter()
+            .flatten()
+        {
             let id = match t.get("id").and_then(|i| i.as_str()) {
                 Some(i) => i.to_string(),
                 None => continue,
             };
-            let preview = t.get("preview").and_then(|p| p.as_str()).map(|s| s.to_string()).filter(|s| !s.is_empty());
-            let name = t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()).filter(|s| !s.is_empty());
+            let preview = t
+                .get("preview")
+                .and_then(|p| p.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
+            let name = t
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
             let title = name.or_else(|| preview.as_ref().map(|p| truncate(p, 80)));
             out.push(NativeSession {
                 provider: ProviderKind::Codex,
                 native_id: id,
                 cwd: t.get("cwd").and_then(|c| c.as_str()).map(|s| s.to_string()),
                 title,
-                updated_at: t.get("updatedAt").and_then(|u| u.as_i64()).and_then(|u| chrono::DateTime::from_timestamp(u, 0)),
+                updated_at: t
+                    .get("updatedAt")
+                    .and_then(|u| u.as_i64())
+                    .and_then(|u| chrono::DateTime::from_timestamp(u, 0)),
                 preview,
             });
         }
         Ok(out)
     }
 
-    async fn start(&self, session: &Session, fork: bool, sink: EventSink) -> Result<Box<dyn Driver>> {
+    async fn start(
+        &self,
+        session: &Session,
+        fork: bool,
+        sink: EventSink,
+    ) -> Result<Box<dyn Driver>> {
         let client = self.client().await?;
         let mut params = serde_json::Map::new();
         params.insert("cwd".into(), json!(session.cwd));
@@ -228,8 +267,11 @@ impl Provider for CodexProvider {
             params.insert("developerInstructions".into(), json!(i));
         }
         if !session.mcp_servers.is_empty() {
-            let config: serde_json::Map<String, Value> =
-                session.mcp_servers.iter().map(|m| (format!("mcp_servers.{}", m.name), mcp_server_config(m))).collect();
+            let config: serde_json::Map<String, Value> = session
+                .mcp_servers
+                .iter()
+                .map(|m| (format!("mcp_servers.{}", m.name), mcp_server_config(m)))
+                .collect();
             params.insert("config".into(), Value::Object(config));
         }
         let (method, thread_hint) = match (&session.native_id, fork) {
@@ -244,7 +286,9 @@ impl Provider for CodexProvider {
             (None, _) => ("thread/start", None),
         };
         // Register early so notifications emitted during the request are not lost.
-        let temp_key = thread_hint.clone().unwrap_or_else(|| format!("pending-{}", session.id));
+        let temp_key = thread_hint
+            .clone()
+            .unwrap_or_else(|| format!("pending-{}", session.id));
         let rx = client.register(&temp_key);
         let res = match client.request(method, Value::Object(params)).await {
             Ok(r) => r,
@@ -266,13 +310,22 @@ impl Provider for CodexProvider {
         let mut initial = mapper.replay_thread(&thread);
         // Effective settings reported by the server.
         if let Some(m) = res.get("model").and_then(|m| m.as_str()) {
-            initial.push(Event::SettingChanged { session_id: session.id.clone(), setting: Setting::Model(m.into()) });
+            initial.push(Event::SettingChanged {
+                session_id: session.id.clone(),
+                setting: Setting::Model(m.into()),
+            });
         }
         if let Some(e) = res.get("reasoningEffort").and_then(|m| m.as_str()) {
-            initial.push(Event::SettingChanged { session_id: session.id.clone(), setting: Setting::Effort(e.into()) });
+            initial.push(Event::SettingChanged {
+                session_id: session.id.clone(),
+                setting: Setting::Effort(e.into()),
+            });
         }
         if let Some(p) = res.get("approvalPolicy").and_then(|m| m.as_str()) {
-            initial.push(Event::SettingChanged { session_id: session.id.clone(), setting: Setting::PermissionMode(p.into()) });
+            initial.push(Event::SettingChanged {
+                session_id: session.id.clone(),
+                setting: Setting::PermissionMode(p.into()),
+            });
         }
         for ev in initial {
             let _ = sink.send(ev);
@@ -302,11 +355,21 @@ impl Provider for CodexProvider {
         }
         if let Some(i) = &session.instructions {
             // `-c` values are TOML; a JSON string is a valid TOML string.
-            argv.extend(["-c".into(), format!("developer_instructions={}", serde_json::to_string(i).unwrap_or_default())]);
+            argv.extend([
+                "-c".into(),
+                format!(
+                    "developer_instructions={}",
+                    serde_json::to_string(i).unwrap_or_default()
+                ),
+            ]);
         }
         for m in &session.mcp_servers {
             // A JSON object is not TOML, so the table is written inline field by field.
-            let args: Vec<String> = m.args.iter().map(|a| serde_json::to_string(a).unwrap_or_default()).collect();
+            let args: Vec<String> = m
+                .args
+                .iter()
+                .map(|a| serde_json::to_string(a).unwrap_or_default())
+                .collect();
             argv.extend([
                 "-c".into(),
                 format!(
@@ -324,24 +387,55 @@ impl Provider for CodexProvider {
         let client = self.client().await?;
         let res = client.request("model/list", json!({})).await?;
         let mut out = vec![];
-        for m in res.get("data").and_then(|d| d.as_array()).into_iter().flatten() {
+        for m in res
+            .get("data")
+            .and_then(|d| d.as_array())
+            .into_iter()
+            .flatten()
+        {
             if m.get("hidden").and_then(|h| h.as_bool()).unwrap_or(false) {
                 continue;
             }
-            let id = m.get("id").or_else(|| m.get("model")).and_then(|i| i.as_str()).unwrap_or("").to_string();
+            let id = m
+                .get("id")
+                .or_else(|| m.get("model"))
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string();
             if id.is_empty() {
                 continue;
             }
             out.push(ModelInfo {
-                display_name: m.get("displayName").and_then(|d| d.as_str()).unwrap_or(&id).to_string(),
-                description: m.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()),
+                display_name: m
+                    .get("displayName")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or(&id)
+                    .to_string(),
+                description: m
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string()),
                 efforts: m
                     .get("supportedReasoningEfforts")
                     .and_then(|e| e.as_array())
-                    .map(|es| es.iter().filter_map(|e| e.get("reasoningEffort").and_then(|r| r.as_str()).map(|s| s.to_string())).collect())
+                    .map(|es| {
+                        es.iter()
+                            .filter_map(|e| {
+                                e.get("reasoningEffort")
+                                    .and_then(|r| r.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default(),
-                default_effort: m.get("defaultReasoningEffort").and_then(|d| d.as_str()).map(|s| s.to_string()),
-                is_default: m.get("isDefault").and_then(|d| d.as_bool()).unwrap_or(false),
+                default_effort: m
+                    .get("defaultReasoningEffort")
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string()),
+                is_default: m
+                    .get("isDefault")
+                    .and_then(|d| d.as_bool())
+                    .unwrap_or(false),
                 id,
             });
         }
@@ -350,14 +444,28 @@ impl Provider for CodexProvider {
 
     async fn list_commands(&self, cwd: &str) -> Result<Vec<SlashCommand>> {
         let client = self.client().await?;
-        let res = client.request("skills/list", json!({ "cwds": [cwd] })).await?;
+        let res = client
+            .request("skills/list", json!({ "cwds": [cwd] }))
+            .await?;
         let mut out = vec![];
-        for entry in res.get("data").and_then(|d| d.as_array()).into_iter().flatten() {
-            for sk in entry.get("skills").and_then(|s| s.as_array()).into_iter().flatten() {
+        for entry in res
+            .get("data")
+            .and_then(|d| d.as_array())
+            .into_iter()
+            .flatten()
+        {
+            for sk in entry
+                .get("skills")
+                .and_then(|s| s.as_array())
+                .into_iter()
+                .flatten()
+            {
                 if sk.get("enabled").and_then(|e| e.as_bool()) == Some(false) {
                     continue;
                 }
-                let Some(name) = sk.get("name").and_then(|n| n.as_str()) else { continue };
+                let Some(name) = sk.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
                 out.push(SlashCommand {
                     name: name.to_string(),
                     description: sk
@@ -492,7 +600,12 @@ impl Driver for CodexDriver {
                 return self.set(setting).await;
             }
         }
-        let active = self.state.lock().mapper.active_turn().map(|s| s.to_string());
+        let active = self
+            .state
+            .lock()
+            .mapper
+            .active_turn()
+            .map(|s| s.to_string());
         if input.steer {
             if let Some(turn_id) = active {
                 let mut inputs = vec![json!({ "type": "text", "text": input.text })];
@@ -513,15 +626,29 @@ impl Driver for CodexDriver {
     }
 
     async fn interrupt(&self) -> Result<()> {
-        let active = self.state.lock().mapper.active_turn().map(|s| s.to_string());
+        let active = self
+            .state
+            .lock()
+            .mapper
+            .active_turn()
+            .map(|s| s.to_string());
         if let Some(turn_id) = active {
-            self.client.request("turn/interrupt", json!({ "threadId": self.thread_id, "turnId": turn_id })).await?;
+            self.client
+                .request(
+                    "turn/interrupt",
+                    json!({ "threadId": self.thread_id, "turnId": turn_id }),
+                )
+                .await?;
         }
         Ok(())
     }
 
     async fn respond_approval(&self, approval_id: &str, decision: ApprovalDecision) -> Result<()> {
-        let (id, result) = self.state.lock().mapper.approval_reply(approval_id, &decision)?;
+        let (id, result) = self
+            .state
+            .lock()
+            .mapper
+            .approval_reply(approval_id, &decision)?;
         self.client.reply(id, result).await
     }
 
@@ -545,31 +672,67 @@ impl Driver for CodexDriver {
                 }
                 Setting::SandboxMode(sb) => {
                     if !SANDBOX_MODES.contains(&sb.as_str()) {
-                        bail!("unknown Codex sandbox mode `{sb}` (expected one of {SANDBOX_MODES:?})");
+                        bail!(
+                            "unknown Codex sandbox mode `{sb}` (expected one of {SANDBOX_MODES:?})"
+                        );
                     }
                     st.sandbox_mode = Some(sb.clone());
                     st.dirty_policy = true;
                 }
             }
         }
-        let _ = self.sink.send(Event::SettingChanged { session_id: self.session_id.clone(), setting });
+        let _ = self.sink.send(Event::SettingChanged {
+            session_id: self.session_id.clone(),
+            setting,
+        });
         Ok(())
     }
 
     async fn action(&self, name: &str, params: Value) -> Result<Value> {
         match name {
-            "compact" => self.client.request("thread/compact/start", json!({ "threadId": self.thread_id })).await,
+            "compact" => {
+                self.client
+                    .request(
+                        "thread/compact/start",
+                        json!({ "threadId": self.thread_id }),
+                    )
+                    .await
+            }
             "review" => {
-                let target = params.get("target").cloned().unwrap_or(json!({ "type": "uncommittedChanges" }));
-                self.client.request("review/start", json!({ "threadId": self.thread_id, "target": target })).await
+                let target = params
+                    .get("target")
+                    .cloned()
+                    .unwrap_or(json!({ "type": "uncommittedChanges" }));
+                self.client
+                    .request(
+                        "review/start",
+                        json!({ "threadId": self.thread_id, "target": target }),
+                    )
+                    .await
             }
             "rename" => {
-                let name = params.get("name").and_then(|n| n.as_str()).ok_or_else(|| anyhow!("rename requires `name`"))?;
-                self.client.request("thread/name/set", json!({ "threadId": self.thread_id, "name": name })).await
+                let name = params
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .ok_or_else(|| anyhow!("rename requires `name`"))?;
+                self.client
+                    .request(
+                        "thread/name/set",
+                        json!({ "threadId": self.thread_id, "name": name }),
+                    )
+                    .await
             }
-            "archive" => self.client.request("thread/archive", json!({ "threadId": self.thread_id })).await,
+            "archive" => {
+                self.client
+                    .request("thread/archive", json!({ "threadId": self.thread_id }))
+                    .await
+            }
             "mcp_status" => self.client.request("mcpServerStatus/list", json!({})).await,
-            "rate_limits" => self.client.request("account/rateLimits/read", json!({})).await,
+            "rate_limits" => {
+                self.client
+                    .request("account/rateLimits/read", json!({}))
+                    .await
+            }
             "account" => self.client.request("account/read", json!({})).await,
             "file_search" => {
                 let q = params.get("query").and_then(|q| q.as_str()).unwrap_or("");
@@ -583,7 +746,11 @@ impl Driver for CodexDriver {
 
     async fn stop(&self) -> Result<()> {
         if !self.client.is_closed() {
-            if let Err(e) = self.client.request("thread/unsubscribe", json!({ "threadId": self.thread_id })).await {
+            if let Err(e) = self
+                .client
+                .request("thread/unsubscribe", json!({ "threadId": self.thread_id }))
+                .await
+            {
                 tracing::debug!("thread/unsubscribe: {e}");
             }
         }
@@ -600,7 +767,10 @@ mod tests {
     const THREAD: &str = "01a0ae9a-efcf-7150-8940-8dd2fea0cbf2";
 
     fn capture() -> Vec<Value> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/protocol/codex/traffic.jsonl");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/protocol/codex/traffic.jsonl"
+        );
         let text = std::fs::read_to_string(path).expect("traffic capture");
         text.lines()
             .filter(|l| !l.trim().is_empty())
@@ -616,12 +786,18 @@ mod tests {
         let mut events = vec![];
         let mut replies = vec![];
         for msg in capture() {
-            let Some(method) = msg.get("method").and_then(|m| m.as_str()) else { continue };
+            let Some(method) = msg.get("method").and_then(|m| m.as_str()) else {
+                continue;
+            };
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
             if client::thread_id_of(&params).as_deref() != Some(THREAD) {
                 continue;
             }
-            let inc = Incoming { id: msg.get("id").cloned(), method: method.to_string(), params };
+            let inc = Incoming {
+                id: msg.get("id").cloned(),
+                method: method.to_string(),
+                params,
+            };
             let out = mapper.handle(&inc);
             events.extend(out.events);
             if let Some(r) = out.reply {
@@ -637,18 +813,37 @@ mod tests {
             .collect();
         // The capture holds six command approvals: the spike passed a relative cwd, Codex's
         // exec failed and it retried with different commands, each needing approval.
-        assert_eq!(approvals.len(), 6, "expected the six approvals present in the capture");
+        assert_eq!(
+            approvals.len(),
+            6,
+            "expected the six approvals present in the capture"
+        );
         assert!(approvals.iter().all(|a| a.kind == ApprovalKind::Command));
         let a = approvals[0];
-        assert_eq!(a.payload["command"].as_str().unwrap(), "/bin/zsh -lc 'echo hi > hello2.txt'");
+        assert_eq!(
+            a.payload["command"].as_str().unwrap(),
+            "/bin/zsh -lc 'echo hi > hello2.txt'"
+        );
         assert!(a.options.contains(&ApprovalOption::Accept));
         assert!(a.options.contains(&ApprovalOption::Cancel));
         // The approval reply carries the server request id and a valid decision.
         let (rpc_id, result) = mapper
-            .approval_reply(&a.id, &ApprovalDecision { option: ApprovalOption::AcceptForSession, updated_input: None, message: None })
+            .approval_reply(
+                &a.id,
+                &ApprovalDecision {
+                    option: ApprovalOption::AcceptForSession,
+                    updated_input: None,
+                    message: None,
+                },
+            )
             .unwrap();
         assert_eq!(rpc_id, json!(0));
-        assert!(result["decision"].get("acceptWithExecpolicyAmendment").is_some(), "{result}");
+        assert!(
+            result["decision"]
+                .get("acceptWithExecpolicyAmendment")
+                .is_some(),
+            "{result}"
+        );
 
         let turns: Vec<&Turn> = events
             .iter()
@@ -662,7 +857,13 @@ mod tests {
         // The capture shows Codex reported the second (interrupted) turn as `completed`
         // too: the interrupt landed after the turn had already finished.
         assert_eq!(turns[1].status, TurnStatus::Completed);
-        assert_eq!(events.iter().filter(|e| matches!(e, Event::TurnStarted { .. })).count(), 2);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::TurnStarted { .. }))
+                .count(),
+            2
+        );
 
         let started_msgs = events
             .iter()
@@ -671,7 +872,15 @@ mod tests {
         assert!(started_msgs >= 1);
         let deltas = events
             .iter()
-            .filter(|e| matches!(e, Event::ItemDelta { delta: ItemDelta::Text { .. }, .. }))
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::ItemDelta {
+                        delta: ItemDelta::Text { .. },
+                        ..
+                    }
+                )
+            })
             .count();
         assert!(deltas >= 1, "expected agent message deltas");
         let usage = events.iter().find_map(|e| match e {
@@ -679,10 +888,26 @@ mod tests {
             _ => None,
         });
         assert_eq!(usage.unwrap().context_window, Some(258400));
-        assert!(events.iter().any(|e| matches!(e, Event::NativeId { native_id, .. } if native_id == THREAD)));
-        assert!(events.iter().any(|e| matches!(e, Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage)));
-        assert!(events.iter().any(|e| matches!(e, Event::ItemDelta { delta: ItemDelta::Output { .. }, .. })), "command output delta");
-        assert!(replies.is_empty(), "mapper should not auto-answer approvals");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::NativeId { native_id, .. } if native_id == THREAD)));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage)
+        ));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::ItemDelta {
+                    delta: ItemDelta::Output { .. },
+                    ..
+                }
+            )),
+            "command output delta"
+        );
+        assert!(
+            replies.is_empty(),
+            "mapper should not auto-answer approvals"
+        );
     }
 
     #[test]
@@ -692,7 +917,11 @@ mod tests {
             "type": "fileChange", "id": "fc1", "status": "inProgress",
             "changes": [{ "path": "src/a.rs", "kind": { "type": "update", "move_path": null }, "diff": "--- a\n+++ b\n" }]
         });
-        let out = mapper.handle(&Incoming { id: None, method: "item/started".into(), params: json!({ "threadId": "t", "turnId": "u", "item": item }) });
+        let out = mapper.handle(&Incoming {
+            id: None,
+            method: "item/started".into(),
+            params: json!({ "threadId": "t", "turnId": "u", "item": item }),
+        });
         match &out.events[0] {
             Event::ItemStarted { item, .. } => {
                 assert_eq!(item.kind, ItemKind::FileChange);
@@ -713,11 +942,27 @@ mod tests {
         assert_eq!(approval.payload["changes"][0]["path"], "src/a.rs");
         assert!(approval.title.contains("src/a.rs"));
         let (id, res) = mapper
-            .approval_reply(&approval.id, &ApprovalDecision { option: ApprovalOption::Decline, updated_input: None, message: None })
+            .approval_reply(
+                &approval.id,
+                &ApprovalDecision {
+                    option: ApprovalOption::Decline,
+                    updated_input: None,
+                    message: None,
+                },
+            )
             .unwrap();
         assert_eq!(id, json!(42));
         assert_eq!(res, json!({ "decision": "decline" }));
-        assert!(mapper.approval_reply(&approval.id, &ApprovalDecision { option: ApprovalOption::Accept, updated_input: None, message: None }).is_err());
+        assert!(mapper
+            .approval_reply(
+                &approval.id,
+                &ApprovalDecision {
+                    option: ApprovalOption::Accept,
+                    updated_input: None,
+                    message: None
+                }
+            )
+            .is_err());
     }
 
     #[test]
@@ -736,19 +981,32 @@ mod tests {
         assert_eq!(req.questions[0].options.len(), 2);
         let mut answers = std::collections::HashMap::new();
         answers.insert("q1".to_string(), vec!["Red".to_string()]);
-        let (id, res) = mapper.input_reply(&UserInputResponse { request_id: req.id, answers }).unwrap();
+        let (id, res) = mapper
+            .input_reply(&UserInputResponse {
+                request_id: req.id,
+                answers,
+            })
+            .unwrap();
         assert_eq!(id, json!(9));
         assert_eq!(res, json!({ "answers": { "q1": { "answers": ["Red"] } } }));
     }
 
     #[test]
     fn mcp_servers_are_approved_up_front_in_both_modes() {
-        let m = McpServer { name: "aura".into(), command: "/bin/aura".into(), args: vec!["mcp".into(), "--orchestrator".into(), "x".into()] };
+        let m = McpServer {
+            name: "aura".into(),
+            command: "/bin/aura".into(),
+            args: vec!["mcp".into(), "--orchestrator".into(), "x".into()],
+        };
         assert_eq!(
             mcp_server_config(&m),
             json!({ "command": "/bin/aura", "args": ["mcp", "--orchestrator", "x"], "tool_timeout_sec": MCP_TOOL_TIMEOUT_SECS, "default_tools_approval_mode": "approve" })
         );
-        let mut s = Session::new(&CreateSessionOpts { provider: ProviderKind::Codex, cwd: "/tmp".into(), ..Default::default() });
+        let mut s = Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Codex,
+            cwd: "/tmp".into(),
+            ..Default::default()
+        });
         s.mcp_servers = vec![m];
         let argv = CodexProvider::new().terminal_command(&s);
         assert_eq!(
@@ -763,14 +1021,21 @@ mod tests {
     #[test]
     fn closed_connection_becomes_process_exited() {
         let mut mapper = ThreadMapper::new("sess", "t");
-        let out = mapper.handle(&Incoming { id: None, method: client::CLOSED.into(), params: Value::Null });
+        let out = mapper.handle(&Incoming {
+            id: None,
+            method: client::CLOSED.into(),
+            params: Value::Null,
+        });
         assert!(matches!(out.events[0], Event::ProcessExited { .. }));
     }
 
     #[test]
     fn unknown_item_types_become_system_items() {
         let mapper = ThreadMapper::new("sess", "t");
-        let it = mapper.map_item(&json!({ "type": "somethingNew", "id": "x", "foo": 1 }), None);
+        let it = mapper.map_item(
+            &json!({ "type": "somethingNew", "id": "x", "foo": 1 }),
+            None,
+        );
         assert_eq!(it.kind, ItemKind::System);
         assert_eq!(it.data["raw"]["foo"], 1);
     }
@@ -808,15 +1073,26 @@ mod tests {
         };
         let session = Session::new(&opts);
         let driver = provider.start(&session, false, tx).await.unwrap();
-        driver.send(Input { text: "Reply with exactly: pong".into(), ..Default::default() }).await.unwrap();
+        driver
+            .send(Input {
+                text: "Reply with exactly: pong".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
         let mut got_native = false;
         let mut text = String::new();
         loop {
-            let ev = tokio::time::timeout_at(deadline, rx.recv()).await.expect("timeout").expect("sink closed");
+            let ev = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout")
+                .expect("sink closed");
             match ev {
                 Event::NativeId { .. } => got_native = true,
-                Event::ItemCompleted { item, .. } if item.kind == ItemKind::AgentMessage => text.push_str(&item.text),
+                Event::ItemCompleted { item, .. } if item.kind == ItemKind::AgentMessage => {
+                    text.push_str(&item.text)
+                }
                 Event::TurnCompleted { turn, .. } => {
                     assert_eq!(turn.status, TurnStatus::Completed, "{turn:?}");
                     break;

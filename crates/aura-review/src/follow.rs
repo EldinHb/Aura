@@ -760,9 +760,11 @@ mod tests {
                         .to_string();
                     self.heads.lock().push(head.clone());
                     let nodes = if head == "feature" {
-                        vec![json!({"number": 1, "title": "PR", "url": "https://github.com/o/r/pull/1", "state": "OPEN",
+                        vec![
+                            json!({"number": 1, "title": "PR", "url": "https://github.com/o/r/pull/1", "state": "OPEN",
                             "isDraft": false, "reviewDecision": "", "headRefOid": "abc", "author": {"login": "me"},
-                            "headRepository": {"nameWithOwner": "o/r"}, "commits": {"nodes": []}})]
+                            "headRepository": {"nameWithOwner": "o/r"}, "commits": {"nodes": []}}),
+                        ]
                     } else {
                         vec![]
                     };
@@ -1141,23 +1143,41 @@ mod tests {
     async fn activity_reaches_the_session_on_the_branch_and_skips_archived_and_muted_ones() {
         let gh = Arc::new(Fake::default());
         let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
-        let manager = Manager::new(store.clone(), vec![Arc::new(Agent(Default::default()))], None);
+        let manager = Manager::new(
+            store.clone(),
+            vec![Arc::new(Agent(Default::default()))],
+            None,
+        );
         // A worktree whose remote is o/r, on the PR's branch; another whose branch has no PR.
         let repo = |name: &str| {
             let dir = tempfile::tempdir().unwrap();
             let git = |args: &[&str]| {
-                assert!(std::process::Command::new("git").args(args).current_dir(dir.path()).output().unwrap().status.success());
+                assert!(std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(dir.path())
+                    .output()
+                    .unwrap()
+                    .status
+                    .success());
             };
             git(&["init", "-q", "-b", name]);
             git(&["remote", "add", "origin", "https://github.com/o/r.git"]);
             dir
         };
         let (feature, other) = (repo("feature"), repo("other"));
-        let stored = |id: &str, minutes: u64, dir: Option<(&tempfile::TempDir, &str)>, pulls: &[&str], archived: bool| {
+        let stored = |id: &str,
+                      minutes: u64,
+                      dir: Option<(&tempfile::TempDir, &str)>,
+                      pulls: &[&str],
+                      archived: bool| {
             let mut s = session(id, None, minutes);
             if let Some((dir, branch)) = dir {
                 s.cwd = dir.path().to_string_lossy().to_string();
-                s.worktree = Some(WorktreeInfo { repo_root: s.cwd.clone(), path: s.cwd.clone(), branch: branch.into() });
+                s.worktree = Some(WorktreeInfo {
+                    repo_root: s.cwd.clone(),
+                    path: s.cwd.clone(),
+                    branch: branch.into(),
+                });
             }
             s.pulls = pulls.iter().map(|p| p.to_string()).collect();
             s.archived = archived;
@@ -1176,8 +1196,14 @@ mod tests {
         let svc = FollowService::new(store, gh.clone(), manager.clone(), events).unwrap();
 
         svc.poll().await;
-        assert_eq!(manager.get_session("coder").unwrap().pulls, vec![url], "the worktree's PR is recorded");
-        gh.reviews.lock().push(review(2, "alice", "CHANGES_REQUESTED", "Rename this"));
+        assert_eq!(
+            manager.get_session("coder").unwrap().pulls,
+            vec![url],
+            "the worktree's PR is recorded"
+        );
+        gh.reviews
+            .lock()
+            .push(review(2, "alice", "CHANGES_REQUESTED", "Rename this"));
         svc.poll().await;
         let activity = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {

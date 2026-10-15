@@ -58,7 +58,10 @@ pub struct Scrollback {
 
 impl Scrollback {
     pub fn new(cap: usize) -> Self {
-        Self { buf: VecDeque::with_capacity(cap.min(1 << 20)), cap }
+        Self {
+            buf: VecDeque::with_capacity(cap.min(1 << 20)),
+            cap,
+        }
     }
     pub fn push(&mut self, data: &[u8]) {
         if data.len() >= self.cap {
@@ -107,7 +110,12 @@ impl PtyHandle {
     pub fn spawn(spec: PtySpec) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system
-            .openpty(PtySize { rows: spec.rows, cols: spec.cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows: spec.rows,
+                cols: spec.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("openpty")?;
         let (prog, args) = spec.argv.split_first().context("empty argv")?;
         let mut cmd = CommandBuilder::new(prog);
@@ -136,7 +144,9 @@ impl PtyHandle {
             exit_rx,
             size: Mutex::new((spec.cols, spec.rows)),
         });
-        let handle = Self { inner: inner.clone() };
+        let handle = Self {
+            inner: inner.clone(),
+        };
 
         // Reader thread: blocking reads -> scrollback + broadcast.
         let reader_inner = inner.clone();
@@ -195,7 +205,12 @@ impl PtyHandle {
         self.inner
             .master
             .lock()
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("resize")
     }
 
@@ -266,9 +281,14 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_echo_and_exit() {
-        let spec = PtySpec::new(vec!["/bin/sh".into(), "-c".into(), "printf hello; exit 3".into()], "/tmp");
+        let spec = PtySpec::new(
+            vec!["/bin/sh".into(), "-c".into(), "printf hello; exit 3".into()],
+            "/tmp",
+        );
         let h = PtyHandle::spawn(spec).unwrap();
-        let code = tokio::time::timeout(std::time::Duration::from_secs(10), h.wait()).await.unwrap();
+        let code = tokio::time::timeout(std::time::Duration::from_secs(10), h.wait())
+            .await
+            .unwrap();
         assert_eq!(code, Some(3));
         // give the reader a moment to drain
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -285,7 +305,9 @@ mod tests {
         let mut got = String::new();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         while !got.contains("ping") && tokio::time::Instant::now() < deadline {
-            if let Ok(Ok(chunk)) = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
+            if let Ok(Ok(chunk)) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+            {
                 got.push_str(&String::from_utf8_lossy(&chunk));
             }
         }

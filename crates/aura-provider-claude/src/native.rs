@@ -15,19 +15,25 @@ pub fn projects_dir() -> Option<PathBuf> {
 /// Scan the projects directory. Never fails: a missing directory yields an empty list.
 pub fn scan(dir: &Path, cap: usize) -> Vec<NativeSession> {
     let mut out = vec![];
-    let Ok(projects) = std::fs::read_dir(dir) else { return out };
+    let Ok(projects) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for project in projects.flatten() {
         let ppath = project.path();
         if !ppath.is_dir() {
             continue;
         }
-        let Ok(files) = std::fs::read_dir(&ppath) else { continue };
+        let Ok(files) = std::fs::read_dir(&ppath) else {
+            continue;
+        };
         for f in files.flatten() {
             let path = f.path();
             if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
             if stem.starts_with("agent-") {
                 continue;
             }
@@ -44,7 +50,10 @@ pub fn scan(dir: &Path, cap: usize) -> Vec<NativeSession> {
 fn read_session(path: &Path, stem: &str) -> Option<NativeSession> {
     let file = std::fs::File::open(path).ok()?;
     let meta = file.metadata().ok()?;
-    let updated_at = meta.modified().ok().map(chrono::DateTime::<chrono::Utc>::from);
+    let updated_at = meta
+        .modified()
+        .ok()
+        .map(chrono::DateTime::<chrono::Utc>::from);
     let reader = BufReader::new(file);
     let mut cwd: Option<String> = None;
     let mut title: Option<String> = None;
@@ -53,7 +62,9 @@ fn read_session(path: &Path, stem: &str) -> Option<NativeSession> {
             break;
         }
         let Ok(line) = line else { break };
-        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         if cwd.is_none() {
             if let Some(c) = v.get("cwd").and_then(Value::as_str) {
                 cwd = Some(c.to_string());

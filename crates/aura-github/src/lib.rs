@@ -1,7 +1,9 @@
 //! GitHub transport. Only the daemon invokes gh; credentials never reach the webview.
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use aura_core::{LatestReview, Note, PullActivity, PullRequest, RequestedReviewer, SubmittedReview};
+use aura_core::{
+    LatestReview, Note, PullActivity, PullRequest, RequestedReviewer, SubmittedReview,
+};
 use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
@@ -169,8 +171,10 @@ impl GhCli {
         token: Option<&str>,
     ) -> Result<String> {
         let retry = is_read(method, path, body.as_ref());
-        GATE.run(retry, || self.invoke_once(method, path, body.clone(), diff, token))
-            .await
+        GATE.run(retry, || {
+            self.invoke_once(method, path, body.clone(), diff, token)
+        })
+        .await
     }
 
     async fn invoke_once(
@@ -350,7 +354,11 @@ const BATCH: usize = 20;
 /// Read the PRs `ids` (`owner/repo`, number) in order, a batch per GraphQL query. A PR GitHub
 /// cannot return fails on its own, so the rest of its batch still reads; a query that fails as
 /// a whole fails the read.
-pub async fn pulls(gh: &dyn Github, account: &str, ids: &[(String, u32)]) -> Result<Vec<Result<PullRequest>>> {
+pub async fn pulls(
+    gh: &dyn Github,
+    account: &str,
+    ids: &[(String, u32)],
+) -> Result<Vec<Result<PullRequest>>> {
     for (repo, _) in ids {
         validate_repo(repo)?;
     }
@@ -365,14 +373,24 @@ pub async fn pulls(gh: &dyn Github, account: &str, ids: &[(String, u32)]) -> Res
 }
 /// One query for `ids`: an aliased `repository` per repo (`r0`, `r1`, …) holding an aliased
 /// `pullRequest` per PR (`pr0`, `pr1`, … by position in `ids`).
-async fn batch(gh: &dyn Github, account: &str, login: &str, ids: &[(String, u32)]) -> Result<Vec<Result<PullRequest>>> {
+async fn batch(
+    gh: &dyn Github,
+    account: &str,
+    login: &str,
+    ids: &[(String, u32)],
+) -> Result<Vec<Result<PullRequest>>> {
     let mut repos: Vec<&str> = vec![];
     for (repo, _) in ids {
         if !repos.iter().any(|r| r.eq_ignore_ascii_case(repo)) {
             repos.push(repo);
         }
     }
-    let repo_of = |repo: &str| repos.iter().position(|r| r.eq_ignore_ascii_case(repo)).unwrap();
+    let repo_of = |repo: &str| {
+        repos
+            .iter()
+            .position(|r| r.eq_ignore_ascii_case(repo))
+            .unwrap()
+    };
     let mut query = String::from("query($login:String!){");
     for (i, repo) in repos.iter().enumerate() {
         // validate_repo allows no quotes or braces, so the names are safe to inline.
@@ -386,7 +404,11 @@ async fn batch(gh: &dyn Github, account: &str, login: &str, ids: &[(String, u32)
     query += "}";
     query += PULL;
     let q = gh
-        .request("POST", "graphql", Some(json!({"query": query, "variables": {"login": login}})))
+        .request(
+            "POST",
+            "graphql",
+            Some(json!({"query": query, "variables": {"login": login}})),
+        )
         .await?;
     if !q["data"].is_object() {
         bail!("Unable to read pull requests: {}", q["errors"]);
@@ -400,23 +422,44 @@ async fn batch(gh: &dyn Github, account: &str, login: &str, ids: &[(String, u32)
             // An error on the repository itself, or anywhere inside this PR, fails this PR.
             let error = errors.iter().find(|e| {
                 let path = &e["path"];
-                path[0] == r.as_str() && path[1].as_str().is_none_or(|seg| seg == pr || !is_pull_alias(seg))
+                path[0] == r.as_str()
+                    && path[1]
+                        .as_str()
+                        .is_none_or(|seg| seg == pr || !is_pull_alias(seg))
             });
             if let Some(e) = error {
-                bail!("Unable to read {repo}#{number}: {}", e["message"].as_str().unwrap_or("GitHub returned an error"));
+                bail!(
+                    "Unable to read {repo}#{number}: {}",
+                    e["message"].as_str().unwrap_or("GitHub returned an error")
+                );
             }
             let node = &q["data"][&r][&pr];
             if !node.is_object() {
                 bail!("Unable to read {repo}#{number}: not found");
             }
-            Ok(from_graphql(account, login, repo, *number, &q["data"][&r], node))
+            Ok(from_graphql(
+                account,
+                login,
+                repo,
+                *number,
+                &q["data"][&r],
+                node,
+            ))
         })
         .collect())
 }
 fn is_pull_alias(seg: &str) -> bool {
-    seg.strip_prefix("pr").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    seg.strip_prefix("pr")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
-fn from_graphql(account: &str, login: &str, repo: &str, number: u32, r: &Value, d: &Value) -> PullRequest {
+fn from_graphql(
+    account: &str,
+    login: &str,
+    repo: &str,
+    number: u32,
+    r: &Value,
+    d: &Value,
+) -> PullRequest {
     let names = |conn: &Value, field: &str| {
         conn["nodes"]
             .as_array()
@@ -451,7 +494,10 @@ fn from_graphql(account: &str, login: &str, repo: &str, number: u32, r: &Value, 
         milestone_title: s(&d["milestone"], "title"),
         can_edit: d["viewerCanUpdate"].as_bool().unwrap_or(false),
         review_decision: s(d, "reviewDecision"),
-        checks: s(&d["commits"]["nodes"][0]["commit"]["statusCheckRollup"], "state"),
+        checks: s(
+            &d["commits"]["nodes"][0]["commit"]["statusCheckRollup"],
+            "state",
+        ),
         ..Default::default()
     };
     let review = &d["reviews"]["nodes"][0];
@@ -469,13 +515,20 @@ fn from_graphql(account: &str, login: &str, repo: &str, number: u32, r: &Value, 
     p.unanswered_threads = unanswered_threads(&d["reviewThreads"]["nodes"], login);
     p.review_requested_at = requested_at(&d["timelineItems"]["nodes"], login);
     p.merge_state = s(d, "mergeStateStatus");
-    p.merge_methods = [("merge", "mergeCommitAllowed"), ("squash", "squashMergeAllowed"), ("rebase", "rebaseMergeAllowed")]
-        .into_iter()
-        .filter(|(_, allowed)| r[*allowed] == true)
-        .map(|(method, _)| method.to_string())
-        .collect();
+    p.merge_methods = [
+        ("merge", "mergeCommitAllowed"),
+        ("squash", "squashMergeAllowed"),
+        ("rebase", "rebaseMergeAllowed"),
+    ]
+    .into_iter()
+    .filter(|(_, allowed)| r[*allowed] == true)
+    .map(|(method, _)| method.to_string())
+    .collect();
     p.default_merge_method = s(r, "viewerDefaultMergeMethod").to_lowercase();
-    p.can_merge = matches!(r["viewerPermission"].as_str(), Some("WRITE" | "MAINTAIN" | "ADMIN"));
+    p.can_merge = matches!(
+        r["viewerPermission"].as_str(),
+        Some("WRITE" | "MAINTAIN" | "ADMIN")
+    );
     p.can_delete_branch = p.can_merge && d["isCrossRepository"] == false;
     p.auto_delete_branch = r["deleteBranchOnMerge"] == true;
     p.merge_blocked_by = p.merge_blocker().map(String::from);
@@ -487,7 +540,11 @@ fn activity(d: &Value) -> PullActivity {
     let nodes = |v: &Value| v["nodes"].as_array().cloned().unwrap_or_default();
     let note = |n: &Value| {
         let author = s(&n["author"], "login");
-        Some(Note { id: n["databaseId"].as_u64()?, bot: n["author"]["__typename"] == "Bot" || author.ends_with("[bot]"), author })
+        Some(Note {
+            id: n["databaseId"].as_u64()?,
+            bot: n["author"]["__typename"] == "Bot" || author.ends_with("[bot]"),
+            author,
+        })
     };
     let head = &d["commits"]["nodes"][0]["commit"];
     let state_actor = match s(d, "state").as_str() {
@@ -502,12 +559,21 @@ fn activity(d: &Value) -> PullActivity {
             .filter(|login| !login.is_empty())
             .collect(),
         comments: nodes(&d["comments"]).iter().filter_map(note).collect(),
-        thread_comments: nodes(&d["reviewThreads"]).iter().flat_map(|t| nodes(&t["comments"])).filter_map(|n| note(&n)).collect(),
+        thread_comments: nodes(&d["reviewThreads"])
+            .iter()
+            .flat_map(|t| nodes(&t["comments"]))
+            .filter_map(|n| note(&n))
+            .collect(),
         reviews: nodes(&d["latestReviews"])
             .iter()
             .filter_map(|n| {
                 let note = note(n)?;
-                Some(LatestReview { id: note.id, reviewer: note.author, bot: note.bot, state: s(n, "state") })
+                Some(LatestReview {
+                    id: note.id,
+                    reviewer: note.author,
+                    bot: note.bot,
+                    state: s(n, "state"),
+                })
             })
             .collect(),
         state_actor,
@@ -541,13 +607,19 @@ pub async fn delete_branch(gh: &dyn Github, account: &str, p: &PullRequest) -> R
 
 /// A branch name as a REST path: each segment percent-encoded, `/` kept.
 fn ref_path(branch: &str) -> Result<String> {
-    if branch.is_empty() || branch.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..") {
+    if branch.is_empty()
+        || branch
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
         bail!("Invalid branch name");
     }
     Ok(branch
         .bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect())
@@ -577,7 +649,11 @@ pub fn reviews_by_others(pull: &Value, skip: &[&str]) -> Vec<SubmittedReview> {
             .as_array()
             .into_iter()
             .flatten()
-            .find(|n| n["author"]["login"].as_str().is_some_and(|l| l.eq_ignore_ascii_case(login)))
+            .find(|n| {
+                n["author"]["login"]
+                    .as_str()
+                    .is_some_and(|l| l.eq_ignore_ascii_case(login))
+            })
             .map(|n| s(n, "state"))
             .filter(|state| RESPONSES.contains(&state.as_str()))
     };
@@ -614,7 +690,10 @@ fn requested_reviewers(nodes: &Value) -> Vec<RequestedReviewer> {
                 "Bot" => (s(who, "login"), "bot"),
                 _ => (s(who, "login"), "user"),
             };
-            (!name.is_empty()).then(|| RequestedReviewer { name, kind: kind.into() })
+            (!name.is_empty()).then(|| RequestedReviewer {
+                name,
+                kind: kind.into(),
+            })
         })
         .collect()
 }
@@ -627,9 +706,14 @@ fn unanswered_threads(threads: &Value, login: &str) -> u32 {
         .flatten()
         .filter(|t| t["isResolved"] == false)
         .filter(|t| {
-            let author = &t["comments"]["nodes"].as_array().and_then(|c| c.last()).unwrap_or(&Value::Null)["author"];
+            let author = &t["comments"]["nodes"]
+                .as_array()
+                .and_then(|c| c.last())
+                .unwrap_or(&Value::Null)["author"];
             author["__typename"] != "Bot"
-                && author["login"].as_str().is_some_and(|l| !l.is_empty() && !l.eq_ignore_ascii_case(login))
+                && author["login"]
+                    .as_str()
+                    .is_some_and(|l| !l.is_empty() && !l.eq_ignore_ascii_case(login))
         })
         .count() as u32
 }
@@ -662,7 +746,12 @@ pub async fn requested(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
 
 /// Open PRs of others the user reviewed.
 pub async fn reviewed(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
-    search(gh, "reviewed-by%3A%40me%20-author%3A%40me", "list of reviewed pull requests").await
+    search(
+        gh,
+        "reviewed-by%3A%40me%20-author%3A%40me",
+        "list of reviewed pull requests",
+    )
+    .await
 }
 
 /// Open PRs the user authored.
@@ -852,17 +941,30 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 3);
 
         let calls = AtomicUsize::new(0);
-        assert!(gate.run(true, counting(&calls, 9, "gh: HTTP 502")).await.is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 3, "gives up after the last delay");
+        assert!(gate
+            .run(true, counting(&calls, 9, "gh: HTTP 502"))
+            .await
+            .is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "gives up after the last delay"
+        );
     }
     #[tokio::test]
     async fn never_retries_writes_or_client_errors() {
         let gate = Gate::new(4, Duration::from_secs(60), &NO_WAIT);
         let calls = AtomicUsize::new(0);
-        assert!(gate.run(false, counting(&calls, 1, "gh: HTTP 504")).await.is_err());
+        assert!(gate
+            .run(false, counting(&calls, 1, "gh: HTTP 504"))
+            .await
+            .is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let calls = AtomicUsize::new(0);
-        assert!(gate.run(true, counting(&calls, 1, "gh: Not Found (HTTP 404)")).await.is_err());
+        assert!(gate
+            .run(true, counting(&calls, 1, "gh: Not Found (HTTP 404)"))
+            .await
+            .is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
@@ -872,17 +974,32 @@ mod tests {
         let msg = "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)";
         assert!(gate.run(true, counting(&calls, 1, msg)).await.is_err());
         let refused = gate.run(true, counting(&calls, 0, "")).await.unwrap_err();
-        assert!(refused.downcast_ref::<RejectedRequest>().is_some(), "refused unsent: {refused}");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "nothing reaches GitHub while paused");
+        assert!(
+            refused.downcast_ref::<RejectedRequest>().is_some(),
+            "refused unsent: {refused}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "nothing reaches GitHub while paused"
+        );
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(gate.run(true, counting(&calls, 0, "")).await.unwrap(), "ok");
     }
     #[test]
     fn only_reads_count_as_repeatable() {
         assert!(is_read("GET", "repos/o/r/pulls/1", None));
-        assert!(!is_read("POST", "repos/o/r/pulls/1/reviews", Some(&json!({}))));
+        assert!(!is_read(
+            "POST",
+            "repos/o/r/pulls/1/reviews",
+            Some(&json!({}))
+        ));
         assert!(is_read("POST", "graphql", Some(&json!({"query": PULL}))));
-        assert!(!is_read("POST", "graphql", Some(&json!({"query": " mutation($id:ID!){x}"}))));
+        assert!(!is_read(
+            "POST",
+            "graphql",
+            Some(&json!({"query": " mutation($id:ID!){x}"}))
+        ));
     }
     #[test]
     fn branch_paths_keep_slashes_and_encode_the_rest() {
@@ -954,12 +1071,23 @@ mod tests {
             let (mut data, mut errors) = (json!({}), vec![]);
             // r0:repository(owner:"o",name:"r"){… pr0:pullRequest(number:1){...pull} …}
             for part in query.split("repository(owner:\"").skip(1) {
-                let alias = query[..query.find(&format!("repository(owner:\"{part}")).unwrap()].rsplit(['{', '}']).next().unwrap().trim_end_matches(':').to_string();
+                let alias = query[..query.find(&format!("repository(owner:\"{part}")).unwrap()]
+                    .rsplit(['{', '}'])
+                    .next()
+                    .unwrap()
+                    .trim_end_matches(':')
+                    .to_string();
                 let (owner, rest) = part.split_once("\",name:\"").unwrap();
                 let name = rest.split('"').next().unwrap();
-                let Some((_, numbers)) = self.repos.iter().find(|(r, _)| *r == format!("{owner}/{name}")) else {
+                let Some((_, numbers)) = self
+                    .repos
+                    .iter()
+                    .find(|(r, _)| *r == format!("{owner}/{name}"))
+                else {
                     data[&alias] = Value::Null;
-                    errors.push(json!({"path": [alias], "message": "Could not resolve to a Repository"}));
+                    errors.push(
+                        json!({"path": [alias], "message": "Could not resolve to a Repository"}),
+                    );
                     continue;
                 };
                 data[&alias] = json!({"viewerPermission": "WRITE", "squashMergeAllowed": true});
@@ -969,17 +1097,17 @@ mod tests {
                     let key = format!("pr{index}");
                     if numbers.contains(&number) {
                         data[&alias][&key] = json!({"number": number, "title": format!("PR {number}"), "state": "OPEN", "author": {"login": "bob"}, "headRefOid": "h",
-                            "reviewThreads": {"nodes": [
-                                {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "User", "login": "alice"}}]}},
-                                {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "User", "login": "me"}}]}},
-                                {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "Bot", "login": "copilot"}}]}},
-                                {"isResolved": true, "comments": {"nodes": [{"author": {"__typename": "User", "login": "alice"}}]}},
-                            ]},
-                            "reviewRequests": {"nodes": [
-                                {"requestedReviewer": {"__typename": "User", "login": "carol"}},
-                                {"requestedReviewer": {"__typename": "Team", "combinedSlug": "o/core"}},
-                                {"requestedReviewer": {"__typename": "Bot", "login": "copilot"}},
-                            ]}});
+                        "reviewThreads": {"nodes": [
+                            {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "User", "login": "alice"}}]}},
+                            {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "User", "login": "me"}}]}},
+                            {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "Bot", "login": "copilot"}}]}},
+                            {"isResolved": true, "comments": {"nodes": [{"author": {"__typename": "User", "login": "alice"}}]}},
+                        ]},
+                        "reviewRequests": {"nodes": [
+                            {"requestedReviewer": {"__typename": "User", "login": "carol"}},
+                            {"requestedReviewer": {"__typename": "Team", "combinedSlug": "o/core"}},
+                            {"requestedReviewer": {"__typename": "Bot", "login": "copilot"}},
+                        ]}});
                     } else {
                         data[&alias][&key] = Value::Null;
                         errors.push(json!({"path": [alias, key], "message": format!("Could not resolve to a PullRequest with the number of {number}.")}));
@@ -992,50 +1120,131 @@ mod tests {
 
     #[tokio::test]
     async fn reads_pull_requests_in_batches_of_one_query() {
-        let ids: Vec<(String, u32)> = (1..=25).map(|n| (if n % 2 == 0 { "o/r" } else { "o/other" }.to_string(), n)).collect();
-        let gh = Batched { queries: Default::default(), repos: vec![("o/r", (1..=25).collect()), ("o/other", (1..=25).collect())], fail: false };
+        let ids: Vec<(String, u32)> = (1..=25)
+            .map(|n| (if n % 2 == 0 { "o/r" } else { "o/other" }.to_string(), n))
+            .collect();
+        let gh = Batched {
+            queries: Default::default(),
+            repos: vec![("o/r", (1..=25).collect()), ("o/other", (1..=25).collect())],
+            fail: false,
+        };
         let pulls = pulls(&gh, "github.com:me", &ids).await.unwrap();
-        assert_eq!(gh.queries.lock().unwrap().len(), 2, "25 PRs take two queries of at most {BATCH}");
-        let pulls: Vec<_> = pulls.into_iter().map(Result::unwrap).collect();
-        assert_eq!(pulls.iter().map(|p| (p.repo.as_str(), p.number)).collect::<Vec<_>>(), ids.iter().map(|(r, n)| (r.as_str(), *n)).collect::<Vec<_>>());
-        let p = &pulls[1];
-        assert_eq!((p.id.as_str(), p.title.as_str(), p.state.as_str(), p.author.as_str(), p.can_merge), ("o/r#2", "PR 2", "open", "bob", true));
-        assert_eq!(p.unanswered_threads, 1, "your own last word, a bot's remark and resolved threads wait on no one");
         assert_eq!(
-            p.requested.iter().map(|r| (r.name.as_str(), r.kind.as_str())).collect::<Vec<_>>(),
+            gh.queries.lock().unwrap().len(),
+            2,
+            "25 PRs take two queries of at most {BATCH}"
+        );
+        let pulls: Vec<_> = pulls.into_iter().map(Result::unwrap).collect();
+        assert_eq!(
+            pulls
+                .iter()
+                .map(|p| (p.repo.as_str(), p.number))
+                .collect::<Vec<_>>(),
+            ids.iter()
+                .map(|(r, n)| (r.as_str(), *n))
+                .collect::<Vec<_>>()
+        );
+        let p = &pulls[1];
+        assert_eq!(
+            (
+                p.id.as_str(),
+                p.title.as_str(),
+                p.state.as_str(),
+                p.author.as_str(),
+                p.can_merge
+            ),
+            ("o/r#2", "PR 2", "open", "bob", true)
+        );
+        assert_eq!(
+            p.unanswered_threads, 1,
+            "your own last word, a bot's remark and resolved threads wait on no one"
+        );
+        assert_eq!(
+            p.requested
+                .iter()
+                .map(|r| (r.name.as_str(), r.kind.as_str()))
+                .collect::<Vec<_>>(),
             vec![("carol", "user"), ("o/core", "team"), ("copilot", "bot")]
         );
         let first = &gh.queries.lock().unwrap()[0];
-        assert_eq!(first.matches("repository(").count(), 2, "one repository block per repo");
+        assert_eq!(
+            first.matches("repository(").count(),
+            2,
+            "one repository block per repo"
+        );
         assert!(first.contains("pr19:pullRequest(number:20)") && !first.contains("pr20:"));
     }
 
     #[tokio::test]
     async fn one_unreadable_pull_request_does_not_fail_its_batch() {
-        let gh = Batched { queries: Default::default(), repos: vec![("o/r", vec![1, 3])], fail: false };
-        let ids = [("o/r".to_string(), 1), ("o/r".to_string(), 2), ("o/gone".to_string(), 7), ("o/r".to_string(), 3)];
+        let gh = Batched {
+            queries: Default::default(),
+            repos: vec![("o/r", vec![1, 3])],
+            fail: false,
+        };
+        let ids = [
+            ("o/r".to_string(), 1),
+            ("o/r".to_string(), 2),
+            ("o/gone".to_string(), 7),
+            ("o/r".to_string(), 3),
+        ];
         let pulls = pulls(&gh, "github.com:me", &ids).await.unwrap();
         assert_eq!(pulls[0].as_ref().unwrap().number, 1);
-        assert_eq!(pulls[1].as_ref().unwrap_err().to_string(), "Unable to read o/r#2: Could not resolve to a PullRequest with the number of 2.");
-        assert_eq!(pulls[2].as_ref().unwrap_err().to_string(), "Unable to read o/gone#7: Could not resolve to a Repository");
+        assert_eq!(
+            pulls[1].as_ref().unwrap_err().to_string(),
+            "Unable to read o/r#2: Could not resolve to a PullRequest with the number of 2."
+        );
+        assert_eq!(
+            pulls[2].as_ref().unwrap_err().to_string(),
+            "Unable to read o/gone#7: Could not resolve to a Repository"
+        );
         assert_eq!(pulls[3].as_ref().unwrap().number, 3);
-        assert_eq!(pull(&gh, "github.com:me", "o/r", 3).await.unwrap().number, 3);
+        assert_eq!(
+            pull(&gh, "github.com:me", "o/r", 3).await.unwrap().number,
+            3
+        );
         assert!(pull(&gh, "github.com:me", "o/r", 2).await.is_err());
     }
 
     #[tokio::test]
     async fn a_query_github_rejects_as_a_whole_fails_the_read() {
-        let gh = Batched { queries: Default::default(), repos: vec![], fail: true };
-        assert!(pulls(&gh, "github.com:me", &[("o/r".into(), 1)]).await.unwrap_err().to_string().contains("Something went wrong"));
-        assert!(pulls(&gh, "github.com:me", &[("o/../r".into(), 1)]).await.is_err(), "unsafe names never reach the query");
+        let gh = Batched {
+            queries: Default::default(),
+            repos: vec![],
+            fail: true,
+        };
+        assert!(pulls(&gh, "github.com:me", &[("o/r".into(), 1)])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Something went wrong"));
+        assert!(
+            pulls(&gh, "github.com:me", &[("o/../r".into(), 1)])
+                .await
+                .is_err(),
+            "unsafe names never reach the query"
+        );
     }
 
     #[test]
     fn reads_the_milestone_title() {
-        let with = from_graphql("a", "me", "o/r", 1, &json!({}), &json!({"milestone": {"number": 4, "title": "Q4"}}));
-        assert_eq!((with.milestone, with.milestone_title.as_str()), (Some(4), "Q4"));
+        let with = from_graphql(
+            "a",
+            "me",
+            "o/r",
+            1,
+            &json!({}),
+            &json!({"milestone": {"number": 4, "title": "Q4"}}),
+        );
+        assert_eq!(
+            (with.milestone, with.milestone_title.as_str()),
+            (Some(4), "Q4")
+        );
         let without = from_graphql("a", "me", "o/r", 1, &json!({}), &json!({"milestone": null}));
-        assert_eq!((without.milestone, without.milestone_title.as_str()), (None, ""));
+        assert_eq!(
+            (without.milestone, without.milestone_title.as_str()),
+            (None, "")
+        );
     }
 
     #[test]
@@ -1054,19 +1263,55 @@ mod tests {
             "latestReviews": {"nodes": [{"databaseId": 99, "state": "COMMENTED", "author": user("alice")}]},
         });
         let a = activity(&d);
-        assert_eq!((a.commits, a.pushed_by.clone(), a.state_actor.as_str()), (4, vec!["bob".to_string()], "alice"));
-        assert_eq!(a.comments, vec![Note { id: 7, author: "carol".into(), bot: false }, Note { id: 8, author: "ci[bot]".into(), bot: true }]);
-        assert_eq!(a.thread_comments.iter().map(|n| n.id).collect::<Vec<_>>(), vec![20, 21, 30, 31]);
-        assert_eq!(a.reviews, vec![LatestReview { id: 99, reviewer: "alice".into(), bot: false, state: "COMMENTED".into() }]);
-        assert_eq!(unanswered_threads(&d["reviewThreads"]["nodes"], "me"), 1, "a thread's latest comment decides");
+        assert_eq!(
+            (a.commits, a.pushed_by.clone(), a.state_actor.as_str()),
+            (4, vec!["bob".to_string()], "alice")
+        );
+        assert_eq!(
+            a.comments,
+            vec![
+                Note {
+                    id: 7,
+                    author: "carol".into(),
+                    bot: false
+                },
+                Note {
+                    id: 8,
+                    author: "ci[bot]".into(),
+                    bot: true
+                }
+            ]
+        );
+        assert_eq!(
+            a.thread_comments.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![20, 21, 30, 31]
+        );
+        assert_eq!(
+            a.reviews,
+            vec![LatestReview {
+                id: 99,
+                reviewer: "alice".into(),
+                bot: false,
+                state: "COMMENTED".into()
+            }]
+        );
+        assert_eq!(
+            unanswered_threads(&d["reviewThreads"]["nodes"], "me"),
+            1,
+            "a thread's latest comment decides"
+        );
         let merged = json!({"state": "MERGED", "mergedBy": {"login": "me"}, "stateEvents": {"nodes": [{"actor": {"login": "alice"}}]}});
         assert_eq!(activity(&merged).state_actor, "me");
     }
 
     #[test]
     fn keeps_partial_graphql_answers_from_gh() {
-        assert!(has_data(br#"{"data":{"r0":null},"errors":[{"message":"x"}]}"#));
-        assert!(!has_data(br#"{"data":null,"errors":[{"type":"RATE_LIMITED"}]}"#));
+        assert!(has_data(
+            br#"{"data":{"r0":null},"errors":[{"message":"x"}]}"#
+        ));
+        assert!(!has_data(
+            br#"{"data":null,"errors":[{"type":"RATE_LIMITED"}]}"#
+        ));
         assert!(!has_data(b"gh: not json"));
     }
 }

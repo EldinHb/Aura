@@ -527,17 +527,80 @@ mod tests {
     #[test]
     fn merges_only_when_github_reports_ready_and_checks_pass() {
         assert_eq!(ready().merge_blocker(), None);
-        assert_eq!(PullRequest { checks: String::new(), ..ready() }.merge_blocker(), None, "a PR without checks has none failing");
+        assert_eq!(
+            PullRequest {
+                checks: String::new(),
+                ..ready()
+            }
+            .merge_blocker(),
+            None,
+            "a PR without checks has none failing"
+        );
         for (pr, why) in [
-            (PullRequest { checks: "PENDING".into(), ..ready() }, "Checks are still running"),
-            (PullRequest { checks: "FAILURE".into(), ..ready() }, "Checks have failed"),
-            (PullRequest { merge_state: "DIRTY".into(), ..ready() }, "The branch has merge conflicts"),
-            (PullRequest { merge_state: "BLOCKED".into(), review_decision: "REVIEW_REQUIRED".into(), ..ready() }, "A review is required"),
-            (PullRequest { merge_state: "UNKNOWN".into(), ..ready() }, "GitHub is still checking whether this can be merged"),
-            (PullRequest { draft: true, ..ready() }, "Draft pull requests cannot be merged"),
-            (PullRequest { can_merge: false, ..ready() }, "You do not have permission to merge this pull request"),
-            (PullRequest { merge_methods: vec![], ..ready() }, "The repository allows no merge method"),
-            (PullRequest { state: "merged".into(), ..ready() }, "This pull request is not open"),
+            (
+                PullRequest {
+                    checks: "PENDING".into(),
+                    ..ready()
+                },
+                "Checks are still running",
+            ),
+            (
+                PullRequest {
+                    checks: "FAILURE".into(),
+                    ..ready()
+                },
+                "Checks have failed",
+            ),
+            (
+                PullRequest {
+                    merge_state: "DIRTY".into(),
+                    ..ready()
+                },
+                "The branch has merge conflicts",
+            ),
+            (
+                PullRequest {
+                    merge_state: "BLOCKED".into(),
+                    review_decision: "REVIEW_REQUIRED".into(),
+                    ..ready()
+                },
+                "A review is required",
+            ),
+            (
+                PullRequest {
+                    merge_state: "UNKNOWN".into(),
+                    ..ready()
+                },
+                "GitHub is still checking whether this can be merged",
+            ),
+            (
+                PullRequest {
+                    draft: true,
+                    ..ready()
+                },
+                "Draft pull requests cannot be merged",
+            ),
+            (
+                PullRequest {
+                    can_merge: false,
+                    ..ready()
+                },
+                "You do not have permission to merge this pull request",
+            ),
+            (
+                PullRequest {
+                    merge_methods: vec![],
+                    ..ready()
+                },
+                "The repository allows no merge method",
+            ),
+            (
+                PullRequest {
+                    state: "merged".into(),
+                    ..ready()
+                },
+                "This pull request is not open",
+            ),
         ] {
             assert_eq!(pr.merge_blocker(), Some(why));
         }
@@ -546,7 +609,11 @@ mod tests {
     /// `value` as an older daemon wrote it: without the fields named in `added`.
     fn without(mut value: serde_json::Value, added: &[&str]) -> serde_json::Value {
         for key in added {
-            value.as_object_mut().unwrap().remove(*key).expect("field exists today");
+            value
+                .as_object_mut()
+                .unwrap()
+                .remove(*key)
+                .expect("field exists today");
         }
         value
     }
@@ -555,19 +622,45 @@ mod tests {
     /// and as an older client sends them, still read.
     #[test]
     fn reads_what_0_2_8_wrote() {
-        let review = SubmittedReview { state: "APPROVED".into(), submitted_at: "2026-10-01T10:00:00Z".into(), commit_sha: "abc".into(), ..Default::default() };
-        let mut pull = without(serde_json::to_value(PullRequest::default()).unwrap(), &["reviews", "requested", "unanswered_threads"]);
+        let review = SubmittedReview {
+            state: "APPROVED".into(),
+            submitted_at: "2026-10-01T10:00:00Z".into(),
+            commit_sha: "abc".into(),
+            ..Default::default()
+        };
+        let mut pull = without(
+            serde_json::to_value(PullRequest::default()).unwrap(),
+            &["reviews", "requested", "unanswered_threads"],
+        );
         pull["my_review"] = without(serde_json::to_value(&review).unwrap(), &["reviewer", "bot"]);
         let read: PullRequest = serde_json::from_value(pull.clone()).unwrap();
-        assert_eq!(read, PullRequest { my_review: Some(review), ..Default::default() });
+        assert_eq!(
+            read,
+            PullRequest {
+                my_review: Some(review),
+                ..Default::default()
+            }
+        );
 
-        let mut inbox = without(serde_json::to_value(ReviewInbox::default()).unwrap(), &["reviewed"]);
+        let mut inbox = without(
+            serde_json::to_value(ReviewInbox::default()).unwrap(),
+            &["reviewed"],
+        );
         inbox["pulls"] = serde_json::json!([pull.clone()]);
         inbox["mine"] = serde_json::json!([pull]);
         let read: ReviewInbox = serde_json::from_value(inbox).unwrap();
-        assert_eq!((read.pulls.len(), read.mine.len(), read.reviewed.len()), (1, 1, 0));
+        assert_eq!(
+            (read.pulls.len(), read.mine.len(), read.reviewed.len()),
+            (1, 1, 0)
+        );
 
-        let branch = without(serde_json::to_value(BranchPull::default()).unwrap(), &["reviews"]);
-        assert_eq!(serde_json::from_value::<BranchPull>(branch).unwrap(), BranchPull::default());
+        let branch = without(
+            serde_json::to_value(BranchPull::default()).unwrap(),
+            &["reviews"],
+        );
+        assert_eq!(
+            serde_json::from_value::<BranchPull>(branch).unwrap(),
+            BranchPull::default()
+        );
     }
 }

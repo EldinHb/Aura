@@ -101,10 +101,22 @@ pub fn parse_config(text: &str) -> Result<Vec<AgentSpec>, String> {
         if id.is_empty() {
             return Err(format!("agents[{i}]: `id` is empty"));
         }
-        if a.command.first().map(|c| c.trim().is_empty()).unwrap_or(true) {
-            return Err(format!("agents[{i}] ({id}): `command` must start with the program to run"));
+        if a.command
+            .first()
+            .map(|c| c.trim().is_empty())
+            .unwrap_or(true)
+        {
+            return Err(format!(
+                "agents[{i}] ({id}): `command` must start with the program to run"
+            ));
         }
-        out.push(AgentSpec { display_name: a.name.unwrap_or_else(|| id.clone()), id, command: a.command, env: a.env, source: "custom" });
+        out.push(AgentSpec {
+            display_name: a.name.unwrap_or_else(|| id.clone()),
+            id,
+            command: a.command,
+            env: a.env,
+            source: "custom",
+        });
     }
     Ok(out)
 }
@@ -140,7 +152,10 @@ pub fn load(config: Option<&Path>) -> Vec<ResolvedAgent> {
     };
     merge(builtin(), custom)
         .into_iter()
-        .map(|spec| ResolvedAgent { binary: resolve(&spec.command[0]), spec })
+        .map(|spec| ResolvedAgent {
+            binary: resolve(&spec.command[0]),
+            spec,
+        })
         .collect()
 }
 
@@ -153,11 +168,17 @@ pub fn resolve(program: &str) -> Option<String> {
     }
     // npm installs Windows shims as `.cmd`; native installers use `.exe`.
     let names: Vec<String> = if cfg!(windows) && path.extension().is_none() {
-        vec![format!("{program}.exe"), format!("{program}.cmd"), program.to_string()]
+        vec![
+            format!("{program}.exe"),
+            format!("{program}.cmd"),
+            program.to_string(),
+        ]
     } else {
         vec![program.to_string()]
     };
-    names.iter().find_map(|n| aura_core::which::find_binary(n, "", &[]))
+    names
+        .iter()
+        .find_map(|n| aura_core::which::find_binary(n, "", &[]))
 }
 
 #[cfg(test)]
@@ -179,15 +200,26 @@ mod tests {
         assert_eq!(gemini.source, "custom");
         assert_eq!(gemini.display_name, "gemini", "name defaults to the id");
         let claude = merged.last().unwrap();
-        assert_eq!((claude.id.as_str(), claude.display_name.as_str()), ("claude-acp", "Claude (ACP)"));
+        assert_eq!(
+            (claude.id.as_str(), claude.display_name.as_str()),
+            ("claude-acp", "Claude (ACP)")
+        );
         assert_eq!(claude.env["A"], "1");
         assert_eq!(merged.len(), builtin().len() + 1);
     }
 
     #[test]
     fn rejects_entries_that_cannot_start() {
-        assert!(parse_config(r#"{ "agents": [ { "id": "x", "command": [] } ] }"#).unwrap_err().contains("command"));
-        assert!(parse_config(r#"{ "agents": [ { "id": " ", "command": ["x"] } ] }"#).unwrap_err().contains("id"));
+        assert!(
+            parse_config(r#"{ "agents": [ { "id": "x", "command": [] } ] }"#)
+                .unwrap_err()
+                .contains("command")
+        );
+        assert!(
+            parse_config(r#"{ "agents": [ { "id": " ", "command": ["x"] } ] }"#)
+                .unwrap_err()
+                .contains("id")
+        );
         assert!(parse_config("not json").is_err());
         assert_eq!(parse_config("{}").unwrap(), vec![]);
     }
@@ -198,7 +230,10 @@ mod tests {
         let path = dir.path().join(CONFIG_FILE);
         std::fs::write(&path, "{ oops").unwrap();
         assert_eq!(load(Some(&path)).len(), builtin().len());
-        assert_eq!(load(Some(&dir.path().join("missing.json"))).len(), builtin().len());
+        assert_eq!(
+            load(Some(&dir.path().join("missing.json"))).len(),
+            builtin().len()
+        );
     }
 
     #[test]

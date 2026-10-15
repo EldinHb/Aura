@@ -48,7 +48,9 @@ impl Client {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        let mut child = cmd.spawn().with_context(|| format!("spawn {binary} app-server"))?;
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("spawn {binary} app-server"))?;
         let stdin = child.stdin.take().context("stdin")?;
         let stdout = child.stdout.take().context("stdout")?;
         let client = Self::from_io(stdout, stdin);
@@ -73,7 +75,9 @@ impl Client {
             closed_rx,
             child: Mutex::new(None),
         });
-        let client = Self { inner: inner.clone() };
+        let client = Self {
+            inner: inner.clone(),
+        };
         tokio::spawn(Self::read_loop(inner, reader));
         client
     }
@@ -110,15 +114,26 @@ impl Client {
         }
         let routes: Vec<_> = inner.routes.lock().drain().collect();
         for (_, tx) in routes {
-            let _ = tx.send(Incoming { id: None, method: CLOSED.into(), params: Value::Null });
+            let _ = tx.send(Incoming {
+                id: None,
+                method: CLOSED.into(),
+                params: Value::Null,
+            });
         }
         if let Some(tx) = inner.global.lock().as_ref() {
-            let _ = tx.send(Incoming { id: None, method: CLOSED.into(), params: Value::Null });
+            let _ = tx.send(Incoming {
+                id: None,
+                method: CLOSED.into(),
+                params: Value::Null,
+            });
         }
     }
 
     async fn dispatch(inner: &Arc<Inner>, msg: Value) {
-        let method = msg.get("method").and_then(|m| m.as_str()).map(|s| s.to_string());
+        let method = msg
+            .get("method")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string());
         let id = msg.get("id").cloned();
         match (method, id) {
             (None, Some(id)) => {
@@ -139,8 +154,14 @@ impl Client {
             (Some(method), id) => {
                 let params = msg.get("params").cloned().unwrap_or(Value::Null);
                 let thread_id = thread_id_of(&params);
-                let incoming = Incoming { id: id.clone(), method: method.clone(), params };
-                let route = thread_id.as_ref().and_then(|t| inner.routes.lock().get(t).cloned());
+                let incoming = Incoming {
+                    id: id.clone(),
+                    method: method.clone(),
+                    params,
+                };
+                let route = thread_id
+                    .as_ref()
+                    .and_then(|t| inner.routes.lock().get(t).cloned());
                 if let Some(tx) = route {
                     if tx.send(incoming.clone()).is_ok() {
                         return;
@@ -154,9 +175,13 @@ impl Client {
                 }
                 if let Some(id) = id {
                     // Never leave a server request hanging.
-                    tracing::warn!("codex: unrouted server request {method}; answering with a cancel");
+                    tracing::warn!(
+                        "codex: unrouted server request {method}; answering with a cancel"
+                    );
                     let result = fallback_reply(&method);
-                    let client = Client { inner: inner.clone() };
+                    let client = Client {
+                        inner: inner.clone(),
+                    };
                     let _ = client.reply(id, result).await;
                 } else {
                     tracing::trace!("codex: unrouted notification {method}");
@@ -232,7 +257,8 @@ impl Client {
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<()> {
-        self.write(&json!({ "method": method, "params": params })).await
+        self.write(&json!({ "method": method, "params": params }))
+            .await
     }
 
     /// Answer a server-initiated request.
@@ -254,14 +280,21 @@ pub fn thread_id_of(params: &Value) -> Option<String> {
     params
         .get("threadId")
         .and_then(|t| t.as_str())
-        .or_else(|| params.get("thread").and_then(|t| t.get("id")).and_then(|t| t.as_str()))
+        .or_else(|| {
+            params
+                .get("thread")
+                .and_then(|t| t.get("id"))
+                .and_then(|t| t.as_str())
+        })
         .map(|s| s.to_string())
 }
 
 /// Safe default answer for a server request nobody handles.
 pub fn fallback_reply(method: &str) -> Value {
     match method {
-        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => json!({ "decision": "cancel" }),
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            json!({ "decision": "cancel" })
+        }
         "item/permissions/requestApproval" => json!({ "permissions": {} }),
         "item/tool/requestUserInput" => json!({ "answers": {} }),
         "mcpServer/elicitation/request" => json!({ "action": "cancel" }),
@@ -289,12 +322,15 @@ mod tests {
             assert_eq!(req["method"], "initialize");
             let id = req["id"].clone();
             // Notification, then a server request, then the response (out of order on purpose).
-            let n = json!({"method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn1"}}});
+            let n =
+                json!({"method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn1"}}});
             bw.write_all(format!("{n}\n").as_bytes()).await.unwrap();
             let sr = json!({"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"t1","command":"ls"}});
             bw.write_all(format!("{sr}\n").as_bytes()).await.unwrap();
             let unrouted = json!({"id":8,"method":"item/tool/requestUserInput","params":{"threadId":"other","questions":[]}});
-            bw.write_all(format!("{unrouted}\n").as_bytes()).await.unwrap();
+            bw.write_all(format!("{unrouted}\n").as_bytes())
+                .await
+                .unwrap();
             let resp = json!({"id":id,"result":{"ok":true}});
             bw.write_all(format!("{resp}\n").as_bytes()).await.unwrap();
             // Expect the client's reply to request 7 and the fallback reply to 8 (any order).
@@ -314,7 +350,10 @@ mod tests {
         let sr = rx.recv().await.unwrap();
         assert_eq!(sr.method, "item/commandExecution/requestApproval");
         assert_eq!(sr.id, Some(json!(7)));
-        client.reply(json!(7), json!({"decision":"accept"})).await.unwrap();
+        client
+            .reply(json!(7), json!({"decision":"accept"}))
+            .await
+            .unwrap();
 
         let got = server.await.unwrap();
         let by_id = |id: i64| got.iter().find(|m| m["id"] == json!(id)).cloned().unwrap();

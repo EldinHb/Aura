@@ -1023,7 +1023,12 @@ async fn a_busy_orchestrator_gets_reports_once_it_is_free_and_not_for_what_it_wa
         .await
         .unwrap();
     let waited = m
-        .wait_workers(&orch.id, std::slice::from_ref(&a.id), false, Duration::from_secs(5))
+        .wait_workers(
+            &orch.id,
+            std::slice::from_ref(&a.id),
+            false,
+            Duration::from_secs(5),
+        )
         .await
         .unwrap();
     assert!(!waited.timed_out);
@@ -1178,7 +1183,9 @@ async fn sent_images_are_kept_and_shown_on_the_user_message() {
     let user = evs
         .iter()
         .find_map(|e| match e {
-            Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage => Some(item.clone()),
+            Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage => {
+                Some(item.clone())
+            }
             _ => None,
         })
         .unwrap();
@@ -1188,7 +1195,10 @@ async fn sent_images_are_kept_and_shown_on_the_user_message() {
     assert_eq!(att["original_width"], 4000);
     assert_eq!(att["thumbnail"], "data:image/png;base64,AAAA");
     let id = att["id"].as_str().unwrap();
-    assert_eq!(m.attachment(&s.id, id).unwrap(), ("iVBORw0K".to_string(), "image/png".to_string()));
+    assert_eq!(
+        m.attachment(&s.id, id).unwrap(),
+        ("iVBORw0K".to_string(), "image/png".to_string())
+    );
     // Stored history carries them too, and ids cannot leave the directory.
     let hist = m.history(&s.id, 0, 100).unwrap();
     assert!(hist.iter().any(|e| matches!(&e.event, Event::ItemCompleted { item, .. } if item.data["attachments"][0]["id"] == id)));
@@ -1196,7 +1206,15 @@ async fn sent_images_are_kept_and_shown_on_the_user_message() {
     assert!(m.attachment("..", id).is_err());
 
     // A later message without images gets none.
-    m.send(&s.id, Input { text: "look at this".into(), ..Default::default() }).await.unwrap();
+    m.send(
+        &s.id,
+        Input {
+            text: "look at this".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     wait_status(&m, &s.id, SessionStatus::Idle).await;
     let evs = drain(&mut rx).await;
     assert!(evs.iter().any(|e| matches!(e, Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage && item.data.get("attachments").is_none())));
@@ -1218,6 +1236,18 @@ async fn terminal_sessions_refuse_images() {
         })
         .await
         .unwrap();
-    let input = Input { text: "x".into(), images: vec![ImageInput { data: Some("AA==".into()), ..Default::default() }], ..Default::default() };
-    assert!(m.send(&s.id, input).await.unwrap_err().to_string().contains("cannot take images"));
+    let input = Input {
+        text: "x".into(),
+        images: vec![ImageInput {
+            data: Some("AA==".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(m
+        .send(&s.id, input)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("cannot take images"));
 }

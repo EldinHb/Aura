@@ -62,9 +62,11 @@ pub struct SqliteStore {
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
         }
-        let conn = Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
         Self::init(conn)
     }
 
@@ -77,7 +79,9 @@ impl SqliteStore {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        let store = Self { conn: Mutex::new(conn) };
+        let store = Self {
+            conn: Mutex::new(conn),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -90,14 +94,18 @@ impl SqliteStore {
             if version >= target {
                 continue;
             }
-            conn.execute_batch(sql).with_context(|| format!("migration v{target}"))?;
+            conn.execute_batch(sql)
+                .with_context(|| format!("migration v{target}"))?;
             conn.pragma_update(None, "user_version", target)?;
         }
         Ok(())
     }
 
     pub fn schema_version(&self) -> Result<i64> {
-        Ok(self.conn.lock().pragma_query_value(None, "user_version", |r| r.get(0))?)
+        Ok(self
+            .conn
+            .lock()
+            .pragma_query_value(None, "user_version", |r| r.get(0))?)
     }
 }
 
@@ -125,8 +133,11 @@ fn parse_ts(s: &str) -> DateTime<Utc> {
 impl Store for SqliteStore {
     fn feature_records(&self, namespace: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, json FROM feature_records WHERE namespace = ? ORDER BY id")?;
-        let rows = stmt.query_map([namespace], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        let mut stmt =
+            conn.prepare("SELECT id, json FROM feature_records WHERE namespace = ? ORDER BY id")?;
+        let rows = stmt
+            .query_map([namespace], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
     fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> Result<()> {
@@ -134,7 +145,10 @@ impl Store for SqliteStore {
         Ok(())
     }
     fn delete_feature_record(&self, namespace: &str, id: &str) -> Result<()> {
-        self.conn.lock().execute("DELETE FROM feature_records WHERE namespace = ?1 AND id = ?2", params![namespace, id])?;
+        self.conn.lock().execute(
+            "DELETE FROM feature_records WHERE namespace = ?1 AND id = ?2",
+            params![namespace, id],
+        )?;
         Ok(())
     }
     fn upsert_session(&self, session: &Session) -> Result<()> {
@@ -163,7 +177,10 @@ impl Store for SqliteStore {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
         tx.execute("DELETE FROM events WHERE session_id = ?1", params![id])?;
-        tx.execute("DELETE FROM messages_fts WHERE session_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM messages_fts WHERE session_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM scrollback WHERE session_id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
@@ -171,7 +188,8 @@ impl Store for SqliteStore {
 
     fn list_sessions(&self) -> Result<Vec<Session>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT json FROM sessions ORDER BY pinned DESC, last_activity DESC")?;
+        let mut stmt =
+            conn.prepare("SELECT json FROM sessions ORDER BY pinned DESC, last_activity DESC")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
@@ -195,10 +213,18 @@ impl Store for SqliteStore {
         let ts = Utc::now();
         tx.execute(
             "INSERT INTO events (session_id, seq, ts, kind, json) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session_id, seq, ts.to_rfc3339(), event_kind(event), serde_json::to_string(event)?],
+            params![
+                session_id,
+                seq,
+                ts.to_rfc3339(),
+                event_kind(event),
+                serde_json::to_string(event)?
+            ],
         )?;
         if let Event::ItemCompleted { item, .. } = event {
-            if matches!(item.kind, ItemKind::UserMessage | ItemKind::AgentMessage) && !item.text.trim().is_empty() {
+            if matches!(item.kind, ItemKind::UserMessage | ItemKind::AgentMessage)
+                && !item.text.trim().is_empty()
+            {
                 tx.execute(
                     "INSERT INTO messages_fts (session_id, item_id, ts, text) VALUES (?1, ?2, ?3, ?4)",
                     params![session_id, item.id, ts.to_rfc3339(), item.text],
@@ -215,13 +241,21 @@ impl Store for SqliteStore {
             "SELECT seq, ts, json FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq ASC LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![session_id, after_seq as i64, limit as i64], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         let mut out = Vec::new();
         for row in rows {
             let (seq, ts, json) = row?;
             match serde_json::from_str::<Event>(&json) {
-                Ok(event) => out.push(StoredEvent { seq: seq as u64, ts: parse_ts(&ts), event }),
+                Ok(event) => out.push(StoredEvent {
+                    seq: seq as u64,
+                    ts: parse_ts(&ts),
+                    event,
+                }),
                 Err(e) => tracing::warn!("skipping unreadable event {session_id}/{seq}: {e}"),
             }
         }
@@ -248,7 +282,9 @@ impl Store for SqliteStore {
                  FROM messages_fts WHERE messages_fts MATCH ?1 ORDER BY rank LIMIT ?2",
             )
             .and_then(|mut stmt| {
-                let hits = stmt.query_map(params![q, limit as i64], map)?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let hits = stmt
+                    .query_map(params![q, limit as i64], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(hits)
             });
         match fts {
@@ -260,7 +296,9 @@ impl Store for SqliteStore {
                     "SELECT session_id, item_id, substr(text, 1, 200), ts FROM messages_fts
                      WHERE text LIKE ?1 ESCAPE '\\' LIMIT ?2",
                 )?;
-                let hits = stmt.query_map(params![like, limit as i64], map)?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let hits = stmt
+                    .query_map(params![like, limit as i64], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(hits)
             }
         }
@@ -270,7 +308,11 @@ impl Store for SqliteStore {
         Ok(self
             .conn
             .lock()
-            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
             .optional()?)
     }
 
@@ -295,7 +337,11 @@ impl Store for SqliteStore {
         Ok(self
             .conn
             .lock()
-            .query_row("SELECT data FROM scrollback WHERE session_id = ?1", params![session_id], |r| r.get(0))
+            .query_row(
+                "SELECT data FROM scrollback WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
             .optional()?)
     }
 }
@@ -306,20 +352,29 @@ mod tests {
     use aura_core::{CreateSessionOpts, Item, ItemKind, ProviderKind, Turn, TurnStatus};
 
     fn session(cwd: &str) -> Session {
-        Session::new(&CreateSessionOpts { provider: ProviderKind::Terminal, cwd: cwd.into(), ..Default::default() })
+        Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Terminal,
+            cwd: cwd.into(),
+            ..Default::default()
+        })
     }
 
     fn msg(session_id: &str, kind: ItemKind, text: &str) -> Event {
         Event::ItemCompleted {
             session_id: session_id.into(),
-            item: Item::new(session_id, None, kind).with_text(text).completed(),
+            item: Item::new(session_id, None, kind)
+                .with_text(text)
+                .completed(),
         }
     }
 
     #[test]
     fn fts5_is_available() {
         let s = SqliteStore::open_in_memory().unwrap();
-        s.conn.lock().execute_batch("CREATE VIRTUAL TABLE t USING fts5(x);").unwrap();
+        s.conn
+            .lock()
+            .execute_batch("CREATE VIRTUAL TABLE t USING fts5(x);")
+            .unwrap();
     }
 
     #[test]
@@ -372,9 +427,33 @@ mod tests {
     #[test]
     fn fts_search() {
         let s = SqliteStore::open_in_memory().unwrap();
-        s.append_event("s1", &msg("s1", ItemKind::AgentMessage, "The quick brown fox fixed auth.py today.")).unwrap();
-        s.append_event("s1", &msg("s1", ItemKind::Reasoning, "brown reasoning should not index")).unwrap();
-        s.append_event("s2", &msg("s2", ItemKind::UserMessage, "Please run cargo test -- --nocapture")).unwrap();
+        s.append_event(
+            "s1",
+            &msg(
+                "s1",
+                ItemKind::AgentMessage,
+                "The quick brown fox fixed auth.py today.",
+            ),
+        )
+        .unwrap();
+        s.append_event(
+            "s1",
+            &msg(
+                "s1",
+                ItemKind::Reasoning,
+                "brown reasoning should not index",
+            ),
+        )
+        .unwrap();
+        s.append_event(
+            "s2",
+            &msg(
+                "s2",
+                ItemKind::UserMessage,
+                "Please run cargo test -- --nocapture",
+            ),
+        )
+        .unwrap();
         let hits = s.search("brown", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "s1");
@@ -411,7 +490,10 @@ mod tests {
         s.save_feature_record("groups", "b", "2").unwrap();
         s.save_feature_record("other", "a", "3").unwrap();
         s.delete_feature_record("groups", "a").unwrap();
-        assert_eq!(s.feature_records("groups").unwrap(), vec![("b".to_string(), "2".to_string())]);
+        assert_eq!(
+            s.feature_records("groups").unwrap(),
+            vec![("b".to_string(), "2".to_string())]
+        );
         assert_eq!(s.feature_records("other").unwrap().len(), 1);
     }
 
@@ -427,7 +509,8 @@ mod tests {
             id = sess.id.clone();
             s.upsert_session(&sess).unwrap();
             s.set_setting("theme", "dark").unwrap();
-            s.append_event(&id, &msg(&id, ItemKind::AgentMessage, "persist me")).unwrap();
+            s.append_event(&id, &msg(&id, ItemKind::AgentMessage, "persist me"))
+                .unwrap();
         }
         let s = SqliteStore::open(&path).unwrap();
         assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);

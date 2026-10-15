@@ -454,7 +454,12 @@ impl ReviewService {
                 {
                     let mut state = self.state.lock();
                     let state = &mut *state;
-                    for pull in state.pulls.iter_mut().chain(&mut state.reviewed).chain(&mut state.mine) {
+                    for pull in state
+                        .pulls
+                        .iter_mut()
+                        .chain(&mut state.reviewed)
+                        .chain(&mut state.mine)
+                    {
                         if pull.id == id && pull.account == account {
                             pull.hidden = hidden;
                         }

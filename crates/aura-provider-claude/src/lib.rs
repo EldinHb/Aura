@@ -27,7 +27,10 @@ mod tests {
     use serde_json::Value;
 
     fn fixture_lines() -> Vec<(String, Value)> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/protocol/claude/traffic.jsonl");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/protocol/claude/traffic.jsonl"
+        );
         let text = std::fs::read_to_string(path).expect("fixture traffic.jsonl");
         text.lines()
             .filter(|l| !l.trim().is_empty())
@@ -47,45 +50,74 @@ mod tests {
             match dir.as_str() {
                 "out" => match msg.get("type").and_then(Value::as_str) {
                     Some("user") => {
-                        let text = msg.pointer("/message/content/0/text").and_then(Value::as_str).unwrap_or("");
+                        let text = msg
+                            .pointer("/message/content/0/text")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
                         events.extend(p.start_turn(text));
                     }
                     Some("control_request") => {
                         let id = msg["request_id"].as_str().unwrap();
                         let kind = match msg.pointer("/request/subtype").and_then(Value::as_str) {
                             Some("interrupt") => parser::OutboundControl::Interrupt,
-                            Some("set_permission_mode") => parser::OutboundControl::SetPermissionMode(
-                                msg.pointer("/request/mode").and_then(Value::as_str).unwrap_or("").into(),
-                            ),
+                            Some("set_permission_mode") => {
+                                parser::OutboundControl::SetPermissionMode(
+                                    msg.pointer("/request/mode")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .into(),
+                                )
+                            }
                             _ => parser::OutboundControl::Other,
                         };
                         p.note_outbound(id, kind);
                     }
                     Some("control_response") => {
                         // The driver would have built this via approval_response / input_response.
-                        let rid = msg.pointer("/response/request_id").and_then(Value::as_str).unwrap();
-                        let pending = p.pending_approvals.get(rid).cloned().expect("pending approval");
+                        let rid = msg
+                            .pointer("/response/request_id")
+                            .and_then(Value::as_str)
+                            .unwrap();
+                        let pending = p
+                            .pending_approvals
+                            .get(rid)
+                            .cloned()
+                            .expect("pending approval");
                         if pending.is_question {
                             let mut answers = std::collections::HashMap::new();
-                            answers.insert("Do you prefer red or blue?".to_string(), vec!["Red".to_string()]);
-                            let resp = p.input_response(&UserInputResponse { request_id: rid.into(), answers }).unwrap();
+                            answers.insert(
+                                "Do you prefer red or blue?".to_string(),
+                                vec!["Red".to_string()],
+                            );
+                            let resp = p
+                                .input_response(&UserInputResponse {
+                                    request_id: rid.into(),
+                                    answers,
+                                })
+                                .unwrap();
                             assert_eq!(resp.pointer("/response/response/updatedInput/answers/Do you prefer red or blue?"), Some(&Value::String("Red".into())));
                         } else {
                             let resp = p
                                 .approval_response(
                                     rid,
-                                    &ApprovalDecision { option: ApprovalOption::Accept, updated_input: None, message: None },
+                                    &ApprovalDecision {
+                                        option: ApprovalOption::Accept,
+                                        updated_input: None,
+                                        message: None,
+                                    },
                                 )
                                 .unwrap();
-                            assert_eq!(resp.pointer("/response/response/behavior"), Some(&Value::String("allow".into())));
+                            assert_eq!(
+                                resp.pointer("/response/response/behavior"),
+                                Some(&Value::String("allow".into()))
+                            );
                         }
                     }
                     _ => {}
                 },
-                "in"
-                    if msg.is_object() => {
-                        events.extend(p.handle_line(&msg));
-                    }
+                "in" if msg.is_object() => {
+                    events.extend(p.handle_line(&msg));
+                }
                 _ => {}
             }
         }
@@ -99,43 +131,92 @@ mod tests {
 
         let approvals: Vec<&Approval> = events
             .iter()
-            .filter_map(|e| if let Event::ApprovalRequested { approval, .. } = e { Some(approval) } else { None })
+            .filter_map(|e| {
+                if let Event::ApprovalRequested { approval, .. } = e {
+                    Some(approval)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(approvals.len(), 1, "exactly one approval");
         assert_eq!(approvals[0].kind, ApprovalKind::Command);
-        assert!(approvals[0].payload["command"].as_str().unwrap().contains("hello.txt"));
-        assert!(approvals[0].options.contains(&ApprovalOption::AcceptForSession), "addRules suggestion present");
+        assert!(approvals[0].payload["command"]
+            .as_str()
+            .unwrap()
+            .contains("hello.txt"));
+        assert!(
+            approvals[0]
+                .options
+                .contains(&ApprovalOption::AcceptForSession),
+            "addRules suggestion present"
+        );
 
         let inputs: Vec<&UserInputRequest> = events
             .iter()
-            .filter_map(|e| if let Event::UserInputRequested { request, .. } = e { Some(request) } else { None })
+            .filter_map(|e| {
+                if let Event::UserInputRequested { request, .. } = e {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].questions.len(), 1);
-        let labels: Vec<&str> = inputs[0].questions[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<&str> = inputs[0].questions[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, vec!["Red", "Blue"]);
 
         let turns: Vec<&Turn> = events
             .iter()
-            .filter_map(|e| if let Event::TurnCompleted { turn, .. } = e { Some(turn) } else { None })
+            .filter_map(|e| {
+                if let Event::TurnCompleted { turn, .. } = e {
+                    Some(turn)
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(turns.len() >= 4, "got {} turns", turns.len());
         assert!(turns[0].usage.as_ref().unwrap().total_cost_usd.unwrap() > 0.0);
         assert_eq!(turns[0].status, TurnStatus::Completed);
-        assert_eq!(turns[2].status, TurnStatus::Interrupted, "third turn was interrupted");
+        assert_eq!(
+            turns[2].status,
+            TurnStatus::Interrupted,
+            "third turn was interrupted"
+        );
         assert!(turns[0].usage.as_ref().unwrap().context_window.unwrap() > 0);
 
         let native: Vec<&str> = events
             .iter()
-            .filter_map(|e| if let Event::NativeId { native_id, .. } = e { Some(native_id.as_str()) } else { None })
+            .filter_map(|e| {
+                if let Event::NativeId { native_id, .. } = e {
+                    Some(native_id.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(native, vec!["6bd613c3-559c-4cb9-b53c-5b1196062f48"]);
 
         let completed: Vec<&Item> = events
             .iter()
-            .filter_map(|e| if let Event::ItemCompleted { item, .. } = e { Some(item) } else { None })
+            .filter_map(|e| {
+                if let Event::ItemCompleted { item, .. } = e {
+                    Some(item)
+                } else {
+                    None
+                }
+            })
             .collect();
-        assert!(completed.iter().any(|i| i.kind == ItemKind::Reasoning), "reasoning item");
+        assert!(
+            completed.iter().any(|i| i.kind == ItemKind::Reasoning),
+            "reasoning item"
+        );
         let cmd = completed
             .iter()
             .find(|i| i.kind == ItemKind::CommandExec)
@@ -155,13 +236,19 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, Event::ItemDelta { item_id, delta: ItemDelta::Text { .. }, .. } if item_id == &done.id)));
 
         // Synthetic /model response arrives without stream events and shows as the command's output.
-        let model = completed.iter().find(|i| i.text.starts_with("Current model:")).expect("/model output");
+        let model = completed
+            .iter()
+            .find(|i| i.text.starts_with("Current model:"))
+            .expect("/model output");
         assert_eq!(model.kind, ItemKind::System);
         assert_eq!(model.data["command"], "model");
         assert_eq!(model.title.as_deref(), Some("/model"));
 
         // User messages: 4 sent, none duplicated by the replay echo.
-        let users = completed.iter().filter(|i| i.kind == ItemKind::UserMessage).count();
+        let users = completed
+            .iter()
+            .filter(|i| i.kind == ItemKind::UserMessage)
+            .count();
         assert_eq!(users, 4);
 
         // Settings observed.
@@ -182,11 +269,27 @@ mod tests {
         let evs = p.handle_line(&req);
         assert!(matches!(evs[0], Event::ApprovalRequested { .. }));
         let deny = p
-            .approval_response("r1", &ApprovalDecision { option: ApprovalOption::Decline, updated_input: None, message: Some("no".into()) })
+            .approval_response(
+                "r1",
+                &ApprovalDecision {
+                    option: ApprovalOption::Decline,
+                    updated_input: None,
+                    message: Some("no".into()),
+                },
+            )
             .unwrap();
         assert_eq!(deny.pointer("/response/response/behavior").unwrap(), "deny");
         assert_eq!(deny.pointer("/response/response/message").unwrap(), "no");
-        assert!(p.approval_response("r1", &ApprovalDecision { option: ApprovalOption::Accept, updated_input: None, message: None }).is_none());
+        assert!(p
+            .approval_response(
+                "r1",
+                &ApprovalDecision {
+                    option: ApprovalOption::Accept,
+                    updated_input: None,
+                    message: None
+                }
+            )
+            .is_none());
 
         p.handle_line(&serde_json::json!({
             "type": "control_request", "request_id": "r2",
@@ -197,12 +300,18 @@ mod tests {
                 "r2",
                 &ApprovalDecision {
                     option: ApprovalOption::EditInput,
-                    updated_input: Some(serde_json::json!({"file_path": "/tmp/aura-nope/b.txt", "content": "hi"})),
+                    updated_input: Some(
+                        serde_json::json!({"file_path": "/tmp/aura-nope/b.txt", "content": "hi"}),
+                    ),
                     message: None,
                 },
             )
             .unwrap();
-        assert_eq!(edit.pointer("/response/response/updatedInput/file_path").unwrap(), "/tmp/aura-nope/b.txt");
+        assert_eq!(
+            edit.pointer("/response/response/updatedInput/file_path")
+                .unwrap(),
+            "/tmp/aura-nope/b.txt"
+        );
     }
 
     #[test]
@@ -215,7 +324,8 @@ mod tests {
         let diff = data["changes"][0]["diff"].as_str().unwrap();
         assert!(diff.contains("-let a = 1;"));
         assert!(diff.contains("+let a = 2;"));
-        let (kind, _, data) = parser::classify_tool("mcp__github__list_prs", &serde_json::json!({"repo": "x"}));
+        let (kind, _, data) =
+            parser::classify_tool("mcp__github__list_prs", &serde_json::json!({"repo": "x"}));
         assert_eq!(kind, ItemKind::McpCall);
         assert_eq!(data["server"], "github");
         assert_eq!(data["tool"], "list_prs");
@@ -227,12 +337,24 @@ mod tests {
         let ev = p.start_turn("/effort medium");
         assert!(ev.iter().any(|e| matches!(e, Event::SettingChanged { setting: Setting::Effort(v), .. } if v == "medium")));
         // Same value again is a no-op.
-        assert!(!p.start_turn("/effort medium").iter().any(|e| matches!(e, Event::SettingChanged { .. })));
+        assert!(!p
+            .start_turn("/effort medium")
+            .iter()
+            .any(|e| matches!(e, Event::SettingChanged { .. })));
         let ev = p.start_turn("/model claude-opus-5");
         assert!(ev.iter().any(|e| matches!(e, Event::SettingChanged { setting: Setting::Model(v), .. } if v == "claude-opus-5")));
         // Ordinary text and bare or multi-word commands do not.
-        for t in ["hello /effort low", "/effort", "/compact keep the summary short"] {
-            assert!(!p.start_turn(t).iter().any(|e| matches!(e, Event::SettingChanged { .. })), "{t}");
+        for t in [
+            "hello /effort low",
+            "/effort",
+            "/compact keep the summary short",
+        ] {
+            assert!(
+                !p.start_turn(t)
+                    .iter()
+                    .any(|e| matches!(e, Event::SettingChanged { .. })),
+                "{t}"
+            );
         }
     }
 
@@ -324,8 +446,16 @@ mod tests {
         let ev = p.handle_line(&zero_result("clear", "n2"));
         let usage = usage_of(&ev).expect("usage after clear");
         assert_eq!(usage.context_used, None);
-        assert!(ev.iter().any(|e| matches!(e, Event::NativeId { native_id, .. } if native_id == "n2")));
-        let turn = ev.iter().find_map(|e| match e { Event::TurnCompleted { turn, .. } => Some(turn.clone()), _ => None }).unwrap();
+        assert!(ev
+            .iter()
+            .any(|e| matches!(e, Event::NativeId { native_id, .. } if native_id == "n2")));
+        let turn = ev
+            .iter()
+            .find_map(|e| match e {
+                Event::TurnCompleted { turn, .. } => Some(turn.clone()),
+                _ => None,
+            })
+            .unwrap();
         assert!(turn.usage.is_none(), "local command turns carry no usage");
     }
 
@@ -352,8 +482,16 @@ mod tests {
         p.start_turn("hi");
         p.handle_line(&model_result());
         p.start_turn("/compact");
-        let ev = p.handle_line(&serde_json::json!({"type": "system", "subtype": "status", "status": "compacting"}));
-        let started = ev.iter().find_map(|e| match e { Event::ItemStarted { item, .. } => Some(item.clone()), _ => None }).unwrap();
+        let ev = p.handle_line(
+            &serde_json::json!({"type": "system", "subtype": "status", "status": "compacting"}),
+        );
+        let started = ev
+            .iter()
+            .find_map(|e| match e {
+                Event::ItemStarted { item, .. } => Some(item.clone()),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(started.status, ItemStatus::InProgress);
         assert_eq!(started.data["boundary"], "compact");
         assert!(p.handle_line(&serde_json::json!({"type": "system", "subtype": "status", "status": null, "compact_result": "success"})).is_empty());
@@ -363,7 +501,10 @@ mod tests {
         }));
         let done = items_completed(&ev);
         assert_eq!(done.len(), 1);
-        assert_eq!(done[0].id, started.id, "the progress item becomes the boundary");
+        assert_eq!(
+            done[0].id, started.id,
+            "the progress item becomes the boundary"
+        );
         assert_eq!(done[0].status, ItemStatus::Completed);
         assert_eq!(done[0].data["pre_tokens"], 25865);
         assert_eq!(done[0].data["post_tokens"], 4470);
@@ -387,21 +528,29 @@ mod tests {
 
         // Auto compaction mid-turn has no progress status first.
         let ev = p.handle_line(&serde_json::json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "auto"}}));
-        assert_eq!(items_completed(&ev)[0].data["message"], "Context compacted automatically");
+        assert_eq!(
+            items_completed(&ev)[0].data["message"],
+            "Context compacted automatically"
+        );
     }
 
     #[test]
     fn failed_compaction_is_shown_once() {
         let mut p = Parser::new("s");
         p.start_turn("/compact");
-        p.handle_line(&serde_json::json!({"type": "system", "subtype": "status", "status": "compacting"}));
+        p.handle_line(
+            &serde_json::json!({"type": "system", "subtype": "status", "status": "compacting"}),
+        );
         let ev = p.handle_line(&serde_json::json!({
             "type": "system", "subtype": "status", "status": null,
             "compact_result": "failed", "compact_error": "Not enough messages to compact."
         }));
         let done = items_completed(&ev);
         assert_eq!(done[0].status, ItemStatus::Failed);
-        assert_eq!(done[0].data["message"], "Compaction failed: Not enough messages to compact.");
+        assert_eq!(
+            done[0].data["message"],
+            "Compaction failed: Not enough messages to compact."
+        );
         // Claude repeats the error as command output; drop the duplicate.
         let ev = p.handle_line(&serde_json::json!({
             "type": "assistant",
@@ -415,9 +564,13 @@ mod tests {
     #[test]
     fn unknown_messages_are_ignored() {
         let mut p = Parser::new("s");
-        assert!(p.handle_line(&serde_json::json!({"type": "something_new", "x": 1})).is_empty());
+        assert!(p
+            .handle_line(&serde_json::json!({"type": "something_new", "x": 1}))
+            .is_empty());
         assert!(p.handle_line(&serde_json::json!({"nope": true})).is_empty());
-        assert!(p.handle_line(&serde_json::json!({"type": "system", "subtype": "brand_new"})).is_empty());
+        assert!(p
+            .handle_line(&serde_json::json!({"type": "system", "subtype": "brand_new"}))
+            .is_empty());
     }
 
     #[test]
@@ -443,16 +596,28 @@ mod tests {
         let provider = ClaudeProvider::new();
         assert!(provider.binary().is_some(), "claude binary required");
         let tmp = tempfile::tempdir().unwrap();
-        let opts = CreateSessionOpts { provider: ProviderKind::Claude, cwd: tmp.path().to_string_lossy().to_string(), ..Default::default() };
+        let opts = CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: tmp.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
         let session = Session::new(&opts);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let driver = provider.start(&session, false, tx).await.unwrap();
-        driver.send(Input { text: "Reply with exactly: pong".into(), ..Default::default() }).await.unwrap();
+        driver
+            .send(Input {
+                text: "Reply with exactly: pong".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
         let mut completed = None;
         let mut native = None;
         while tokio::time::Instant::now() < deadline {
-            let Ok(Some(ev)) = tokio::time::timeout_at(deadline, rx.recv()).await else { break };
+            let Ok(Some(ev)) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+                break;
+            };
             match ev {
                 Event::TurnCompleted { turn, .. } => {
                     completed = Some(turn);

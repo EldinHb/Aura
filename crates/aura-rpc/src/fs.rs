@@ -19,7 +19,9 @@ pub fn list_dir(path: &str, show_hidden: bool) -> Result<Vec<DirEntry>> {
     let p = if path.is_empty() || path == "~" {
         dirs::home_dir().unwrap_or_else(|| Path::new("/").to_path_buf())
     } else if let Some(rest) = path.strip_prefix("~/") {
-        dirs::home_dir().unwrap_or_else(|| Path::new("/").to_path_buf()).join(rest)
+        dirs::home_dir()
+            .unwrap_or_else(|| Path::new("/").to_path_buf())
+            .join(rest)
     } else {
         Path::new(path).to_path_buf()
     };
@@ -43,14 +45,22 @@ pub fn list_dir(path: &str, show_hidden: bool) -> Result<Vec<DirEntry>> {
             is_git_repo: is_dir && full.join(".git").exists(),
         });
     }
-    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(out)
 }
 
 /// Fuzzy file search honouring .gitignore. Scores subsequence matches, prefers
 /// matches in the file name and shorter paths.
 pub fn search_files(cwd: &str, query: &str, limit: usize) -> Result<Vec<String>> {
-    let q: Vec<char> = query.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+    let q: Vec<char> = query
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     let mut scored: Vec<(i64, String)> = vec![];
     let walker = ignore::WalkBuilder::new(cwd)
         .hidden(true)
@@ -63,12 +73,21 @@ pub fn search_files(cwd: &str, query: &str, limit: usize) -> Result<Vec<String>>
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
             continue;
         }
-        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path()).to_string_lossy().to_string();
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or(entry.path())
+            .to_string_lossy()
+            .to_string();
         if let Some(score) = fuzzy_score(&rel, &q) {
             scored.push((score, rel));
         }
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.len().cmp(&b.1.len())).then(a.1.cmp(&b.1)));
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(a.1.len().cmp(&b.1.len()))
+            .then(a.1.cmp(&b.1))
+    });
     Ok(scored.into_iter().take(limit).map(|(_, p)| p).collect())
 }
 

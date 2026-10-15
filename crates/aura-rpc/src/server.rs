@@ -50,7 +50,12 @@ impl RpcServer {
         Self::start_with_notifications(manager, data_dir, ext, None).await
     }
 
-    pub async fn start_with_notifications(manager: Manager, data_dir: &std::path::Path, ext: Option<ExtHandler>, notifications: Option<broadcast::Sender<Value>>) -> Result<RpcServer> {
+    pub async fn start_with_notifications(
+        manager: Manager,
+        data_dir: &std::path::Path,
+        ext: Option<ExtHandler>,
+        notifications: Option<broadcast::Sender<Value>>,
+    ) -> Result<RpcServer> {
         std::fs::create_dir_all(data_dir)?;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let port = listener.local_addr()?.port();
@@ -85,7 +90,11 @@ impl RpcServer {
                 })
                 .await;
         });
-        Ok(RpcServer { info, shutdown, handle })
+        Ok(RpcServer {
+            info,
+            shutdown,
+            handle,
+        })
     }
 
     pub async fn wait(self) {
@@ -153,15 +162,27 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         loop {
             match events.recv().await {
                 Ok(ev) => {
-                    let n = Notification { method: "event".into(), params: serde_json::to_value(&ev).unwrap_or(Value::Null) };
-                    if ev_tx.send(Message::Text(serde_json::to_string(&n).unwrap())).await.is_err() {
+                    let n = Notification {
+                        method: "event".into(),
+                        params: serde_json::to_value(&ev).unwrap_or(Value::Null),
+                    };
+                    if ev_tx
+                        .send(Message::Text(serde_json::to_string(&n).unwrap()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!("client lagged {n} events");
-                    let n = Notification { method: "lagged".into(), params: json!({ "count": n }) };
-                    let _ = ev_tx.send(Message::Text(serde_json::to_string(&n).unwrap())).await;
+                    let n = Notification {
+                        method: "lagged".into(),
+                        params: json!({ "count": n }),
+                    };
+                    let _ = ev_tx
+                        .send(Message::Text(serde_json::to_string(&n).unwrap()))
+                        .await;
                 }
                 Err(_) => break,
             }
@@ -175,10 +196,18 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             loop {
                 let notification = match rx.recv().await {
                     Ok(value) => value,
-                    Err(broadcast::error::RecvError::Lagged(_)) => json!({"method":"reviews.changed","params":{}}),
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        json!({"method":"reviews.changed","params":{}})
+                    }
                     Err(_) => break,
                 };
-                if tx.send(Message::Text(notification.to_string())).await.is_err() { break; }
+                if tx
+                    .send(Message::Text(notification.to_string()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
     });
@@ -214,9 +243,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         let resp = Response {
                             id: Value::Null,
                             result: None,
-                            error: Some(RpcError { code: ERR_PARSE, message: e.to_string(), data: None }),
+                            error: Some(RpcError {
+                                code: ERR_PARSE,
+                                message: e.to_string(),
+                                data: None,
+                            }),
                         };
-                        let _ = out_tx.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
+                        let _ = out_tx
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
                         continue;
                     }
                 };
@@ -228,14 +263,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     let result = dispatch(&state, &attached, req).await;
                     if let Some(id) = id {
                         let resp = match result {
-                            Ok(v) => Response { id, result: Some(v), error: None },
+                            Ok(v) => Response {
+                                id,
+                                result: Some(v),
+                                error: None,
+                            },
                             Err(e) => Response {
                                 id,
                                 result: None,
-                                error: Some(RpcError { code: e.code, message: e.message, data: None }),
+                                error: Some(RpcError {
+                                    code: e.code,
+                                    message: e.message,
+                                    data: None,
+                                }),
                             },
                         };
-                        let _ = out.send(Message::Text(serde_json::to_string(&resp).unwrap())).await;
+                        let _ = out
+                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                            .await;
                     }
                 });
             }
@@ -250,7 +295,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             _ => {}
         }
     }
-    if let Some(task) = extra_task { task.abort(); }
+    if let Some(task) = extra_task {
+        task.abort();
+    }
     ev_task.abort();
     pty_task.abort();
     drop(out_tx);
@@ -265,16 +312,25 @@ struct DispatchError {
 
 impl From<anyhow::Error> for DispatchError {
     fn from(e: anyhow::Error) -> Self {
-        DispatchError { code: ERR_INTERNAL, message: format!("{e:#}") }
+        DispatchError {
+            code: ERR_INTERNAL,
+            message: format!("{e:#}"),
+        }
     }
 }
 
 fn params<T: serde::de::DeserializeOwned>(v: &Value) -> Result<T, DispatchError> {
-    serde_json::from_value(v.clone()).map_err(|e| DispatchError { code: ERR_PARAMS, message: e.to_string() })
+    serde_json::from_value(v.clone()).map_err(|e| DispatchError {
+        code: ERR_PARAMS,
+        message: e.to_string(),
+    })
 }
 
 fn ok<T: serde::Serialize>(v: T) -> Result<Value, DispatchError> {
-    serde_json::to_value(v).map_err(|e| DispatchError { code: ERR_INTERNAL, message: e.to_string() })
+    serde_json::to_value(v).map_err(|e| DispatchError {
+        code: ERR_INTERNAL,
+        message: e.to_string(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -359,7 +415,11 @@ async fn dispatch(
                 approval_id: String,
                 decision: ApprovalDecision,
             }
-            let P { id, approval_id, decision } = params(p)?;
+            let P {
+                id,
+                approval_id,
+                decision,
+            } = params(p)?;
             m.respond_approval(&id, &approval_id, decision).await?;
             ok(true)
         }
@@ -391,7 +451,11 @@ async fn dispatch(
                 #[serde(default)]
                 params: Value,
             }
-            let P { id, name, params: ap } = params(p)?;
+            let P {
+                id,
+                name,
+                params: ap,
+            } = params(p)?;
             ok(m.action(&id, &name, ap).await?)
         }
         "session.clear_notices" => {
@@ -429,7 +493,11 @@ async fn dispatch(
                 worker: String,
                 text: String,
             }
-            let P { orchestrator, worker, text } = params(p)?;
+            let P {
+                orchestrator,
+                worker,
+                text,
+            } = params(p)?;
             ok(m.message_worker(&orchestrator, &worker, text).await?)
         }
         "orchestrator.workers" => {
@@ -448,7 +516,11 @@ async fn dispatch(
                 #[serde(default)]
                 turns: Option<usize>,
             }
-            let P { orchestrator, worker, turns } = params(p)?;
+            let P {
+                orchestrator,
+                worker,
+                turns,
+            } = params(p)?;
             ok(m.worker_transcript(&orchestrator, &worker, turns.unwrap_or(1))?)
         }
         "orchestrator.wait" => {
@@ -462,9 +534,16 @@ async fn dispatch(
                 #[serde(default)]
                 timeout_secs: Option<u64>,
             }
-            let P { orchestrator, workers, any, timeout_secs } = params(p)?;
-            let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(600).clamp(1, 3600));
-            ok(m.wait_workers(&orchestrator, &workers, any, timeout).await?)
+            let P {
+                orchestrator,
+                workers,
+                any,
+                timeout_secs,
+            } = params(p)?;
+            let timeout =
+                std::time::Duration::from_secs(timeout_secs.unwrap_or(600).clamp(1, 3600));
+            ok(m.wait_workers(&orchestrator, &workers, any, timeout)
+                .await?)
         }
         "orchestrator.interrupt" | "orchestrator.stop" => {
             #[derive(Deserialize)]
@@ -472,7 +551,10 @@ async fn dispatch(
                 orchestrator: String,
                 worker: String,
             }
-            let P { orchestrator, worker } = params(p)?;
+            let P {
+                orchestrator,
+                worker,
+            } = params(p)?;
             if req.method == "orchestrator.stop" {
                 m.stop_worker(&orchestrator, &worker).await?;
             } else {
@@ -543,7 +625,9 @@ async fn dispatch(
             }
             let P { cwd } = params(p)?;
             let m = m.clone();
-            ok(tokio::task::spawn_blocking(move || m.group_for_dir(&cwd)).await.map_err(|e| anyhow!(e))??)
+            ok(tokio::task::spawn_blocking(move || m.group_for_dir(&cwd))
+                .await
+                .map_err(|e| anyhow!(e))??)
         }
         "group.delete" => {
             #[derive(Deserialize)]
@@ -597,7 +681,10 @@ async fn dispatch(
                 #[serde(default)]
                 remove_worktree: bool,
             }
-            let P { id, remove_worktree } = params(p)?;
+            let P {
+                id,
+                remove_worktree,
+            } = params(p)?;
             attached.lock().remove(&id);
             m.delete(&id, remove_worktree).await?;
             ok(true)
@@ -623,7 +710,11 @@ async fn dispatch(
             fn default_limit() -> usize {
                 5000
             }
-            let P { id, after_seq, limit } = params(p)?;
+            let P {
+                id,
+                after_seq,
+                limit,
+            } = params(p)?;
             ok(m.history(&id, after_seq, limit)?)
         }
         "session.attachment" => {
@@ -731,9 +822,10 @@ async fn dispatch(
             }
             let P { cwd, query, limit } = params(p)?;
             let cwd2 = cwd.clone();
-            let res = tokio::task::spawn_blocking(move || crate::fs::search_files(&cwd2, &query, limit))
-                .await
-                .map_err(|e| anyhow!(e))??;
+            let res =
+                tokio::task::spawn_blocking(move || crate::fs::search_files(&cwd2, &query, limit))
+                    .await
+                    .map_err(|e| anyhow!(e))??;
             ok(res)
         }
         other => {
@@ -742,7 +834,10 @@ async fn dispatch(
                     return Ok(v);
                 }
             }
-            Err(DispatchError { code: ERR_METHOD, message: format!("unknown method {other}") })
+            Err(DispatchError {
+                code: ERR_METHOD,
+                message: format!("unknown method {other}"),
+            })
         }
     }
 }

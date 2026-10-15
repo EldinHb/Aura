@@ -52,16 +52,30 @@ pub(crate) fn git_allow(cwd: &str, args: &[&str], ok_codes: &[i32]) -> Result<St
 }
 
 fn canonical(p: &Path) -> String {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_string()
+    std::fs::canonicalize(p)
+        .unwrap_or_else(|_| p.to_path_buf())
+        .to_string_lossy()
+        .to_string()
 }
 
 fn branch_exists(root: &str, branch: &str) -> bool {
-    git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok()
+    git(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
 }
 
 /// Make sure `.aura-worktrees/` is ignored via `<common git dir>/info/exclude`.
 fn ensure_excluded(root: &str) -> Result<()> {
-    let common = git(root, &["rev-parse", "--git-common-dir"])?.trim().to_string();
+    let common = git(root, &["rev-parse", "--git-common-dir"])?
+        .trim()
+        .to_string();
     let common_dir = {
         let p = PathBuf::from(&common);
         if p.is_absolute() {
@@ -75,7 +89,10 @@ fn ensure_excluded(root: &str) -> Result<()> {
     let exclude = info.join("exclude");
     let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
     let line = format!("{WORKTREES_DIR}/");
-    if existing.lines().any(|l| l.trim() == line || l.trim() == WORKTREES_DIR) {
+    if existing
+        .lines()
+        .any(|l| l.trim() == line || l.trim() == WORKTREES_DIR)
+    {
         return Ok(());
     }
     let mut content = existing;
@@ -92,10 +109,13 @@ pub struct Git;
 
 impl WorktreeBackend for Git {
     fn create(&self, cwd: &str, opts: &WorktreeOpts) -> Result<WorktreeInfo> {
-        let root = ops::repo_root(cwd)?.ok_or_else(|| anyhow!("{cwd} is not inside a git repository"))?;
+        let root =
+            ops::repo_root(cwd)?.ok_or_else(|| anyhow!("{cwd} is not inside a git repository"))?;
         let path = match &opts.path {
             Some(p) => PathBuf::from(p),
-            None => PathBuf::from(&root).join(WORKTREES_DIR).join(opts.branch.replace('/', "-")),
+            None => PathBuf::from(&root)
+                .join(WORKTREES_DIR)
+                .join(opts.branch.replace('/', "-")),
         };
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -105,14 +125,24 @@ impl WorktreeBackend for Git {
             git(&root, &["worktree", "add", &path_str, &opts.branch])?;
         } else {
             let base = opts.base.as_deref().unwrap_or("HEAD");
-            git(&root, &["worktree", "add", "-b", &opts.branch, &path_str, base])?;
+            git(
+                &root,
+                &["worktree", "add", "-b", &opts.branch, &path_str, base],
+            )?;
         }
         ensure_excluded(&root)?;
-        Ok(WorktreeInfo { repo_root: root, path: canonical(&path), branch: opts.branch.clone() })
+        Ok(WorktreeInfo {
+            repo_root: root,
+            path: canonical(&path),
+            branch: opts.branch.clone(),
+        })
     }
 
     fn remove(&self, info: &WorktreeInfo) -> Result<()> {
-        match git(&info.repo_root, &["worktree", "remove", "--force", &info.path]) {
+        match git(
+            &info.repo_root,
+            &["worktree", "remove", "--force", &info.path],
+        ) {
             Ok(_) => Ok(()),
             Err(e) => {
                 let msg = e.to_string();
@@ -152,12 +182,26 @@ mod tests {
         let dir = repo();
         let cwd = dir.path().to_string_lossy().to_string();
         let info = Git
-            .create(&cwd, &WorktreeOpts { branch: "feat/x".into(), base: None, path: None })
+            .create(
+                &cwd,
+                &WorktreeOpts {
+                    branch: "feat/x".into(),
+                    base: None,
+                    path: None,
+                },
+            )
             .unwrap();
-        assert!(info.path.ends_with(".aura-worktrees/feat-x"), "{}", info.path);
+        assert!(
+            info.path.ends_with(".aura-worktrees/feat-x"),
+            "{}",
+            info.path
+        );
         assert!(Path::new(&info.path).join(".git").exists());
         assert_eq!(ops::current_branch(&info.path).unwrap(), "feat/x");
-        assert!(ops::worktrees(&cwd).unwrap().iter().any(|w| w.branch.as_deref() == Some("feat/x")));
+        assert!(ops::worktrees(&cwd)
+            .unwrap()
+            .iter()
+            .any(|w| w.branch.as_deref() == Some("feat/x")));
         Git.remove(&info).unwrap();
         assert!(!Path::new(&info.path).exists());
         // removing again is a no-op
@@ -170,7 +214,14 @@ mod tests {
         let cwd = dir.path().to_string_lossy().to_string();
         git(&cwd, &["branch", "existing"]).unwrap();
         let info = Git
-            .create(&cwd, &WorktreeOpts { branch: "existing".into(), base: None, path: None })
+            .create(
+                &cwd,
+                &WorktreeOpts {
+                    branch: "existing".into(),
+                    base: None,
+                    path: None,
+                },
+            )
             .unwrap();
         assert_eq!(ops::current_branch(&info.path).unwrap(), "existing");
         let branches = ops::branches(&cwd).unwrap();
@@ -181,14 +232,37 @@ mod tests {
     fn exclude_updated_once() {
         let dir = repo();
         let cwd = dir.path().to_string_lossy().to_string();
-        Git.create(&cwd, &WorktreeOpts { branch: "a".into(), base: None, path: None }).unwrap();
-        Git.create(&cwd, &WorktreeOpts { branch: "b".into(), base: None, path: None }).unwrap();
+        Git.create(
+            &cwd,
+            &WorktreeOpts {
+                branch: "a".into(),
+                base: None,
+                path: None,
+            },
+        )
+        .unwrap();
+        Git.create(
+            &cwd,
+            &WorktreeOpts {
+                branch: "b".into(),
+                base: None,
+                path: None,
+            },
+        )
+        .unwrap();
         let exclude = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
         assert_eq!(exclude.matches(".aura-worktrees/").count(), 1, "{exclude}");
         // not a repo
         let other = tempfile::tempdir().unwrap();
         assert!(Git
-            .create(&other.path().to_string_lossy(), &WorktreeOpts { branch: "z".into(), base: None, path: None })
+            .create(
+                &other.path().to_string_lossy(),
+                &WorktreeOpts {
+                    branch: "z".into(),
+                    base: None,
+                    path: None
+                }
+            )
             .is_err());
     }
 
@@ -213,7 +287,14 @@ mod tests {
         assert!(d.contains("+fresh"), "{d}");
         assert!(d.contains("new.txt"), "{d}");
 
-        let only = ops::diff(&cwd, &ops::DiffOpts { path: Some("a.txt".into()), ..Default::default() }).unwrap();
+        let only = ops::diff(
+            &cwd,
+            &ops::DiffOpts {
+                path: Some("a.txt".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(only.contains("+two") && !only.contains("fresh"), "{only}");
 
         let stat = ops::diff_stat(&cwd, None).unwrap();
@@ -228,9 +309,23 @@ mod tests {
         assert_eq!(log[0].author, "Test");
         assert!(ops::status(&cwd).unwrap().is_empty());
 
-        let base_diff = ops::diff(&cwd, &ops::DiffOpts { base: Some("HEAD~1".into()), ..Default::default() }).unwrap();
+        let base_diff = ops::diff(
+            &cwd,
+            &ops::DiffOpts {
+                base: Some("HEAD~1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(base_diff.contains("+fresh"));
-        let staged = ops::diff(&cwd, &ops::DiffOpts { staged: true, ..Default::default() }).unwrap();
+        let staged = ops::diff(
+            &cwd,
+            &ops::DiffOpts {
+                staged: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(staged.is_empty());
     }
 
@@ -242,14 +337,38 @@ mod tests {
         let mut b = ops::branches(&cwd).unwrap();
         b.sort();
         assert_eq!(b, vec!["main".to_string(), "other".to_string()]);
-        assert_eq!(ops::repo_root(&cwd).unwrap().unwrap(), canonical(dir.path()));
+        assert_eq!(
+            ops::repo_root(&cwd).unwrap().unwrap(),
+            canonical(dir.path())
+        );
         std::fs::create_dir(dir.path().join("sub")).unwrap();
-        assert_eq!(ops::main_repo_root(&dir.path().join("sub").to_string_lossy()).unwrap().unwrap(), canonical(dir.path()));
-        let wt = Git.create(&cwd, &WorktreeOpts { branch: "wt".into(), base: None, path: None }).unwrap();
-        assert_eq!(ops::main_repo_root(&wt.path).unwrap().unwrap(), canonical(dir.path()), "a linked worktree belongs to its main repository");
+        assert_eq!(
+            ops::main_repo_root(&dir.path().join("sub").to_string_lossy())
+                .unwrap()
+                .unwrap(),
+            canonical(dir.path())
+        );
+        let wt = Git
+            .create(
+                &cwd,
+                &WorktreeOpts {
+                    branch: "wt".into(),
+                    base: None,
+                    path: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            ops::main_repo_root(&wt.path).unwrap().unwrap(),
+            canonical(dir.path()),
+            "a linked worktree belongs to its main repository"
+        );
         assert_eq!(Git.repo_root(&wt.path), Some(canonical(dir.path())));
         let none = tempfile::tempdir().unwrap();
-        assert_eq!(ops::repo_root(&none.path().to_string_lossy()).unwrap(), None);
+        assert_eq!(
+            ops::repo_root(&none.path().to_string_lossy()).unwrap(),
+            None
+        );
         assert_eq!(Git.repo_root(&none.path().to_string_lossy()), None);
         // diff with no HEAD (fresh repo) falls back
         let fresh = tempfile::tempdir().unwrap();

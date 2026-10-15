@@ -104,12 +104,19 @@ impl SessionMapper {
             error: None,
         };
         self.turn = Some(turn.clone());
-        out.push(Event::TurnStarted { session_id: self.sid(), turn });
-        let mut item = Item::new(&self.session_id, self.turn_id(), ItemKind::UserMessage).with_text(text);
+        out.push(Event::TurnStarted {
+            session_id: self.sid(),
+            turn,
+        });
+        let mut item =
+            Item::new(&self.session_id, self.turn_id(), ItemKind::UserMessage).with_text(text);
         if images > 0 {
             item.data = json!({ "images": images });
         }
-        out.push(Event::ItemCompleted { session_id: self.sid(), item: item.completed() });
+        out.push(Event::ItemCompleted {
+            session_id: self.sid(),
+            item: item.completed(),
+        });
         out
     }
 
@@ -122,23 +129,44 @@ impl SessionMapper {
         };
         let clean = status == TurnStatus::Completed;
         if let Some(plan) = self.plan.take() {
-            out.push(Event::ItemCompleted { session_id: self.sid(), item: plan.completed() });
+            out.push(Event::ItemCompleted {
+                session_id: self.sid(),
+                item: plan.completed(),
+            });
         }
-        let mut open: Vec<Tool> = self.tools.drain().map(|(_, t)| t).filter(|t| t.item.status == ItemStatus::InProgress).collect();
+        let mut open: Vec<Tool> = self
+            .tools
+            .drain()
+            .map(|(_, t)| t)
+            .filter(|t| t.item.status == ItemStatus::InProgress)
+            .collect();
         open.sort_by_key(|t| t.item.started_at);
         for t in open {
-            let item = if clean { t.item.completed() } else { t.item.failed() };
-            out.push(Event::ItemCompleted { session_id: self.sid(), item });
+            let item = if clean {
+                t.item.completed()
+            } else {
+                t.item.failed()
+            };
+            out.push(Event::ItemCompleted {
+                session_id: self.sid(),
+                item,
+            });
         }
         if let TurnOutcome::Stopped(reason) = &outcome {
             let note = match reason.as_str() {
                 "max_tokens" => Some("The agent stopped: it reached its token limit."),
-                "max_turn_requests" => Some("The agent stopped: it reached its limit of model requests for one turn."),
+                "max_turn_requests" => {
+                    Some("The agent stopped: it reached its limit of model requests for one turn.")
+                }
                 "refusal" => Some("The agent refused to continue."),
                 _ => None,
             };
             if let Some(message) = note {
-                out.push(Event::Notice { session_id: self.sid(), level: NoticeLevel::Warn, message: message.into() });
+                out.push(Event::Notice {
+                    session_id: self.sid(),
+                    level: NoticeLevel::Warn,
+                    message: message.into(),
+                });
             }
         }
         if let Some(mut turn) = self.turn.take() {
@@ -146,14 +174,20 @@ impl SessionMapper {
             turn.ended_at = Some(now());
             turn.error = error;
             turn.usage = Some(self.usage.clone());
-            out.push(Event::TurnCompleted { session_id: self.sid(), turn });
+            out.push(Event::TurnCompleted {
+                session_id: self.sid(),
+                turn,
+            });
         }
         out
     }
 
     fn close_stream(&mut self) -> Vec<Event> {
         match self.stream.take() {
-            Some(s) => vec![Event::ItemCompleted { session_id: self.sid(), item: s.item.completed() }],
+            Some(s) => vec![Event::ItemCompleted {
+                session_id: self.sid(),
+                item: s.item.completed(),
+            }],
             None => vec![],
         }
     }
@@ -162,14 +196,19 @@ impl SessionMapper {
 
     /// One `session/update` payload (the `update` object).
     pub fn handle_update(&mut self, update: &Value) -> Vec<Event> {
-        let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("");
+        let kind = update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         match kind {
             "available_commands_update" => {
                 self.state.commands = arr(update, "availableCommands");
                 vec![self.info_event()]
             }
             "current_mode_update" => {
-                let Some(id) = str_of(update, "currentModeId") else { return vec![] };
+                let Some(id) = str_of(update, "currentModeId") else {
+                    return vec![];
+                };
                 if let Some(Value::Object(m)) = self.state.modes.as_mut() {
                     m.insert("currentModeId".into(), json!(id));
                 }
@@ -185,10 +224,16 @@ impl SessionMapper {
             "usage_update" => {
                 self.usage.context_used = update.get("used").and_then(Value::as_u64);
                 self.usage.context_window = update.get("size").and_then(Value::as_u64);
-                if let Some(cost) = update.get("cost").filter(|c| c.get("currency").and_then(Value::as_str) == Some("USD")) {
+                if let Some(cost) = update
+                    .get("cost")
+                    .filter(|c| c.get("currency").and_then(Value::as_str) == Some("USD"))
+                {
                     self.usage.total_cost_usd = cost.get("amount").and_then(Value::as_f64);
                 }
-                vec![Event::Usage { session_id: self.sid(), usage: self.usage.clone() }]
+                vec![Event::Usage {
+                    session_id: self.sid(),
+                    usage: self.usage.clone(),
+                }]
             }
             _ if self.replaying => vec![],
             "agent_message_chunk" => self.chunk(ItemKind::AgentMessage, update),
@@ -228,11 +273,18 @@ impl SessionMapper {
             let s = self.stream.as_mut().expect("checked above");
             s.item.text.push_str(&text);
             let item_id = s.item.id.clone();
-            return vec![Event::ItemDelta { session_id: self.sid(), item_id, delta: ItemDelta::Text { text } }];
+            return vec![Event::ItemDelta {
+                session_id: self.sid(),
+                item_id,
+                delta: ItemDelta::Text { text },
+            }];
         }
         let mut out = self.close_stream();
         let item = Item::new(&self.session_id, self.turn_id(), kind).with_text(text);
-        out.push(Event::ItemStarted { session_id: self.sid(), item: item.clone() });
+        out.push(Event::ItemStarted {
+            session_id: self.sid(),
+            item: item.clone(),
+        });
         self.stream = Some(Stream { item, message_id });
         out
     }
@@ -245,12 +297,23 @@ impl SessionMapper {
         match self.plan.as_mut() {
             Some(plan) => {
                 plan.data = json!({ "steps": steps });
-                Event::ItemDelta { session_id: self.session_id.clone(), item_id: plan.id.clone(), delta: ItemDelta::Data { data: json!({ "steps": steps }) } }
+                Event::ItemDelta {
+                    session_id: self.session_id.clone(),
+                    item_id: plan.id.clone(),
+                    delta: ItemDelta::Data {
+                        data: json!({ "steps": steps }),
+                    },
+                }
             }
             None => {
-                let item = Item::new(&self.session_id, self.turn_id(), ItemKind::Plan).with_title("Plan").with_data(json!({ "steps": steps }));
+                let item = Item::new(&self.session_id, self.turn_id(), ItemKind::Plan)
+                    .with_title("Plan")
+                    .with_data(json!({ "steps": steps }));
                 self.plan = Some(item.clone());
-                Event::ItemStarted { session_id: self.sid(), item }
+                Event::ItemStarted {
+                    session_id: self.sid(),
+                    item,
+                }
             }
         }
     }
@@ -258,7 +321,9 @@ impl SessionMapper {
     /// Apply a `tool_call` / `tool_call_update` (or the `toolCall` of a
     /// permission request). Returns the tool call id and the events.
     fn tool_update(&mut self, update: &Value) -> (String, Vec<Event>) {
-        let Some(id) = str_of(update, "toolCallId") else { return (String::new(), vec![]) };
+        let Some(id) = str_of(update, "toolCallId") else {
+            return (String::new(), vec![]);
+        };
         let fields = update.as_object().cloned().unwrap_or_default();
         let known = self.tools.contains_key(&id);
         let turn_id = self.turn_id();
@@ -277,11 +342,23 @@ impl SessionMapper {
         let item = tool.item.clone();
         let sid = self.session_id.clone();
         let events = if item.status != ItemStatus::InProgress {
-            vec![Event::ItemCompleted { session_id: sid, item }]
+            vec![Event::ItemCompleted {
+                session_id: sid,
+                item,
+            }]
         } else if !known || was_done {
-            vec![Event::ItemStarted { session_id: sid, item }]
+            vec![Event::ItemStarted {
+                session_id: sid,
+                item,
+            }]
         } else {
-            vec![Event::ItemDelta { session_id: sid, item_id: id.clone(), delta: ItemDelta::Data { data: item.data.clone() } }]
+            vec![Event::ItemDelta {
+                session_id: sid,
+                item_id: id.clone(),
+                delta: ItemDelta::Data {
+                    data: item.data.clone(),
+                },
+            }]
         };
         (id, events)
     }
@@ -295,7 +372,12 @@ impl SessionMapper {
         out.extend(events);
         let options: Vec<(String, String)> = arr(params, "options")
             .iter()
-            .filter_map(|o| Some((str_of(o, "optionId")?, str_of(o, "kind").unwrap_or_default())))
+            .filter_map(|o| {
+                Some((
+                    str_of(o, "optionId")?,
+                    str_of(o, "kind").unwrap_or_default(),
+                ))
+            })
             .collect();
         let has = |k: &str| options.iter().any(|(_, kind)| kind == k);
         let mut offered = vec![];
@@ -312,14 +394,28 @@ impl SessionMapper {
 
         let tool = self.tools.get(&item_id);
         let (kind, payload) = match tool.map(|t| (&t.item.kind, &t.item.data)) {
-            Some((ItemKind::CommandExec, d)) => (ApprovalKind::Command, json!({ "command": d["command"], "cwd": d["cwd"] })),
-            Some((ItemKind::FileChange, d)) => (ApprovalKind::FileChange, json!({ "changes": d["changes"] })),
-            Some((_, d)) => (ApprovalKind::Tool, json!({ "tool_name": d["tool_name"], "input": d["input"] })),
+            Some((ItemKind::CommandExec, d)) => (
+                ApprovalKind::Command,
+                json!({ "command": d["command"], "cwd": d["cwd"] }),
+            ),
+            Some((ItemKind::FileChange, d)) => {
+                (ApprovalKind::FileChange, json!({ "changes": d["changes"] }))
+            }
+            Some((_, d)) => (
+                ApprovalKind::Tool,
+                json!({ "tool_name": d["tool_name"], "input": d["input"] }),
+            ),
             None => (ApprovalKind::Generic, json!({})),
         };
-        let title = tool.and_then(|t| t.item.title.clone()).unwrap_or_else(|| "Permission requested".into());
+        let title = tool
+            .and_then(|t| t.item.title.clone())
+            .unwrap_or_else(|| "Permission requested".into());
         let description = (!options.is_empty()).then(|| {
-            arr(params, "options").iter().filter_map(|o| str_of(o, "name")).collect::<Vec<_>>().join(" · ")
+            arr(params, "options")
+                .iter()
+                .filter_map(|o| str_of(o, "name"))
+                .collect::<Vec<_>>()
+                .join(" · ")
         });
         let approval = Approval {
             id: new_id(),
@@ -333,21 +429,42 @@ impl SessionMapper {
             options: offered,
             created_at: now(),
         };
-        self.approvals.insert(approval.id.clone(), PendingPermission { rpc_id, options });
-        out.push(Event::ApprovalRequested { session_id: self.sid(), approval });
+        self.approvals
+            .insert(approval.id.clone(), PendingPermission { rpc_id, options });
+        out.push(Event::ApprovalRequested {
+            session_id: self.sid(),
+            approval,
+        });
         out
     }
 
     /// The JSON-RPC id and result answering a permission request.
-    pub fn approval_reply(&mut self, approval_id: &str, decision: &ApprovalDecision) -> Result<(Value, Value)> {
-        let pending = self.approvals.get(approval_id).ok_or_else(|| anyhow!("unknown approval {approval_id}"))?;
-        let pick = |kinds: &[&str]| kinds.iter().find_map(|k| pending.options.iter().find(|(_, kind)| kind == k).map(|(id, _)| id.clone()));
+    pub fn approval_reply(
+        &mut self,
+        approval_id: &str,
+        decision: &ApprovalDecision,
+    ) -> Result<(Value, Value)> {
+        let pending = self
+            .approvals
+            .get(approval_id)
+            .ok_or_else(|| anyhow!("unknown approval {approval_id}"))?;
+        let pick = |kinds: &[&str]| {
+            kinds.iter().find_map(|k| {
+                pending
+                    .options
+                    .iter()
+                    .find(|(_, kind)| kind == k)
+                    .map(|(id, _)| id.clone())
+            })
+        };
         let option = match decision.option {
             ApprovalOption::Accept => pick(&["allow_once", "allow_always"]),
             ApprovalOption::AcceptForSession => pick(&["allow_always", "allow_once"]),
             ApprovalOption::Decline => pick(&["reject_once", "reject_always"]),
             ApprovalOption::Cancel => None,
-            ApprovalOption::EditInput => anyhow::bail!("ACP agents do not accept edited tool input"),
+            ApprovalOption::EditInput => {
+                anyhow::bail!("ACP agents do not accept edited tool input")
+            }
         };
         if option.is_none() && decision.option != ApprovalOption::Cancel {
             anyhow::bail!("the agent did not offer that choice");
@@ -363,7 +480,10 @@ impl SessionMapper {
     /// Every unanswered permission request, removed. ACP requires answering
     /// them with `cancelled` once the turn is cancelled.
     pub fn take_approvals(&mut self) -> Vec<(String, Value)> {
-        self.approvals.drain().map(|(id, p)| (id, p.rpc_id)).collect()
+        self.approvals
+            .drain()
+            .map(|(id, p)| (id, p.rpc_id))
+            .collect()
     }
 
     // ---------------------------------------------------------- session state
@@ -383,7 +503,11 @@ impl SessionMapper {
                 out.push(self.setting(Setting::PermissionMode(id)));
             }
         }
-        if res.get("configOptions").map(Value::is_array).unwrap_or(false) {
+        if res
+            .get("configOptions")
+            .map(Value::is_array)
+            .unwrap_or(false)
+        {
             out.extend(self.set_config_options(arr(res, "configOptions")));
         } else {
             out.push(self.info_event());
@@ -394,13 +518,22 @@ impl SessionMapper {
     pub fn set_config_options(&mut self, options: Vec<Value>) -> Vec<Event> {
         self.state.config_options = options;
         let mut out = vec![];
-        for (category, setting) in [("model", Setting::Model as fn(String) -> Setting), ("thought_level", Setting::Effort)] {
-            if let Some(v) = self.config_option(category).and_then(|o| str_of(o, "currentValue")) {
+        for (category, setting) in [
+            ("model", Setting::Model as fn(String) -> Setting),
+            ("thought_level", Setting::Effort),
+        ] {
+            if let Some(v) = self
+                .config_option(category)
+                .and_then(|o| str_of(o, "currentValue"))
+            {
                 out.push(self.setting(setting(v)));
             }
         }
         if self.state.modes.is_none() {
-            if let Some(v) = self.config_option("mode").and_then(|o| str_of(o, "currentValue")) {
+            if let Some(v) = self
+                .config_option("mode")
+                .and_then(|o| str_of(o, "currentValue"))
+            {
                 out.push(self.setting(Setting::PermissionMode(v)));
             }
         }
@@ -410,7 +543,10 @@ impl SessionMapper {
 
     /// The first select option in `category` (`model`, `thought_level`, `mode`).
     pub fn config_option(&self, category: &str) -> Option<&Value> {
-        self.state.config_options.iter().find(|o| str_of(o, "category").as_deref() == Some(category) && str_of(o, "type").as_deref() == Some("select"))
+        self.state.config_options.iter().find(|o| {
+            str_of(o, "category").as_deref() == Some(category)
+                && str_of(o, "type").as_deref() == Some("select")
+        })
     }
 
     pub fn has_modes(&self) -> bool {
@@ -418,7 +554,10 @@ impl SessionMapper {
     }
 
     fn setting(&self, setting: Setting) -> Event {
-        Event::SettingChanged { session_id: self.sid(), setting }
+        Event::SettingChanged {
+            session_id: self.sid(),
+            setting,
+        }
     }
 
     /// Everything the UI needs for pickers and the inspector, under
@@ -451,7 +590,10 @@ fn str_of(v: &Value, key: &str) -> Option<String> {
 }
 
 fn arr(v: &Value, key: &str) -> Vec<Value> {
-    v.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
+    v.get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Readable text for an ACP content block.
@@ -460,7 +602,9 @@ pub fn content_text(block: &Value) -> String {
         Some("text") => str_of(block, "text").unwrap_or_default(),
         Some("resource_link") => {
             let uri = str_of(block, "uri").unwrap_or_default();
-            let name = str_of(block, "title").or_else(|| str_of(block, "name")).unwrap_or_else(|| uri.clone());
+            let name = str_of(block, "title")
+                .or_else(|| str_of(block, "name"))
+                .unwrap_or_else(|| uri.clone());
             format!("[{name}]({uri})")
         }
         Some("resource") => {
@@ -493,14 +637,22 @@ fn command_of(raw: &Map<String, Value>) -> Option<String> {
     let input = raw.get("rawInput")?;
     match input.get("command").or_else(|| input.get("cmd"))? {
         Value::String(s) => Some(s.clone()),
-        Value::Array(parts) => Some(parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+        Value::Array(parts) => Some(
+            parts
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
         _ => None,
     }
 }
 
 fn exit_code_of(raw: &Map<String, Value>) -> Option<i64> {
     let out = raw.get("rawOutput")?;
-    ["exit_code", "exitCode", "code"].iter().find_map(|k| out.get(*k).and_then(Value::as_i64))
+    ["exit_code", "exitCode", "code"]
+        .iter()
+        .find_map(|k| out.get(*k).and_then(Value::as_i64))
 }
 
 /// Recompute an Aura item from a tool call's merged ACP fields.
@@ -521,7 +673,11 @@ fn rebuild_tool_item(raw: &Map<String, Value>, item: &mut Item) {
     if acp_kind == "execute" {
         item.kind = ItemKind::CommandExec;
         let output = if text.is_empty() {
-            raw.get("rawOutput").and_then(|o| o.get("output").or_else(|| o.get("stdout"))).and_then(Value::as_str).unwrap_or("").to_string()
+            raw.get("rawOutput")
+                .and_then(|o| o.get("output").or_else(|| o.get("stdout")))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
         } else {
             text
         };
@@ -561,7 +717,11 @@ fn rebuild_tool_item(raw: &Map<String, Value>, item: &mut Item) {
         item.text = text;
     } else {
         item.kind = ItemKind::ToolCall;
-        let result = raw.get("rawOutput").cloned().filter(|v| !v.is_null()).or_else(|| (!text.is_empty()).then(|| json!(text)));
+        let result = raw
+            .get("rawOutput")
+            .cloned()
+            .filter(|v| !v.is_null())
+            .or_else(|| (!text.is_empty()).then(|| json!(text)));
         item.data = json!({
             "tool_name": s("name").unwrap_or(&title),
             "input": raw.get("rawInput").cloned().unwrap_or(Value::Null),
@@ -572,7 +732,9 @@ fn rebuild_tool_item(raw: &Map<String, Value>, item: &mut Item) {
     }
     item.title = Some(title);
     match s("status") {
-        Some("completed") if item.status == ItemStatus::InProgress => *item = item.clone().completed(),
+        Some("completed") if item.status == ItemStatus::InProgress => {
+            *item = item.clone().completed()
+        }
         Some("failed") if item.status == ItemStatus::InProgress => *item = item.clone().failed(),
         Some("pending") | Some("in_progress") => {
             item.status = ItemStatus::InProgress;
@@ -583,10 +745,19 @@ fn rebuild_tool_item(raw: &Map<String, Value>, item: &mut Item) {
 }
 
 pub fn unified_diff(old: &str, new: &str, path: &str) -> String {
-    let with_nl = |s: &str| if s.is_empty() || s.ends_with('\n') { s.to_string() } else { format!("{s}\n") };
+    let with_nl = |s: &str| {
+        if s.is_empty() || s.ends_with('\n') {
+            s.to_string()
+        } else {
+            format!("{s}\n")
+        }
+    };
     let (old, new) = (with_nl(old), with_nl(new));
     let diff = similar::TextDiff::from_lines(&old, &new);
-    format!("--- a/{path}\n+++ b/{path}\n{}", diff.unified_diff().context_radius(3))
+    format!(
+        "--- a/{path}\n+++ b/{path}\n{}",
+        diff.unified_diff().context_radius(3)
+    )
 }
 
 #[cfg(test)]
@@ -598,7 +769,16 @@ mod tests {
     }
 
     fn items_completed(events: &[Event]) -> Vec<Item> {
-        events.iter().filter_map(|e| if let Event::ItemCompleted { item, .. } = e { Some(item.clone()) } else { None }).collect()
+        events
+            .iter()
+            .filter_map(|e| {
+                if let Event::ItemCompleted { item, .. } = e {
+                    Some(item.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -606,20 +786,37 @@ mod tests {
         let mut m = SessionMapper::new("s");
         let ev = m.begin_turn("hello", 0);
         assert!(matches!(ev[0], Event::TurnStarted { .. }));
-        assert!(matches!(&ev[1], Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage && item.text == "hello"));
+        assert!(
+            matches!(&ev[1], Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage && item.text == "hello")
+        );
 
         let ev = m.handle_update(&up(json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking"}})));
-        assert!(matches!(&ev[0], Event::ItemStarted { item, .. } if item.kind == ItemKind::Reasoning));
-        let ev = m.handle_update(&up(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi "}})));
-        assert!(matches!(&ev[0], Event::ItemCompleted { item, .. } if item.kind == ItemKind::Reasoning), "switching kinds closes the thought");
-        assert!(matches!(&ev[1], Event::ItemStarted { item, .. } if item.kind == ItemKind::AgentMessage && item.text == "Hi "));
-        let ev = m.handle_update(&up(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"there"}})));
-        assert!(matches!(&ev[0], Event::ItemDelta { delta: ItemDelta::Text { text }, .. } if text == "there"));
+        assert!(
+            matches!(&ev[0], Event::ItemStarted { item, .. } if item.kind == ItemKind::Reasoning)
+        );
+        let ev = m.handle_update(&up(
+            json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi "}}),
+        ));
+        assert!(
+            matches!(&ev[0], Event::ItemCompleted { item, .. } if item.kind == ItemKind::Reasoning),
+            "switching kinds closes the thought"
+        );
+        assert!(
+            matches!(&ev[1], Event::ItemStarted { item, .. } if item.kind == ItemKind::AgentMessage && item.text == "Hi ")
+        );
+        let ev = m.handle_update(&up(
+            json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"there"}}),
+        ));
+        assert!(
+            matches!(&ev[0], Event::ItemDelta { delta: ItemDelta::Text { text }, .. } if text == "there")
+        );
 
         let ev = m.end_turn(TurnOutcome::Stopped("end_turn".into()));
         let done = items_completed(&ev);
         assert_eq!(done[0].text, "Hi there");
-        assert!(matches!(ev.last(), Some(Event::TurnCompleted { turn, .. }) if turn.status == TurnStatus::Completed));
+        assert!(
+            matches!(ev.last(), Some(Event::TurnCompleted { turn, .. }) if turn.status == TurnStatus::Completed)
+        );
         assert!(!m.turn_active());
     }
 
@@ -638,7 +835,10 @@ mod tests {
         m.begin_turn("run it", 0);
         m.handle_update(&json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Running"}}));
         let ev = m.handle_update(&json!({"sessionUpdate":"tool_call","toolCallId":"t1","title":"List files","kind":"execute","status":"pending","rawInput":{"command":["ls","-la"]}}));
-        assert!(matches!(&ev[0], Event::ItemCompleted { item, .. } if item.kind == ItemKind::AgentMessage), "a tool call closes the message");
+        assert!(
+            matches!(&ev[0], Event::ItemCompleted { item, .. } if item.kind == ItemKind::AgentMessage),
+            "a tool call closes the message"
+        );
         match &ev[1] {
             Event::ItemStarted { item, .. } => {
                 assert_eq!(item.id, "t1");
@@ -648,19 +848,27 @@ mod tests {
             e => panic!("{e:?}"),
         }
         let ev = m.handle_update(&json!({"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":"a.txt"}}]}));
-        assert!(matches!(&ev[0], Event::ItemDelta { delta: ItemDelta::Data { data }, .. } if data["output"] == "a.txt" && data["command"] == "ls -la"));
+        assert!(
+            matches!(&ev[0], Event::ItemDelta { delta: ItemDelta::Data { data }, .. } if data["output"] == "a.txt" && data["command"] == "ls -la")
+        );
         let ev = m.handle_update(&json!({"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed","rawOutput":{"exit_code":0}}));
         match &ev[0] {
             Event::ItemCompleted { item, .. } => {
                 assert_eq!(item.status, ItemStatus::Completed);
                 assert_eq!(item.data["exit_code"], 0);
-                assert_eq!(item.data["output"], "a.txt", "content from an earlier update is kept");
+                assert_eq!(
+                    item.data["output"], "a.txt",
+                    "content from an earlier update is kept"
+                );
                 assert_eq!(item.title.as_deref(), Some("List files"));
             }
             e => panic!("{e:?}"),
         }
         let ev = m.end_turn(TurnOutcome::Stopped("end_turn".into()));
-        assert!(items_completed(&ev).is_empty(), "finished tools are not completed twice");
+        assert!(
+            items_completed(&ev).is_empty(),
+            "finished tools are not completed twice"
+        );
     }
 
     #[test]
@@ -695,11 +903,21 @@ mod tests {
         let mut m = SessionMapper::new("s");
         m.begin_turn("plan", 0);
         let ev = m.handle_update(&json!({"sessionUpdate":"plan","entries":[{"content":"a","priority":"high","status":"pending"}]}));
-        assert!(matches!(&ev[0], Event::ItemStarted { item, .. } if item.kind == ItemKind::Plan && item.data["steps"][0]["step"] == "a"));
+        assert!(
+            matches!(&ev[0], Event::ItemStarted { item, .. } if item.kind == ItemKind::Plan && item.data["steps"][0]["step"] == "a")
+        );
         let ev = m.handle_update(&json!({"sessionUpdate":"plan","entries":[{"content":"a","priority":"high","status":"completed"},{"content":"b","priority":"low","status":"in_progress"}]}));
-        assert!(matches!(&ev[0], Event::ItemDelta { delta: ItemDelta::Data { data }, .. } if data["steps"][1]["status"] == "in_progress"));
+        assert!(
+            matches!(&ev[0], Event::ItemDelta { delta: ItemDelta::Data { data }, .. } if data["steps"][1]["status"] == "in_progress")
+        );
         let ev = m.end_turn(TurnOutcome::Stopped("end_turn".into()));
-        assert_eq!(items_completed(&ev)[0].data["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            items_completed(&ev)[0].data["steps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -709,7 +927,10 @@ mod tests {
         let params = json!({"sessionId":"x","toolCall":{"toolCallId":"t9","title":"Run rm","kind":"execute","status":"pending","rawInput":{"command":"rm -rf build"}},
             "options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"always","name":"Always allow","kind":"allow_always"},{"optionId":"no","name":"Reject","kind":"reject_once"}]});
         let ev = m.permission_request(json!(7), &params);
-        assert!(matches!(&ev[0], Event::ItemStarted { item, .. } if item.id == "t9"), "an unannounced tool call is created");
+        assert!(
+            matches!(&ev[0], Event::ItemStarted { item, .. } if item.id == "t9"),
+            "an unannounced tool call is created"
+        );
         let approval = match ev.last() {
             Some(Event::ApprovalRequested { approval, .. }) => approval.clone(),
             e => panic!("{e:?}"),
@@ -717,14 +938,37 @@ mod tests {
         assert_eq!(approval.kind, ApprovalKind::Command);
         assert_eq!(approval.payload["command"], "rm -rf build");
         assert_eq!(approval.item_id.as_deref(), Some("t9"));
-        assert_eq!(approval.options, vec![ApprovalOption::Accept, ApprovalOption::AcceptForSession, ApprovalOption::Decline, ApprovalOption::Cancel]);
+        assert_eq!(
+            approval.options,
+            vec![
+                ApprovalOption::Accept,
+                ApprovalOption::AcceptForSession,
+                ApprovalOption::Decline,
+                ApprovalOption::Cancel
+            ]
+        );
 
-        let decide = |option| ApprovalDecision { option, updated_input: None, message: None };
-        assert!(m.approval_reply(&approval.id, &decide(ApprovalOption::EditInput)).is_err());
-        let (id, res) = m.approval_reply(&approval.id, &decide(ApprovalOption::AcceptForSession)).unwrap();
+        let decide = |option| ApprovalDecision {
+            option,
+            updated_input: None,
+            message: None,
+        };
+        assert!(m
+            .approval_reply(&approval.id, &decide(ApprovalOption::EditInput))
+            .is_err());
+        let (id, res) = m
+            .approval_reply(&approval.id, &decide(ApprovalOption::AcceptForSession))
+            .unwrap();
         assert_eq!(id, json!(7));
-        assert_eq!(res, json!({ "outcome": { "outcome": "selected", "optionId": "always" } }));
-        assert!(m.approval_reply(&approval.id, &decide(ApprovalOption::Accept)).is_err(), "answered once");
+        assert_eq!(
+            res,
+            json!({ "outcome": { "outcome": "selected", "optionId": "always" } })
+        );
+        assert!(
+            m.approval_reply(&approval.id, &decide(ApprovalOption::Accept))
+                .is_err(),
+            "answered once"
+        );
     }
 
     #[test]
@@ -736,10 +980,21 @@ mod tests {
             Some(Event::ApprovalRequested { approval, .. }) => approval.clone(),
             e => panic!("{e:?}"),
         };
-        assert_eq!(approval.options, vec![ApprovalOption::Decline, ApprovalOption::Cancel]);
-        let decide = |option| ApprovalDecision { option, updated_input: None, message: None };
-        assert!(m.approval_reply(&approval.id, &decide(ApprovalOption::Accept)).is_err());
-        let (_, res) = m.approval_reply(&approval.id, &decide(ApprovalOption::Decline)).unwrap();
+        assert_eq!(
+            approval.options,
+            vec![ApprovalOption::Decline, ApprovalOption::Cancel]
+        );
+        let decide = |option| ApprovalDecision {
+            option,
+            updated_input: None,
+            message: None,
+        };
+        assert!(m
+            .approval_reply(&approval.id, &decide(ApprovalOption::Accept))
+            .is_err());
+        let (_, res) = m
+            .approval_reply(&approval.id, &decide(ApprovalOption::Decline))
+            .unwrap();
         assert_eq!(res["outcome"]["optionId"], "r");
     }
 
@@ -752,9 +1007,16 @@ mod tests {
         assert_eq!(m.take_approvals().len(), 1);
         let ev = m.end_turn(TurnOutcome::Stopped("cancelled".into()));
         assert_eq!(items_completed(&ev)[0].status, ItemStatus::Failed);
-        assert!(matches!(ev.last(), Some(Event::TurnCompleted { turn, .. }) if turn.status == TurnStatus::Interrupted));
-        let ev = { m.begin_turn("again", 0); m.end_turn(TurnOutcome::Failed("agent exited".into())) };
-        assert!(matches!(ev.last(), Some(Event::TurnCompleted { turn, .. }) if turn.status == TurnStatus::Failed && turn.error.as_deref() == Some("agent exited")));
+        assert!(
+            matches!(ev.last(), Some(Event::TurnCompleted { turn, .. }) if turn.status == TurnStatus::Interrupted)
+        );
+        let ev = {
+            m.begin_turn("again", 0);
+            m.end_turn(TurnOutcome::Failed("agent exited".into()))
+        };
+        assert!(
+            matches!(ev.last(), Some(Event::TurnCompleted { turn, .. }) if turn.status == TurnStatus::Failed && turn.error.as_deref() == Some("agent exited"))
+        );
     }
 
     #[test]
@@ -762,10 +1024,15 @@ mod tests {
         let mut m = SessionMapper::new("s");
         m.replaying = true;
         assert!(m.handle_update(&json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"old"}})).is_empty());
-        assert!(m.handle_update(&json!({"sessionUpdate":"tool_call","toolCallId":"t","title":"x"})).is_empty());
+        assert!(m
+            .handle_update(&json!({"sessionUpdate":"tool_call","toolCallId":"t","title":"x"}))
+            .is_empty());
         let ev = m.handle_update(&json!({"sessionUpdate":"available_commands_update","availableCommands":[{"name":"init","description":"Create AGENTS.md","input":{"hint":"path"}}]}));
         match &ev[0] {
-            Event::ProviderInfo { info, .. } => assert_eq!(info["commands"][0], json!({"name":"init","description":"Create AGENTS.md","hint":"path"})),
+            Event::ProviderInfo { info, .. } => assert_eq!(
+                info["commands"][0],
+                json!({"name":"init","description":"Create AGENTS.md","hint":"path"})
+            ),
             e => panic!("{e:?}"),
         }
     }
@@ -781,19 +1048,47 @@ mod tests {
                 {"id":"think","name":"Thinking","category":"thought_level","type":"select","currentValue":"high","options":[]}
             ]
         }));
-        let settings: Vec<&Setting> = ev.iter().filter_map(|e| if let Event::SettingChanged { setting, .. } = e { Some(setting) } else { None }).collect();
-        assert_eq!(settings, vec![&Setting::PermissionMode("default".into()), &Setting::Model("pro".into()), &Setting::Effort("high".into())]);
+        let settings: Vec<&Setting> = ev
+            .iter()
+            .filter_map(|e| {
+                if let Event::SettingChanged { setting, .. } = e {
+                    Some(setting)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            settings,
+            vec![
+                &Setting::PermissionMode("default".into()),
+                &Setting::Model("pro".into()),
+                &Setting::Effort("high".into())
+            ]
+        );
         assert!(m.has_modes());
         assert_eq!(m.config_option("model").unwrap()["id"], "model");
 
-        let ev = m.handle_update(&json!({"sessionUpdate":"current_mode_update","currentModeId":"yolo"}));
-        assert!(matches!(&ev[0], Event::SettingChanged { setting: Setting::PermissionMode(p), .. } if p == "yolo"));
-        assert!(matches!(&ev[1], Event::ProviderInfo { info, .. } if info["current_mode"] == "yolo"));
+        let ev =
+            m.handle_update(&json!({"sessionUpdate":"current_mode_update","currentModeId":"yolo"}));
+        assert!(
+            matches!(&ev[0], Event::SettingChanged { setting: Setting::PermissionMode(p), .. } if p == "yolo")
+        );
+        assert!(
+            matches!(&ev[1], Event::ProviderInfo { info, .. } if info["current_mode"] == "yolo")
+        );
 
         let ev = m.handle_update(&json!({"sessionUpdate":"usage_update","used":1200,"size":200000,"cost":{"amount":0.25,"currency":"USD"}}));
         match &ev[0] {
             Event::Usage { usage, .. } => {
-                assert_eq!((usage.context_used, usage.context_window, usage.total_cost_usd), (Some(1200), Some(200000), Some(0.25)));
+                assert_eq!(
+                    (
+                        usage.context_used,
+                        usage.context_window,
+                        usage.total_cost_usd
+                    ),
+                    (Some(1200), Some(200000), Some(0.25))
+                );
             }
             e => panic!("{e:?}"),
         }
@@ -801,9 +1096,18 @@ mod tests {
 
     #[test]
     fn content_blocks_render_as_text() {
-        assert_eq!(content_text(&json!({"type":"resource_link","name":"a.rs","uri":"file:///a.rs"})), "[a.rs](file:///a.rs)");
-        assert_eq!(content_text(&json!({"type":"resource","resource":{"uri":"file:///b","text":"body"}})), "body");
-        assert_eq!(content_text(&json!({"type":"image","data":"..","mimeType":"image/png"})), "[image]");
+        assert_eq!(
+            content_text(&json!({"type":"resource_link","name":"a.rs","uri":"file:///a.rs"})),
+            "[a.rs](file:///a.rs)"
+        );
+        assert_eq!(
+            content_text(&json!({"type":"resource","resource":{"uri":"file:///b","text":"body"}})),
+            "body"
+        );
+        assert_eq!(
+            content_text(&json!({"type":"image","data":"..","mimeType":"image/png"})),
+            "[image]"
+        );
         assert_eq!(content_text(&json!({"type":"mystery"})), "");
     }
 }

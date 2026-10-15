@@ -77,9 +77,15 @@ pub struct BranchStatus {
 /// Canonical root of the main working tree, also when `cwd` is inside a linked
 /// worktree. None when `cwd` is not inside a repository.
 pub fn main_repo_root(cwd: &str) -> Result<Option<String>> {
-    let Some(root) = repo_root(cwd)? else { return Ok(None) };
+    let Some(root) = repo_root(cwd)? else {
+        return Ok(None);
+    };
     let common = std::path::PathBuf::from(git(&root, &["rev-parse", "--git-common-dir"])?.trim());
-    let common = if common.is_absolute() { common } else { Path::new(&root).join(common) };
+    let common = if common.is_absolute() {
+        common
+    } else {
+        Path::new(&root).join(common)
+    };
     // A non-bare repository keeps its common dir at `<main worktree>/.git`.
     match (common.file_name(), common.parent()) {
         (Some(name), Some(main)) if name == ".git" => Ok(Some(canonical(main))),
@@ -110,7 +116,10 @@ fn has_head(cwd: &str) -> bool {
 }
 
 pub fn status(cwd: &str) -> Result<Vec<FileStatus>> {
-    let out = git(cwd, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+    let out = git(
+        cwd,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
     let mut entries = Vec::new();
     let mut parts = out.split('\0').filter(|s| !s.is_empty());
     while let Some(rec) = parts.next() {
@@ -126,7 +135,12 @@ pub fn status(cwd: &str) -> Result<Vec<FileStatus>> {
         } else {
             None
         };
-        entries.push(FileStatus { path, staged, unstaged, renamed_from });
+        entries.push(FileStatus {
+            path,
+            staged,
+            unstaged,
+            renamed_from,
+        });
     }
     Ok(entries)
 }
@@ -137,7 +151,11 @@ fn untracked(cwd: &str, path: Option<&str>) -> Result<Vec<String>> {
         args.extend(["--", p]);
     }
     let out = git(cwd, &args)?;
-    Ok(out.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
+    Ok(out
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// Unified diff. Untracked files are appended as additions so a session's new
@@ -159,7 +177,11 @@ pub fn diff(cwd: &str, opts: &DiffOpts) -> Result<String> {
     let mut out = git(cwd, &refs)?;
     if !opts.staged {
         for file in untracked(cwd, opts.path.as_deref())? {
-            let piece = git_allow(cwd, &["diff", "--no-color", "--no-index", "--", "/dev/null", &file], &[1])?;
+            let piece = git_allow(
+                cwd,
+                &["diff", "--no-color", "--no-index", "--", "/dev/null", &file],
+                &[1],
+            )?;
             out.push_str(&piece);
         }
     }
@@ -183,18 +205,30 @@ pub fn diff_stat(cwd: &str, base: Option<&str>) -> Result<Vec<DiffStat>> {
             let added = it.next()?.parse().unwrap_or(0);
             let deleted = it.next()?.parse().unwrap_or(0);
             let path = it.next()?.to_string();
-            Some(DiffStat { path, added, deleted })
+            Some(DiffStat {
+                path,
+                added,
+                deleted,
+            })
         })
         .collect();
     for file in untracked(cwd, None)? {
-        let lines = std::fs::read_to_string(Path::new(cwd).join(&file)).map(|s| s.lines().count()).unwrap_or(0);
-        stats.push(DiffStat { path: file, added: lines as u32, deleted: 0 });
+        let lines = std::fs::read_to_string(Path::new(cwd).join(&file))
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        stats.push(DiffStat {
+            path: file,
+            added: lines as u32,
+            deleted: 0,
+        });
     }
     Ok(stats)
 }
 
 pub fn current_branch(cwd: &str) -> Result<String> {
-    Ok(git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
+    Ok(git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_string())
 }
 
 /// Branch, tracking and working tree state of `cwd`. None when `cwd` is not
@@ -203,13 +237,26 @@ pub fn branch_status(cwd: &str) -> Result<Option<BranchStatus>> {
     if repo_root(cwd)?.is_none() {
         return Ok(None);
     }
-    let mut status = parse_branch_status(&git(cwd, &["status", "--porcelain=v2", "--branch", "--untracked-files=normal"])?);
+    let mut status = parse_branch_status(&git(
+        cwd,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=normal",
+        ],
+    )?);
     if let (Some(branch), Some(_)) = (&status.branch, &status.upstream) {
         let config = |key: &str| -> Result<Option<String>> {
-            let out = git_allow(cwd, &["config", "--get", &format!("branch.{branch}.{key}")], &[1])?;
+            let out = git_allow(
+                cwd,
+                &["config", "--get", &format!("branch.{branch}.{key}")],
+                &[1],
+            )?;
             Ok(Some(out.trim().to_string()).filter(|v| !v.is_empty()))
         };
-        status.upstream_branch = config("merge")?.map(|r| r.strip_prefix("refs/heads/").unwrap_or(&r).to_string());
+        status.upstream_branch =
+            config("merge")?.map(|r| r.strip_prefix("refs/heads/").unwrap_or(&r).to_string());
         if let Some(remote) = config("remote")? {
             let url = git_allow(cwd, &["remote", "get-url", &remote], &[2])?;
             status.upstream_repo = parse_github_remote(url.trim());
@@ -230,8 +277,14 @@ fn parse_branch_status(out: &str) -> BranchStatus {
             status.upstream = Some(upstream.to_string());
         } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
             let mut it = ab.split_whitespace();
-            status.ahead = it.next().and_then(|a| a.strip_prefix('+')?.parse().ok()).unwrap_or(0);
-            status.behind = it.next().and_then(|b| b.strip_prefix('-')?.parse().ok()).unwrap_or(0);
+            status.ahead = it
+                .next()
+                .and_then(|a| a.strip_prefix('+')?.parse().ok())
+                .unwrap_or(0);
+            status.behind = it
+                .next()
+                .and_then(|b| b.strip_prefix('-')?.parse().ok())
+                .unwrap_or(0);
         } else if ["1 ", "2 ", "u ", "? "].iter().any(|p| line.starts_with(p)) {
             status.changed += 1;
         }
@@ -240,8 +293,15 @@ fn parse_branch_status(out: &str) -> BranchStatus {
 }
 
 pub fn branches(cwd: &str) -> Result<Vec<String>> {
-    let out = git(cwd, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"])?;
-    Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    let out = git(
+        cwd,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    )?;
+    Ok(out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
 }
 
 /// Commit and return the new commit sha. With `all`, stages everything first.
@@ -292,7 +352,11 @@ pub fn worktrees(cwd: &str) -> Result<Vec<Worktree>> {
             if let Some(w) = cur.take() {
                 list.push(w);
             }
-            cur = Some(Worktree { path: p.to_string(), branch: None, head: None });
+            cur = Some(Worktree {
+                path: p.to_string(),
+                branch: None,
+                head: None,
+            });
         } else if let Some(h) = line.strip_prefix("HEAD ") {
             if let Some(w) = cur.as_mut() {
                 w.head = Some(h.to_string());
@@ -317,7 +381,11 @@ pub fn github_repo(cwd: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     let remotes = git(cwd, &["remote"])?;
-    let names: Vec<&str> = remotes.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let names: Vec<&str> = remotes
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     for name in ["upstream", "github", "origin"] {
         if !names.contains(&name) {
             continue;
@@ -331,19 +399,31 @@ pub fn github_repo(cwd: &str) -> Result<Option<String>> {
 
 /// `owner/repo` from a github.com remote URL in HTTPS, SSH or scp-like form.
 fn parse_github_remote(url: &str) -> Option<String> {
-    let path = ["https://github.com/", "http://github.com/", "ssh://git@github.com/", "git://github.com/", "git@github.com:"]
-        .iter()
-        .find_map(|prefix| url.strip_prefix(prefix))
-        .or_else(|| {
-            // https://user@github.com/owner/repo
-            let rest = url.strip_prefix("https://")?;
-            let (user, rest) = rest.split_once('@')?;
-            (!user.contains('/')).then_some(rest)?.strip_prefix("github.com/")
-        })?;
+    let path = [
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+        "git://github.com/",
+        "git@github.com:",
+    ]
+    .iter()
+    .find_map(|prefix| url.strip_prefix(prefix))
+    .or_else(|| {
+        // https://user@github.com/owner/repo
+        let rest = url.strip_prefix("https://")?;
+        let (user, rest) = rest.split_once('@')?;
+        (!user.contains('/'))
+            .then_some(rest)?
+            .strip_prefix("github.com/")
+    })?;
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, repo) = path.split_once('/')?;
-    let valid = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let valid = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
     (valid(owner) && valid(repo)).then(|| format!("{owner}/{repo}"))
 }
 
@@ -354,21 +434,27 @@ mod tests {
     #[test]
     fn parses_branch_status() {
         let out = "# branch.oid 1234567890abcdef1234567890abcdef12345678\n# branch.head feature/x\n# branch.upstream origin/feature/x\n# branch.ab +2 -1\n1 .M N... 100644 100644 100644 a b src/a.rs\n2 R. N... 100644 100644 100644 a b R100 new.rs\told.rs\n? notes.md\n";
-        assert_eq!(parse_branch_status(out), BranchStatus {
-            branch: Some("feature/x".into()),
-            head: Some("1234567890abcdef1234567890abcdef12345678".into()),
-            upstream: Some("origin/feature/x".into()),
-            ahead: 2,
-            behind: 1,
-            changed: 3,
-            ..Default::default()
-        });
+        assert_eq!(
+            parse_branch_status(out),
+            BranchStatus {
+                branch: Some("feature/x".into()),
+                head: Some("1234567890abcdef1234567890abcdef12345678".into()),
+                upstream: Some("origin/feature/x".into()),
+                ahead: 2,
+                behind: 1,
+                changed: 3,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn parses_detached_and_unborn_heads() {
         let status = parse_branch_status("# branch.oid (initial)\n# branch.head (detached)\n");
-        assert_eq!((status.branch, status.head, status.upstream), (None, None, None));
+        assert_eq!(
+            (status.branch, status.head, status.upstream),
+            (None, None, None)
+        );
     }
 
     #[test]
@@ -381,9 +467,16 @@ mod tests {
             "git@github.com:owner/repo.git",
             "ssh://git@github.com/owner/repo.git",
         ] {
-            assert_eq!(parse_github_remote(url).as_deref(), Some("owner/repo"), "{url}");
+            assert_eq!(
+                parse_github_remote(url).as_deref(),
+                Some("owner/repo"),
+                "{url}"
+            );
         }
-        assert_eq!(parse_github_remote("git@github.com:my.org/my-repo_2.git").as_deref(), Some("my.org/my-repo_2"));
+        assert_eq!(
+            parse_github_remote("git@github.com:my.org/my-repo_2.git").as_deref(),
+            Some("my.org/my-repo_2")
+        );
     }
 
     #[test]

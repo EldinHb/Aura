@@ -65,7 +65,9 @@ impl RpcClient {
                         if v.get("method").is_some() {
                             if let Ok(n) = serde_json::from_value::<Notification>(v) {
                                 if n.method == "event" {
-                                    if let Ok(ev) = serde_json::from_value::<aura_core::Event>(n.params.clone()) {
+                                    if let Ok(ev) =
+                                        serde_json::from_value::<aura_core::Event>(n.params.clone())
+                                    {
                                         let _ = ev2.send(ev);
                                     }
                                 }
@@ -91,14 +93,24 @@ impl RpcClient {
             // Fail the calls still waiting instead of letting them run into their timeout.
             p2.lock().clear();
         });
-        Ok(Self { out, pending, next_id: Arc::new(AtomicU64::new(1)), events, pty, notifications, mismatch: None })
+        Ok(Self {
+            out,
+            pending,
+            next_id: Arc::new(AtomicU64::new(1)),
+            events,
+            pty,
+            notifications,
+            mismatch: None,
+        })
     }
 
     /// Connect using `<data_dir>/daemon.json`, noting whether the daemon runs this version.
     pub async fn connect_from_dir(data_dir: &std::path::Path) -> Result<Self> {
-        let info = read_daemon_info(data_dir).ok_or_else(|| anyhow!("daemon not running (no daemon.json)"))?;
+        let info = read_daemon_info(data_dir)
+            .ok_or_else(|| anyhow!("daemon not running (no daemon.json)"))?;
         let mut client = Self::connect(info.port, &info.token).await?;
-        client.mismatch = version_mismatch(&info.version, env!("CARGO_PKG_VERSION")).map(Into::into);
+        client.mismatch =
+            version_mismatch(&info.version, env!("CARGO_PKG_VERSION")).map(Into::into);
         Ok(client)
     }
 
@@ -108,23 +120,40 @@ impl RpcClient {
     }
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {
-        self.call_with_timeout(method, params, std::time::Duration::from_secs(120)).await
+        self.call_with_timeout(method, params, std::time::Duration::from_secs(120))
+            .await
     }
 
     /// `call` for methods that may take longer than the default two minutes.
-    pub async fn call_with_timeout(&self, method: &str, params: Value, timeout: std::time::Duration) -> Result<Value> {
+    pub async fn call_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id, tx);
-        let req = Request { id: Some(Value::from(id)), method: method.into(), params };
-        self.out.send(Message::Text(serde_json::to_string(&req)?)).await.map_err(|_| anyhow!("connection closed"))?;
+        let req = Request {
+            id: Some(Value::from(id)),
+            method: method.into(),
+            params,
+        };
+        self.out
+            .send(Message::Text(serde_json::to_string(&req)?))
+            .await
+            .map_err(|_| anyhow!("connection closed"))?;
         let resp = tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| anyhow!("rpc timeout for {method}"))?
             .map_err(|_| anyhow!("connection closed"))?;
         if let Some(e) = resp.error {
             // A method or parameters only one side knows: the version difference is the cause.
-            if let Some(why) = self.mismatch.as_deref().filter(|_| e.code == ERR_METHOD || e.code == ERR_PARAMS) {
+            if let Some(why) = self
+                .mismatch
+                .as_deref()
+                .filter(|_| e.code == ERR_METHOD || e.code == ERR_PARAMS)
+            {
                 bail!("{} ({}). {why}", e.message, e.code);
             }
             bail!("{} ({})", e.message, e.code);
@@ -132,7 +161,11 @@ impl RpcClient {
         Ok(resp.result.unwrap_or(Value::Null))
     }
 
-    pub async fn call_as<T: serde::de::DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
+    pub async fn call_as<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<T> {
         let value = self.call(method, params).await?;
         serde_json::from_value(value).map_err(|e| match self.mismatch.as_deref() {
             Some(why) => anyhow!("could not read the reply to {method}: {e}. {why}"),
@@ -142,7 +175,10 @@ impl RpcClient {
 
     pub async fn pty_input(&self, session_id: &str, data: &[u8]) -> Result<()> {
         let frame = encode_pty_frame(FRAME_PTY_INPUT, session_id, data);
-        self.out.send(Message::Binary(frame)).await.map_err(|_| anyhow!("connection closed"))
+        self.out
+            .send(Message::Binary(frame))
+            .await
+            .map_err(|_| anyhow!("connection closed"))
     }
 
     pub fn events(&self) -> broadcast::Receiver<aura_core::Event> {

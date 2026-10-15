@@ -29,7 +29,10 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let data_dir = args.data_dir.clone().unwrap_or_else(aura_rpc::default_data_dir);
+    let data_dir = args
+        .data_dir
+        .clone()
+        .unwrap_or_else(aura_rpc::default_data_dir);
     std::fs::create_dir_all(&data_dir).with_context(|| format!("create {}", data_dir.display()))?;
     init_logging(&data_dir, args.foreground)?;
 
@@ -43,7 +46,10 @@ async fn main() -> Result<()> {
     // second daemon off this SQLite database if that file is ever lost.
     if let Some(info) = aura_rpc::read_daemon_info(&data_dir) {
         if daemon_alive(info.port).await {
-            eprintln!("aurad already running (pid {}, port {})", info.pid, info.port);
+            eprintln!(
+                "aurad already running (pid {}, port {})",
+                info.pid, info.port
+            );
             std::process::exit(2);
         }
     }
@@ -51,7 +57,10 @@ async fn main() -> Result<()> {
     let _data_dir_lock = match aura_rpc::lock_data_dir(&data_dir)? {
         Some(lock) => lock,
         None => {
-            eprintln!("aurad already running (another process holds {})", data_dir.join("daemon.lock").display());
+            eprintln!(
+                "aurad already running (another process holds {})",
+                data_dir.join("daemon.lock").display()
+            );
             std::process::exit(2);
         }
     };
@@ -86,19 +95,39 @@ async fn main() -> Result<()> {
     let manager = Manager::new(store.clone(), providers, Some(Arc::new(aura_git::Git)));
     manager.enable_attachments(data_dir.join("attachments"));
     // Orchestrators get their tools from `aura mcp`, installed next to aurad.
-    match std::env::current_exe().map(|exe| exe.with_file_name(if cfg!(windows) { "aura.exe" } else { "aura" })) {
-        Ok(aura) if aura.exists() => manager.enable_orchestration(aura, std::fs::canonicalize(&data_dir).unwrap_or_else(|_| data_dir.clone())),
+    match std::env::current_exe()
+        .map(|exe| exe.with_file_name(if cfg!(windows) { "aura.exe" } else { "aura" }))
+    {
+        Ok(aura) if aura.exists() => manager.enable_orchestration(
+            aura,
+            std::fs::canonicalize(&data_dir).unwrap_or_else(|_| data_dir.clone()),
+        ),
         _ => tracing::warn!("`aura` not found next to aurad; orchestrators will have no tools"),
     }
     let restored = manager.restore()?;
     tracing::info!(restored, "sessions restored");
 
-    let reviews = aura_review::ReviewService::new(store.clone(), Arc::new(aura_github::GhCli::default()), Arc::new(aura_review::runner::CliRunner), manager.clone(), data_dir.join("review-workspaces"))?;
+    let reviews = aura_review::ReviewService::new(
+        store.clone(),
+        Arc::new(aura_github::GhCli::default()),
+        Arc::new(aura_review::runner::CliRunner),
+        manager.clone(),
+        data_dir.join("review-workspaces"),
+    )?;
     reviews.launch();
-    let watches = aura_review::watch::WatchService::new(store.clone(), Arc::new(aura_github::GhCli::default()), reviews.events.clone())?;
+    let watches = aura_review::watch::WatchService::new(
+        store.clone(),
+        Arc::new(aura_github::GhCli::default()),
+        reviews.events.clone(),
+    )?;
     watches.launch();
     // Review activity on a session's own PRs goes to that session's agent.
-    let follows = aura_review::follow::FollowService::new(store, Arc::new(aura_github::GhCli::default()), manager.clone(), reviews.events.clone())?;
+    let follows = aura_review::follow::FollowService::new(
+        store,
+        Arc::new(aura_github::GhCli::default()),
+        manager.clone(),
+        reviews.events.clone(),
+    )?;
     follows.launch();
     let service = reviews.clone();
     let github: Arc<dyn aura_github::Github> = Arc::new(aura_github::GhCli::default());
@@ -107,16 +136,36 @@ async fn main() -> Result<()> {
         let watches = watches.clone();
         let github = github.clone();
         Box::pin(async move {
-            if let Some(result) = service.handle(&method, params.clone()).await? { return Ok(Some(result)); }
-            if let Some(result) = watches.handle(&method, params.clone()).await? { return Ok(Some(result)); }
-            if let Some(result) = github_methods(github.as_ref(), &method, &params).await? { return Ok(Some(result)); }
+            if let Some(result) = service.handle(&method, params.clone()).await? {
+                return Ok(Some(result));
+            }
+            if let Some(result) = watches.handle(&method, params.clone()).await? {
+                return Ok(Some(result));
+            }
+            if let Some(result) = github_methods(github.as_ref(), &method, &params).await? {
+                return Ok(Some(result));
+            }
             git_methods(&method, params).await
         })
     });
-    let server = RpcServer::start_with_notifications(manager.clone(), &data_dir, Some(ext), Some(reviews.events.clone())).await?;
-    tracing::info!(port = server.info.port, pid = server.info.pid, "aurad listening");
+    let server = RpcServer::start_with_notifications(
+        manager.clone(),
+        &data_dir,
+        Some(ext),
+        Some(reviews.events.clone()),
+    )
+    .await?;
+    tracing::info!(
+        port = server.info.port,
+        pid = server.info.pid,
+        "aurad listening"
+    );
     if args.foreground {
-        eprintln!("aurad listening on 127.0.0.1:{} (data dir {})", server.info.port, data_dir.display());
+        eprintln!(
+            "aurad listening on 127.0.0.1:{} (data dir {})",
+            server.info.port,
+            data_dir.display()
+        );
     }
 
     let shutdown = server.shutdown.clone();
@@ -142,15 +191,23 @@ async fn main() -> Result<()> {
 
 async fn daemon_alive(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/healthz");
-    match tokio::time::timeout(std::time::Duration::from_millis(800), tokio::net::TcpStream::connect(("127.0.0.1", port))).await {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(800),
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    {
         Ok(Ok(mut stream)) => {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let req = "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_string();
+            let req =
+                "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".to_string();
             if stream.write_all(req.as_bytes()).await.is_err() {
                 return false;
             }
             let mut buf = vec![0u8; 512];
-            match tokio::time::timeout(std::time::Duration::from_millis(800), stream.read(&mut buf)).await {
+            match tokio::time::timeout(std::time::Duration::from_millis(800), stream.read(&mut buf))
+                .await
+            {
                 Ok(Ok(n)) => String::from_utf8_lossy(&buf[..n]).contains("200"),
                 _ => false,
             }
@@ -184,27 +241,57 @@ async fn wait_for_signal() {
 fn init_logging(data_dir: &std::path::Path, foreground: bool) -> Result<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,aura_core=debug,aura_provider_claude=debug,aura_provider_codex=debug,aura_provider_acp=debug"));
     if foreground {
-        tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
     } else {
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(data_dir.join("aurad.log"))?;
-        tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(std::sync::Mutex::new(file)).init();
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(data_dir.join("aurad.log"))?;
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .init();
     }
     Ok(())
 }
 
 /// GitHub reads for the new-session dialog and a session's branch status.
-async fn github_methods(gh: &dyn aura_github::Github, method: &str, params: &Value) -> Result<Option<Value>> {
+async fn github_methods(
+    gh: &dyn aura_github::Github,
+    method: &str,
+    params: &Value,
+) -> Result<Option<Value>> {
     Ok(match method {
         "github.issues" => {
-            let repo = params.get("repo").and_then(|v| v.as_str()).context("repo is required")?;
+            let repo = params
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .context("repo is required")?;
             let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let today = chrono::Local::now().date_naive();
-            Some(serde_json::to_value(aura_github::issues::open_issues(gh, repo, query, today).await?)?)
+            Some(serde_json::to_value(
+                aura_github::issues::open_issues(gh, repo, query, today).await?,
+            )?)
         }
         "github.branch_pull" => {
-            let str_param = |key: &str| params.get(key).and_then(|v| v.as_str()).with_context(|| format!("{key} is required"));
-            let (repo, head_repo, branch) = (str_param("repo")?, str_param("head_repo")?, str_param("branch")?);
-            Some(serde_json::to_value(aura_github::branch::branch_pull(gh, repo, head_repo, branch).await?)?)
+            let str_param = |key: &str| {
+                params
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .with_context(|| format!("{key} is required"))
+            };
+            let (repo, head_repo, branch) = (
+                str_param("repo")?,
+                str_param("head_repo")?,
+                str_param("branch")?,
+            );
+            Some(serde_json::to_value(
+                aura_github::branch::branch_pull(gh, repo, head_repo, branch).await?,
+            )?)
         }
         _ => None,
     })
@@ -213,7 +300,11 @@ async fn github_methods(gh: &dyn aura_github::Github, method: &str, params: &Val
 /// Git methods exposed to clients. All take `cwd`.
 async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     use aura_git::ops;
-    let cwd = params.get("cwd").and_then(|v| v.as_str()).unwrap_or(".").to_string();
+    let cwd = params
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".")
+        .to_string();
     let p = params.clone();
     let m = method.to_string();
     let res = tokio::task::spawn_blocking(move || -> Result<Option<Value>> {
@@ -223,26 +314,45 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
             "git.status" => Some(serde_json::to_value(ops::status(&cwd)?)?),
             "git.diff" => {
                 let opts = ops::DiffOpts {
-                    path: p.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    path: p
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                     staged: p.get("staged").and_then(|v| v.as_bool()).unwrap_or(false),
-                    base: p.get("base").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    base: p
+                        .get("base")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 };
                 Some(json!(ops::diff(&cwd, &opts)?))
             }
             "git.diff_stat" => {
-                let base = p.get("base").and_then(|v| v.as_str()).map(|s| s.to_string());
-                Some(serde_json::to_value(ops::diff_stat(&cwd, base.as_deref())?)?)
+                let base = p
+                    .get("base")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                Some(serde_json::to_value(ops::diff_stat(
+                    &cwd,
+                    base.as_deref(),
+                )?)?)
             }
             "git.branch_status" => Some(serde_json::to_value(ops::branch_status(&cwd)?)?),
             "git.current_branch" => Some(json!(ops::current_branch(&cwd)?)),
             "git.branches" => Some(json!(ops::branches(&cwd)?)),
             "git.commit" => {
-                let message = p.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let message = p
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let all = p.get("all").and_then(|v| v.as_bool()).unwrap_or(true);
                 Some(json!(ops::commit(&cwd, &message, all)?))
             }
             "git.push" => {
-                let set_upstream = p.get("set_upstream").and_then(|v| v.as_bool()).unwrap_or(true);
+                let set_upstream = p
+                    .get("set_upstream")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 Some(json!(ops::push(&cwd, set_upstream)?))
             }
             "git.log" => {
@@ -253,12 +363,21 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
             "git.main_repo_root" => Some(json!(ops::main_repo_root(&cwd)?)),
             "git.cleanup_candidates" => {
                 let fetch = p.get("fetch").and_then(|v| v.as_bool()).unwrap_or(true);
-                Some(serde_json::to_value(aura_git::cleanup::candidates(&cwd, fetch)?)?)
+                Some(serde_json::to_value(aura_git::cleanup::candidates(
+                    &cwd, fetch,
+                )?)?)
             }
             "git.cleanup" => {
-                let branches: Vec<String> = serde_json::from_value(p.get("branches").cloned().unwrap_or_default()).context("branches must be a list of names")?;
-                let prune = p.get("prune_worktrees").and_then(|v| v.as_bool()).unwrap_or(false);
-                Some(serde_json::to_value(aura_git::cleanup::clean(&cwd, &branches, prune)?)?)
+                let branches: Vec<String> =
+                    serde_json::from_value(p.get("branches").cloned().unwrap_or_default())
+                        .context("branches must be a list of names")?;
+                let prune = p
+                    .get("prune_worktrees")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Some(serde_json::to_value(aura_git::cleanup::clean(
+                    &cwd, &branches, prune,
+                )?)?)
             }
             _ => None,
         })

@@ -10,7 +10,11 @@ use std::io::Write;
 mod mcp;
 
 #[derive(Parser, Debug)]
-#[command(name = "aura", version, about = "Aura: keyboard-first manager for AI coding CLI sessions")]
+#[command(
+    name = "aura",
+    version,
+    about = "Aura: keyboard-first manager for AI coding CLI sessions"
+)]
 struct Cli {
     /// Data directory (default: ~/.aura or $AURA_DATA_DIR)
     #[arg(long, global = true)]
@@ -119,9 +123,16 @@ enum DaemonCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let data_dir = cli.data_dir.clone().unwrap_or_else(aura_rpc::default_data_dir);
-    if let Cmd::Daemon { cmd } = &cli.cmd { return daemon_cmd(&data_dir, cmd).await }
-    if let Cmd::Mcp { orchestrator } = cli.cmd { return mcp::run(data_dir, orchestrator).await }
+    let data_dir = cli
+        .data_dir
+        .clone()
+        .unwrap_or_else(aura_rpc::default_data_dir);
+    if let Cmd::Daemon { cmd } = &cli.cmd {
+        return daemon_cmd(&data_dir, cmd).await;
+    }
+    if let Cmd::Mcp { orchestrator } = cli.cmd {
+        return mcp::run(data_dir, orchestrator).await;
+    }
     let client = connect_or_start(&data_dir).await?;
     match cli.cmd {
         Cmd::Ls { all } => {
@@ -132,13 +143,24 @@ async fn main() -> Result<()> {
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&sessions)?);
             } else {
-                println!("{:<10} {:<9} {:<17} {:<11} {:<30} CWD", "ID", "PROVIDER", "STATUS", "MODE", "TITLE");
+                println!(
+                    "{:<10} {:<9} {:<17} {:<11} {:<30} CWD",
+                    "ID", "PROVIDER", "STATUS", "MODE", "TITLE"
+                );
                 for s in sessions {
                     println!(
                         "{:<10} {:<9} {:<17} {:<11} {:<30} {}",
                         &s.id[..8],
                         s.agent.as_deref().unwrap_or(s.provider.as_str()),
-                        format!("{:?}{}", s.status, if s.pending_count > 0 { format!("({})", s.pending_count) } else { String::new() }),
+                        format!(
+                            "{:?}{}",
+                            s.status,
+                            if s.pending_count > 0 {
+                                format!("({})", s.pending_count)
+                            } else {
+                                String::new()
+                            }
+                        ),
                         format!("{:?}", s.mode),
                         truncate(&s.title, 30),
                         s.cwd
@@ -146,30 +168,62 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::New { provider, agent, cwd, title, group, prompt, system_prompt, branch, orchestrator, resume, attach, command } => {
-            let mut provider = ProviderKind::parse(&provider).ok_or_else(|| anyhow!("unknown provider {provider}"))?;
+        Cmd::New {
+            provider,
+            agent,
+            cwd,
+            title,
+            group,
+            prompt,
+            system_prompt,
+            branch,
+            orchestrator,
+            resume,
+            attach,
+            command,
+        } => {
+            let mut provider = ProviderKind::parse(&provider)
+                .ok_or_else(|| anyhow!("unknown provider {provider}"))?;
             if agent.is_some() {
                 if !matches!(provider, ProviderKind::Acp | ProviderKind::Terminal) {
-                    anyhow::bail!("--agent selects an ACP agent; it cannot be combined with --provider {}", provider.as_str());
+                    anyhow::bail!(
+                        "--agent selects an ACP agent; it cannot be combined with --provider {}",
+                        provider.as_str()
+                    );
                 }
                 provider = ProviderKind::Acp;
             }
-            let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap().to_string_lossy().to_string());
+            let cwd = cwd.unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            });
             let opts = CreateSessionOpts {
                 provider,
                 agent,
                 cwd,
                 title,
                 group,
-                command: if command.is_empty() { None } else { Some(command) },
+                command: if command.is_empty() {
+                    None
+                } else {
+                    Some(command)
+                },
                 initial_prompt: prompt,
                 system_prompt,
                 resume_native_id: resume,
-                worktree: branch.map(|b| WorktreeOpts { branch: b, base: None, path: None }),
+                worktree: branch.map(|b| WorktreeOpts {
+                    branch: b,
+                    base: None,
+                    path: None,
+                }),
                 orchestrator,
                 ..Default::default()
             };
-            let s: Session = client.call_as("session.create", serde_json::to_value(opts)?).await?;
+            let s: Session = client
+                .call_as("session.create", serde_json::to_value(opts)?)
+                .await?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&s)?);
             } else {
@@ -185,11 +239,18 @@ async fn main() -> Result<()> {
         }
         Cmd::Send { id, text } => {
             let id = resolve(&client, &id).await?;
-            client.call("session.send", json!({ "id": id, "input": { "text": text.join(" ") } })).await?;
+            client
+                .call(
+                    "session.send",
+                    json!({ "id": id, "input": { "text": text.join(" ") } }),
+                )
+                .await?;
         }
         Cmd::Interrupt { id } => {
             let id = resolve(&client, &id).await?;
-            client.call("session.interrupt", json!({ "id": id })).await?;
+            client
+                .call("session.interrupt", json!({ "id": id }))
+                .await?;
         }
         Cmd::Kill { id } => {
             let id = resolve(&client, &id).await?;
@@ -197,18 +258,29 @@ async fn main() -> Result<()> {
         }
         Cmd::Rm { id, worktree } => {
             let id = resolve(&client, &id).await?;
-            client.call("session.delete", json!({ "id": id, "remove_worktree": worktree })).await?;
+            client
+                .call(
+                    "session.delete",
+                    json!({ "id": id, "remove_worktree": worktree }),
+                )
+                .await?;
         }
         Cmd::Mode { id, mode } => {
             let id = resolve(&client, &id).await?;
-            let s: Session = client.call_as("session.switch_mode", json!({ "id": id, "mode": mode })).await?;
+            let s: Session = client
+                .call_as("session.switch_mode", json!({ "id": id, "mode": mode }))
+                .await?;
             println!("{} now in {:?} mode", &s.id[..8], s.mode);
         }
         Cmd::Pending => {
             let v = client.call("session.pending", json!({})).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
-        Cmd::Approve { id, approval_id, decision } => {
+        Cmd::Approve {
+            id,
+            approval_id,
+            decision,
+        } => {
             let id = resolve(&client, &id).await?;
             let option = match decision.as_str() {
                 "accept" | "y" => ApprovalOption::Accept,
@@ -261,7 +333,10 @@ fn truncate(s: &str, n: usize) -> String {
 
 async fn resolve(client: &RpcClient, prefix: &str) -> Result<String> {
     let sessions: Vec<Session> = client.call_as("session.list", json!({})).await?;
-    let matches: Vec<&Session> = sessions.iter().filter(|s| s.id.starts_with(prefix) || s.title == prefix).collect();
+    let matches: Vec<&Session> = sessions
+        .iter()
+        .filter(|s| s.id.starts_with(prefix) || s.title == prefix)
+        .collect();
     match matches.len() {
         1 => Ok(matches[0].id.clone()),
         0 => bail!("no session matches {prefix}"),
@@ -306,10 +381,16 @@ async fn daemon_cmd(data_dir: &std::path::Path, cmd: &DaemonCmd) -> Result<()> {
 pub fn spawn_daemon(data_dir: &std::path::Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     let sibling = exe.with_file_name(if cfg!(windows) { "aurad.exe" } else { "aurad" });
-    let bin = if sibling.exists() { sibling } else { std::path::PathBuf::from("aurad") };
+    let bin = if sibling.exists() {
+        sibling
+    } else {
+        std::path::PathBuf::from("aurad")
+    };
     let mut cmd = std::process::Command::new(&bin);
     cmd.arg("--data-dir").arg(data_dir);
-    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -328,7 +409,8 @@ pub fn spawn_daemon(data_dir: &std::path::Path) -> Result<()> {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
-    cmd.spawn().with_context(|| format!("spawn {}", bin.display()))?;
+    cmd.spawn()
+        .with_context(|| format!("spawn {}", bin.display()))?;
     Ok(())
 }
 
@@ -375,11 +457,20 @@ async fn attach_session(client: &RpcClient, id: &str) -> Result<()> {
     use crossterm::terminal;
     let s: Session = client.call_as("session.get", json!({ "id": id })).await?;
     if s.mode != SessionMode::Terminal {
-        bail!("session {} is in structured mode; use `aura mode {} terminal` first", &id[..8], &id[..8]);
+        bail!(
+            "session {} is in structured mode; use `aura mode {} terminal` first",
+            &id[..8],
+            &id[..8]
+        );
     }
     let att = client.call("pty.attach", json!({ "id": id })).await?;
     let (cols, rows) = terminal::size().unwrap_or((120, 40));
-    client.call("pty.resize", json!({ "id": id, "cols": cols, "rows": rows })).await?;
+    client
+        .call(
+            "pty.resize",
+            json!({ "id": id, "cols": cols, "rows": rows }),
+        )
+        .await?;
     terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     if let Some(sb) = att["scrollback"].as_str() {

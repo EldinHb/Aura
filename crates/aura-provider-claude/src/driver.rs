@@ -34,9 +34,18 @@ pub(crate) fn mcp_args(session: &Session) -> Vec<String> {
     let servers: serde_json::Map<String, Value> = session
         .mcp_servers
         .iter()
-        .map(|m| (m.name.clone(), json!({ "type": "stdio", "command": m.command, "args": m.args })))
+        .map(|m| {
+            (
+                m.name.clone(),
+                json!({ "type": "stdio", "command": m.command, "args": m.args }),
+            )
+        })
         .collect();
-    let allowed: Vec<String> = session.mcp_servers.iter().map(|m| format!("mcp__{}", m.name)).collect();
+    let allowed: Vec<String> = session
+        .mcp_servers
+        .iter()
+        .map(|m| format!("mcp__{}", m.name))
+        .collect();
     vec![
         format!("--mcp-config={}", json!({ "mcpServers": servers })),
         format!("--allowedTools={}", allowed.join(",")),
@@ -88,7 +97,9 @@ impl ClaudeDriver {
         cmd.args(mcp_args(session));
         cmd.current_dir(&session.cwd);
         cmd.env("AURA_SESSION_ID", &session.id);
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         cmd.kill_on_drop(true);
         let mut child = cmd.spawn().with_context(|| format!("spawn {binary}"))?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
@@ -195,7 +206,11 @@ impl ClaudeDriver {
                 } else {
                     None
                 };
-                evs.push(Event::ProcessExited { session_id: sid.clone(), exit_code: code, message });
+                evs.push(Event::ProcessExited {
+                    session_id: sid.clone(),
+                    exit_code: code,
+                    message,
+                });
                 for ev in evs {
                     let _ = sink.send(ev);
                 }
@@ -207,7 +222,9 @@ impl ClaudeDriver {
 
     async fn write_json(&self, v: &Value) -> Result<()> {
         let mut guard = self.stdin.lock().await;
-        let stdin = guard.as_mut().ok_or_else(|| anyhow!("claude process is not running"))?;
+        let stdin = guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("claude process is not running"))?;
         let mut line = serde_json::to_string(v)?;
         line.push('\n');
         stdin.write_all(line.as_bytes()).await?;
@@ -218,11 +235,16 @@ impl ClaudeDriver {
     async fn control_request(&self, request: Value, kind: OutboundControl) -> Result<()> {
         let id = format!("aura-{}", uuid::Uuid::new_v4());
         self.parser.lock().note_outbound(&id, kind);
-        self.write_json(&json!({"type": "control_request", "request_id": id, "request": request})).await
+        self.write_json(&json!({"type": "control_request", "request_id": id, "request": request}))
+            .await
     }
 
     async fn send_text(&self, text: &str) -> Result<()> {
-        self.send(Input { text: text.to_string(), ..Default::default() }).await
+        self.send(Input {
+            text: text.to_string(),
+            ..Default::default()
+        })
+        .await
     }
 }
 
@@ -232,11 +254,22 @@ impl Driver for ClaudeDriver {
         let mut content: Vec<Value> = vec![];
         for img in &input.images {
             let (data, media) = match (&img.data, &img.path) {
-                (Some(d), _) => (d.clone(), img.media_type.clone().unwrap_or_else(|| "image/png".into())),
+                (Some(d), _) => (
+                    d.clone(),
+                    img.media_type.clone().unwrap_or_else(|| "image/png".into()),
+                ),
                 (None, Some(p)) => {
-                    let bytes = tokio::fs::read(p).await.with_context(|| format!("read image {p}"))?;
-                    let media = img.media_type.clone().unwrap_or_else(|| guess_media_type(p));
-                    (base64::engine::general_purpose::STANDARD.encode(bytes), media)
+                    let bytes = tokio::fs::read(p)
+                        .await
+                        .with_context(|| format!("read image {p}"))?;
+                    let media = img
+                        .media_type
+                        .clone()
+                        .unwrap_or_else(|| guess_media_type(p));
+                    (
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                        media,
+                    )
                 }
                 (None, None) => continue,
             };
@@ -249,11 +282,13 @@ impl Driver for ClaudeDriver {
         for ev in events {
             let _ = self.sink.send(ev);
         }
-        self.write_json(&json!({"type": "user", "message": {"role": "user", "content": content}})).await
+        self.write_json(&json!({"type": "user", "message": {"role": "user", "content": content}}))
+            .await
     }
 
     async fn interrupt(&self) -> Result<()> {
-        self.control_request(json!({"subtype": "interrupt"}), OutboundControl::Interrupt).await
+        self.control_request(json!({"subtype": "interrupt"}), OutboundControl::Interrupt)
+            .await
     }
 
     async fn respond_approval(&self, approval_id: &str, decision: ApprovalDecision) -> Result<()> {
@@ -292,12 +327,19 @@ impl Driver for ClaudeDriver {
     async fn action(&self, name: &str, params: Value) -> Result<Value> {
         match name {
             "compact" => {
-                let instr = params.get("instructions").and_then(Value::as_str).unwrap_or("");
-                self.send_text(format!("/compact {instr}").trim_end()).await?;
+                let instr = params
+                    .get("instructions")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                self.send_text(format!("/compact {instr}").trim_end())
+                    .await?;
                 Ok(json!({"ok": true}))
             }
             "slash" => {
-                let cmd = params.get("command").and_then(Value::as_str).ok_or_else(|| anyhow!("missing command"))?;
+                let cmd = params
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("missing command"))?;
                 self.send_text(cmd).await?;
                 Ok(json!({"ok": true}))
             }
@@ -315,7 +357,10 @@ impl Driver for ClaudeDriver {
         }
         let rx = self.exit_rx.lock().await.take();
         if let Some(rx) = rx {
-            if tokio::time::timeout(std::time::Duration::from_secs(5), rx).await.is_err() {
+            if tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+                .await
+                .is_err()
+            {
                 let _ = self.kill_tx.send(());
             }
         }
@@ -324,7 +369,12 @@ impl Driver for ClaudeDriver {
 }
 
 fn guess_media_type(path: &str) -> String {
-    match std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
@@ -346,12 +396,24 @@ mod tests {
 
     #[test]
     fn mcp_servers_are_passed_with_their_tools_allowed() {
-        let mut s = Session::new(&CreateSessionOpts { provider: ProviderKind::Claude, cwd: "/tmp".into(), ..Default::default() });
+        let mut s = Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: "/tmp".into(),
+            ..Default::default()
+        });
         assert!(mcp_args(&s).is_empty());
-        s.mcp_servers = vec![McpServer { name: "aura".into(), command: "/bin/aura".into(), args: vec!["mcp".into(), "--orchestrator".into(), "x".into()] }];
+        s.mcp_servers = vec![McpServer {
+            name: "aura".into(),
+            command: "/bin/aura".into(),
+            args: vec!["mcp".into(), "--orchestrator".into(), "x".into()],
+        }];
         let args = mcp_args(&s);
-        let config: Value = serde_json::from_str(args[0].strip_prefix("--mcp-config=").unwrap()).unwrap();
-        assert_eq!(config, json!({ "mcpServers": { "aura": { "type": "stdio", "command": "/bin/aura", "args": ["mcp", "--orchestrator", "x"] } } }));
+        let config: Value =
+            serde_json::from_str(args[0].strip_prefix("--mcp-config=").unwrap()).unwrap();
+        assert_eq!(
+            config,
+            json!({ "mcpServers": { "aura": { "type": "stdio", "command": "/bin/aura", "args": ["mcp", "--orchestrator", "x"] } } })
+        );
         assert_eq!(args[1], "--allowedTools=mcp__aura");
     }
 }

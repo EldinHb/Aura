@@ -21,7 +21,11 @@ struct Server {
 }
 
 pub async fn run(data_dir: PathBuf, orchestrator: String) -> Result<()> {
-    let server = Arc::new(Server { data_dir, orchestrator, client: Mutex::new(None) });
+    let server = Arc::new(Server {
+        data_dir,
+        orchestrator,
+        client: Mutex::new(None),
+    });
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
@@ -49,12 +53,16 @@ pub async fn run(data_dir: PathBuf, orchestrator: String) -> Result<()> {
         let server = server.clone();
         let out = out_tx.clone();
         tokio::spawn(async move {
-            let Some(id) = msg.get("id").cloned() else { return }; // a notification
+            let Some(id) = msg.get("id").cloned() else {
+                return;
+            }; // a notification
             let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
             let reply = match server.handle(method, params).await {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+                Err((code, message)) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                }
             };
             let _ = out.send(reply);
         });
@@ -68,8 +76,15 @@ impl Server {
     async fn handle(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => {
-                let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or("");
-                let version = if PROTOCOL_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSIONS[0] };
+                let asked = params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let version = if PROTOCOL_VERSIONS.contains(&asked) {
+                    asked
+                } else {
+                    PROTOCOL_VERSIONS[0]
+                };
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
@@ -80,11 +95,22 @@ impl Server {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
             "tools/call" => {
-                let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-                let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
                 Ok(match self.call(&name, &args).await {
-                    Ok(text) => json!({ "content": [{ "type": "text", "text": text }], "isError": false }),
-                    Err(e) => json!({ "content": [{ "type": "text", "text": format!("{e:#}") }], "isError": true }),
+                    Ok(text) => {
+                        json!({ "content": [{ "type": "text", "text": text }], "isError": false })
+                    }
+                    Err(e) => {
+                        json!({ "content": [{ "type": "text", "text": format!("{e:#}") }], "isError": true })
+                    }
                 })
             }
             _ => Err((-32601, format!("method not found: {method}"))),
@@ -105,10 +131,18 @@ impl Server {
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         // Above the longest `orchestrator.wait` the daemon allows.
         let timeout = Duration::from_secs(3700);
-        match self.connected().await?.call_with_timeout(method, params.clone(), timeout).await {
+        match self
+            .connected()
+            .await?
+            .call_with_timeout(method, params.clone(), timeout)
+            .await
+        {
             Err(e) if e.to_string() == "connection closed" => {
                 *self.client.lock().await = None;
-                self.connected().await?.call_with_timeout(method, params, timeout).await
+                self.connected()
+                    .await?
+                    .call_with_timeout(method, params, timeout)
+                    .await
             }
             result => result,
         }
@@ -121,7 +155,11 @@ impl Server {
             "start_session" => {
                 let mut p = json!({ "orchestrator": o, "agent": req(a, "agent")?, "prompt": req(a, "prompt")? });
                 for key in ["title", "cwd", "branch", "base", "model", "effort"] {
-                    if let Some(v) = a.get(key).and_then(Value::as_str).filter(|v| !v.trim().is_empty()) {
+                    if let Some(v) = a
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|v| !v.trim().is_empty())
+                    {
                         p[key] = json!(v);
                     }
                 }
@@ -142,37 +180,69 @@ impl Server {
                 Ok(format!("Sent to {} (`{}`).", s.title, s.id))
             }
             "list_sessions" => {
-                let workers: Vec<WorkerReport> = serde_json::from_value(self.rpc("orchestrator.workers", json!({ "orchestrator": o })).await?)?;
-                Ok(if workers.is_empty() { "You have no workers yet.".into() } else { describe_workers(&workers) })
+                let workers: Vec<WorkerReport> = serde_json::from_value(
+                    self.rpc("orchestrator.workers", json!({ "orchestrator": o }))
+                        .await?,
+                )?;
+                Ok(if workers.is_empty() {
+                    "You have no workers yet.".into()
+                } else {
+                    describe_workers(&workers)
+                })
             }
             "read_session" => {
                 let turns = a.get("turns").and_then(Value::as_u64).unwrap_or(1);
-                let v = self.rpc("orchestrator.read", json!({ "orchestrator": o, "worker": req(a, "session")?, "turns": turns })).await?;
+                let v = self
+                    .rpc(
+                        "orchestrator.read",
+                        json!({ "orchestrator": o, "worker": req(a, "session")?, "turns": turns }),
+                    )
+                    .await?;
                 Ok(v.as_str().unwrap_or_default().to_string())
             }
             "wait_for_sessions" => {
                 let sessions: Vec<String> = a
                     .get("sessions")
                     .and_then(Value::as_array)
-                    .map(|s| s.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .map(|s| {
+                        s.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let any = a.get("mode").and_then(Value::as_str) == Some("any");
-                let timeout = a.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(600);
+                let timeout = a
+                    .get("timeout_seconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(600);
                 let r: WaitResult = serde_json::from_value(
                     self.rpc("orchestrator.wait", json!({ "orchestrator": o, "workers": sessions, "any": any, "timeout_secs": timeout })).await?,
                 )?;
                 if r.workers.is_empty() {
                     return Ok("You have no workers to wait for.".into());
                 }
-                let head = if r.timed_out { "Timed out; some workers are still working." } else { "Done waiting." };
+                let head = if r.timed_out {
+                    "Timed out; some workers are still working."
+                } else {
+                    "Done waiting."
+                };
                 Ok(format!("{head}\n\n{}", describe_workers(&r.workers)))
             }
             "interrupt_session" => {
-                self.rpc("orchestrator.interrupt", json!({ "orchestrator": o, "worker": req(a, "session")? })).await?;
+                self.rpc(
+                    "orchestrator.interrupt",
+                    json!({ "orchestrator": o, "worker": req(a, "session")? }),
+                )
+                .await?;
                 Ok("Interrupted.".into())
             }
             "stop_session" => {
-                self.rpc("orchestrator.stop", json!({ "orchestrator": o, "worker": req(a, "session")? })).await?;
+                self.rpc(
+                    "orchestrator.stop",
+                    json!({ "orchestrator": o, "worker": req(a, "session")? }),
+                )
+                .await?;
                 Ok("Stopped. The session is kept; a new message resumes it.".into())
             }
             _ => bail!("unknown tool {tool}"),
@@ -180,12 +250,22 @@ impl Server {
     }
 
     async fn list_agents(&self) -> Result<String> {
-        let providers: Vec<ProviderInfo> = serde_json::from_value(self.rpc("provider.list", json!({})).await?)?;
-        let mut out = String::from("Agents you can start (pass the id as `agent` to start_session):\n");
+        let providers: Vec<ProviderInfo> =
+            serde_json::from_value(self.rpc("provider.list", json!({})).await?)?;
+        let mut out =
+            String::from("Agents you can start (pass the id as `agent` to start_session):\n");
         for p in &providers {
             match p.kind {
                 ProviderKind::Claude | ProviderKind::Codex if p.available => {
-                    out.push_str(&format!("- `{}`: {}{}\n", p.kind.as_str(), p.display_name, p.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default()));
+                    out.push_str(&format!(
+                        "- `{}`: {}{}\n",
+                        p.kind.as_str(),
+                        p.display_name,
+                        p.version
+                            .as_deref()
+                            .map(|v| format!(" {v}"))
+                            .unwrap_or_default()
+                    ));
                     let models: Vec<ModelInfo> = self
                         .rpc("provider.models", json!({ "provider": p.kind }))
                         .await
@@ -193,7 +273,8 @@ impl Server {
                         .and_then(|v| serde_json::from_value(v).ok())
                         .unwrap_or_default();
                     if !models.is_empty() {
-                        let ids: Vec<String> = models.iter().map(|m| format!("`{}`", m.id)).collect();
+                        let ids: Vec<String> =
+                            models.iter().map(|m| format!("`{}`", m.id)).collect();
                         out.push_str(&format!("  models: {}\n", ids.join(", ")));
                     }
                 }
@@ -210,7 +291,10 @@ impl Server {
 }
 
 fn req<'a>(a: &'a Value, key: &str) -> Result<&'a str> {
-    a.get(key).and_then(Value::as_str).filter(|v| !v.trim().is_empty()).ok_or_else(|| anyhow!("`{key}` is required"))
+    a.get(key)
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| anyhow!("`{key}` is required"))
 }
 
 fn session_arg() -> Value {

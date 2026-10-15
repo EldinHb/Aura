@@ -41,7 +41,9 @@ fn s(v: &Value, key: &str) -> Option<String> {
 }
 
 fn epoch_secs(v: &Value, key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    v.get(key).and_then(|x| x.as_i64()).and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+    v.get(key)
+        .and_then(|x| x.as_i64())
+        .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
 }
 
 impl ThreadMapper {
@@ -76,21 +78,37 @@ impl ThreadMapper {
         let mut out = vec![];
         if let Some(id) = s(thread, "id") {
             self.thread_id = id.clone();
-            out.push(Event::NativeId { session_id: self.sid(), native_id: id });
+            out.push(Event::NativeId {
+                session_id: self.sid(),
+                native_id: id,
+            });
         }
         out.push(Event::ProviderInfo {
             session_id: self.sid(),
             info: json!({ "kind": "thread", "thread": strip_turns(thread) }),
         });
-        for turn in thread.get("turns").and_then(|t| t.as_array()).into_iter().flatten() {
+        for turn in thread
+            .get("turns")
+            .and_then(|t| t.as_array())
+            .into_iter()
+            .flatten()
+        {
             let turn_id = s(turn, "id");
-            for item in turn.get("items").and_then(|i| i.as_array()).into_iter().flatten() {
+            for item in turn
+                .get("items")
+                .and_then(|i| i.as_array())
+                .into_iter()
+                .flatten()
+            {
                 let mut it = self.map_item(item, turn_id.clone());
                 if it.status == ItemStatus::InProgress {
                     it.status = ItemStatus::Completed;
                 }
                 it.ended_at = Some(it.started_at);
-                out.push(Event::ItemCompleted { session_id: self.sid(), item: it });
+                out.push(Event::ItemCompleted {
+                    session_id: self.sid(),
+                    item: it,
+                });
             }
         }
         out
@@ -510,17 +528,32 @@ impl ThreadMapper {
                 item: Item::new(&self.session_id, turn_id, kind).with_id(iid.clone()),
             });
         }
-        ev.push(Event::ItemDelta { session_id: self.sid(), item_id: iid, delta: make(text) });
+        ev.push(Event::ItemDelta {
+            session_id: self.sid(),
+            item_id: iid,
+            delta: make(text),
+        });
     }
 
     fn next_approval_id(&mut self) -> String {
         self.approval_seq += 1;
-        format!("codex-approval-{}-{}", self.approval_seq, aura_core::new_id())
+        format!(
+            "codex-approval-{}-{}",
+            self.approval_seq,
+            aura_core::new_id()
+        )
     }
 
     /// Build the JSON-RPC reply for an approval decision. Returns (rpc id, result).
-    pub fn approval_reply(&mut self, approval_id: &str, d: &ApprovalDecision) -> Result<(Value, Value)> {
-        let pa = self.approvals.remove(approval_id).ok_or_else(|| anyhow!("unknown approval {approval_id}"))?;
+    pub fn approval_reply(
+        &mut self,
+        approval_id: &str,
+        d: &ApprovalDecision,
+    ) -> Result<(Value, Value)> {
+        let pa = self
+            .approvals
+            .remove(approval_id)
+            .ok_or_else(|| anyhow!("unknown approval {approval_id}"))?;
         let result = match pa.method.as_str() {
             "item/permissions/requestApproval" => match d.option {
                 ApprovalOption::Accept | ApprovalOption::EditInput => {
@@ -570,7 +603,10 @@ impl ThreadMapper {
     }
 
     pub fn input_reply(&mut self, resp: &UserInputResponse) -> Result<(Value, Value)> {
-        let rpc_id = self.inputs.remove(&resp.request_id).ok_or_else(|| anyhow!("unknown input request {}", resp.request_id))?;
+        let rpc_id = self
+            .inputs
+            .remove(&resp.request_id)
+            .ok_or_else(|| anyhow!("unknown input request {}", resp.request_id))?;
         let answers: serde_json::Map<String, Value> = resp
             .answers
             .iter()
@@ -595,7 +631,12 @@ impl ThreadMapper {
                 it.text = item
                     .get("content")
                     .and_then(|c| c.as_array())
-                    .map(|cs| cs.iter().filter_map(|c| s(c, "text")).collect::<Vec<_>>().join("\n"))
+                    .map(|cs| {
+                        cs.iter()
+                            .filter_map(|c| s(c, "text"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
                     .unwrap_or_default();
                 it.data = json!({ "content": item.get("content").cloned().unwrap_or(json!([])) });
                 it.status = ItemStatus::Completed;
@@ -611,11 +652,20 @@ impl ThreadMapper {
                 let join = |k: &str| {
                     item.get(k)
                         .and_then(|a| a.as_array())
-                        .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("\n\n"))
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n\n")
+                        })
                         .unwrap_or_default()
                 };
                 let summary = join("summary");
-                it.text = if summary.is_empty() { join("content") } else { summary };
+                it.text = if summary.is_empty() {
+                    join("content")
+                } else {
+                    summary
+                };
                 it.status = ItemStatus::Completed;
             }
             "commandExecution" => {
@@ -638,7 +688,11 @@ impl ThreadMapper {
                 let changes = map_changes(item.get("changes").unwrap_or(&Value::Null));
                 let n = changes.as_array().map(|a| a.len()).unwrap_or(0);
                 it.title = Some(if n == 1 {
-                    changes[0].get("path").and_then(|p| p.as_str()).unwrap_or("1 file").to_string()
+                    changes[0]
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("1 file")
+                        .to_string()
                 } else {
                     format!("{n} files")
                 });
@@ -664,7 +718,11 @@ impl ThreadMapper {
                     "error": item.get("error").cloned().unwrap_or(Value::Null),
                     "is_error": is_error,
                 });
-                it.status = if is_error { ItemStatus::Failed } else { status_of(st.as_deref()) };
+                it.status = if is_error {
+                    ItemStatus::Failed
+                } else {
+                    status_of(st.as_deref())
+                };
             }
             "dynamicToolCall" => {
                 it.kind = ItemKind::ToolCall;
@@ -677,11 +735,19 @@ impl ThreadMapper {
                     "result": item.get("contentItems").cloned().unwrap_or(Value::Null),
                     "is_error": is_error,
                 });
-                it.status = if is_error { ItemStatus::Failed } else { status_of(st.as_deref()) };
+                it.status = if is_error {
+                    ItemStatus::Failed
+                } else {
+                    status_of(st.as_deref())
+                };
             }
             "collabAgentToolCall" => {
                 it.kind = ItemKind::ToolCall;
-                let tool = item.get("tool").and_then(|t| t.as_str()).unwrap_or("collab").to_string();
+                let tool = item
+                    .get("tool")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("collab")
+                    .to_string();
                 it.title = Some(tool.clone());
                 it.data = json!({
                     "tool_name": tool,
@@ -722,7 +788,11 @@ impl ThreadMapper {
                 it.status = ItemStatus::Completed;
             }
             "enteredReviewMode" | "exitedReviewMode" => {
-                let label = if ty == "enteredReviewMode" { "Entered review mode" } else { "Exited review mode" };
+                let label = if ty == "enteredReviewMode" {
+                    "Entered review mode"
+                } else {
+                    "Exited review mode"
+                };
                 it.title = Some(label.into());
                 it.text = s(item, "review").unwrap_or_default();
                 it.data = json!({ "message": label, "review": it.text });
@@ -730,7 +800,8 @@ impl ThreadMapper {
             }
             _ => {
                 it.title = Some(ty.clone());
-                it.data = json!({ "message": format!("Unsupported Codex item `{ty}`"), "raw": item });
+                it.data =
+                    json!({ "message": format!("Unsupported Codex item `{ty}`"), "raw": item });
                 it.status = status_of(st.as_deref());
             }
         }
@@ -790,7 +861,9 @@ fn decisions_to_options(available: &[Value]) -> Vec<ApprovalOption> {
             Some("acceptForSession") => push(&mut opts, ApprovalOption::AcceptForSession),
             Some("decline") => push(&mut opts, ApprovalOption::Decline),
             Some("cancel") => push(&mut opts, ApprovalOption::Cancel),
-            None if d.get("acceptWithExecpolicyAmendment").is_some() => push(&mut opts, ApprovalOption::AcceptForSession),
+            None if d.get("acceptWithExecpolicyAmendment").is_some() => {
+                push(&mut opts, ApprovalOption::AcceptForSession)
+            }
             _ => {}
         }
     }

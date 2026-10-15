@@ -48,9 +48,15 @@ impl Manager {
                     .clone()
                     .or_else(|| img.path.as_deref().map(|p| media_type_of(p).to_string()));
                 let stored = dir.as_deref().and_then(|dir| {
-                    save(dir, id, img.data.as_deref(), img.path.as_deref(), media_type.as_deref())
-                        .map_err(|e| tracing::warn!("keep attachment: {e:#}"))
-                        .ok()
+                    save(
+                        dir,
+                        id,
+                        img.data.as_deref(),
+                        img.path.as_deref(),
+                        media_type.as_deref(),
+                    )
+                    .map_err(|e| tracing::warn!("keep attachment: {e:#}"))
+                    .ok()
                 });
                 let name = img.name.clone().or_else(|| {
                     img.path
@@ -72,7 +78,9 @@ impl Manager {
             .collect();
         let mut rts = self.inner.runtimes.lock();
         let staged = &mut rts.entry(id.to_string()).or_default().staged;
-        staged.sends.push_back((input.text.trim().to_string(), refs));
+        staged
+            .sends
+            .push_back((input.text.trim().to_string(), refs));
         while staged.sends.len() > MAX_STAGED {
             staged.sends.pop_front();
         }
@@ -91,7 +99,9 @@ impl Manager {
     /// Adds staged attachments to the user message they were sent with.
     pub(super) fn attach_staged(&self, ev: &mut Event) {
         let completed = matches!(ev, Event::ItemCompleted { .. });
-        let (Event::ItemStarted { session_id, item } | Event::ItemCompleted { session_id, item }) = ev else {
+        let (Event::ItemStarted { session_id, item } | Event::ItemCompleted { session_id, item }) =
+            ev
+        else {
             return;
         };
         if item.kind != ItemKind::UserMessage || item.parent_id.is_some() {
@@ -161,7 +171,13 @@ impl Manager {
 }
 
 /// Copies the image into the session's attachment directory; returns its id.
-fn save(dir: &Path, session_id: &str, data: Option<&str>, path: Option<&str>, media_type: Option<&str>) -> Result<String> {
+fn save(
+    dir: &Path,
+    session_id: &str,
+    data: Option<&str>,
+    path: Option<&str>,
+    media_type: Option<&str>,
+) -> Result<String> {
     if !safe_segment(session_id) {
         bail!("invalid session id");
     }
@@ -189,7 +205,8 @@ fn save(dir: &Path, session_id: &str, data: Option<&str>, path: Option<&str>, me
 fn safe_segment(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('.')
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 fn media_type_of(path: &str) -> &'static str {

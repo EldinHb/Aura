@@ -53,18 +53,35 @@ pub struct CleanupResult {
 /// pruned first so that branches of just-merged pull requests show up as gone.
 pub fn candidates(cwd: &str, fetch: bool) -> Result<CleanupReport> {
     let root = crate::ops::main_repo_root(cwd)?.context("Not a git repository")?;
-    let fetch_error = if fetch { fetch_prune(&root).err().map(|e| format!("{e:#}")) } else { None };
+    let fetch_error = if fetch {
+        fetch_prune(&root).err().map(|e| format!("{e:#}"))
+    } else {
+        None
+    };
     let base = default_base(&root);
     let protected = protected_branches(&root, base.as_deref())?;
     let merged: Vec<String> = match &base {
-        Some(b) => lines(&git(&root, &["for-each-ref", "--merged", b, "--format=%(refname:short)", "refs/heads/"])?),
+        Some(b) => lines(&git(
+            &root,
+            &[
+                "for-each-ref",
+                "--merged",
+                b,
+                "--format=%(refname:short)",
+                "refs/heads/",
+            ],
+        )?),
         None => vec![],
     };
     let mut branches = vec![];
     let refs = git(&root, &["for-each-ref", "--format=%(refname:short)%00%(upstream:track)%00%(committerdate:iso-strict)%00%(subject)", "refs/heads/"])?;
     for line in refs.lines() {
         let mut f = line.split('\0');
-        let (Some(name), Some(track), Some(date), Some(subject)) = (f.next(), f.next(), f.next(), f.next()) else { continue };
+        let (Some(name), Some(track), Some(date), Some(subject)) =
+            (f.next(), f.next(), f.next(), f.next())
+        else {
+            continue;
+        };
         if protected.iter().any(|p| p == name) {
             continue;
         }
@@ -76,13 +93,31 @@ pub fn candidates(cwd: &str, fetch: bool) -> Result<CleanupReport> {
             continue;
         };
         let unmerged = match &base {
-            Some(b) => git(&root, &["rev-list", "--count", &format!("{b}..{name}"), "--"])?.trim().parse().unwrap_or(0),
+            Some(b) => git(
+                &root,
+                &["rev-list", "--count", &format!("{b}..{name}"), "--"],
+            )?
+            .trim()
+            .parse()
+            .unwrap_or(0),
             None => 0,
         };
-        branches.push(StaleBranch { name: name.into(), reason: reason.into(), unmerged, subject: subject.into(), date: date.into() });
+        branches.push(StaleBranch {
+            name: name.into(),
+            reason: reason.into(),
+            unmerged,
+            subject: subject.into(),
+            date: date.into(),
+        });
     }
     let prunable_worktrees = prunable(&git(&root, &["worktree", "list", "--porcelain"])?);
-    Ok(CleanupReport { root, base, branches, prunable_worktrees, fetch_error })
+    Ok(CleanupReport {
+        root,
+        base,
+        branches,
+        prunable_worktrees,
+        fetch_error,
+    })
 }
 
 /// Delete `branches` and prune missing worktrees. Each branch is checked again
@@ -112,7 +147,15 @@ pub fn clean(cwd: &str, branches: &[String], prune_worktrees: bool) -> Result<Cl
 /// The default branch to measure merges against: the remote's HEAD, else a
 /// `main` or `master` that exists.
 fn default_base(root: &str) -> Option<String> {
-    if let Ok(head) = git(root, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
+    if let Ok(head) = git(
+        root,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    ) {
         return Some(head.trim().to_string());
     }
     ["origin/main", "origin/master", "main", "master"]
@@ -124,7 +167,10 @@ fn default_base(root: &str) -> Option<String> {
 /// Branches never offered for deletion: the default branch and every branch
 /// checked out in a worktree, the current one included.
 fn protected_branches(root: &str, base: Option<&str>) -> Result<Vec<String>> {
-    let mut out: Vec<String> = crate::ops::worktrees(root)?.into_iter().filter_map(|w| w.branch).collect();
+    let mut out: Vec<String> = crate::ops::worktrees(root)?
+        .into_iter()
+        .filter_map(|w| w.branch)
+        .collect();
     if let Some(b) = base {
         out.push(b.split_once('/').map_or(b, |(_, name)| name).to_string());
         out.push(b.to_string());
@@ -181,7 +227,11 @@ fn prunable(porcelain: &str) -> Vec<String> {
 }
 
 fn lines(out: &str) -> Vec<String> {
-    out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+    out.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 #[cfg(test)]
@@ -197,8 +247,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let remote = dir.path().join("remote.git");
         let local = dir.path().join("local");
-        run(dir.path(), &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
-        run(dir.path(), &["clone", "-q", remote.to_str().unwrap(), local.to_str().unwrap()]);
+        run(
+            dir.path(),
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                remote.to_str().unwrap(),
+            ],
+        );
+        run(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                local.to_str().unwrap(),
+            ],
+        );
         for (k, v) in [("user.email", "t@example.com"), ("user.name", "Test")] {
             run(&local, &["config", k, v]);
         }
@@ -206,7 +274,11 @@ mod tests {
         run(&local, &["push", "-q", "-u", "origin", "main"]);
         run(&local, &["remote", "set-head", "origin", "main"]);
         // Pushed, then its remote branch deleted, as when a PR is merged.
-        for (branch, msg) in [("squashed", "work"), ("unpushed", "keep me"), ("merged", "done")] {
+        for (branch, msg) in [
+            ("squashed", "work"),
+            ("unpushed", "keep me"),
+            ("merged", "done"),
+        ] {
             run(&local, &["checkout", "-q", "-b", branch, "main"]);
             run(&local, &["commit", "-q", "--allow-empty", "-m", msg]);
         }
@@ -224,8 +296,16 @@ mod tests {
         let report = candidates(local.to_str().unwrap(), true).unwrap();
         assert_eq!(report.fetch_error, None);
         assert_eq!(report.base.as_deref(), Some("origin/main"));
-        let found: Vec<(&str, &str, u32)> = report.branches.iter().map(|b| (b.name.as_str(), b.reason.as_str(), b.unmerged)).collect();
-        assert_eq!(found, [("merged", "merged", 0), ("squashed", "gone", 1)], "unpushed work and main are left alone");
+        let found: Vec<(&str, &str, u32)> = report
+            .branches
+            .iter()
+            .map(|b| (b.name.as_str(), b.reason.as_str(), b.unmerged))
+            .collect();
+        assert_eq!(
+            found,
+            [("merged", "merged", 0), ("squashed", "gone", 1)],
+            "unpushed work and main are left alone"
+        );
     }
 
     #[test]
@@ -234,11 +314,22 @@ mod tests {
         let cwd = local.to_str().unwrap();
         candidates(cwd, true).unwrap();
         run(&local, &["checkout", "-q", "merged"]);
-        let result = clean(cwd, &["squashed".into(), "merged".into(), "unpushed".into()], true).unwrap();
+        let result = clean(
+            cwd,
+            &["squashed".into(), "merged".into(), "unpushed".into()],
+            true,
+        )
+        .unwrap();
         assert_eq!(result.deleted, ["squashed"]);
         let failed: Vec<&str> = result.failed.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(failed, ["merged", "unpushed"], "the checked-out branch and live work survive");
-        assert!(crate::ops::branches(cwd).unwrap().contains(&"unpushed".to_string()));
+        assert_eq!(
+            failed,
+            ["merged", "unpushed"],
+            "the checked-out branch and live work survive"
+        );
+        assert!(crate::ops::branches(cwd)
+            .unwrap()
+            .contains(&"unpushed".to_string()));
     }
 
     #[test]
@@ -246,10 +337,16 @@ mod tests {
         let (dir, local) = setup();
         let cwd = local.to_str().unwrap();
         let wt = dir.path().join("wt");
-        run(&local, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        run(
+            &local,
+            &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()],
+        );
         std::fs::remove_dir_all(&wt).unwrap();
         assert_eq!(candidates(cwd, false).unwrap().prunable_worktrees.len(), 1);
         assert_eq!(clean(cwd, &[], true).unwrap().pruned_worktrees, 1);
-        assert!(candidates(cwd, false).unwrap().prunable_worktrees.is_empty());
+        assert!(candidates(cwd, false)
+            .unwrap()
+            .prunable_worktrees
+            .is_empty());
     }
 }

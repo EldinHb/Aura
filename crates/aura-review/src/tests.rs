@@ -114,8 +114,17 @@ impl Github for MockGithub {
         }
         if path.starts_with("search/") {
             let filter = path.split("archived%3Afalse%20").nth(1).unwrap_or_default();
-            let numbers = self.searches.lock().iter().find(|(f, _)| filter.starts_with(f)).map(|(_, n)| n.clone()).unwrap_or_default();
-            let items: Vec<Value> = numbers.iter().map(|n| json!({"repository_url":"https://api.github.com/repos/o/r","number":n})).collect();
+            let numbers = self
+                .searches
+                .lock()
+                .iter()
+                .find(|(f, _)| filter.starts_with(f))
+                .map(|(_, n)| n.clone())
+                .unwrap_or_default();
+            let items: Vec<Value> = numbers
+                .iter()
+                .map(|n| json!({"repository_url":"https://api.github.com/repos/o/r","number":n}))
+                .collect();
             return Ok(json!({"total_count":items.len(),"incomplete_results":false,"items":items}));
         }
         if path.contains("/compare/") {
@@ -129,18 +138,25 @@ impl Github for MockGithub {
                 .map(|_| json!({"state":"COMMENTED","submittedAt":"2026-10-05T10:00:00Z","commit":{"oid":"a".repeat(40)}}))
                 .collect();
             self.reads.fetch_add(1, Ordering::SeqCst);
-            let query = body.as_ref().unwrap()["query"].as_str().unwrap().to_string();
+            let query = body.as_ref().unwrap()["query"]
+                .as_str()
+                .unwrap()
+                .to_string();
             if query.contains("timelineItems(first:100,after:$items") {
                 let conn = |nodes: Value| json!({"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":nodes});
-                return Ok(json!({"data":{"repository":{"pullRequest":{"commits":{"totalCount":2},
+                return Ok(
+                    json!({"data":{"repository":{"pullRequest":{"commits":{"totalCount":2},
                     "timelineItems":conn(json!([
                         {"__typename":"IssueComment","id":"IC_1","body":"Nice","createdAt":"2026-10-05T09:00:00Z","url":"https://github.com/o/r/pull/1#issuecomment-1","author":{"login":"carol"}},
                         {"__typename":"PullRequestReview","id":"PRR_1","databaseId":7,"body":"","state":"APPROVED","createdAt":"2026-10-05T10:00:00Z","submittedAt":"2026-10-05T10:00:00Z","url":"u","author":{"login":"dave"}}])),
                     "reviewThreads":conn(json!([{"id":"T1","isResolved":false,"isOutdated":false,"path":"src/lib.rs","line":2,"originalLine":2,"resolvedBy":null,
-                        "comments":{"totalCount":1,"nodes":[{"id":"C1","body":"Why?","createdAt":"2026-10-05T10:00:00Z","url":"u","diffHunk":"@@","author":{"login":"dave"},"pullRequestReview":{"databaseId":7}}]}}]))}}}}));
+                        "comments":{"totalCount":1,"nodes":[{"id":"C1","body":"Why?","createdAt":"2026-10-05T10:00:00Z","url":"u","diffHunk":"@@","author":{"login":"dave"},"pullRequestReview":{"databaseId":7}}]}}]))}}}}),
+                );
             }
             if query.contains("projectItems") {
-                return Ok(json!({"data":{"repository":{"pullRequest":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}));
+                return Ok(
+                    json!({"data":{"repository":{"pullRequest":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}),
+                );
             }
             // One batched query: r0 is o/r, holding prN:pullRequest(number:…) per PR.
             let mut repo = json!({"viewerPermission":"WRITE","mergeCommitAllowed":false,"squashMergeAllowed":true,"rebaseMergeAllowed":true,"viewerDefaultMergeMethod":"SQUASH","deleteBranchOnMerge":false});
@@ -162,7 +178,10 @@ impl Github for MockGithub {
         if (method == "PUT" && path == "repos/o/r/pulls/1/merge") || method == "DELETE" {
             self.writes.lock().push(format!("{method} {path}"));
             if method == "PUT" {
-                assert_eq!(body.unwrap(), json!({"merge_method":"squash","sha":"a".repeat(40)}));
+                assert_eq!(
+                    body.unwrap(),
+                    json!({"merge_method":"squash","sha":"a".repeat(40)})
+                );
             }
             return Ok(json!({"merged":true}));
         }
@@ -382,25 +401,47 @@ async fn refresh_lists_requested_reviewed_and_authored_pulls_in_one_read() {
     let inbox = svc.snapshot();
     let numbers = |pulls: &[PullRequest]| pulls.iter().map(|p| p.number).collect::<Vec<_>>();
     assert_eq!(numbers(&inbox.pulls), vec![2, 3]);
-    assert_eq!(numbers(&inbox.reviewed), vec![4], "a PR asked again is listed as a request only");
+    assert_eq!(
+        numbers(&inbox.reviewed),
+        vec![4],
+        "a PR asked again is listed as a request only"
+    );
     assert_eq!(numbers(&inbox.mine), vec![1]);
-    svc.handle("pulls.hide", json!({"id":"o/r#4","account":"github.com:alice"})).await.unwrap();
+    svc.handle(
+        "pulls.hide",
+        json!({"id":"o/r#4","account":"github.com:alice"}),
+    )
+    .await
+    .unwrap();
     assert!(svc.snapshot().reviewed[0].hidden);
 }
 #[tokio::test]
 async fn a_pull_request_that_fails_to_read_keeps_its_last_copy() {
     let gh = Arc::new(MockGithub::default());
-    *gh.searches.lock() = vec![("review-requested%3A%40me", vec![2, 3]), ("author%3A%40me", vec![1])];
+    *gh.searches.lock() = vec![
+        ("review-requested%3A%40me", vec![2, 3]),
+        ("author%3A%40me", vec![1]),
+    ];
     let svc = service(gh.clone(), draft());
     svc.refresh().await.unwrap();
     *gh.unreadable.lock() = vec![3];
     *gh.head.lock() = "c".repeat(40);
-    *gh.searches.lock() = vec![("review-requested%3A%40me", vec![2, 3, 5]), ("author%3A%40me", vec![1])];
+    *gh.searches.lock() = vec![
+        ("review-requested%3A%40me", vec![2, 3, 5]),
+        ("author%3A%40me", vec![1]),
+    ];
     gh.unreadable.lock().push(5);
     svc.refresh().await.unwrap();
     let inbox = svc.snapshot();
-    assert_eq!(inbox.pulls.iter().map(|p| (p.number, p.head_sha.clone())).collect::<Vec<_>>(), vec![(2, "c".repeat(40)), (3, "a".repeat(40))],
-        "the others update, #3 keeps its last copy and the never-read #5 is left out");
+    assert_eq!(
+        inbox
+            .pulls
+            .iter()
+            .map(|p| (p.number, p.head_sha.clone()))
+            .collect::<Vec<_>>(),
+        vec![(2, "c".repeat(40)), (3, "a".repeat(40))],
+        "the others update, #3 keeps its last copy and the never-read #5 is left out"
+    );
     assert_eq!(inbox.mine.len(), 1);
     assert_eq!(inbox.error.as_deref(), Some("Unable to read o/r#3: Something went wrong\nUnable to read o/r#5: Something went wrong"));
     gh.unreadable.lock().clear();
@@ -596,7 +637,14 @@ async fn missing_review_diff_does_not_fetch_new_head_under_old_findings() {
 async fn pull_detail_holds_the_timeline_and_the_lists_older_apps_read() {
     let gh = Arc::new(MockGithub::default());
     let svc = service(gh, draft());
-    let detail = svc.handle("pulls.get", json!({"repo":"o/r","number":1,"account":"github.com:alice"})).await.unwrap().unwrap();
+    let detail = svc
+        .handle(
+            "pulls.get",
+            json!({"repo":"o/r","number":1,"account":"github.com:alice"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(detail["timeline"]["commits"], 2);
     assert_eq!(detail["timeline"]["items"][1]["review_id"], 7);
     assert_eq!(detail["timeline"]["threads"][0]["review_id"], 7);
@@ -604,35 +652,62 @@ async fn pull_detail_holds_the_timeline_and_the_lists_older_apps_read() {
     assert_eq!(detail["reviews"][0]["state"], "APPROVED");
     assert_eq!(detail["threads"][0]["path"], "src/lib.rs");
     assert_eq!(detail["project_error"], Value::Null);
-    let cached = svc.handle("pulls.cached", json!({"id":"o/r#1","account":"github.com:alice"})).await.unwrap().unwrap();
+    let cached = svc
+        .handle(
+            "pulls.cached",
+            json!({"id":"o/r#1","account":"github.com:alice"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(cached, detail);
 }
 #[tokio::test]
 async fn merges_the_shown_head_and_deletes_the_branch() {
     let gh = Arc::new(MockGithub::default());
     let svc = service(gh.clone(), draft());
-    let merge = |method: &str, sha: String, delete: bool| {
-        json!({"repo":"o/r","number":1,"account":"github.com:alice","method":method,"sha":sha,"delete_branch":delete})
-    };
+    let merge = |method: &str, sha: String, delete: bool| json!({"repo":"o/r","number":1,"account":"github.com:alice","method":method,"sha":sha,"delete_branch":delete});
     let pr = svc.lookup(&json!({"repo":"o/r","number":1})).await.unwrap();
     assert_eq!(pr.merge_methods, ["squash", "rebase"]);
     assert_eq!(pr.default_merge_method, "squash");
     assert!(pr.can_merge && pr.can_delete_branch);
     assert_eq!(pr.merge_blocked_by, None);
 
-    let err = svc.handle("pulls.merge", merge("merge", "a".repeat(40), true)).await.unwrap_err();
+    let err = svc
+        .handle("pulls.merge", merge("merge", "a".repeat(40), true))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("does not allow merge"), "{err}");
-    let err = svc.handle("pulls.merge", merge("squash", "c".repeat(40), true)).await.unwrap_err();
+    let err = svc
+        .handle("pulls.merge", merge("squash", "c".repeat(40), true))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("New commits"), "{err}");
     *gh.merge_state.lock() = "BLOCKED".into();
-    let err = svc.handle("pulls.merge", merge("squash", "a".repeat(40), true)).await.unwrap_err();
+    let err = svc
+        .handle("pulls.merge", merge("squash", "a".repeat(40), true))
+        .await
+        .unwrap_err();
     assert_eq!(err.to_string(), "A review is required");
-    assert!(gh.writes.lock().is_empty(), "nothing is sent while a merge is refused");
+    assert!(
+        gh.writes.lock().is_empty(),
+        "nothing is sent while a merge is refused"
+    );
 
     *gh.merge_state.lock() = "CLEAN".into();
-    let v = svc.handle("pulls.merge", merge("squash", "a".repeat(40), true)).await.unwrap().unwrap();
+    let v = svc
+        .handle("pulls.merge", merge("squash", "a".repeat(40), true))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(v["branch_deleted"], true);
-    assert_eq!(*gh.writes.lock(), ["PUT repos/o/r/pulls/1/merge", "DELETE repos/o/r/git/refs/heads/feature"]);
+    assert_eq!(
+        *gh.writes.lock(),
+        [
+            "PUT repos/o/r/pulls/1/merge",
+            "DELETE repos/o/r/git/refs/heads/feature"
+        ]
+    );
 }
 #[tokio::test]
 async fn keeps_the_branch_unless_asked() {

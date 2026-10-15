@@ -59,7 +59,10 @@ impl AcpProvider {
 
     pub fn with_config(config: Option<PathBuf>) -> Self {
         let agents = agents::load(config.as_deref());
-        Self { config, agents: Mutex::new((agents, Instant::now())) }
+        Self {
+            config,
+            agents: Mutex::new((agents, Instant::now())),
+        }
     }
 
     pub fn agents(&self) -> Vec<ResolvedAgent> {
@@ -67,7 +70,12 @@ impl AcpProvider {
     }
 
     fn agent(&self, id: &str) -> Option<ResolvedAgent> {
-        self.agents.lock().0.iter().find(|a| a.spec.id == id).cloned()
+        self.agents
+            .lock()
+            .0
+            .iter()
+            .find(|a| a.spec.id == id)
+            .cloned()
     }
 }
 
@@ -78,7 +86,13 @@ impl Provider for AcpProvider {
     }
 
     fn info(&self) -> ProviderInfo {
-        let agents: Vec<AgentInfo> = self.agents.lock().0.iter().map(ResolvedAgent::info).collect();
+        let agents: Vec<AgentInfo> = self
+            .agents
+            .lock()
+            .0
+            .iter()
+            .map(ResolvedAgent::info)
+            .collect();
         ProviderInfo {
             kind: ProviderKind::Acp,
             display_name: "ACP agents".into(),
@@ -119,17 +133,35 @@ impl Provider for AcpProvider {
         Ok(vec![])
     }
 
-    async fn start(&self, session: &Session, fork: bool, sink: EventSink) -> Result<Box<dyn Driver>> {
+    async fn start(
+        &self,
+        session: &Session,
+        fork: bool,
+        sink: EventSink,
+    ) -> Result<Box<dyn Driver>> {
         if fork {
             bail!("ACP agents cannot fork sessions");
         }
-        let id = session.agent.as_deref().ok_or_else(|| anyhow!("session has no ACP agent"))?;
+        let id = session
+            .agent
+            .as_deref()
+            .ok_or_else(|| anyhow!("session has no ACP agent"))?;
         self.refresh().await;
         let agent = self.agent(id).ok_or_else(|| {
-            anyhow!("unknown ACP agent `{id}`; add it to {}", self.config.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| CONFIG_FILE.into()))
+            anyhow!(
+                "unknown ACP agent `{id}`; add it to {}",
+                self.config
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| CONFIG_FILE.into())
+            )
         })?;
         let Some(binary) = agent.binary.clone() else {
-            bail!("{} is not installed (looked for `{}`)", agent.spec.display_name, agent.spec.command[0]);
+            bail!(
+                "{} is not installed (looked for `{}`)",
+                agent.spec.display_name,
+                agent.spec.command[0]
+            );
         };
         let driver = AcpDriver::start(&agent.spec, &binary, session, sink).await?;
         Ok(Box::new(driver))
@@ -180,7 +212,14 @@ pub(crate) struct Link {
 
 fn stderr_tail(buf: &Stderr) -> Option<String> {
     let lines = buf.lock();
-    let text = lines.iter().rev().take(8).rev().cloned().collect::<Vec<_>>().join("\n");
+    let text = lines
+        .iter()
+        .rev()
+        .take(8)
+        .rev()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
     (!text.trim().is_empty()).then_some(text)
 }
 
@@ -197,15 +236,34 @@ fn explain(err: anyhow::Error, stderr: &Stderr) -> anyhow::Error {
 /// The session's MCP servers in ACP's shape. Stdio servers are the kind every
 /// ACP agent must support.
 fn mcp_servers(session: &Session) -> Value {
-    session.mcp_servers.iter().map(|m| json!({ "name": m.name, "command": m.command, "args": m.args, "env": [] })).collect()
+    session
+        .mcp_servers
+        .iter()
+        .map(|m| json!({ "name": m.name, "command": m.command, "args": m.args, "env": [] }))
+        .collect()
 }
 
-async fn with_timeout<T>(what: &str, fut: impl std::future::Future<Output = Result<T>>) -> Result<T> {
-    tokio::time::timeout(STARTUP_TIMEOUT, fut).await.map_err(|_| anyhow!("{what}: the agent did not answer within {}s", STARTUP_TIMEOUT.as_secs()))?
+async fn with_timeout<T>(
+    what: &str,
+    fut: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(STARTUP_TIMEOUT, fut)
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "{what}: the agent did not answer within {}s",
+                STARTUP_TIMEOUT.as_secs()
+            )
+        })?
 }
 
 impl AcpDriver {
-    async fn start(spec: &AgentSpec, binary: &str, session: &Session, sink: EventSink) -> Result<Self> {
+    async fn start(
+        spec: &AgentSpec,
+        binary: &str,
+        session: &Session,
+        sink: EventSink,
+    ) -> Result<Self> {
         let mut cmd = tokio::process::Command::new(binary);
         cmd.args(&spec.command[1..])
             .envs(&spec.env)
@@ -213,7 +271,8 @@ impl AcpDriver {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        let (mut child, group) = aura_core::process::spawn_job(&mut cmd).with_context(|| format!("start {}", spec.command.join(" ")))?;
+        let (mut child, group) = aura_core::process::spawn_job(&mut cmd)
+            .with_context(|| format!("start {}", spec.command.join(" ")))?;
         let stdin = child.stdin.take().context("agent stdin")?;
         let stdout = child.stdout.take().context("agent stdout")?;
         let stderr: Stderr = Arc::new(Mutex::new(VecDeque::new()));
@@ -234,14 +293,46 @@ impl AcpDriver {
         }
 
         let (conn, incoming) = Connection::new(stdout, stdin);
-        Self::connect(Link { conn, incoming, child: Some(child), group: Some(group), stderr }, spec, session, sink).await
+        Self::connect(
+            Link {
+                conn,
+                incoming,
+                child: Some(child),
+                group: Some(group),
+                stderr,
+            },
+            spec,
+            session,
+            sink,
+        )
+        .await
     }
 
-    pub(crate) async fn connect(link: Link, spec: &AgentSpec, session: &Session, sink: EventSink) -> Result<Self> {
-        let Link { conn, incoming, child, group, stderr } = link;
+    pub(crate) async fn connect(
+        link: Link,
+        spec: &AgentSpec,
+        session: &Session,
+        sink: EventSink,
+    ) -> Result<Self> {
+        let Link {
+            conn,
+            incoming,
+            child,
+            group,
+            stderr,
+        } = link;
         let mapper = Arc::new(Mutex::new(SessionMapper::new(&session.id)));
         let life = Arc::new(AtomicU8::new(RUNNING));
-        tokio::spawn(process_incoming(conn.clone(), incoming, mapper.clone(), sink.clone(), session.id.clone(), stderr.clone(), life.clone(), child));
+        tokio::spawn(process_incoming(
+            conn.clone(),
+            incoming,
+            mapper.clone(),
+            sink.clone(),
+            session.id.clone(),
+            stderr.clone(),
+            life.clone(),
+            child,
+        ));
 
         let started = Self::handshake(&conn, spec, session, &mapper, &sink).await;
         let (acp_session, caps, fresh) = match started {
@@ -275,7 +366,13 @@ impl AcpDriver {
 
     /// `initialize`, then a new, resumed or loaded session. Returns the ACP
     /// session id, the agent's capabilities and whether the session is new.
-    async fn handshake(conn: &Connection, spec: &AgentSpec, session: &Session, mapper: &Arc<Mutex<SessionMapper>>, sink: &EventSink) -> Result<(String, Value, bool)> {
+    async fn handshake(
+        conn: &Connection,
+        spec: &AgentSpec,
+        session: &Session,
+        mapper: &Arc<Mutex<SessionMapper>>,
+        sink: &EventSink,
+    ) -> Result<(String, Value, bool)> {
         let init = with_timeout(
             "initialize",
             conn.request(
@@ -289,9 +386,15 @@ impl AcpDriver {
         )
         .await
         .map_err(|e| anyhow!("initialize failed: {e:#}"))?;
-        let version = init.get("protocolVersion").and_then(Value::as_u64).unwrap_or(0);
+        let version = init
+            .get("protocolVersion")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         if version != PROTOCOL_VERSION {
-            bail!("{} speaks ACP version {version}; Aura supports version {PROTOCOL_VERSION}", spec.display_name);
+            bail!(
+                "{} speaks ACP version {version}; Aura supports version {PROTOCOL_VERSION}",
+                spec.display_name
+            );
         }
         let caps = init.get("agentCapabilities").cloned().unwrap_or(json!({}));
         let agent = json!({
@@ -314,19 +417,36 @@ impl AcpDriver {
                 .flatten()
                 .filter_map(|m| m.get("name").and_then(Value::as_str).map(str::to_string))
                 .collect();
-            let how = if methods.is_empty() { String::new() } else { format!(" ({})", methods.join(", ")) };
+            let how = if methods.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", methods.join(", "))
+            };
             anyhow!("{} needs you to sign in{how}. Run `{}` in a terminal once to log in, then start the session again.", spec.display_name, spec.command[0])
         };
 
         let cwd = session.cwd.clone();
-        let session_caps = caps.get("sessionCapabilities").cloned().unwrap_or(Value::Null);
-        let can_resume = session_caps.get("resume").map(Value::is_object).unwrap_or(false);
-        let can_load = caps.get("loadSession").and_then(Value::as_bool).unwrap_or(false);
+        let session_caps = caps
+            .get("sessionCapabilities")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let can_resume = session_caps
+            .get("resume")
+            .map(Value::is_object)
+            .unwrap_or(false);
+        let can_load = caps
+            .get("loadSession")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let native = session.native_id.clone();
 
         if let Some(id) = native.as_ref().filter(|_| can_resume || can_load) {
             let params = json!({ "sessionId": id, "cwd": cwd, "mcpServers": mcp_servers(session) });
-            let method = if can_resume { "session/resume" } else { "session/load" };
+            let method = if can_resume {
+                "session/resume"
+            } else {
+                "session/load"
+            };
             let res = if can_resume {
                 with_timeout(method, conn.request(method, params)).await
             } else {
@@ -350,9 +470,24 @@ impl AcpDriver {
                 message: format!("{} cannot resume sessions, so this is a new conversation. The transcript above is Aura's copy; the agent does not remember it.", spec.display_name),
             });
         }
-        let res = with_timeout("session/new", conn.request("session/new", json!({ "cwd": cwd, "mcpServers": mcp_servers(session) }))).await.map_err(|e| failed("session/new", e))?;
-        let id = res.get("sessionId").and_then(Value::as_str).ok_or_else(|| anyhow!("session/new returned no sessionId"))?.to_string();
-        let _ = sink.send(Event::NativeId { session_id: session.id.clone(), native_id: id.clone() });
+        let res = with_timeout(
+            "session/new",
+            conn.request(
+                "session/new",
+                json!({ "cwd": cwd, "mcpServers": mcp_servers(session) }),
+            ),
+        )
+        .await
+        .map_err(|e| failed("session/new", e))?;
+        let id = res
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("session/new returned no sessionId"))?
+            .to_string();
+        let _ = sink.send(Event::NativeId {
+            session_id: session.id.clone(),
+            native_id: id.clone(),
+        });
         for ev in mapper.lock().session_state(&res) {
             let _ = sink.send(ev);
         }
@@ -362,17 +497,28 @@ impl AcpDriver {
     /// Model and mode chosen when the session was created. A choice the agent
     /// does not offer is reported, not fatal: the session still works.
     async fn apply_initial_settings(&self, session: &Session) {
-        let wanted = [session.model.clone().map(Setting::Model), session.permission_mode.clone().map(Setting::PermissionMode)];
+        let wanted = [
+            session.model.clone().map(Setting::Model),
+            session.permission_mode.clone().map(Setting::PermissionMode),
+        ];
         for setting in wanted.into_iter().flatten() {
             if let Err(e) = self.apply(setting).await {
-                let _ = self.sink.send(Event::Notice { session_id: self.session_id.clone(), level: NoticeLevel::Warn, message: e.to_string() });
+                let _ = self.sink.send(Event::Notice {
+                    session_id: self.session_id.clone(),
+                    level: NoticeLevel::Warn,
+                    message: e.to_string(),
+                });
             }
         }
     }
 
     /// Prompts run one at a time: ACP has no queue of its own, and a second
     /// `session/prompt` during a turn is an error for most agents.
-    fn spawn_turns(&self, mut rx: mpsc::UnboundedReceiver<Input>, mut instructions: Option<String>) {
+    fn spawn_turns(
+        &self,
+        mut rx: mpsc::UnboundedReceiver<Input>,
+        mut instructions: Option<String>,
+    ) {
         let conn = self.conn.clone();
         let acp_session = self.acp_session.clone();
         tokio::spawn(async move {
@@ -386,14 +532,28 @@ impl AcpDriver {
                 let prompt = match prompt {
                     Ok(p) => p,
                     Err(e) => {
-                        conn.inject("__turn_start", json!({ "text": input.text, "images": input.images.len() }));
+                        conn.inject(
+                            "__turn_start",
+                            json!({ "text": input.text, "images": input.images.len() }),
+                        );
                         conn.inject("__turn_end", json!({ "error": e.to_string() }));
                         continue;
                     }
                 };
-                conn.inject("__turn_start", json!({ "text": input.text, "images": input.images.len() }));
-                let end = match conn.request("session/prompt", json!({ "sessionId": acp_session, "prompt": prompt })).await {
-                    Ok(res) => json!({ "stopReason": res.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn") }),
+                conn.inject(
+                    "__turn_start",
+                    json!({ "text": input.text, "images": input.images.len() }),
+                );
+                let end = match conn
+                    .request(
+                        "session/prompt",
+                        json!({ "sessionId": acp_session, "prompt": prompt }),
+                    )
+                    .await
+                {
+                    Ok(res) => {
+                        json!({ "stopReason": res.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn") })
+                    }
                     Err(e) => json!({ "error": e.to_string() }),
                 };
                 conn.inject("__turn_end", end);
@@ -405,16 +565,29 @@ impl AcpDriver {
     }
 
     fn session_caps(&self, name: &str) -> bool {
-        self.caps.get("sessionCapabilities").and_then(|c| c.get(name)).map(Value::is_object).unwrap_or(false)
+        self.caps
+            .get("sessionCapabilities")
+            .and_then(|c| c.get(name))
+            .map(Value::is_object)
+            .unwrap_or(false)
     }
 
     async fn set_config(&self, category: &str, value: &str, what: &str) -> Result<()> {
         let option = self.mapper.lock().config_option(category).cloned();
-        let Some(option) = option else { bail!("{} does not offer a choice of {what}", self.agent_name) };
-        let config_id = option.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let Some(option) = option else {
+            bail!("{} does not offer a choice of {what}", self.agent_name)
+        };
+        let config_id = option
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let res = self
             .conn
-            .request("session/set_config_option", json!({ "sessionId": self.acp_session, "configId": config_id, "value": value }))
+            .request(
+                "session/set_config_option",
+                json!({ "sessionId": self.acp_session, "configId": config_id, "value": value }),
+            )
             .await
             .map_err(|e| anyhow!("could not set {what} to `{value}`: {e:#}"))?;
         if let Some(opts) = res.get("configOptions").and_then(Value::as_array) {
@@ -434,10 +607,15 @@ impl AcpDriver {
                     return self.set_config("mode", &mode, "mode").await;
                 }
                 self.conn
-                    .request("session/set_mode", json!({ "sessionId": self.acp_session, "modeId": mode }))
+                    .request(
+                        "session/set_mode",
+                        json!({ "sessionId": self.acp_session, "modeId": mode }),
+                    )
                     .await
                     .map_err(|e| anyhow!("could not set mode to `{mode}`: {e:#}"))?;
-                let events = self.mapper.lock().handle_update(&json!({ "sessionUpdate": "current_mode_update", "currentModeId": mode }));
+                let events = self.mapper.lock().handle_update(
+                    &json!({ "sessionUpdate": "current_mode_update", "currentModeId": mode }),
+                );
                 for ev in events {
                     let _ = self.sink.send(ev);
                 }
@@ -451,24 +629,40 @@ impl AcpDriver {
 #[async_trait]
 impl Driver for AcpDriver {
     async fn send(&self, input: Input) -> Result<()> {
-        let accepts_images = self.caps.get("promptCapabilities").and_then(|p| p.get("image")).and_then(Value::as_bool).unwrap_or(false);
+        let accepts_images = self
+            .caps
+            .get("promptCapabilities")
+            .and_then(|p| p.get("image"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if !input.images.is_empty() && !accepts_images {
             bail!("{} does not accept images", self.agent_name);
         }
-        self.prompts.send(input).map_err(|_| anyhow!("{} is not running", self.agent_name))
+        self.prompts
+            .send(input)
+            .map_err(|_| anyhow!("{} is not running", self.agent_name))
     }
 
     async fn interrupt(&self) -> Result<()> {
-        self.conn.notify("session/cancel", json!({ "sessionId": self.acp_session })).await?;
+        self.conn
+            .notify("session/cancel", json!({ "sessionId": self.acp_session }))
+            .await?;
         // The protocol requires answering open permission requests with
         // `cancelled` once the turn is cancelled.
         let pending = self.mapper.lock().take_approvals();
         for (approval_id, rpc_id) in pending {
-            let _ = self.conn.reply(rpc_id, json!({ "outcome": { "outcome": "cancelled" } })).await;
+            let _ = self
+                .conn
+                .reply(rpc_id, json!({ "outcome": { "outcome": "cancelled" } }))
+                .await;
             let _ = self.sink.send(Event::ApprovalResolved {
                 session_id: self.session_id.clone(),
                 approval_id,
-                decision: ApprovalDecision { option: ApprovalOption::Cancel, updated_input: None, message: None },
+                decision: ApprovalDecision {
+                    option: ApprovalOption::Cancel,
+                    updated_input: None,
+                    message: None,
+                },
             });
         }
         Ok(())
@@ -490,8 +684,13 @@ impl Driver for AcpDriver {
     async fn stop(&self) -> Result<()> {
         self.life.store(STOPPING, Ordering::SeqCst);
         if self.session_caps("close") && !self.conn.is_closed() {
-            let close = self.conn.request("session/close", json!({ "sessionId": self.acp_session }));
-            if let Err(e) = tokio::time::timeout(Duration::from_secs(2), close).await.unwrap_or_else(|_| Err(anyhow!("timed out"))) {
+            let close = self
+                .conn
+                .request("session/close", json!({ "sessionId": self.acp_session }));
+            if let Err(e) = tokio::time::timeout(Duration::from_secs(2), close)
+                .await
+                .unwrap_or_else(|_| Err(anyhow!("timed out")))
+            {
                 tracing::debug!("acp session/close: {e}");
             }
         }
@@ -514,18 +713,33 @@ async fn process_incoming(
     child: Option<tokio::process::Child>,
 ) {
     while let Some(msg) = rx.recv().await {
-        let str_param = |k: &str| msg.params.get(k).and_then(Value::as_str).map(str::to_string);
+        let str_param = |k: &str| {
+            msg.params
+                .get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
         let events = match (msg.method.as_str(), &msg.id) {
             ("session/update", None) => mapper.lock().handle_update(&msg.params["update"]),
-            ("session/request_permission", Some(id)) => mapper.lock().permission_request(id.clone(), &msg.params),
+            ("session/request_permission", Some(id)) => {
+                mapper.lock().permission_request(id.clone(), &msg.params)
+            }
             ("__turn_start", _) => {
-                let images = msg.params.get("images").and_then(Value::as_u64).unwrap_or(0) as usize;
-                mapper.lock().begin_turn(&str_param("text").unwrap_or_default(), images)
+                let images = msg
+                    .params
+                    .get("images")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                mapper
+                    .lock()
+                    .begin_turn(&str_param("text").unwrap_or_default(), images)
             }
             ("__turn_end", _) => {
                 let outcome = match str_param("error") {
                     Some(e) => TurnOutcome::Failed(e),
-                    None => TurnOutcome::Stopped(str_param("stopReason").unwrap_or_else(|| "end_turn".into())),
+                    None => TurnOutcome::Stopped(
+                        str_param("stopReason").unwrap_or_else(|| "end_turn".into()),
+                    ),
                 };
                 mapper.lock().end_turn(outcome)
             }
@@ -540,14 +754,18 @@ async fn process_incoming(
                 }
                 let expected = life == STOPPING;
                 let exit_code = match child {
-                    Some(mut child) => match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-                        Ok(Ok(status)) => status.code(),
-                        _ => None,
-                    },
+                    Some(mut child) => {
+                        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                            Ok(Ok(status)) => status.code(),
+                            _ => None,
+                        }
+                    }
                     None => None,
                 };
                 let message = (!expected).then(|| {
-                    let code = exit_code.map(|c| format!(" (exit code {c})")).unwrap_or_default();
+                    let code = exit_code
+                        .map(|c| format!(" (exit code {c})"))
+                        .unwrap_or_default();
                     match stderr_tail(&stderr) {
                         Some(tail) => format!("the agent exited{code}:\n{tail}"),
                         None => format!("the agent exited{code}"),
@@ -556,10 +774,16 @@ async fn process_incoming(
                 let mut events = vec![];
                 let mut m = mapper.lock();
                 if m.turn_active() {
-                    events.extend(m.end_turn(TurnOutcome::Failed(message.clone().unwrap_or_else(|| "stopped".into()))));
+                    events.extend(m.end_turn(TurnOutcome::Failed(
+                        message.clone().unwrap_or_else(|| "stopped".into()),
+                    )));
                 }
                 drop(m);
-                events.push(Event::ProcessExited { session_id: session_id.clone(), exit_code, message });
+                events.push(Event::ProcessExited {
+                    session_id: session_id.clone(),
+                    exit_code,
+                    message,
+                });
                 for ev in events {
                     let _ = sink.send(ev);
                 }
@@ -567,7 +791,13 @@ async fn process_incoming(
             }
             (method, Some(id)) => {
                 // fs/*, terminal/*, elicitation/*: none were advertised.
-                let _ = conn.reply_error(id.clone(), rpc::METHOD_NOT_FOUND, &format!("Aura does not support {method}")).await;
+                let _ = conn
+                    .reply_error(
+                        id.clone(),
+                        rpc::METHOD_NOT_FOUND,
+                        &format!("Aura does not support {method}"),
+                    )
+                    .await;
                 vec![]
             }
             (method, None) => {
@@ -591,10 +821,20 @@ async fn prompt_blocks(input: &Input) -> Result<Vec<Value>> {
     }
     for img in &input.images {
         let (data, mime) = match (&img.data, &img.path) {
-            (Some(d), _) => (d.clone(), img.media_type.clone().unwrap_or_else(|| "image/png".into())),
+            (Some(d), _) => (
+                d.clone(),
+                img.media_type.clone().unwrap_or_else(|| "image/png".into()),
+            ),
             (None, Some(p)) => {
-                let bytes = tokio::fs::read(p).await.with_context(|| format!("read image {p}"))?;
-                (base64::engine::general_purpose::STANDARD.encode(bytes), img.media_type.clone().unwrap_or_else(|| guess_media_type(p)))
+                let bytes = tokio::fs::read(p)
+                    .await
+                    .with_context(|| format!("read image {p}"))?;
+                (
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                    img.media_type
+                        .clone()
+                        .unwrap_or_else(|| guess_media_type(p)),
+                )
             }
             (None, None) => continue,
         };
@@ -604,7 +844,11 @@ async fn prompt_blocks(input: &Input) -> Result<Vec<Value>> {
 }
 
 fn guess_media_type(path: &str) -> String {
-    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match ext.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
