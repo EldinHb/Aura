@@ -1,6 +1,7 @@
 import { PullWorkspace } from "./features/reviews/PullWorkspace";
 import { registerReviewCommands } from "./features/reviews/state";
 import { isHandlingReview, registerWatchCommands, useWatchSync } from "./features/watches/state";
+import { unreadChanges, usePullChangeSync, usePullChanges } from "./features/reviews/changes";
 import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
@@ -30,6 +31,7 @@ export default function App() {
   useKeyboard();
   // Detached session windows would announce every review a second time.
   useWatchSync(windowMode !== "session");
+  usePullChangeSync(windowMode !== "session");
   useDetectedLinksSync();
   const connection = useStore((s) => s.connection);
   const connectionError = useStore((s) => s.connectionError);
@@ -156,7 +158,8 @@ export default function App() {
     import("@tauri-apps/api/event").then(({ listen }) =>
       listen("aura://summon", () => {
         const st = useStore.getState();
-        if (Object.values(st.sessions).some((s) => s.pending_count > 0)) st.openDialog({ kind: "inbox" });
+        const changed = unreadChanges(usePullChanges.getState().changes, st.settings.pullChangesMuted).length > 0;
+        if (changed || Object.values(st.sessions).some((s) => s.pending_count > 0)) st.openDialog({ kind: "inbox" });
         else setFocus("sidebar");
       }).then((u) => (un = u)),
     );

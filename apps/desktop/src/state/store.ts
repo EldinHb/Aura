@@ -157,6 +157,8 @@ export type UiSettings = {
   mergeMethod: string;
   /** Last choice of deleting the head branch when merging. */
   deleteBranchAfterMerge: boolean;
+  /** Kinds of pull request change (see `PULL_CHANGE_KINDS`) left out of the inbox and notifications. */
+  pullChangesMuted: string[];
 };
 
 export const defaultSettings: UiSettings = {
@@ -174,6 +176,7 @@ export const defaultSettings: UiSettings = {
   pullFilters: ["author:dependabot"],
   mergeMethod: "",
   deleteBranchAfterMerge: true,
+  pullChangesMuted: [],
 };
 
 export function emptyTranscript(): Transcript {

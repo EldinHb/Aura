@@ -584,9 +584,9 @@ fn target(linking: &[Session]) -> Option<&Session> {
         .max_by_key(|s| s.last_activity)
 }
 
-fn read_setting(store: &dyn Store, key: &str) -> Value {
+fn setting(store: &dyn Store, key: String) -> Value {
     store
-        .get_setting(key)
+        .get_setting(&key)
         .ok()
         .flatten()
         .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -596,7 +596,7 @@ fn read_setting(store: &dyn Store, key: &str) -> Value {
 /// Whether review activity may go to the session: the user can turn it off
 /// per session in the app's links dialog.
 pub fn follows_reviews(store: &dyn Store, session: &str) -> bool {
-    read_setting(store, &format!("{LINKS_KEY}{session}"))["reviews"] != false
+    setting(store, format!("{LINKS_KEY}{session}"))["reviews"] != false
 }
 
 /// The PRs whose activity may go to a session, unless the user turned
@@ -621,11 +621,17 @@ pub fn followed_prs(store: &dyn Store, session: &Session) -> Vec<(String, u32)> 
 /// The PRs a session is linked to, unless the user turned follow-ups off for
 /// it: the links the user chose, else the ones detected in the conversation.
 pub fn linked_prs(store: &dyn Store, session: &str) -> Vec<(String, u32)> {
-    let read = |key: String| read_setting(store, &key);
-    let prefs = read(format!("{LINKS_KEY}{session}"));
-    if prefs["reviews"] == false {
+    if setting(store, format!("{LINKS_KEY}{session}"))["reviews"] == false {
         return vec![];
     }
+    session_prs(store, session)
+}
+
+/// The PRs a session is linked to: the links the user chose, else the ones
+/// detected in the conversation.
+pub fn session_prs(store: &dyn Store, session: &str) -> Vec<(String, u32)> {
+    let read = |key: String| setting(store, key);
+    let prefs = read(format!("{LINKS_KEY}{session}"));
     let urls: Vec<Value> = if let Some(list) = prefs["prs"].as_array() {
         list.clone()
     } else if prefs.get("pr").is_some() {

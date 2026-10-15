@@ -18,6 +18,8 @@ tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+# Shown directly for notifications whose click opens something; the plugin drops clicks on desktop.
+notify-rust = "4"
 tauri-plugin-os = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-window-state = "2"

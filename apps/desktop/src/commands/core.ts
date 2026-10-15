@@ -79,7 +79,7 @@ export const coreCommands: Command[] = [
   { id: "settings.groups", title: "Manage groups…", group: "Aura", keywords: ["delete group"], run: () => st().openDialog({ kind: "settings", tab: "groups" }) },
   { id: "settings.prompts", title: "System prompts…", group: "Aura", keywords: ["global prompt", "agent prompt", "instructions"], run: () => st().openDialog({ kind: "settings", tab: "prompts" }) },
   { id: "search.open", title: "Search across sessions", group: "Aura", run: () => st().openDialog({ kind: "search" }) },
-  { id: "inbox.open", title: "Approvals inbox", group: "Aura", run: () => st().openDialog({ kind: "inbox" }) },
+  { id: "inbox.open", title: "Inbox", group: "Aura", keywords: ["approvals", "questions", "pull request changes"], run: () => st().openDialog({ kind: "inbox" }) },
   { id: "import.open", title: "Import existing CLI sessions", group: "Session", run: () => st().openDialog({ kind: "import" }) },
   { id: "hints.enter", title: "Show hint labels (click anything by keyboard)", group: "Aura", run: () => st().setHintMode(true) },
   {

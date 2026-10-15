@@ -59,8 +59,9 @@ keyboard, while the agents keep working in the background.
   reviews and comments on your PRs go to its agent, which fixes and pushes, and
   you are told when they arrive and when the agent is done.
   See [Agents follow up on reviews](#agents-follow-up-on-reviews).
-- **An inbox for approvals.** See every session waiting on you, and approve or decline
-  with a single key.
+- **An inbox for approvals and PR changes.** See every session waiting on you, and approve
+  or decline with a single key. Changes on the pull requests you follow land there too;
+  click one to open the PR. See [Pull request changes in the inbox](#pull-request-changes-in-the-inbox).
 - **Git worktrees built in.** Start a session in its own worktree so parallel agents do
   not step on each other. Review the diff, commit and push from Aura. Each session
   shows its branch (unpushed, unpulled and uncommitted counts) and the status of
@@ -283,7 +284,7 @@ Shortcuts are shown with macOS keys; use `Ctrl` for `⌘` on Windows and Linux.
 | `j` `k` `gg` `G` `Enter` | Navigate lists and transcript items |
 | `←` `→` | In the sidebar: hide / show an orchestrator's workers, step between it and them |
 | `y` `Y` `n` `e` | Accept / accept for session / decline / edit the oldest pending approval |
-| `⌘I` | Approvals inbox across all sessions |
+| `⌘I` | Inbox: approvals across all sessions and pull request changes |
 | `⌘T` | Toggle structured view and the provider's own TUI |
 | `⌘D` | Diff of the session's working tree |
 | `f` | Hint mode: label everything clickable, type the label |
@@ -464,6 +465,27 @@ the activity arrives, and another with the agent's summary when its turn ends.
   from its own workers; otherwise the session active last gets it.
 - Untick **Hand new reviews and comments on these PRs to this session** in
   **Edit issues & PRs…** to stop it for a session.
+
+### Pull request changes in the inbox
+
+The daemon refreshes your pull requests every minute: the ones you opened, the ones
+you are asked to review or have reviewed, and the ones linked to a session. It
+compares each with the previous refresh and puts what changed in the inbox, one
+entry per PR, with a toast and, when Aura is in the background and **Desktop
+notifications** is on, a desktop notification. Click an entry or the notification
+to open the PR in Aura; that marks it read.
+
+- Reported: new commits, reviews (bot reviews are marked as such), comments and
+  review-thread replies, your review being requested, and merging, closing or
+  reopening. On your own PRs and linked ones also checks failing or passing again,
+  merge conflicts, and becoming ready to merge.
+- Your own actions are never reported, nor are conversation comments by bots.
+- Changes found in one refresh form one entry, and later ones join it until you
+  read it. The first refresh only records where things stand, and a daemon
+  restart reports nothing twice. It all runs in the daemon, so it keeps working
+  while the window is closed.
+- **Settings → General** chooses which kinds of change reach the inbox and
+  notifications.
 
 ---
 

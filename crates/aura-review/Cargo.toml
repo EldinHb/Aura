@@ -8,6 +8,7 @@ license.workspace = true
 aura-git = { workspace = true }
 aura-core = { workspace = true }
 aura-github = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

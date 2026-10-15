@@ -11,6 +11,7 @@ import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
 import { pullFilterError } from "../../features/reviews/state";
+import { PULL_CHANGE_KINDS } from "../../features/reviews/changes";
 
 type Tab = "general" | "keymap" | "providers" | "prompts" | "groups";
 const TABS: Tab[] = ["general", "keymap", "providers", "prompts", "groups"];
@@ -97,6 +98,14 @@ function GeneralTab() {
       <label className="check-row">
         <input type="checkbox" checked={settings.notifications} onChange={(e) => set("notifications", e.target.checked)} /> Desktop notifications
       </label>
+      <div className="field wide">
+        <label>Pull request changes in the inbox and notifications</label>
+        {PULL_CHANGE_KINDS.map(({ kind, label }) => (
+          <label key={kind} className="check-row">
+            <input type="checkbox" checked={!settings.pullChangesMuted.includes(kind)} onChange={(e) => set("pullChangesMuted", e.target.checked ? settings.pullChangesMuted.filter((k) => k !== kind) : [...settings.pullChangesMuted, kind])} /> {label}
+          </label>
+        ))}
+      </div>
       <label className="check-row">
         <input type="checkbox" checked={settings.confirmDelete} onChange={(e) => set("confirmDelete", e.target.checked)} /> Confirm before deleting a session
       </label>

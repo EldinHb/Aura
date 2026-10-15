@@ -1,7 +1,7 @@
 //! GitHub transport. Only the daemon invokes gh; credentials never reach the webview.
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use aura_core::{PullRequest, RequestedReviewer, SubmittedReview};
+use aura_core::{LatestReview, Note, PullActivity, PullRequest, RequestedReviewer, SubmittedReview};
 use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
@@ -11,7 +11,7 @@ use tokio::{io::AsyncWriteExt, process::Command};
 /// GraphQL selection on a pull request; read with [`reviews_by_others`].
 macro_rules! reviews_query {
     () => {
-        "latestReviews(first:100){nodes{state submittedAt author{__typename login} commit{oid}}} latestOpinionatedReviews(first:100){nodes{state author{login}}}"
+        "latestReviews(first:100){nodes{databaseId state submittedAt author{__typename login} commit{oid}}} latestOpinionatedReviews(first:100){nodes{state author{login}}}"
     };
 }
 pub mod branch;
@@ -479,7 +479,39 @@ fn from_graphql(account: &str, login: &str, repo: &str, number: u32, r: &Value, 
     p.can_delete_branch = p.can_merge && d["isCrossRepository"] == false;
     p.auto_delete_branch = r["deleteBranchOnMerge"] == true;
     p.merge_blocked_by = p.merge_blocker().map(String::from);
+    p.activity = activity(d);
     p
+}
+/// Who did what lately on the PR in `d`, to tell what changed since the previous read.
+fn activity(d: &Value) -> PullActivity {
+    let nodes = |v: &Value| v["nodes"].as_array().cloned().unwrap_or_default();
+    let note = |n: &Value| {
+        let author = s(&n["author"], "login");
+        Some(Note { id: n["databaseId"].as_u64()?, bot: n["author"]["__typename"] == "Bot" || author.ends_with("[bot]"), author })
+    };
+    let head = &d["commits"]["nodes"][0]["commit"];
+    let state_actor = match s(d, "state").as_str() {
+        "MERGED" => s(&d["mergedBy"], "login"),
+        _ => s(&d["stateEvents"]["nodes"][0]["actor"], "login"),
+    };
+    PullActivity {
+        commits: d["commits"]["totalCount"].as_u64().unwrap_or(0) as u32,
+        pushed_by: [&head["author"], &head["committer"]]
+            .into_iter()
+            .map(|who| s(&who["user"], "login"))
+            .filter(|login| !login.is_empty())
+            .collect(),
+        comments: nodes(&d["comments"]).iter().filter_map(note).collect(),
+        thread_comments: nodes(&d["reviewThreads"]).iter().flat_map(|t| nodes(&t["comments"])).filter_map(|n| note(&n)).collect(),
+        reviews: nodes(&d["latestReviews"])
+            .iter()
+            .filter_map(|n| {
+                let note = note(n)?;
+                Some(LatestReview { id: note.id, reviewer: note.author, bot: note.bot, state: s(n, "state") })
+            })
+            .collect(),
+        state_actor,
+    }
 }
 /// Merge `p` with `method` as `account`. GitHub refuses when the head moved past
 /// `p.head_sha`, so only the commits that were shown are merged.
@@ -522,13 +554,16 @@ fn ref_path(branch: &str) -> Result<String> {
 }
 /// What a merge may do, read once per repository in a batch.
 const REPO: &str = "viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod deleteBranchOnMerge";
-/// A PR with your latest review, who reviewed and was asked to, and open review threads.
+/// A PR with your latest review, who reviewed and was asked to, open review threads, and who
+/// last pushed, commented, merged or closed it.
 const PULL: &str = concat!(
     "fragment pull on PullRequest{number title body url author{login} state isDraft baseRefName headRefName baseRefOid headRefOid createdAt updatedAt additions deletions changedFiles assignees(first:20){nodes{login}} labels(first:50){nodes{name}} milestone{number title} ",
-    "viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} ",
+    "viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository mergedBy{login} commits(last:1){totalCount nodes{commit{statusCheckRollup{state} author{user{login}} committer{user{login}}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} ",
     "timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}} ",
     "reviewRequests(first:20){nodes{requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login} ... on Mannequin{login}}}} ",
-    "reviewThreads(first:100){nodes{isResolved comments(last:1){nodes{author{__typename login}}}}} ",
+    "reviewThreads(first:100){nodes{isResolved comments(last:3){nodes{databaseId author{__typename login}}}}} ",
+    "comments(last:20){nodes{databaseId author{__typename login}}} ",
+    "stateEvents:timelineItems(last:1,itemTypes:[CLOSED_EVENT,REOPENED_EVENT]){nodes{... on ClosedEvent{actor{login}} ... on ReopenedEvent{actor{login}}}} ",
     reviews_query!(),
     "}"
 );
@@ -592,7 +627,7 @@ fn unanswered_threads(threads: &Value, login: &str) -> u32 {
         .flatten()
         .filter(|t| t["isResolved"] == false)
         .filter(|t| {
-            let author = &t["comments"]["nodes"][0]["author"];
+            let author = &t["comments"]["nodes"].as_array().and_then(|c| c.last()).unwrap_or(&Value::Null)["author"];
             author["__typename"] != "Bot"
                 && author["login"].as_str().is_some_and(|l| !l.is_empty() && !l.eq_ignore_ascii_case(login))
         })
@@ -1002,6 +1037,32 @@ mod tests {
         let without = from_graphql("a", "me", "o/r", 1, &json!({}), &json!({"milestone": null}));
         assert_eq!((without.milestone, without.milestone_title.as_str()), (None, ""));
     }
+
+    #[test]
+    fn reads_who_pushed_commented_and_closed() {
+        let user = |login: &str| json!({"__typename": if login.ends_with("[bot]") { "Bot" } else { "User" }, "login": login});
+        let d = json!({
+            "state": "CLOSED",
+            "mergedBy": null,
+            "stateEvents": {"nodes": [{"actor": {"login": "alice"}}]},
+            "commits": {"totalCount": 4, "nodes": [{"commit": {"author": {"user": {"login": "bob"}}, "committer": {"user": null}}}]},
+            "comments": {"nodes": [{"databaseId": 7, "author": user("carol")}, {"databaseId": 8, "author": user("ci[bot]")}, {"author": user("x")}]},
+            "reviewThreads": {"nodes": [
+                {"isResolved": false, "comments": {"nodes": [{"databaseId": 20, "author": user("alice")}, {"databaseId": 21, "author": user("me")}]}},
+                {"isResolved": false, "comments": {"nodes": [{"databaseId": 30, "author": user("me")}, {"databaseId": 31, "author": user("dave")}]}},
+            ]},
+            "latestReviews": {"nodes": [{"databaseId": 99, "state": "COMMENTED", "author": user("alice")}]},
+        });
+        let a = activity(&d);
+        assert_eq!((a.commits, a.pushed_by.clone(), a.state_actor.as_str()), (4, vec!["bob".to_string()], "alice"));
+        assert_eq!(a.comments, vec![Note { id: 7, author: "carol".into(), bot: false }, Note { id: 8, author: "ci[bot]".into(), bot: true }]);
+        assert_eq!(a.thread_comments.iter().map(|n| n.id).collect::<Vec<_>>(), vec![20, 21, 30, 31]);
+        assert_eq!(a.reviews, vec![LatestReview { id: 99, reviewer: "alice".into(), bot: false, state: "COMMENTED".into() }]);
+        assert_eq!(unanswered_threads(&d["reviewThreads"]["nodes"], "me"), 1, "a thread's latest comment decides");
+        let merged = json!({"state": "MERGED", "mergedBy": {"login": "me"}, "stateEvents": {"nodes": [{"actor": {"login": "alice"}}]}});
+        assert_eq!(activity(&merged).state_actor, "me");
+    }
+
     #[test]
     fn keeps_partial_graphql_answers_from_gh() {
         assert!(has_data(br#"{"data":{"r0":null},"errors":[{"message":"x"}]}"#));

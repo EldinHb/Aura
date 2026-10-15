@@ -72,6 +72,41 @@ pub struct PullRequest {
     /// [`PullRequest::merge_blocker`] when the PR was read; None when it could be merged.
     #[serde(default)]
     pub merge_blocked_by: Option<String>,
+    /// Who did what lately, read with the PR to tell what changed between refreshes. Daemon-only.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub activity: PullActivity,
+}
+/// The latest activity on a pull request, as far as one read shows it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PullActivity {
+    /// Commits on the PR.
+    pub commits: u32,
+    /// Logins of the head commit's author and committer, where GitHub knows them.
+    pub pushed_by: Vec<String>,
+    /// The latest conversation comments, oldest first.
+    pub comments: Vec<Note>,
+    /// The latest comments of each review thread.
+    pub thread_comments: Vec<Note>,
+    /// Each reviewer's latest review as submitted, whatever their verdict stands at.
+    pub reviews: Vec<LatestReview>,
+    /// Who merged it, or last closed or reopened it.
+    pub state_actor: String,
+}
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LatestReview {
+    pub id: u64,
+    pub reviewer: String,
+    pub bot: bool,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED` or `PENDING`.
+    pub state: String,
+}
+/// A comment, by GitHub's database id.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Note {
+    pub id: u64,
+    pub author: String,
+    pub bot: bool,
 }
 
 impl PullRequest {
@@ -344,6 +379,66 @@ pub struct ReviewInbox {
     pub last_synced: Option<String>,
     pub error: Option<String>,
     pub defaults: ReviewConfig,
+}
+/// What changed on a pull request the user follows, as one inbox entry. Changes found in one
+/// refresh, and later ones while the entry is unread, gather in the same entry.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullChange {
+    pub id: String,
+    #[serde(default)]
+    pub account: String,
+    /// [`PullRequest::id`]: `owner/repo#number`.
+    #[serde(default)]
+    pub pull_id: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub number: u32,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    /// Why the user follows it: `authored`, `requested`, `reviewed` or `linked` (to a session).
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub events: Vec<PullEvent>,
+    /// The events' texts in a line, e.g. `2 new commits · alice approved · checks failed`.
+    #[serde(default)]
+    pub summary: String,
+    /// When the latest event was found.
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub read: bool,
+}
+/// One kind of change on a pull request.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullEvent {
+    /// `commits`, `review`, `comment`, `review_requested`, `checks`, `state` or `mergeable`.
+    #[serde(default)]
+    pub kind: String,
+    /// Who did it; empty when unknown.
+    #[serde(default)]
+    pub actor: String,
+    /// The actor is an app, such as Copilot.
+    #[serde(default)]
+    pub bot: bool,
+    /// By kind: the review state (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`); the check
+    /// rollup (`FAILURE`, `SUCCESS`); `merged`, `closed` or `reopened`; `conflicts` or `clean`.
+    #[serde(default)]
+    pub detail: String,
+    /// New commits or comments; 1 for the other kinds.
+    #[serde(default)]
+    pub count: u32,
+    /// GitHub's id of a review, so one announced elsewhere is not announced again; else 0.
+    #[serde(default)]
+    pub review_id: u64,
+    /// The event in words, e.g. `alice approved`.
+    #[serde(default)]
+    pub text: String,
 }
 /// A daemon-side poll of one pull request's reviews. Keyed by lowercase `owner/repo#number`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]

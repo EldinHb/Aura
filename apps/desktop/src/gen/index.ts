@@ -32,6 +32,8 @@ export * from './PrWatch';
 export * from './PreReview';
 export * from './ProviderInfo';
 export * from './ProviderKind';
+export * from './PullChange';
+export * from './PullEvent';
 export * from './PullRequest';
 export * from './PullTimeline';
 export * from './Question';

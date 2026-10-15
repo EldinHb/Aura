@@ -53,8 +53,8 @@ function tell(title: string, message: string, level: "info" | "warn" | "error" =
   if (app.settings.notifications && !document.hasFocus()) void desktopNotify(title, message);
 }
 
-/** GitHub review ids already announced: a watched PR can also be followed by a session. */
-const announcedReviews = new Set<number>();
+/** GitHub review ids already announced: a watched PR can also be followed by a session, and its changes reach the inbox. */
+export const announcedReviews = new Set<number>();
 
 function announce(watch: PrWatch, review: WatchedReview) {
   if (announcedReviews.has(review.id)) return;

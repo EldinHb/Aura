@@ -1,22 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModalC } from "../ModalC";
 import { useStore } from "../../state/store";
-import type { Approval, ApprovalOption, UserInputRequest } from "../../gen";
+import type { Approval, ApprovalOption, PullChange, UserInputRequest } from "../../gen";
 import { relTime } from "../../lib/platform";
 import { setFocus } from "../../commands/core";
+import { describeEvents, markChangesRead, openPullChange, shownEvents, unreadChanges, usePullChanges } from "../../features/reviews/changes";
 import clsx from "clsx";
 
-type Row = { kind: "approval"; a: Approval } | { kind: "input"; r: UserInputRequest };
+type SessionRow = { kind: "approval"; a: Approval } | { kind: "input"; r: UserInputRequest };
+type Row = SessionRow | { kind: "pull"; c: PullChange };
 
 function rowId(r: Row): string {
-  return r.kind === "approval" ? `a:${r.a.id}` : `i:${r.r.id}`;
+  return r.kind === "approval" ? `a:${r.a.id}` : r.kind === "input" ? `i:${r.r.id}` : `p:${r.c.id}`;
 }
-function rowSession(r: Row): string {
+function rowSession(r: SessionRow): string {
   return r.kind === "approval" ? r.a.session_id : r.r.session_id;
 }
-function rowTime(r: Row): string {
+function rowTime(r: SessionRow): string {
   return r.kind === "approval" ? r.a.created_at : r.r.created_at;
 }
+const ROLES: Record<string, string> = { authored: "your PR", requested: "review requested", reviewed: "you reviewed", linked: "linked" };
 
 export function InboxDialog() {
   const client = useStore((s) => s.client);
@@ -25,6 +28,8 @@ export function InboxDialog() {
   const select = useStore((s) => s.select);
   const closeDialog = useStore((s) => s.closeDialog);
   const toast = useStore((s) => s.toast);
+  const muted = useStore((s) => s.settings.pullChangesMuted);
+  const changes = usePullChanges((s) => s.changes);
   const [fetched, setFetched] = useState<{ approvals: Approval[]; inputs: UserInputRequest[] }>({ approvals: [], inputs: [] });
   const [idx, setIdx] = useState(0);
   const [resolved, setResolved] = useState<Set<string>>(new Set());
@@ -34,10 +39,11 @@ export function InboxDialog() {
       ?.pending()
       .then(setFetched)
       .catch(() => {});
+    void usePullChanges.getState().refresh();
   }, [client]);
 
   const rows: Row[] = useMemo(() => {
-    const m = new Map<string, Row>();
+    const m = new Map<string, SessionRow>();
     for (const a of fetched.approvals) m.set(`a:${a.id}`, { kind: "approval", a });
     for (const r of fetched.inputs) m.set(`i:${r.id}`, { kind: "input", r });
     for (const t of Object.values(transcripts)) {
@@ -50,7 +56,7 @@ export function InboxDialog() {
       for (const a of Object.values(t.approvals)) live.add(`a:${a.id}`);
       for (const r of Object.values(t.inputs)) live.add(`i:${r.id}`);
     }
-    return [...m.values()]
+    const waiting: Row[] = [...m.values()]
       .filter((r) => {
         const id = rowId(r);
         if (resolved.has(id)) return false;
@@ -60,7 +66,9 @@ export function InboxDialog() {
         return true;
       })
       .sort((x, y) => rowTime(x).localeCompare(rowTime(y)));
-  }, [fetched, transcripts, resolved]);
+    // What waits on you first, then what changed on your pull requests, the latest first.
+    return [...waiting, ...unreadChanges(changes, muted).map((c): Row => ({ kind: "pull", c }))];
+  }, [fetched, transcripts, resolved, changes, muted]);
 
   useEffect(() => {
     if (idx >= rows.length) setIdx(Math.max(0, rows.length - 1));
@@ -77,7 +85,7 @@ export function InboxDialog() {
   };
 
   const acceptAllInSession = async (row: Row) => {
-    if (!client) return;
+    if (!client || row.kind === "pull") return;
     const sid = rowSession(row);
     const list = rows.filter((r): r is Extract<Row, { kind: "approval" }> => r.kind === "approval" && r.a.session_id === sid && r.a.kind === "command");
     for (const r of list) await respond(r, "accept");
@@ -85,8 +93,9 @@ export function InboxDialog() {
   };
 
   const jump = (row: Row) => {
-    select(rowSession(row));
     closeDialog();
+    if (row.kind === "pull") void openPullChange(row.c);
+    else select(rowSession(row));
     setFocus("main");
   };
 
@@ -100,6 +109,7 @@ export function InboxDialog() {
     else if (k === "Y" && row) void respond(row, "accept_for_session");
     else if (k === "n" && row) void respond(row, "decline");
     else if (k === "a" && row) void acceptAllInSession(row);
+    else if (k === "x" && row?.kind === "pull") void markChangesRead([row.c.id]);
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -112,7 +122,7 @@ export function InboxDialog() {
           <span>Inbox</span>
           <span style={{ flex: 1 }} />
           <span className="dim" style={{ fontWeight: 400, color: "var(--fg-dim)", fontSize: 11 }}>
-            <kbd>y</kbd> accept <kbd>Y</kbd> for session <kbd>n</kbd> decline <kbd>a</kbd> accept all cmds <kbd>↩</kbd> go to session
+            <kbd>y</kbd> accept <kbd>Y</kbd> for session <kbd>n</kbd> decline <kbd>a</kbd> accept all cmds <kbd>x</kbd> mark PR read <kbd>↩</kbd> open
           </span>
         </>
       }
@@ -126,6 +136,21 @@ export function InboxDialog() {
           </div>
         )}
         {rows.map((row, i) => {
+          if (row.kind === "pull") {
+            const c = row.c;
+            return (
+              <button key={rowId(row)} type="button" data-hint className={clsx("list-item inbox-row", i === idx && "active")} onClick={() => jump(row)} title="Open the pull request">
+                <span className="chip">PR</span>
+                <span className="inbox-kind chip">{ROLES[c.role] ?? "pull request"}</span>
+                <span className="grow">
+                  <div className="inbox-title">{c.title || `${c.repo}#${c.number}`}</div>
+                  <div className="dim mono inbox-sub">{c.repo}#{c.number}</div>
+                  <div className="dim inbox-sub">{describeEvents(shownEvents(c, muted))}</div>
+                </span>
+                <span className="dim">{relTime(c.created_at)}</span>
+              </button>
+            );
+          }
           const s = sessions[rowSession(row)];
           const isApproval = row.kind === "approval";
           const payload = isApproval ? (row.a.payload as { command?: string }) : null;

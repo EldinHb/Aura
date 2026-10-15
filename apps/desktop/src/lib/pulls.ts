@@ -4,7 +4,7 @@
  * since; a missing list would throw where the UI filters or maps it, and blank
  * the window. Every reply carrying pull requests passes through here.
  */
-import type { BranchPull, PreReview, PullRequest, PullTimeline, ReviewInbox, ReviewThread, Session, SubmittedReview, ThreadComment, TimelineItem } from "../gen";
+import type { BranchPull, PreReview, PullChange, PullEvent, PullRequest, PullTimeline, ReviewInbox, ReviewThread, Session, SubmittedReview, ThreadComment, TimelineItem } from "../gen";
 
 const list = <T>(value: T[] | null | undefined): T[] => (Array.isArray(value) ? value : []);
 
@@ -82,3 +82,17 @@ export function normalizeDetail(d: PullDetail): PullDetail {
     project_error: d.project_error ?? null,
   };
 }
+
+const event = (e: PullEvent): PullEvent => ({ ...e, kind: e.kind ?? "", actor: e.actor ?? "", bot: e.bot ?? false, detail: e.detail ?? "", count: e.count ?? 1, review_id: e.review_id ?? 0, text: e.text ?? "" });
+
+export const normalizePullChange = (c: PullChange): PullChange => ({
+  ...c,
+  events: list(c.events).map(event),
+  summary: c.summary ?? "",
+  title: c.title ?? "",
+  role: c.role ?? "",
+  read: c.read ?? false,
+});
+
+/** The daemon's PR change entries; an older daemon has none. */
+export const normalizePullChanges = (value: unknown): PullChange[] => list(value as PullChange[]).map(normalizePullChange);

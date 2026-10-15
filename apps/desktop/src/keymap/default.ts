@@ -65,7 +65,7 @@ export const defaultBindings: Binding[] = [
   { keys: "leader b", command: "session.pick-sandbox", label: "Sandbox…" },
   { keys: "leader c", command: "session.compact", label: "Compact context" },
   { keys: "leader r", command: "session.review", label: "Code review" },
-  { keys: "leader a", command: "inbox.open", label: "Approvals inbox" },
+  { keys: "leader a", command: "inbox.open", label: "Inbox" },
   { keys: "leader g d", command: "git.diff", label: "Diff" },
   { keys: "leader g c", command: "git.commit", label: "Commit…" },
   { keys: "leader g p", command: "git.push", label: "Push" },

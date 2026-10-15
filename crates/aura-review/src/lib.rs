@@ -1,4 +1,5 @@
 //! Daemon-owned review jobs. All state transitions are serialized and persisted before publication.
+pub mod changes;
 pub mod diff;
 pub mod follow;
 pub mod runner;
@@ -211,7 +212,29 @@ impl ReviewService {
                     ids.push(id.clone());
                 }
             }
-            let fetched = aura_github::pulls(&*self.gh, &account, &ids).await?;
+            // Read in the same queries, for the inbox only: PRs linked to a session, and
+            // PRs that left the lists since the last refresh, to learn whether they were
+            // merged or closed.
+            let snapshots = changes::load(&*self.store, &account);
+            let linked = self.linked_pulls();
+            let followed_ids: Vec<(String, u32)> = ids.iter().chain(&linked).cloned().collect();
+            let leaving = snapshots
+                .as_ref()
+                .map(|s| changes::leavers(s, &followed_ids))
+                .unwrap_or_default();
+            let mut extra: Vec<(String, u32)> = vec![];
+            for id in linked.iter().chain(&leaving) {
+                if !ids
+                    .iter()
+                    .chain(&extra)
+                    .any(|(r, n)| r.eq_ignore_ascii_case(&id.0) && *n == id.1)
+                {
+                    extra.push(id.clone());
+                }
+            }
+            let all: Vec<(String, u32)> = ids.iter().chain(&extra).cloned().collect();
+            let mut fetched = aura_github::pulls(&*self.gh, &account, &all).await?;
+            let followed = fetched.split_off(ids.len());
             self.ensure_account(&account).await?;
             let hidden = self.store.feature_records(&format!("hidden:{account}"))?;
             let mut s = self.state.lock();
@@ -224,12 +247,14 @@ impl ReviewService {
                 .map(|p| (p.id.clone(), p.clone()))
                 .collect();
             let mut read = HashMap::new();
+            let mut fresh = vec![];
             let mut failures = vec![];
             for ((repo, number), result) in ids.iter().zip(fetched) {
                 let id = format!("{repo}#{number}");
                 match result {
                     Ok(mut p) => {
                         p.hidden = hidden.iter().any(|(h, v)| h == &p.id && v == "true");
+                        fresh.push(p.clone());
                         read.insert(id, p);
                     }
                     Err(e) => {
@@ -251,6 +276,49 @@ impl ReviewService {
             s.mine = list(&mine);
             s.last_synced = Some(now().to_rfc3339());
             s.error = (!failures.is_empty()).then(|| failures.join("\n"));
+            drop(s);
+            for ((repo, number), result) in extra.iter().zip(followed) {
+                match result {
+                    Ok(p) => fresh.push(p),
+                    Err(e) => {
+                        tracing::debug!("reading {repo}#{number} for the inbox failed: {e:#}")
+                    }
+                }
+            }
+            let has = |list: &[(String, u32)], p: &PullRequest| {
+                list.iter()
+                    .any(|(r, n)| r.eq_ignore_ascii_case(&p.repo) && *n == p.number)
+            };
+            let roles: Vec<(&PullRequest, &str)> = fresh
+                .iter()
+                .map(|p| {
+                    let role = [&requested, &mine, &reviewed, &linked]
+                        .iter()
+                        .zip(changes::ROLES)
+                        .find(|(list, _)| has(list, p))
+                        .map_or("", |(_, role)| role);
+                    (p, role)
+                })
+                .collect();
+            let me = account
+                .split_once(':')
+                .map_or(account.as_str(), |(_, login)| login);
+            // The PR lists are read either way; failing to record changes only costs those.
+            let (snapshots, found) = changes::detect(snapshots, &roles, &leaving, me);
+            let recorded = changes::save(&*self.store, &account, &snapshots)
+                .and_then(|_| changes::record(&*self.store, &account, found));
+            match recorded {
+                Ok(news) if !news.is_empty() => {
+                    let _ = self
+                        .events
+                        .send(json!({"method":"pulls.activity","params":{"changes":news}}));
+                    let _ = self
+                        .events
+                        .send(json!({"method":"pulls.changes.changed","params":{}}));
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("recording pull request changes failed: {e:#}"),
+            }
             Ok::<_, anyhow::Error>(())
         }
         .await;
@@ -261,6 +329,18 @@ impl ReviewService {
         self.persist_inbox()?;
         self.emit();
         result
+    }
+    /// PRs linked to a session the user still has: chosen by the user, else detected.
+    fn linked_pulls(&self) -> Vec<(String, u32)> {
+        let mut out: Vec<(String, u32)> = vec![];
+        for s in self.manager.list_sessions().iter().filter(|s| !s.archived) {
+            for id in follow::session_prs(&*self.store, &s.id) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+        out
     }
     /// After Aura changes a PR on GitHub, show the change straight away instead of at the next
     /// poll: re-read that PR, resync both lists, and resync once more after GitHub's search
@@ -334,6 +414,25 @@ impl ReviewService {
         }
         let v = match method {
             "github.status" | "pulls.list" | "reviews.list" => json!(self.snapshot()),
+            "pulls.changes" => match self.state.lock().account.clone() {
+                Some(account) => json!(changes::entries(&*self.store, &account)?),
+                None => json!([]),
+            },
+            "pulls.changes.read" => {
+                let account = self.state.lock().account.clone();
+                let ids: Option<Vec<String>> = match &p["ids"] {
+                    Value::Null => None,
+                    v => Some(serde_json::from_value(v.clone()).context("Invalid ids")?),
+                };
+                if let Some(account) = account {
+                    if changes::mark_read(&*self.store, &account, ids.as_deref())? {
+                        let _ = self
+                            .events
+                            .send(json!({"method":"pulls.changes.changed","params":{}}));
+                    }
+                }
+                json!(true)
+            }
             "reviews.defaults" => {
                 json!({"instructions":runner::DEFAULT_PROMPT,"config":self.state.lock().defaults})
             }

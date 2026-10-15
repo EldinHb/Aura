@@ -221,6 +221,65 @@ fn open_session_window(app: AppHandle, session_id: String) -> Result<(), String>
     Ok(())
 }
 
+/// Notifications waiting for a click, each on its own thread. Past the limit, a
+/// notification is only shown: clicking it brings Aura forward and opens nothing.
+static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_WAITING: usize = 24;
+
+/// Show a notification whose click shows the main window and emits
+/// `aura://notification-clicked` with `target`. The notification plugin cannot:
+/// on desktop it shows the notification and drops the handle that reports clicks.
+#[tauri::command]
+fn notify_with_target(app: AppHandle, title: String, body: String, target: serde_json::Value) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let mut n = notify_rust::Notification::new();
+    n.summary(&title).body(&body);
+    let identifier = app.config().identifier.clone();
+    #[cfg(target_os = "macos")]
+    {
+        // An app run outside its bundle cannot post as itself (as the plugin does).
+        let _ = notify_rust::set_application(if tauri::is_dev() { "com.apple.Terminal" } else { &identifier });
+    }
+    #[cfg(windows)]
+    {
+        if !tauri::is_dev() {
+            n.app_id(&identifier);
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // The freedesktop server reports a click on the body as the "default" action.
+        n.appname("Aura").action("default", "Open");
+    }
+    let _ = identifier;
+    if WAITING.fetch_add(1, Ordering::SeqCst) >= MAX_WAITING {
+        WAITING.fetch_sub(1, Ordering::SeqCst);
+        return n.show().map(drop).map_err(|e| e.to_string());
+    }
+    std::thread::Builder::new()
+        .name("notification".into())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            // Blocks until the notification is clicked, dismissed or cleared.
+            let shown = n.show().map_err(|e| e.to_string()).and_then(|handle| {
+                handle
+                    .wait_for_response(|response: &notify_rust::NotificationResponse| {
+                        if matches!(response, notify_rust::NotificationResponse::Default | notify_rust::NotificationResponse::Action(_)) {
+                            focus_main(&app);
+                            let _ = app.emit("aura://notification-clicked", target);
+                        }
+                    })
+                    .map_err(|e| e.to_string())
+            });
+            if let Err(e) = shown {
+                tracing::warn!("notification failed: {e}");
+            }
+            WAITING.fetch_sub(1, Ordering::SeqCst);
+        })
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn show_main(app: AppHandle) {
     focus_main(&app);
@@ -256,7 +315,7 @@ pub fn run() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![connect_daemon, restart_daemon, set_badge, open_session_window, show_main])
+        .invoke_handler(tauri::generate_handler![connect_daemon, restart_daemon, set_badge, open_session_window, show_main, notify_with_target])
         .setup(|app| {
             // Tray. Built here rather than via the `trayIcon` config block: Tauri
             // creates one tray per source and keeps them in a list, so declaring it

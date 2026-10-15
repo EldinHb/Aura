@@ -77,6 +77,10 @@ struct MockGithub {
     searches: Mutex<Vec<(&'static str, Vec<u32>)>>,
     /// PRs whose read fails inside an otherwise fine batch.
     unreadable: Mutex<Vec<u32>>,
+    /// GraphQL state of every PR, and who merged them.
+    state: Mutex<(String, String)>,
+    /// Batched GraphQL reads so far.
+    reads: AtomicUsize,
 }
 impl Default for MockGithub {
     fn default() -> Self {
@@ -91,6 +95,8 @@ impl Default for MockGithub {
             writes: Mutex::new(vec![]),
             searches: Mutex::new(vec![("author%3A%40me", vec![1])]),
             unreadable: Mutex::new(vec![]),
+            state: Mutex::new(("OPEN".into(), String::new())),
+            reads: AtomicUsize::new(0),
         }
     }
 }
@@ -122,6 +128,7 @@ impl Github for MockGithub {
                 .iter()
                 .map(|_| json!({"state":"COMMENTED","submittedAt":"2026-10-05T10:00:00Z","commit":{"oid":"a".repeat(40)}}))
                 .collect();
+            self.reads.fetch_add(1, Ordering::SeqCst);
             let query = body.as_ref().unwrap()["query"].as_str().unwrap().to_string();
             if query.contains("timelineItems(first:100,after:$items") {
                 let conn = |nodes: Value| json!({"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":nodes});
@@ -147,7 +154,8 @@ impl Github for MockGithub {
                     errors.push(json!({"path":["r0",key],"message":"Something went wrong"}));
                     continue;
                 }
-                repo[&key] = json!({"number":number,"title":format!("PR {number}"),"state":"OPEN","author":{"login":"bob"},"headRefOid":*self.head.lock(),"headRefName":"feature","baseRefOid":"b".repeat(40),"baseRefName":"main","viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":*self.merge_state.lock(),"isCrossRepository":false,"commits":{"nodes":[]},"reviews":{"nodes":reviews}});
+                let (state, merged_by) = self.state.lock().clone();
+                repo[&key] = json!({"number":number,"title":format!("PR {number}"),"state":state,"mergedBy":{"login":merged_by},"author":{"login":"bob"},"headRefOid":*self.head.lock(),"headRefName":"feature","baseRefOid":"b".repeat(40),"baseRefName":"main","viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":*self.merge_state.lock(),"isCrossRepository":false,"commits":{"nodes":[]},"reviews":{"nodes":reviews}});
             }
             return Ok(json!({"data":{"r0":repo},"errors":errors}));
         }
@@ -637,4 +645,118 @@ async fn keeps_the_branch_unless_asked() {
         .unwrap();
     assert_eq!(v["branch_deleted"], false);
     assert_eq!(*gh.writes.lock(), ["PUT repos/o/r/pulls/1/merge"]);
+}
+#[tokio::test]
+async fn refresh_puts_what_changed_in_the_inbox_once() {
+    let gh = Arc::new(MockGithub::default());
+    *gh.searches.lock() = vec![
+        ("author%3A%40me", vec![1]),
+        ("review-requested%3A%40me", vec![2]),
+    ];
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let start = || {
+        let manager = Manager::new(store.clone(), vec![], None);
+        ReviewService::new(
+            store.clone(),
+            gh.clone(),
+            Arc::new(MockRunner),
+            manager,
+            std::env::temp_dir(),
+        )
+        .unwrap()
+    };
+    let svc = start();
+    let mut rx = svc.events.subscribe();
+    let activity = |rx: &mut broadcast::Receiver<Value>| {
+        let mut out = vec![];
+        while let Ok(v) = rx.try_recv() {
+            if v["method"] == "pulls.activity" {
+                out.extend(v["params"]["changes"].as_array().unwrap().iter().map(|c| {
+                    (
+                        c["pull_id"].as_str().unwrap().to_string(),
+                        c["summary"].as_str().unwrap().to_string(),
+                    )
+                }));
+            }
+        }
+        out.sort();
+        out
+    };
+    svc.refresh().await.unwrap();
+    assert!(
+        activity(&mut rx).is_empty(),
+        "the first refresh is a baseline"
+    );
+    assert_eq!(
+        gh.reads.load(Ordering::SeqCst),
+        1,
+        "no read beyond the batched one"
+    );
+
+    *gh.head.lock() = "c".repeat(40);
+    svc.refresh().await.unwrap();
+    assert_eq!(
+        activity(&mut rx),
+        vec![
+            ("o/r#1".into(), "1 new commit".into()),
+            ("o/r#2".into(), "1 new commit".into())
+        ]
+    );
+    let entries: Vec<PullChange> = serde_json::from_value(
+        svc.handle("pulls.changes", json!({}))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 2);
+    let mut roles: Vec<_> = entries
+        .iter()
+        .map(|e| (e.number, e.role.as_str()))
+        .collect();
+    roles.sort();
+    assert_eq!(roles, vec![(1, "authored"), (2, "requested")]);
+
+    // A restarted daemon has nothing new to say.
+    let svc = start();
+    let mut rx = svc.events.subscribe();
+    svc.refresh().await.unwrap();
+    assert!(activity(&mut rx).is_empty());
+
+    svc.handle("pulls.changes.read", json!({"ids": [entries[0].id]}))
+        .await
+        .unwrap();
+    let after: Vec<PullChange> = serde_json::from_value(
+        svc.handle("pulls.changes", json!({}))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(after.iter().filter(|e| e.read).count(), 1);
+
+    // #1 is merged by someone else: it leaves the search and is read once more in the same query.
+    *gh.searches.lock() = vec![("review-requested%3A%40me", vec![2])];
+    *gh.state.lock() = ("MERGED".into(), "bob".into());
+    let reads = gh.reads.load(Ordering::SeqCst);
+    svc.refresh().await.unwrap();
+    assert_eq!(gh.reads.load(Ordering::SeqCst), reads + 1);
+    assert_eq!(
+        activity(&mut rx),
+        vec![
+            ("o/r#1".into(), "merged by bob".into()),
+            ("o/r#2".into(), "merged by bob".into())
+        ]
+    );
+    svc.refresh().await.unwrap();
+    assert!(activity(&mut rx).is_empty());
+    svc.handle("pulls.changes.read", json!({})).await.unwrap();
+    let after: Vec<PullChange> = serde_json::from_value(
+        svc.handle("pulls.changes", json!({}))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(after.iter().all(|e| e.read));
 }
