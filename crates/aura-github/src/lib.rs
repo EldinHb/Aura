@@ -16,6 +16,8 @@ macro_rules! reviews_query {
 }
 pub mod branch;
 pub mod issues;
+pub mod timeline;
+pub use timeline::timeline;
 
 #[async_trait]
 pub trait Github: Send + Sync {

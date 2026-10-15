@@ -367,21 +367,18 @@ impl ReviewService {
             }
             "pulls.get" => {
                 let pr = self.lookup(&p).await?;
-                let base = format!("repos/{}", pr.repo);
-                let comment_path = format!("{base}/issues/{}/comments", pr.number);
-                let review_path = format!("{base}/pulls/{}/reviews", pr.number);
-                let thread_path = format!("{base}/pulls/{}/comments", pr.number);
-                let (comments, reviews, threads, projects) = tokio::join!(
-                    pages(&*self.gh, &comment_path),
-                    pages(&*self.gh, &review_path),
-                    pages(&*self.gh, &thread_path),
+                let (timeline, projects) = tokio::join!(
+                    aura_github::timeline(&*self.gh, &pr),
                     aura_github::projects(&*self.gh, &pr)
                 );
+                let timeline = timeline?;
                 let (projects, project_error) = match projects {
                     Ok(v) => (v, None),
                     Err(e) => (vec![], Some(e.to_string())),
                 };
-                let value = json!({"pull":pr,"comments":comments?,"reviews":reviews?,"threads":threads?,"projects":projects,"project_error":project_error});
+                // The REST-shaped lists are for apps up to 0.2.10, which read nothing else.
+                let (comments, reviews, threads) = aura_github::timeline::legacy_lists(&timeline);
+                let value = json!({"pull":pr,"timeline":timeline,"comments":comments,"reviews":reviews,"threads":threads,"projects":projects,"project_error":project_error});
                 self.store.save_feature_record(
                     &format!("details:{}", pr.account),
                     &pr.id,

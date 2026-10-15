@@ -120,6 +120,85 @@ pub struct SubmittedReview {
     pub submitted_at: String,
     pub commit_sha: String,
 }
+/// A pull request's conversation as GitHub's Conversation tab shows it: the timeline,
+/// and the review threads the UI nests under the review that started each one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(default)]
+pub struct PullTimeline {
+    /// In GitHub's order. Replies submitted as their own review are left out, as on GitHub.
+    pub items: Vec<TimelineItem>,
+    pub threads: Vec<ReviewThread>,
+    /// Commits on the PR, counted by GitHub.
+    pub commits: u32,
+}
+/// One timeline entry. Each `kind` fills the fields it needs; a newer daemon may send
+/// kinds an older app does not know, which it skips.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(default)]
+pub struct TimelineItem {
+    /// `comment`, `review`, `commit`, `force_pushed`, `review_requested`,
+    /// `review_request_removed`, `labeled`, `unlabeled`, `assigned`, `unassigned`,
+    /// `ready_for_review`, `converted_to_draft`, `merged`, `closed`, `reopened`,
+    /// `head_ref_deleted`, `head_ref_restored`, `renamed`, `milestoned`, `demilestoned`,
+    /// `referenced` or `review_dismissed`.
+    pub kind: String,
+    pub id: String,
+    /// When it happened: submitted, created or committed.
+    pub at: String,
+    /// Login of who did it; a commit author's name when the commit has no GitHub user.
+    pub actor: String,
+    /// Markdown of a comment or review; the message of a dismissal.
+    pub body: String,
+    pub url: String,
+    /// A review's state: `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED` or `PENDING`.
+    pub state: String,
+    /// GitHub's database id of a review, which its threads refer to.
+    pub review_id: Option<u64>,
+    /// What the event is about: a label, assignee, reviewer, milestone, new title, commit
+    /// headline, branch, or the `owner/repo#n title` of a referencing issue.
+    pub subject: String,
+    /// The title before a rename.
+    pub previous: String,
+    /// A label's colour, hex without `#`.
+    pub color: String,
+    /// The commit: pushed, merged, or the head after a force-push.
+    pub sha: String,
+    /// The head before a force-push.
+    pub before: String,
+}
+/// A review thread on a line of the diff.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(default)]
+pub struct ReviewThread {
+    pub id: String,
+    pub path: String,
+    /// The line in the current diff; None once the thread is outdated.
+    pub line: Option<u32>,
+    pub original_line: Option<u32>,
+    pub resolved: bool,
+    pub outdated: bool,
+    pub resolved_by: String,
+    /// The hunk the first comment was made on, ending at its line.
+    pub diff_hunk: String,
+    /// The review the first comment was submitted with.
+    pub review_id: Option<u64>,
+    pub comments: Vec<ThreadComment>,
+    /// Replies beyond those read; open the thread on GitHub to see them.
+    pub more: u32,
+}
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(default)]
+pub struct ThreadComment {
+    pub id: String,
+    pub author: String,
+    pub at: String,
+    pub body: String,
+    pub url: String,
+}
 /// A person, team or bot asked to review a pull request.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]

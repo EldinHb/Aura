@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { inboxFixture, pullFixture as basePull, reviewFixture as baseReview } from "../../src/features/reviews/fixtures";
-import type { Approval, CapabilitySet, Event, Item, Session, StoredEvent, UserInputRequest } from "../../src/gen";
+import type { Approval, CapabilitySet, Event, Item, PullTimeline, Session, StoredEvent, TimelineItem, UserInputRequest } from "../../src/gen";
 
 const OUT = "../../docs/screenshots";
 const now = Date.parse("2026-10-15T09:40:00Z");
@@ -164,6 +164,28 @@ const reviewFixture = {
   },
 } as typeof baseReview;
 
+const event = (kind: string, minAgo: number, over: Partial<TimelineItem> = {}): TimelineItem => ({ kind, id: `${kind}-${minAgo}`, at: at(minAgo), actor: "jordan", body: "", url: "", state: "", review_id: null, subject: "", previous: "", color: "", sha: "", before: "", ...over });
+const timelineFixture: PullTimeline = {
+  commits: 3,
+  items: [
+    event("commit", 1490, { subject: "Retry webhook deliveries with exponential backoff", sha: "9a1f3c2b7d" }),
+    event("commit", 1485, { subject: "Add delivery retry tests", sha: "3e8d2a1c4b" }),
+    event("labeled", 1480, { subject: "webhooks", color: "1d76db" }),
+    event("review_requested", 1479, { subject: "sam" }),
+    event("comment", 1200, { actor: "riley", body: "Do we cap the total delay? A receiver that is down for an hour should not keep a worker busy." }),
+    event("comment", 1150, { body: "Yes: `MAX_ATTEMPTS` is 5, so the worst case is about a minute of backoff." }),
+    event("review", 300, { actor: "sam", state: "CHANGES_REQUESTED", review_id: 11, body: "The loop reads well. One problem with client errors, see inline." }),
+    event("commit", 120, { subject: "Do not retry 4xx responses", sha: "4f9c2e1d8b" }),
+    event("review", 90, { actor: "riley", state: "APPROVED", review_id: 12 }),
+  ],
+  threads: [
+    { id: "t1", path: "src/webhooks/deliver.ts", line: 15, original_line: 15, resolved: true, outdated: false, resolved_by: "jordan", review_id: 11, more: 0, diff_hunk: "@@ -8,5 +8,13 @@\n+    try {\n+      const res = await fetch(hook.url, { method: \"POST\", body });\n+      if (res.ok) return;\n+      if (res.status < 500) throw new DeliveryError(hook.id, res.status);",
+      comments: [{ id: "t1a", author: "sam", at: at(301), body: "This `DeliveryError` is caught by the `catch` below, so a 4xx is retried anyway.", url: "" }, { id: "t1b", author: "jordan", at: at(118), body: "Good catch, fixed in 4f9c2e1.", url: "" }] },
+    { id: "t2", path: "src/webhooks/deliver.ts", line: 19, original_line: 19, resolved: false, outdated: false, resolved_by: "", review_id: 11, more: 0, diff_hunk: "@@ -8,5 +8,13 @@\n+    } catch (e) {\n+      if (attempt === MAX_ATTEMPTS) throw e;\n+    }\n+    await sleep(2 ** attempt * 1000);",
+      comments: [{ id: "t2a", author: "sam", at: at(300), body: "Worth adding jitter here so failing hooks do not retry in lockstep.", url: "" }] },
+  ],
+};
+
 async function mockDaemon(page: Page) {
   const inbox = { ...inboxFixture, pulls: [pullFixture], reviews: [reviewFixture] };
   await page.routeWebSocket("ws://127.0.0.1:19998/**", (socket) => {
@@ -184,7 +206,7 @@ async function mockDaemon(page: Page) {
         case "git.branch_status": result = null; break;
         case "git.status": case "git.diff_stat": case "git.log": case "git.worktrees": case "git.branches": result = []; break;
         case "pulls.list": case "pulls.refresh": result = inbox; break;
-        case "pulls.get": result = { pull: pullFixture, comments: [], reviews: [], threads: [], projects: [], project_error: null }; break;
+        case "pulls.get": result = { pull: pullFixture, timeline: timelineFixture, comments: [], reviews: [], threads: [], projects: [], project_error: null }; break;
         case "pulls.diff": result = { diff: diffFixture, sha: pullFixture.head_sha }; break;
         case "reviews.get": result = reviewFixture; break;
         case "reviews.defaults": result = { instructions: "Review correctness and edge cases", config: inboxFixture.defaults }; break;
@@ -228,4 +250,17 @@ test("pull request review", async ({ page }) => {
   await expect(page.getByLabel("Summary", { exact: true })).toBeVisible();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `${OUT}/pull-request.png` });
+});
+
+/** Not for the README: a look at the PR page in both themes, written to test-results. */
+for (const theme of ["dark", "light"]) test(`pull request conversation (${theme})`, async ({ page }) => {
+  await open(page, ids.rate);
+  await page.getByTitle("Retry failed webhook deliveries", { exact: true }).click();
+  await expect(page.getByText("Worth adding jitter here", { exact: false })).toBeVisible();
+  await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: `test-results/screenshots/pull-conversation-${theme}.png` });
+  await page.locator(".pr-detail-scroll").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `test-results/screenshots/pull-conversation-${theme}-end.png` });
 });

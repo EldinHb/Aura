@@ -122,8 +122,20 @@ impl Github for MockGithub {
                 .iter()
                 .map(|_| json!({"state":"COMMENTED","submittedAt":"2026-10-05T10:00:00Z","commit":{"oid":"a".repeat(40)}}))
                 .collect();
+            let query = body.as_ref().unwrap()["query"].as_str().unwrap().to_string();
+            if query.contains("timelineItems(first:100,after:$items") {
+                let conn = |nodes: Value| json!({"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":nodes});
+                return Ok(json!({"data":{"repository":{"pullRequest":{"commits":{"totalCount":2},
+                    "timelineItems":conn(json!([
+                        {"__typename":"IssueComment","id":"IC_1","body":"Nice","createdAt":"2026-10-05T09:00:00Z","url":"https://github.com/o/r/pull/1#issuecomment-1","author":{"login":"carol"}},
+                        {"__typename":"PullRequestReview","id":"PRR_1","databaseId":7,"body":"","state":"APPROVED","createdAt":"2026-10-05T10:00:00Z","submittedAt":"2026-10-05T10:00:00Z","url":"u","author":{"login":"dave"}}])),
+                    "reviewThreads":conn(json!([{"id":"T1","isResolved":false,"isOutdated":false,"path":"src/lib.rs","line":2,"originalLine":2,"resolvedBy":null,
+                        "comments":{"totalCount":1,"nodes":[{"id":"C1","body":"Why?","createdAt":"2026-10-05T10:00:00Z","url":"u","diffHunk":"@@","author":{"login":"dave"},"pullRequestReview":{"databaseId":7}}]}}]))}}}}));
+            }
+            if query.contains("projectItems") {
+                return Ok(json!({"data":{"repository":{"pullRequest":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}));
+            }
             // One batched query: r0 is o/r, holding prN:pullRequest(number:…) per PR.
-            let query = body.unwrap()["query"].as_str().unwrap().to_string();
             let mut repo = json!({"viewerPermission":"WRITE","mergeCommitAllowed":false,"squashMergeAllowed":true,"rebaseMergeAllowed":true,"viewerDefaultMergeMethod":"SQUASH","deleteBranchOnMerge":false});
             let mut errors = vec![];
             for part in query.split(" pr").skip(1) {
@@ -571,6 +583,21 @@ async fn missing_review_diff_does_not_fetch_new_head_under_old_findings() {
     let preview = svc.preview("review-1").await.unwrap();
     assert!(preview.comments.is_empty());
     assert!(preview.body.contains("Additional notes"));
+}
+#[tokio::test]
+async fn pull_detail_holds_the_timeline_and_the_lists_older_apps_read() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh, draft());
+    let detail = svc.handle("pulls.get", json!({"repo":"o/r","number":1,"account":"github.com:alice"})).await.unwrap().unwrap();
+    assert_eq!(detail["timeline"]["commits"], 2);
+    assert_eq!(detail["timeline"]["items"][1]["review_id"], 7);
+    assert_eq!(detail["timeline"]["threads"][0]["review_id"], 7);
+    assert_eq!(detail["comments"][0]["user"]["login"], "carol");
+    assert_eq!(detail["reviews"][0]["state"], "APPROVED");
+    assert_eq!(detail["threads"][0]["path"], "src/lib.rs");
+    assert_eq!(detail["project_error"], Value::Null);
+    let cached = svc.handle("pulls.cached", json!({"id":"o/r#1","account":"github.com:alice"})).await.unwrap().unwrap();
+    assert_eq!(cached, detail);
 }
 #[tokio::test]
 async fn merges_the_shown_head_and_deletes_the_branch() {
