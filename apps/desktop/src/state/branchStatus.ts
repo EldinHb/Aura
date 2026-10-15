@@ -43,7 +43,7 @@ export function refreshGit(client: RpcClient, cwd: string) {
     .finally(() => { read.running = false; });
 }
 
-const pullKey = (target: PullTarget) => `${target.repo}\n${target.headRepo}\n${target.branch}`.toLowerCase();
+export const pullKey = (target: PullTarget) => `${target.repo}\n${target.headRepo}\n${target.branch}`.toLowerCase();
 
 /**
  * Read the branch's pull request unless the saved one is younger than `ttl`

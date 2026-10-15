@@ -86,3 +86,11 @@
 .pr-reviewer.pending, .pr-reviewer.more { opacity:.7; }
 .pr-reviewer.bot { opacity:.6; font-style:italic; }
 .pr-reviewer.more { flex-shrink:0; }
+.pr-sessions { border-bottom:1px solid var(--border); padding:6px 12px; max-height:9.5rem; overflow:auto; flex-shrink:0; }
+.pr-sessions-heading { font-size:11px; font-weight:600; color:var(--fg-dim); text-transform:uppercase; letter-spacing:.04em; margin-bottom:2px; }
+.pr-session-row { display:flex; align-items:center; gap:6px; width:100%; min-width:0; padding:3px 6px; border:0; border-radius:4px; background:none; color:var(--fg); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+.pr-session-row:hover,.pr-session-row:focus-visible { background:var(--bg-hover); }
+.pr-session-row.archived>.title { color:var(--fg-dim); }
+.pr-session-row>.title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.pr-session-row>.dot,.pr-session-row>.chip,.pr-session-row>.pr-muted { flex-shrink:0; }
+.pr-session-row>.spacer { flex:1; }

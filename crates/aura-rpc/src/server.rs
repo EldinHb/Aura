@@ -563,6 +563,15 @@ async fn dispatch(
             let P { id, pinned } = params(p)?;
             ok(m.set_pinned(&id, pinned)?)
         }
+        "session.record_pull" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                url: String,
+            }
+            let P { id, url } = params(p)?;
+            ok(m.record_pull(&id, &url)?)
+        }
         "session.set_archived" => {
             #[derive(Deserialize)]
             struct P {

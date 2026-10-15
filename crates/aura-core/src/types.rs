@@ -121,6 +121,11 @@ pub struct Session {
     /// The orchestrator that started this session, if any.
     #[serde(default)]
     pub orchestrator_id: Option<SessionId>,
+    /// URLs of the pull requests opened from this session's branch, recorded
+    /// as the app finds them, so a PR keeps listing the session after the
+    /// branch is deleted or the session moves to another one.
+    #[serde(default)]
+    pub pulls: Vec<String>,
     /// The complete system prompt Aura hands the agent when it starts: global,
     /// per-agent and per-session prompts with their placeholders filled in.
     /// Set by the manager just before `Provider::start`; never stored or sent.
@@ -574,6 +579,7 @@ impl Session {
             system_prompt: opts.system_prompt.clone().filter(|p| !p.trim().is_empty()),
             orchestrator: opts.orchestrator,
             orchestrator_id: opts.orchestrator_id.clone(),
+            pulls: vec![],
             instructions: None,
             mcp_servers: vec![],
         }

@@ -293,6 +293,10 @@ export class RpcClient {
   setPinned(id: string, pinned: boolean) {
     return this.call<Session>("session.set_pinned", { id, pinned });
   }
+  /** Remember that the session's branch is the head of this pull request. */
+  recordSessionPull(id: string, url: string) {
+    return this.call<Session>("session.record_pull", { id, url });
+  }
   setArchived(id: string, archived: boolean) {
     return this.call<Session>("session.set_archived", { id, archived });
   }

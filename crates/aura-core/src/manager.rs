@@ -723,6 +723,28 @@ impl Manager {
         self.update_session(id, |s| s.pinned = pinned)
     }
 
+    /// Remember that the session's branch is the head of this pull request
+    /// (see [`Session::pulls`]). Finding it is not activity: the session keeps
+    /// its place in the list.
+    pub fn record_pull(&self, id: &str, url: &str) -> Result<Session> {
+        let url = url.trim();
+        if !url.starts_with("https://") || !url.contains("/pull/") || url.len() > 512 {
+            bail!("not a pull request URL: {url}");
+        }
+        let updated = {
+            let mut sessions = self.inner.sessions.lock();
+            let s = sessions
+                .get_mut(id)
+                .ok_or_else(|| anyhow!("unknown session {id}"))?;
+            if s.pulls.iter().any(|p| p.eq_ignore_ascii_case(url)) {
+                return Ok(s.clone());
+            }
+            s.pulls.push(url.to_string());
+            s.clone()
+        };
+        self.save_session(updated)
+    }
+
     pub async fn set_archived(&self, id: &str, archived: bool) -> Result<Session> {
         if archived {
             self.stop(id).await?;
@@ -1005,6 +1027,10 @@ impl Manager {
             s.last_activity = crate::now();
             s.clone()
         };
+        self.save_session(updated)
+    }
+
+    fn save_session(&self, updated: Session) -> Result<Session> {
         self.inner.store.upsert_session(&updated)?;
         self.broadcast(Event::SessionUpdated {
             session: updated.clone(),

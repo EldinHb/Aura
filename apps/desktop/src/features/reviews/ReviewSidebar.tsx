@@ -1,12 +1,15 @@
 import { useEffect } from "react";
 import type { PullRequest } from "../../gen";
 import { useStore } from "../../state/store";
+import { useLoadPullSessionSources } from "../../state/pullSessions";
+import { PullSessionCount } from "./PullSessions";
 import { hidePull, isPullHidden, isRerequested, isStale, mergeStatus, openHistory, openPull, pullFilter, pullStatus, report, reviewerEntries, reviewRound, useReviews, visiblePulls } from "./state";
 
 export function ReviewSidebar() {
   const state = useReviews();
   const client = useStore((s) => s.client);
   const rules = useStore((s) => s.settings.pullFilters);
+  useLoadPullSessionSources();
   useEffect(() => {
     if (!client) return;
     void useReviews.getState().refresh();
@@ -85,6 +88,7 @@ function PullRows({ pulls, kind, empty }: { pulls: PullRequest[]; kind: "request
           <ReviewerLine pull={pull} />
           <span className="pr-status">
             {changed && <span className="chip new" title="New commits since your review">↻ new commits</span>}
+            <PullSessionCount pull={pull} />
             {mine && pull.unanswered_threads > 0 && <span className="chip err" title="Open review threads where someone else had the last word">{pull.unanswered_threads} unanswered</span>}
             {[...(mine ? [] : reviewRound(pull)), ...pullStatus(pull), ...mergeStatus(pull)].map((s) => <span key={s.label} className={`chip ${s.tone ?? ""}`}>{s.label}</span>)}
           </span>

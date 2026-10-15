@@ -653,6 +653,65 @@ async fn clearing_notices_is_recorded_without_touching_the_sessions() {
     assert!(m.clear_notices(Some("missing")).is_err());
 }
 
+#[tokio::test]
+async fn pull_requests_are_recorded_once_and_survive_a_restart() {
+    let (m, _calls, _starts, store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut rx = m.subscribe();
+    drain(&mut rx).await;
+    let before = m.get_session(&s.id).unwrap().last_activity;
+    let url = "https://github.com/owner/repo/pull/7";
+
+    assert_eq!(m.record_pull(&s.id, url).unwrap().pulls, vec![url]);
+    let evs = drain(&mut rx).await;
+    assert!(evs.iter().any(
+        |e| matches!(e, Event::SessionUpdated { session } if session.pulls == vec![url.to_string()])
+    ));
+    // The same PR again, in another case, changes nothing and tells no one.
+    m.record_pull(&s.id, "https://github.com/Owner/Repo/pull/7")
+        .unwrap();
+    assert!(!drain(&mut rx)
+        .await
+        .iter()
+        .any(|e| matches!(e, Event::SessionUpdated { .. })));
+    let later = "https://github.com/owner/repo/pull/9";
+    assert_eq!(m.record_pull(&s.id, later).unwrap().pulls, vec![url, later]);
+    assert_eq!(
+        m.get_session(&s.id).unwrap().last_activity,
+        before,
+        "finding a PR must not reorder the sidebar"
+    );
+    assert!(m.record_pull(&s.id, "not a url").is_err());
+    assert!(m.record_pull("missing", url).is_err());
+
+    let stored = store.list_sessions().unwrap();
+    assert_eq!(
+        stored.iter().find(|x| x.id == s.id).unwrap().pulls,
+        vec![url, later]
+    );
+}
+
+#[test]
+fn sessions_saved_before_pulls_were_recorded_still_load() {
+    let s = Session::new(&CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: "/tmp".into(),
+        ..Default::default()
+    });
+    let mut json = serde_json::to_value(&s).unwrap();
+    json.as_object_mut().unwrap().remove("pulls");
+    let old: Session = serde_json::from_value(json).unwrap();
+    assert!(old.pulls.is_empty());
+}
+
 /// Every directory is its own repository, except `not-a-repo` directories.
 struct DirRepos;
 

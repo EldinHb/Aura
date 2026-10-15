@@ -44,4 +44,10 @@ orchestrator: boolean,
 /**
  * The orchestrator that started this session, if any.
  */
-orchestrator_id: string | null, };
+orchestrator_id: string | null, 
+/**
+ * URLs of the pull requests opened from this session's branch, recorded
+ * as the app finds them, so a PR keeps listing the session after the
+ * branch is deleted or the session moves to another one.
+ */
+pulls: Array<string>, };

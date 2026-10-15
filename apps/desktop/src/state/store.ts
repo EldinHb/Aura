@@ -19,6 +19,7 @@ import type {
   UserInputRequest,
 } from "../gen";
 import type { RpcClient, ConnectionState } from "../lib/rpc";
+import { normalizeSession } from "../lib/pulls";
 import { planContent, type SessionPlan } from "../views/sessionPlans";
 
 export type Notice = { id: string; level: "info" | "warn" | "error"; message: string; ts: number };
@@ -322,7 +323,7 @@ export const useStore = create<AppState>((set, get) => ({
   setProviders: (providers) => set({ providers }),
   setSessions: (list) => {
     const sessions: Record<string, Session> = {};
-    for (const s of list) sessions[s.id] = s;
+    for (const s of list) sessions[s.id] = normalizeSession(s);
     set({
       sessions,
       sessionOrder: saveOrder(mergeOrder(get().sessionOrder, list)),
@@ -330,7 +331,7 @@ export const useStore = create<AppState>((set, get) => ({
     });
   },
   upsertSession: (s) => {
-    const sessions = { ...get().sessions, [s.id]: s };
+    const sessions = { ...get().sessions, [s.id]: normalizeSession(s) };
     const order = get().sessionOrder;
     set(order.includes(s.id) ? { sessions } : { sessions, sessionOrder: saveOrder([...order, s.id]) });
   },

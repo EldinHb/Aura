@@ -4,7 +4,7 @@
  * since; a missing list would throw where the UI filters or maps it, and blank
  * the window. Every reply carrying pull requests passes through here.
  */
-import type { BranchPull, PreReview, PullRequest, ReviewInbox, SubmittedReview } from "../gen";
+import type { BranchPull, PreReview, PullRequest, ReviewInbox, Session, SubmittedReview } from "../gen";
 
 const list = <T>(value: T[] | null | undefined): T[] => (Array.isArray(value) ? value : []);
 
@@ -37,3 +37,6 @@ export function normalizeInbox(inbox: ReviewInbox): ReviewInbox {
     reviews: list(inbox.reviews).map(normalizePreReview),
   };
 }
+
+/** Sessions carry the pull requests found for their branch; older daemons send none. */
+export const normalizeSession = (session: Session): Session => ({ ...session, pulls: list(session.pulls) });

@@ -13,6 +13,8 @@ import { selectedSessionLinks, sessionLinks } from "../views/issueLinks";
 import { useGithubRepo } from "../state/githubRepos";
 import { useSessionBranch } from "../state/branchStatus";
 import { BranchPullChip, GitCounts, branchName, describeBranchPull } from "./BranchStatus";
+import { statusClass } from "../lib/sessionStatus";
+import { useRecordBranchPull } from "../state/pullSessions";
 
 /** Every session row in sidebar order, the workers of collapsed orchestrators included. */
 const selectAllRows = (st: AppState) => selectSessionSections(st, true).flatMap(([, list]) => list);
@@ -26,22 +28,6 @@ function sidebarCurrent(st: AppState, sessions: Session[]): Session | undefined 
   return orchestratorsOf(st.sessions[id], section).find((o) => sessions.includes(o));
 }
 
-function statusClass(s: Session): string {
-  switch (s.status) {
-    case "running":
-      return "info pulse";
-    case "waiting_approval":
-    case "waiting_input":
-      return "warn pulse";
-    case "error":
-      return "err";
-    case "exited":
-      return "";
-    default:
-      return "ok";
-  }
-}
-
 /**
  * The quiet second line: agent, orchestrator mark, workers hidden under a
  * collapsed orchestrator, then folder or worktree, branch state, terminal mode
@@ -49,6 +35,7 @@ function statusClass(s: Session): string {
  */
 function SessionRowDetails({ session: s, selected, hidden }: { session: Session; selected: boolean; hidden: Session[] }) {
   const { git, pull } = useSessionBranch(s, selected);
+  useRecordBranchPull(s, pull);
   const branch = (git && branchName(git)) ?? s.worktree?.branch;
   const agent = s.agent ?? s.provider;
   return (

@@ -2,6 +2,7 @@ import clsx from "clsx";
 import type { BranchPull, BranchStatus, Session } from "../gen";
 import { isStale, pullStatus, reviewStatus } from "../features/reviews/state";
 import { useSessionBranch } from "../state/branchStatus";
+import { useRecordBranchPull } from "../state/pullSessions";
 import { ExternalLink } from "./ExternalLink";
 
 type Label = { label: string; tone?: "ok" | "err" | "merged" };
@@ -60,6 +61,7 @@ export function BranchPullChip({ pull }: { pull: BranchPull }) {
 /** Branch and pull request of the selected session, for the status bar. */
 export function StatusBarBranch({ session }: { session: Session }) {
   const { git, pull } = useSessionBranch(session, true);
+  useRecordBranchPull(session, pull);
   const name = git && branchName(git);
   if (!name) return null;
   return (
