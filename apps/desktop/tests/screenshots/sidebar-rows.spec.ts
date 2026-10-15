@@ -14,7 +14,7 @@ const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
 const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null };
 
 function session(id: string, over: Partial<Session>): Session {
-  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/vidara.portal", worktree: null, group: "Vidara Portal", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(10), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, usage, ...over };
+  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/vidara.portal", worktree: null, group: "Vidara Portal", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(10), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, usage, pulls: [], ...over };
 }
 
 const id = (n: number) => `5e55a0e0-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -102,7 +102,12 @@ test("rows with hint labels", async ({ page }) => {
   await mockDaemon(page);
   await page.goto(`/?port=19998&token=shots&session=${billing}`);
   await expect(page.getByText("PR #2612").first()).toBeVisible();
-  await page.evaluate(() => import("/src/lib/commands.ts").then((m) => m.runCommand("hints.enter")));
+  await page.evaluate(async () => {
+    // A path in a variable, so the type checker leaves this browser-side import alone.
+    const path = "/src/lib/commands.ts";
+    const commands = (await import(/* @vite-ignore */ path)) as { runCommand: (id: string) => void };
+    commands.runCommand("hints.enter");
+  });
   await expect(page.locator(".hint-label").first()).toBeVisible();
   await page.screenshot({ path: `${OUT}/hints.png`, clip: { x: 0, y: 0, width: 300, height: 700 } });
 });
