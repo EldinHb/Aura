@@ -365,4 +365,32 @@ mod tests {
             assert_eq!(pr.merge_blocker(), Some(why));
         }
     }
+
+    /// `value` as an older daemon wrote it: without the fields named in `added`.
+    fn without(mut value: serde_json::Value, added: &[&str]) -> serde_json::Value {
+        for key in added {
+            value.as_object_mut().unwrap().remove(*key).expect("field exists today");
+        }
+        value
+    }
+
+    /// 0.2.8 shapes, as an earlier daemon persisted them (`reviews.inbox`, the pull of a pre-review)
+    /// and as an older client sends them, still read.
+    #[test]
+    fn reads_what_0_2_8_wrote() {
+        let review = SubmittedReview { state: "APPROVED".into(), submitted_at: "2026-10-01T10:00:00Z".into(), commit_sha: "abc".into(), ..Default::default() };
+        let mut pull = without(serde_json::to_value(PullRequest::default()).unwrap(), &["reviews", "requested", "unanswered_threads"]);
+        pull["my_review"] = without(serde_json::to_value(&review).unwrap(), &["reviewer", "bot"]);
+        let read: PullRequest = serde_json::from_value(pull.clone()).unwrap();
+        assert_eq!(read, PullRequest { my_review: Some(review), ..Default::default() });
+
+        let mut inbox = without(serde_json::to_value(ReviewInbox::default()).unwrap(), &["reviewed"]);
+        inbox["pulls"] = serde_json::json!([pull.clone()]);
+        inbox["mine"] = serde_json::json!([pull]);
+        let read: ReviewInbox = serde_json::from_value(inbox).unwrap();
+        assert_eq!((read.pulls.len(), read.mine.len(), read.reviewed.len()), (1, 1, 0));
+
+        let branch = without(serde_json::to_value(BranchPull::default()).unwrap(), &["reviews"]);
+        assert_eq!(serde_json::from_value::<BranchPull>(branch).unwrap(), BranchPull::default());
+    }
 }
