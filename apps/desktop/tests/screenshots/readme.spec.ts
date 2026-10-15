@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { inboxFixture, pullFixture as basePull, reviewFixture as baseReview } from "../../src/features/reviews/fixtures";
-import type { Approval, CapabilitySet, Event, Item, PullTimeline, Session, StoredEvent, TimelineItem, UserInputRequest } from "../../src/gen";
+import type { Approval, CapabilitySet, Event, Item, PullRequest, PullTimeline, Session, StoredEvent, TimelineItem, UserInputRequest } from "../../src/gen";
 
 const OUT = "../../docs/screenshots";
 const now = Date.parse("2026-10-15T09:40:00Z");
@@ -186,7 +186,7 @@ const timelineFixture: PullTimeline = {
   ],
 };
 
-async function mockDaemon(page: Page) {
+async function mockDaemon(page: Page, detail: { pull: PullRequest; timeline: PullTimeline } = { pull: pullFixture, timeline: timelineFixture }) {
   const inbox = { ...inboxFixture, pulls: [pullFixture], reviews: [reviewFixture] };
   await page.routeWebSocket("ws://127.0.0.1:19998/**", (socket) => {
     socket.onMessage((raw) => {
@@ -206,7 +206,7 @@ async function mockDaemon(page: Page) {
         case "git.branch_status": result = null; break;
         case "git.status": case "git.diff_stat": case "git.log": case "git.worktrees": case "git.branches": result = []; break;
         case "pulls.list": case "pulls.refresh": result = inbox; break;
-        case "pulls.get": result = { pull: pullFixture, timeline: timelineFixture, comments: [], reviews: [], threads: [], projects: [], project_error: null }; break;
+        case "pulls.get": result = { pull: detail.pull, timeline: detail.timeline, comments: [], reviews: [], threads: [], projects: [], project_error: null }; break;
         case "pulls.diff": result = { diff: diffFixture, sha: pullFixture.head_sha }; break;
         case "reviews.get": result = reviewFixture; break;
         case "reviews.defaults": result = { instructions: "Review correctness and edge cases", config: inboxFixture.defaults }; break;
@@ -218,8 +218,8 @@ async function mockDaemon(page: Page) {
   });
 }
 
-const open = async (page: Page, sid: string) => {
-  await mockDaemon(page);
+const open = async (page: Page, sid: string, detail?: Parameters<typeof mockDaemon>[1]) => {
+  await mockDaemon(page, detail);
   await page.goto(`/?port=19998&token=shots&session=${sid}`);
 };
 
@@ -252,15 +252,24 @@ test("pull request review", async ({ page }) => {
   await page.screenshot({ path: `${OUT}/pull-request.png` });
 });
 
-/** Not for the README: a look at the PR page in both themes, written to test-results. */
-for (const theme of ["dark", "light"]) test(`pull request conversation (${theme})`, async ({ page }) => {
-  await open(page, ids.rate);
+/** Not for the README: the PR page, open and merged, in both themes. Written to AURA_SHOTS_DIR. */
+const SHOTS = process.env.AURA_SHOTS_DIR ?? "test-results/screenshots";
+const reviewedPull = { ...pullFixture, review_decision: "APPROVED", milestone: 7, milestone_title: "October release", assignees: ["jordan"], reviews: [{ reviewer: "riley", bot: false, state: "APPROVED", submitted_at: at(90), commit_sha: "4f9c2e1d8b" }, { reviewer: "sam", bot: false, state: "CHANGES_REQUESTED", submitted_at: at(300), commit_sha: "3e8d2a1c4b" }] };
+const variants = {
+  open: { pull: reviewedPull, timeline: timelineFixture },
+  merged: {
+    pull: { ...reviewedPull, state: "merged", can_merge: false, merge_blocked_by: "This pull request is not open" },
+    timeline: { ...timelineFixture, items: [...timelineFixture.items, event("merged", 30, { actor: "riley", subject: "main", sha: "7c1d9e3f2a" }), event("head_ref_deleted", 29, { actor: "riley", subject: "webhook-retries" })] },
+  },
+};
+for (const [name, detail] of Object.entries(variants)) for (const theme of ["dark", "light"]) test(`pull request conversation (${name}, ${theme})`, async ({ page }) => {
+  await open(page, ids.rate, detail);
   await page.getByTitle("Retry failed webhook deliveries", { exact: true }).click();
   await expect(page.getByText("Worth adding jitter here", { exact: false })).toBeVisible();
   await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
   await page.waitForTimeout(400);
-  await page.screenshot({ path: `test-results/screenshots/pull-conversation-${theme}.png` });
+  await page.screenshot({ path: `${SHOTS}/pull-${name}-${theme}.png` });
   await page.locator(".pr-detail-scroll").evaluate((el) => { el.scrollTop = el.scrollHeight; });
   await page.waitForTimeout(200);
-  await page.screenshot({ path: `test-results/screenshots/pull-conversation-${theme}-end.png` });
+  await page.screenshot({ path: `${SHOTS}/pull-${name}-${theme}-end.png` });
 });

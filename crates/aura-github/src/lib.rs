@@ -448,6 +448,7 @@ fn from_graphql(account: &str, login: &str, repo: &str, number: u32, r: &Value, 
         assignees: names(&d["assignees"], "login"),
         labels: names(&d["labels"], "name"),
         milestone: d["milestone"]["number"].as_u64().map(|n| n as u32),
+        milestone_title: s(&d["milestone"], "title"),
         can_edit: d["viewerCanUpdate"].as_bool().unwrap_or(false),
         review_decision: s(d, "reviewDecision"),
         checks: s(&d["commits"]["nodes"][0]["commit"]["statusCheckRollup"], "state"),
@@ -523,7 +524,7 @@ fn ref_path(branch: &str) -> Result<String> {
 const REPO: &str = "viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod deleteBranchOnMerge";
 /// A PR with your latest review, who reviewed and was asked to, and open review threads.
 const PULL: &str = concat!(
-    "fragment pull on PullRequest{number title body url author{login} state isDraft baseRefName headRefName baseRefOid headRefOid createdAt updatedAt additions deletions changedFiles assignees(first:20){nodes{login}} labels(first:50){nodes{name}} milestone{number} ",
+    "fragment pull on PullRequest{number title body url author{login} state isDraft baseRefName headRefName baseRefOid headRefOid createdAt updatedAt additions deletions changedFiles assignees(first:20){nodes{login}} labels(first:50){nodes{name}} milestone{number title} ",
     "viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} ",
     "timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}} ",
     "reviewRequests(first:20){nodes{requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login} ... on Mannequin{login}}}} ",
@@ -994,6 +995,13 @@ mod tests {
         assert!(pulls(&gh, "github.com:me", &[("o/../r".into(), 1)]).await.is_err(), "unsafe names never reach the query");
     }
 
+    #[test]
+    fn reads_the_milestone_title() {
+        let with = from_graphql("a", "me", "o/r", 1, &json!({}), &json!({"milestone": {"number": 4, "title": "Q4"}}));
+        assert_eq!((with.milestone, with.milestone_title.as_str()), (Some(4), "Q4"));
+        let without = from_graphql("a", "me", "o/r", 1, &json!({}), &json!({"milestone": null}));
+        assert_eq!((without.milestone, without.milestone_title.as_str()), (None, ""));
+    }
     #[test]
     fn keeps_partial_graphql_answers_from_gh() {
         assert!(has_data(br#"{"data":{"r0":null},"errors":[{"message":"x"}]}"#));

@@ -20,6 +20,7 @@ export function normalizePull(pull: PullRequest): PullRequest {
     reviews: list(pull.reviews).map(review),
     requested: list(pull.requested),
     unanswered_threads: pull.unanswered_threads ?? 0,
+    milestone_title: pull.milestone_title ?? "",
   };
 }
 

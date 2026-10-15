@@ -186,6 +186,9 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
 /* The default ring is the accent colour, which vanishes against an accent fill; separate it with a gap. */
 .btn.primary:focus-visible { box-shadow: 0 0 0 2px var(--bg-elev), 0 0 0 4px var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled:hover { background: var(--bg-elev2); }
+.btn.primary:disabled:hover { background: var(--accent); }
 .btn.danger { border-color: var(--err); color: var(--err); }
 .btn.small { padding: 2px 8px; font-size: 11.5px; }
 .btn kbd { margin-left: 2px; }

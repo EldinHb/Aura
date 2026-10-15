@@ -118,7 +118,7 @@ it("renders the timeline, resolved threads collapsed, and the commit count", asy
     threads: [thread("t", 3, "2026-09-21T11:59:00Z", { resolved: true, resolved_by: "ann" })],
     commits: 1,
   };
-  call.mockImplementation(async (method: string) => method === "pulls.get" ? { pull: { ...pullFixture, state: "merged" }, timeline, comments: [], reviews: [], threads: [], projects: [], project_error: null } : null);
+  call.mockImplementation(async (method: string) => method === "pulls.get" ? { pull: { ...pullFixture, state: "merged", milestone: 3, milestone_title: "October" }, timeline, comments: [], reviews: [], threads: [], projects: [], project_error: null } : null);
   render(<PullWorkspace />);
   await screen.findByText("Guard against empty data");
   expect(screen.getByText(/merged 1 commit/).textContent).toBe("dana merged 1 commit into main from fix-empty");
@@ -126,4 +126,18 @@ it("renders the timeline, resolved threads collapsed, and the commit count", asy
   const details = screen.getByText("Resolved by ann").closest("details")!;
   expect(details.open).toBe(false);
   expect(screen.getByText(/approved these changes/)).toBeTruthy();
+  const status = screen.getByRole("region", { name: "Status" });
+  expect(status.textContent).toContain("Merged into main by dana");
+  expect(status.textContent).toContain("Checks pass");
+  expect(screen.getByText("October")).toBeTruthy();
+});
+
+it("keeps the final state of a closed PR and shows milestones from older daemons by number", async () => {
+  const closed = { ...pullFixture, state: "closed", checks: "FAILURE", milestone: 3, milestone_title: undefined };
+  call.mockImplementation(async (method: string) => method === "pulls.get" ? { pull: closed, timeline: { items: [item("closed", "x", "2026-09-22T10:00:00Z", { actor: "erin" })], threads: [], commits: 1 }, projects: [] } : null);
+  render(<PullWorkspace />);
+  const status = await screen.findByRole("region", { name: "Status" });
+  await waitFor(() => expect(status.textContent).toContain("Closed by erin"));
+  expect(status.textContent).toContain("Checks fail");
+  expect(screen.getByText("#3")).toBeTruthy();
 });

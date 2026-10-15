@@ -7,7 +7,7 @@ import { Markdown } from "../../views/transcript/MarkdownView";
 import { ReviewDiff } from "./ReviewDiff";
 import { ReviewEditor } from "./ReviewEditor";
 import { PullSessions } from "./PullSessions";
-import { Avatar, Timeline } from "./Timeline";
+import { Avatar, Time, Timeline } from "./Timeline";
 import { commitCount } from "./conversation";
 import { isRerequested, openPull, pullStatus, rpc, startReview, useReviews } from "./state";
 
@@ -78,7 +78,7 @@ function PullDetailView({ pull: initial }: { pull: PullRequest }) {
           description={editing ? <div className="pr-form"><label>Title<input value={title} onChange={(e) => setTitle(e.target.value)} /></label><label>Description<textarea rows={12} value={body} onChange={(e) => setBody(e.target.value)} /></label><button className="btn" data-hint disabled={busy || !title.trim()} onClick={() => void mutate("pulls.update", { patch: { title, body } }).then((ok) => { if (ok) setEditing(false); })}>Save description</button></div> : <Markdown text={pull.body || "No description provided."} />} />
         <div className="pr-tl-end">
           {merged && <div className="pr-card pr-merged" role="status"><strong>Merged.</strong> {merged.branch_deleted ? `Deleted ${pull.head_ref} on GitHub.` : ""}{merged.branch_error && <span className="err-text"> {merged.branch_error}</span>} <button className="btn small" data-hint data-command="git.cleanup" onClick={() => useStore.getState().openDialog({ kind: "git-cleanup", repo: pull.repo })}>Clean up local branches…</button></div>}
-          {!merged && <StatusBox pull={pull} />}
+          {!merged && <StatusBox pull={pull} detail={detail} />}
           {!merged && pull.state === "open" && pull.can_merge && <MergeCard pull={pull} busy={busy} onMerged={(result) => { setMerged(result); void load(); void useReviews.getState().refresh(); }} />}
           <div className="pr-card pr-form pr-composer"><label>Add a comment<textarea rows={4} value={comment} placeholder="Leave a comment (Markdown)" onChange={(e) => setComment(e.target.value)} /></label><div className="pr-toolbar"><span className="spacer" /><button className="btn primary" data-hint disabled={busy || !comment.trim()} onClick={() => void mutate("pulls.addComment", { body: comment }).then((ok) => { if (ok) setComment(""); })}>Comment</button></div></div>
         </div>
@@ -87,7 +87,7 @@ function PullDetailView({ pull: initial }: { pull: PullRequest }) {
         <h3>Details</h3>{pull.can_edit && !options && <button className="btn small" data-hint onClick={() => rpc<Options>("pulls.options", identity).then(setOptions).catch((e) => setError(String(e)))}>Edit metadata</button>}
         <MetadataList label="Assignees" values={pull.assignees} options={options?.assignees.map((x) => x.login)} busy={busy} onChange={(assignees) => void mutate("pulls.update", { patch: { assignees } })} />
         <MetadataList label="Labels" values={pull.labels} options={options?.labels.map((x) => x.name)} busy={busy} onChange={(labels) => void mutate("pulls.update", { patch: { labels } })} />
-        <label className="pr-field">Milestone{options ? <select value={pull.milestone ?? ""} disabled={busy} onChange={(e) => void mutate("pulls.update", { patch: { milestone: e.target.value ? Number(e.target.value) : null } })}><option value="">None</option>{pull.milestone && !options.milestones.some((m) => m.number === pull.milestone) && <option value={pull.milestone}>#{pull.milestone}</option>}{options.milestones.map((m) => <option key={m.number} value={m.number}>{m.title}</option>)}</select> : <span>{pull.milestone ? `#${pull.milestone}` : "None"}</span>}</label>
+        <label className="pr-field">Milestone{options ? <select value={pull.milestone ?? ""} disabled={busy} onChange={(e) => void mutate("pulls.update", { patch: { milestone: e.target.value ? Number(e.target.value) : null } })}><option value="">None</option>{pull.milestone && !options.milestones.some((m) => m.number === pull.milestone) && <option value={pull.milestone}>{pull.milestone_title || `#${pull.milestone}`}</option>}{options.milestones.map((m) => <option key={m.number} value={m.number}>{m.title}</option>)}</select> : <span>{pull.milestone ? pull.milestone_title || `#${pull.milestone}` : "None"}</span>}</label>
         {detail?.project_error && <p className="pr-muted">{detail.project_error}</p>}
         {detail?.projects.map((item) => <section key={item.id}><h3>{item.project.title}</h3>{item.fieldValues.filter((v) => v.field).map((value) => <ProjectFieldControl key={value.field!.id} value={value} disabled={busy || !item.project.viewerCanUpdate} item={item} mutate={mutate} />)}</section>)}
         {!!reviews?.length && <><h3>Previous pre-reviews</h3>{reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => useReviews.setState({ reviewId: r.id })}>{r.status} · {new Date(r.created_at).toLocaleString()}</button>)}</>}
@@ -104,14 +104,28 @@ export function PullSummary({ pull, detail }: { pull: PullRequest; detail: PullD
   return <div className="pr-toolbar pr-summary"><span className={`pr-state ${state.tone}`}>{state.label}</span>
     <span><strong>{pull.state === "merged" ? merger || pull.author : pull.author}</strong> {pull.state === "merged" ? "merged" : "wants to merge"}{commits} into <code>{pull.base_ref}</code> from <code>{pull.head_ref}</code></span></div>;
 }
-/** Checks, reviews and what blocks a merge, above the merge controls as on GitHub. */
-function StatusBox({ pull }: { pull: PullRequest }) {
-  if (pull.state !== "open") return null;
+const capital = (s: string) => s[0].toUpperCase() + s.slice(1);
+const CHECK_MARK = { ok: "✓", err: "✕" } as const;
+/**
+ * Checks, reviews and what blocks a merge, above the merge controls as on GitHub. A merged or
+ * closed PR keeps a reduced box: who merged or closed it, and how its checks ended.
+ */
+function StatusBox({ pull, detail }: { pull: PullRequest; detail: PullDetail | null }) {
   const [checks, ...rest] = pullStatus({ ...pull, draft: false });
+  const checksRow = <div className="pr-status-row"><span className={`pr-tl-icon ${checks.tone ?? ""}`} aria-hidden>{checks.tone ? CHECK_MARK[checks.tone] : "◦"}</span>{capital(checks.label)}</div>;
+  if (pull.state !== "open") {
+    const merged = pull.state === "merged";
+    const event = detail?.timeline?.items.filter((i) => i.kind === (merged ? "merged" : "closed")).pop();
+    return <section className="pr-card pr-status-box" aria-label="Status">
+      <div className="pr-status-row"><span className={`pr-tl-icon ${merged ? "merged" : "err"}`} aria-hidden>{merged ? "⇄" : "✕"}</span>
+        <span>{merged ? <>Merged into <code>{pull.base_ref}</code></> : "Closed"}{event && <> by <strong>{event.actor}</strong> <span className="pr-muted"><Time at={event.at} /></span></>}</span></div>
+      {checksRow}
+    </section>;
+  }
   const review = rest[0] ?? { label: "no reviews" };
   return <section className="pr-card pr-status-box" aria-label="Status">
-    <div className="pr-status-row"><span className={`pr-tl-icon ${checks.tone ?? ""}`} aria-hidden>{checks.tone === "ok" ? "✓" : checks.tone === "err" ? "✕" : "◦"}</span>{checks.label[0].toUpperCase() + checks.label.slice(1)}</div>
-    <div className="pr-status-row"><span className={`pr-tl-icon ${review.tone ?? ""}`} aria-hidden>{review.tone === "ok" ? "✓" : review.tone === "err" ? "±" : "◦"}</span>{review.label[0].toUpperCase() + review.label.slice(1)}</div>
+    {checksRow}
+    <div className="pr-status-row"><span className={`pr-tl-icon ${review.tone ?? ""}`} aria-hidden>{review.tone === "ok" ? "✓" : review.tone === "err" ? "±" : "◦"}</span>{capital(review.label)}</div>
     {pull.draft && <div className="pr-status-row"><span className="pr-tl-icon" aria-hidden>◌</span>This pull request is still a draft</div>}
     {!pull.can_merge && pull.merge_blocked_by && <div className="pr-status-row"><span className="pr-tl-icon" aria-hidden>◦</span>{pull.merge_blocked_by}</div>}
   </section>;

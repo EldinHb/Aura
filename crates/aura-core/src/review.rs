@@ -32,6 +32,9 @@ pub struct PullRequest {
     pub assignees: Vec<String>,
     pub labels: Vec<String>,
     pub milestone: Option<u32>,
+    /// The milestone's title; empty without one, or from daemons up to 0.2.10.
+    #[serde(default)]
+    pub milestone_title: String,
     /// Your latest submitted review of this PR on GitHub.
     #[serde(default)]
     pub my_review: Option<SubmittedReview>,

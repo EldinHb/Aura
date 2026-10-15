@@ -4,6 +4,10 @@ import type { SubmittedReview } from "./SubmittedReview";
 
 export type PullRequest = { id: string, account: string, repo: string, number: number, title: string, body: string, url: string, author: string, state: string, draft: boolean, base_ref: string, head_ref: string, base_sha: string, head_sha: string, updated_at: string, created_at: string, additions: number, deletions: number, changed_files: number, checks: string, review_decision: string, hidden: boolean, can_edit: boolean, assignees: Array<string>, labels: Array<string>, milestone: number | null, 
 /**
+ * The milestone's title; empty without one, or from daemons up to 0.2.10.
+ */
+milestone_title: string, 
+/**
  * Your latest submitted review of this PR on GitHub.
  */
 my_review: SubmittedReview | null, 
