@@ -18,6 +18,11 @@
   --info: #62b0ff;
   --focus-ring: 0 0 0 2px var(--accent);
   --chevron: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" fill="none" stroke="%239aa3b8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+  --agent-claude: #e8a878;
+  --agent-codex: #8fd9b5;
+  --agent-terminal: #a8b1ff;
+  --agent-acp: #d8b7f5;
+  --orchestrator-icon: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><g fill="none" stroke="black" stroke-width="1.3"><circle cx="6" cy="2.6" r="1.7"/><circle cx="2.4" cy="9.4" r="1.7"/><circle cx="9.6" cy="9.4" r="1.7"/><path d="M6 4.3v1.9M2.4 7.7V6.2h7.2v1.5"/></g></svg>');
   --radius: 8px;
   --font: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
   --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
@@ -39,6 +44,10 @@
   --fg-dim: #8a91a6;
   --accent: #6a5cff;
   --accent-bg: rgba(106, 92, 255, 0.12);
+  --agent-claude: #b5602b;
+  --agent-codex: #2f8a63;
+  --agent-terminal: #4d5bd6;
+  --agent-acp: #8b4fc4;
   --chevron: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" fill="none" stroke="%234f566b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
 }
 * { box-sizing: border-box; }
@@ -100,13 +109,37 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .sidebar-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
 .sidebar-head input { flex: 1; background: var(--bg-elev2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
 .session-list { overflow: auto; flex: 1; padding-bottom: 8px; }
-.session-row { display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: center; padding: 6px 10px 6px 12px; cursor: default; border-left: 2px solid transparent; }
+/* The title owns the first line; agent, orchestrator, hidden workers and folder share a quieter second; linked issues and PRs a third. */
+.session-row { display: grid; grid-template-columns: 8px 1fr; gap: 8px; align-items: start; padding: 6px 10px 6px 12px; cursor: default; border-left: 2px solid transparent; }
+.session-row > .dot { margin-top: 5px; }
+.session-row-body { min-width: 0; }
+.session-row .title-line { display: flex; align-items: center; gap: 6px; line-height: 18px; }
+.session-row .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-row .title-line .orchestra-toggle { flex-shrink: 0; margin: 0 -2px 0 -3px; }
+.session-row .title-line .pin { flex-shrink: 0; font-size: 11px; }
+.session-row .title-line kbd, .session-row .title-line .badge, .session-row .title-line .chip { flex-shrink: 0; }
+.session-row .title-line kbd { padding: 0 4px; font-size: 10px; line-height: 14px; }
+.session-row .age { flex-shrink: 0; min-width: 22px; text-align: right; font-size: 11px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.session-row .sub { display: flex; align-items: center; gap: 6px; margin-top: 1px; font-size: 11px; line-height: 16px; color: var(--fg-dim); white-space: nowrap; }
+.session-row .sub > * { flex-shrink: 0; }
+.session-row .sub .where { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.session-row .agent { color: var(--fg-muted); }
+.session-row .agent.claude { color: var(--agent-claude); }
+.session-row .agent.codex { color: var(--agent-codex); }
+.session-row .agent.terminal { color: var(--agent-terminal); }
+.session-row .agent.acp { color: var(--agent-acp); }
+.orchestrator-mark { width: 12px; height: 12px; background: var(--accent); -webkit-mask: var(--orchestrator-icon) no-repeat center / contain; mask: var(--orchestrator-icon) no-repeat center / contain; }
+.session-row .sub .chip { padding: 0 5px; font-size: 10px; line-height: 14px; }
+/* Whole chips only: the ones that do not fit leave the line but stay measurable, and "+N" lists them. */
+.session-row .links { position: relative; display: flex; gap: 6px; margin-top: 2px; font-size: 11px; line-height: 16px; color: var(--accent-2); white-space: nowrap; overflow: hidden; }
+.session-row .links > * { flex-shrink: 0; }
+.session-row .links > .overflow { position: absolute; visibility: hidden; }
+.session-row .links .links-more { padding: 0 5px; font-size: 10px; line-height: 14px; color: var(--fg-muted); }
+:root[data-theme="light"] .session-row .links { color: #0e8a76; }
+:root[data-theme="light"] .session-row .chip.warn { color: #9a6200; border-color: #d99a1f; }
 .session-row:hover { background: var(--bg-hover); }
 .session-row.selected { background: var(--accent-bg); border-left-color: var(--accent); }
 .session-row.cursor { box-shadow: inset 0 0 0 1px var(--accent); }
-.session-row .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-row .sub { font-size: 11px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-row .links { display: flex; gap: 6px; margin-top: 2px; font-size: 11px; color: var(--accent-2); white-space: nowrap; overflow: hidden; }
 .session-row .git-count, .statusbar .git-count { color: var(--fg-muted); }
 .session-row .git-count.warn, .statusbar .git-count.warn { color: var(--warn); }
 .pull-label.ok { color: var(--ok); }
@@ -122,7 +155,6 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .orchestra-toggle:hover { background-color: var(--bg-hover); }
 .orchestra-toggle.collapsed { transform: rotate(-90deg); }
 .session-row .chip.warn { border-color: var(--warn); color: var(--warn); }
-.session-row .meta { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--fg-dim); }
 .session-list.dragging { user-select: none; cursor: grabbing; }
 .session-row.drag-source { opacity: 0.5; }
 .session-row.drop-above { box-shadow: inset 0 2px 0 var(--accent); }
@@ -130,10 +162,10 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .badge { background: var(--warn); color: #1a1a1a; border-radius: 10px; padding: 0 6px; font-size: 10.5px; font-weight: 700; }
 .badge.accent { background: var(--accent); color: white; }
 .chip { font-size: 10.5px; padding: 1px 6px; border-radius: 10px; background: var(--bg-elev2); border: 1px solid var(--border); color: var(--fg-muted); }
-.chip.claude { border-color: #d98b5a55; color: #e8a878; }
-.chip.codex { border-color: #6fbf9a55; color: #8fd9b5; }
-.chip.terminal { border-color: #7f8cff55; color: #a8b1ff; }
-.chip.acp { border-color: #c79bf055; color: #d8b7f5; }
+.chip.claude { border-color: #d98b5a55; color: var(--agent-claude); }
+.chip.codex { border-color: #6fbf9a55; color: var(--agent-codex); }
+.chip.terminal { border-color: #7f8cff55; color: var(--agent-terminal); }
+.chip.acp { border-color: #c79bf055; color: var(--agent-acp); }
 .chip.orchestrator { border-color: var(--accent); color: var(--accent-2); }
 .group-title { display: flex; align-items: center; gap: 6px; }
 

@@ -129,7 +129,7 @@ it("collapses an orchestrator to hide its workers and keeps that across a restar
   fireEvent.click(toggle("o1")!);
   expect(rows()).toEqual(["p", "o1", "o2", "v1", "q"]);
   expect(toggle("o1")?.getAttribute("aria-expanded")).toBe("false");
-  expect(document.querySelector('[data-session-id="o1"] .meta')?.textContent).toContain("+3");
+  expect(document.querySelector('[data-session-id="o1"] .sub .workers')?.textContent).toContain("+3");
   // Collapsing does not select the orchestrator, and the hidden workers give up their ⌘-numbers.
   expect(current()).toBeNull();
   expect(document.querySelector('[data-session-id="o2"] kbd')?.textContent).toBe("3");
@@ -292,4 +292,60 @@ it("navigates from the orchestrator when the selected worker was collapsed away 
   expect(document.querySelector('[data-session-id="o1"]')?.classList.contains("cursor")).toBe(true);
   press("sidebar.nav.down");
   expect(current()).toBe("o2");
+});
+
+it("shows the session's agent, orchestrator mark and hidden workers on the second line, the title alone on the first", () => {
+  orchestras();
+  useStore.setState({ collapsedOrchestras: ["o1"], sessions: { ...useStore.getState().sessions, w3: session("w3", "Worker 3", { orchestrator_id: "w2", pending_count: 1 }) } });
+  render(<Sidebar />);
+  const row = document.querySelector('[data-session-id="o1"]')!;
+  expect(row.querySelector(".title")?.textContent).toBe("Lead");
+  expect(row.querySelector(".sub .agent")?.textContent).toBe("claude");
+  expect(row.querySelector(".sub [aria-label=Orchestrator]")).toBeTruthy();
+  const workers = row.querySelector(".sub .workers")!;
+  expect(workers.textContent).toBe("+3");
+  // A hidden worker waits on the user.
+  expect(workers.classList.contains("warn")).toBe(true);
+  expect(workers.getAttribute("title")).toBe("Worker 1\nWorker 2\nWorker 3");
+  expect(document.querySelector('[data-session-id="p"] [aria-label=Orchestrator]')).toBeNull();
+});
+
+it("shows only whole link chips that fit, then +N with the rest in its tooltip, and adapts as the sidebar resizes", async () => {
+  const urls = [7, 8, 9, 10].map((n) => `https://github.com/owner/repo/issues/${n}`);
+  settings.set("session.links.detected.v1.a", JSON.stringify(urls));
+  // jsdom lays nothing out: chips are 60px wide, "+N" 24px, and the line as wide as `room`.
+  let room = 150;
+  let resized = () => {};
+  vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("link-slot") ? 60 : this.classList.contains("links-more") ? 24 : 0;
+  });
+  const client = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.classList.contains("links") ? room : 0;
+  });
+  try {
+    render(<Sidebar />);
+    const shown = () => [...document.querySelectorAll('[data-session-id="a"] .link-slot:not(.overflow)')].map((el) => el.textContent);
+    const more = () => document.querySelector<HTMLElement>('[data-session-id="a"] .links-more')!;
+    // 60 + 60 + "+2" fits in 150; a third chip with "+1" does not.
+    await waitFor(() => expect(shown()).toEqual(["Issue #7", "Issue #8"]));
+    expect(more().textContent).toBe("+2");
+    expect(more().classList.contains("overflow")).toBe(false);
+    expect(more().title).toBe(`${urls[2]}\n${urls[3]}`);
+
+    room = 240;
+    act(() => resized());
+    expect(shown()).toEqual(["Issue #7", "Issue #8", "Issue #9", "Issue #10"]);
+    expect(more().classList.contains("overflow")).toBe(true);
+
+    // Too narrow for any chip: only the count.
+    room = 40;
+    act(() => resized());
+    expect(shown()).toEqual([]);
+    expect(more().textContent).toBe("+4");
+  } finally {
+    width.mockRestore();
+    client.mockRestore();
+    vi.unstubAllGlobals();
+  }
 });

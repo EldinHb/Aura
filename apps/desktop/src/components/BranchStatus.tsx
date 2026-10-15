@@ -44,12 +44,13 @@ function changedSinceReview(pull: BranchPull) {
   return !!latest && isStale(latest, pull.head_sha);
 }
 
-const describe = (pull: BranchPull) => `${pull.repo}#${pull.number} · ${branchPullLabels(pull).map((l) => l.label).join(" · ")}${pull.state === "open" && changedSinceReview(pull) ? " · new commits since the latest review" : ""}\n${pull.title}`;
+/** The tooltip of a branch's pull request: number, state and title. */
+export const describeBranchPull = (pull: BranchPull) => `${pull.repo}#${pull.number} · ${branchPullLabels(pull).map((l) => l.label).join(" · ")}${pull.state === "open" && changedSinceReview(pull) ? " · new commits since the latest review" : ""}\n${pull.title}`;
 
 /** The branch's pull request in a sidebar row. */
 export function BranchPullChip({ pull }: { pull: BranchPull }) {
   return (
-    <span className="session-row-link branch-pull" title={describe(pull)}>
+    <span className="session-row-link branch-pull" title={describeBranchPull(pull)}>
       PR #{pull.number}
       {compactLabels(pull).map((l) => <span key={l.label} className={clsx("pull-label", l.tone)}> {l.label}</span>)}
     </span>
@@ -66,7 +67,7 @@ export function StatusBarBranch({ session }: { session: Session }) {
       <span title={git.upstream ? `tracking ${git.upstream}` : "not pushed"}>⎇ {name}</span>
       <GitCounts git={git} />
       {pull && (
-        <ExternalLink href={pull.url} className="statusbar-pull" title={describe(pull)}>
+        <ExternalLink href={pull.url} className="statusbar-pull" title={describeBranchPull(pull)}>
           PR #{pull.number}
           {branchPullLabels(pull).map((l) => <span key={l.label} className={clsx("pull-label", l.tone)}> · {l.label}</span>)}
         </ExternalLink>

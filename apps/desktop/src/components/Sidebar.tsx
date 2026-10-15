@@ -1,6 +1,6 @@
 import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, canReorder, isNestedWorker, orchestratorsOf, type AppState } from "../state/store";
 import type { BranchPull, Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
@@ -12,7 +12,7 @@ import { useDetectedLinksStore, useLinkPreferencesStore, useSidebarLinks } from 
 import { selectedSessionLinks, sessionLinks } from "../views/issueLinks";
 import { useGithubRepo } from "../state/githubRepos";
 import { useSessionBranch } from "../state/branchStatus";
-import { BranchPullChip, GitCounts, branchName } from "./BranchStatus";
+import { BranchPullChip, GitCounts, branchName, describeBranchPull } from "./BranchStatus";
 
 /** Every session row in sidebar order, the workers of collapsed orchestrators included. */
 const selectAllRows = (st: AppState) => selectSessionSections(st, true).flatMap(([, list]) => list);
@@ -42,18 +42,32 @@ function statusClass(s: Session): string {
   }
 }
 
-/** Folder or worktree, branch state, agent mode and model, then the session's issues and PRs. */
-function SessionRowDetails({ session: s, selected }: { session: Session; selected: boolean }) {
+/**
+ * The quiet second line: agent, orchestrator mark, workers hidden under a
+ * collapsed orchestrator, then folder or worktree, branch state, terminal mode
+ * and model, which give way first. Then the session's issues and PRs.
+ */
+function SessionRowDetails({ session: s, selected, hidden }: { session: Session; selected: boolean; hidden: Session[] }) {
   const { git, pull } = useSessionBranch(s, selected);
   const branch = (git && branchName(git)) ?? s.worktree?.branch;
+  const agent = s.agent ?? s.provider;
   return (
     <>
       <div className="sub">
-        {!s.worktree && basename(s.cwd)}
-        {branch && `${s.worktree ? "" : " · "}⎇ ${branch}`}
-        {git && <GitCounts git={git} />}
-        {s.mode === "terminal" && s.provider !== "terminal" ? " · tui" : ""}
-        {s.model ? ` · ${s.model}` : ""}
+        <span className={clsx("agent", s.provider)} title={`Agent: ${agent}`}>{agent}</span>
+        {s.orchestrator && <span className="orchestrator-mark" role="img" aria-label="Orchestrator" title="Orchestrator: starts and directs the sessions under it" />}
+        {hidden.length > 0 && (
+          <span className={clsx("chip", "workers", hidden.some((w) => w.pending_count > 0) && "warn")} title={hidden.map((w) => w.title).join("\n")}>
+            +{hidden.length}
+          </span>
+        )}
+        <span className="where">
+          {!s.worktree && basename(s.cwd)}
+          {branch && `${s.worktree ? "" : " · "}⎇ ${branch}`}
+          {git && <GitCounts git={git} />}
+          {s.mode === "terminal" && s.provider !== "terminal" ? " · tui" : ""}
+          {s.model ? ` · ${s.model}` : ""}
+        </span>
       </div>
       <SessionRowLinks session={s} branchPull={pull} />
     </>
@@ -61,8 +75,37 @@ function SessionRowDetails({ session: s, selected }: { session: Session; selecte
 }
 
 /**
- * The issue and PR numbers linked to a session, as the Inspector shows them,
- * and the pull request of its branch with its status.
+ * How many of the chips in `ref` fit on its one line whole, leaving room for
+ * the "+N" chip after them when some do not. Chips past that stay laid out,
+ * out of sight, so they can be measured again when the sidebar widens.
+ */
+function useFittingChips(ref: RefObject<HTMLDivElement | null>, key: string) {
+  const [fit, setFit] = useState(Infinity);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const widths = [...el.querySelectorAll<HTMLElement>(":scope > .link-slot")].map((c) => c.offsetWidth);
+      const more = el.querySelector<HTMLElement>(":scope > .links-more")?.offsetWidth ?? 0;
+      const gap = parseFloat(getComputedStyle(el).columnGap) || 0;
+      const width = (n: number) => widths.slice(0, n).reduce((sum, w) => sum + w, 0) + gap * Math.max(0, n - 1);
+      let n = widths.length;
+      if (width(n) > el.clientWidth) do n--; while (n > 0 && width(n) + gap + more > el.clientWidth);
+      setFit(n);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, key]);
+  return fit;
+}
+
+/**
+ * The pull request of the session's branch with its status, then the issue and
+ * PR numbers linked to the session as the Inspector shows them. As many whole
+ * chips as fit, then "+N" with the rest in its tooltip.
  */
 function SessionRowLinks({ session, branchPull }: { session: Session; branchPull: BranchPull | null }) {
   const transcript = useStore((s) => s.transcripts[session.id]);
@@ -75,13 +118,22 @@ function SessionRowLinks({ session, branchPull }: { session: Session; branchPull
   }, [transcript?.loaded, transcript?.items, session.title, repo, detected, preferences]);
   // The branch's pull request replaces the same PR linked from the transcript.
   const shown = branchPull ? links.filter((l) => !(l.kind === "PR" && Number(l.number) === branchPull.number && l.repo.toLowerCase() === branchPull.repo.toLowerCase())) : links;
-  if (shown.length === 0 && !branchPull) return null;
+  const chips = [
+    ...(branchPull ? [{ key: branchPull.url, tip: describeBranchPull(branchPull), chip: <BranchPullChip pull={branchPull} /> }] : []),
+    ...shown.map((link) => ({ key: link.url, tip: link.url, chip: <span className="session-row-link" title={link.url}>{link.kind} #{link.number}</span> })),
+  ];
+  const ref = useRef<HTMLDivElement>(null);
+  // The branch PR's labels change its width, so they are part of what is measured.
+  const fit = useFittingChips(ref, chips.map((c) => c.key).join(" ") + (branchPull ? describeBranchPull(branchPull) : ""));
+  if (chips.length === 0) return null;
+  const rest = chips.slice(fit);
   return (
-    <div className="links">
-      {shown.map((link) => (
-        <span key={link.url} className="session-row-link" title={link.url}>{link.kind} #{link.number}</span>
-      ))}
-      {branchPull && <BranchPullChip pull={branchPull} />}
+    <div className="links" ref={ref}>
+      {chips.map((c, i) => <span key={c.key} className={clsx("link-slot", i >= fit && "overflow")} aria-hidden={i >= fit || undefined}>{c.chip}</span>)}
+      {/* Measured even while every chip fits, at its widest. */}
+      <span className={clsx("chip", "links-more", rest.length === 0 && "overflow")} aria-hidden={rest.length === 0 || undefined} title={rest.map((c) => c.tip).join("\n")}>
+        +{rest.length || chips.length}
+      </span>
     </div>
   );
 }
@@ -287,8 +339,8 @@ export function Sidebar() {
                   title={s.cwd}
                 >
                   <span className={clsx("dot", statusClass(s))} />
-                  <div style={{ minWidth: 0 }}>
-                    <div className="title">
+                  <div className="session-row-body">
+                    <div className="title-line">
                       {workers.length > 0 && (
                         <button
                           className={clsx("orchestra-toggle", collapsed && "collapsed")}
@@ -303,23 +355,14 @@ export function Sidebar() {
                           }}
                         />
                       )}
-                      {s.pinned && <span title="pinned">📌 </span>}
-                      {s.title}
-                      {s.archived && <span className="chip" style={{ marginLeft: 6 }}>archived</span>}
+                      {s.pinned && <span className="pin" title="pinned">📌</span>}
+                      <span className="title">{s.title}</span>
+                      {s.archived && <span className="chip">archived</span>}
+                      {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
+                      {idx < 9 && <kbd>{idx + 1}</kbd>}
+                      <span className="age">{relTime(s.last_activity)}</span>
                     </div>
-                    <SessionRowDetails session={s} selected={s.id === selectedId} />
-                  </div>
-                  <div className="meta">
-                    {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
-                    {s.orchestrator && <span className="chip orchestrator" title="Orchestrator: starts and directs the sessions under it">orch</span>}
-                    {hidden.length > 0 && (
-                      <span className={clsx("chip", hidden.some((w) => w.pending_count > 0) && "warn")} title={hidden.map((w) => w.title).join("\n")}>
-                        +{hidden.length}
-                      </span>
-                    )}
-                    <span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>
-                    {idx < 9 && <kbd>{idx + 1}</kbd>}
-                    <span>{relTime(s.last_activity)}</span>
+                    <SessionRowDetails session={s} selected={s.id === selectedId} hidden={hidden} />
                   </div>
                 </div>
               );

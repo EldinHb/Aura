@@ -62,16 +62,16 @@ it("shows each session's branch with unpushed, unpulled and uncommitted counts",
   git.set("/work/a", status({ ahead: 2, behind: 1, changed: 3 }));
   git.set("/work/b", status({ branch: null, head: "abcdef0123456789", upstream: null, upstream_branch: null, upstream_repo: null }));
   render(<Sidebar />);
-  await waitFor(() => expect(rowText("a", ".sub")).toBe("a · ⎇ feature ↑2 ↓1 ±3"));
-  expect(rowText("b", ".sub")).toBe("b · ⎇ abcdef0");
+  await waitFor(() => expect(rowText("a", ".sub .where")).toBe("a · ⎇ feature ↑2 ↓1 ±3"));
+  expect(rowText("b", ".sub .where")).toBe("b · ⎇ abcdef0");
 });
 
 it("keeps showing the worktree branch before git is read, and no folder for worktree sessions", async () => {
   useStore.setState({ sessions: { a: session("a", "Hours page", { worktree: { repo_root: "/work", path: "/work/a", branch: "wt-branch" } }) }, sessionOrder: ["a"] });
   git.set("/work/a", status({ changed: 1 }));
   render(<Sidebar />);
-  expect(rowText("a", ".sub")).toBe("⎇ wt-branch");
-  await waitFor(() => expect(rowText("a", ".sub")).toBe("⎇ feature ±1"));
+  expect(rowText("a", ".sub .where")).toBe("⎇ wt-branch");
+  await waitFor(() => expect(rowText("a", ".sub .where")).toBe("⎇ feature ±1"));
 });
 
 it("shows the branch's pull request status in its row in place of the same linked PR", async () => {
