@@ -15,6 +15,7 @@ import { useSessionBranch } from "../state/branchStatus";
 import { BranchPullChip, GitCounts, branchName, describeBranchPull } from "./BranchStatus";
 import { statusClass } from "../lib/sessionStatus";
 import { useRecordBranchPull } from "../state/pullSessions";
+import { ATTENTION, hiddenAttention, useViewedSessionId } from "../state/attention";
 
 /** Every session row in sidebar order, the workers of collapsed orchestrators included. */
 const selectAllRows = (st: AppState) => selectSessionSections(st, true).flatMap(([, list]) => list);
@@ -43,11 +44,7 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
       <div className="sub">
         <span className={clsx("agent", s.provider)} title={`Agent: ${agent}`}>{agent}</span>
         {s.orchestrator && <span className="orchestrator-mark" role="img" aria-label="Orchestrator" title="Orchestrator: starts and directs the sessions under it" />}
-        {hidden.length > 0 && (
-          <span className={clsx("chip", "workers", hidden.some((w) => w.pending_count > 0) && "warn")} title={hidden.map((w) => w.title).join("\n")}>
-            +{hidden.length}
-          </span>
-        )}
+        {hidden.length > 0 && <HiddenWorkers hidden={hidden} />}
         <span className="where">
           {!s.worktree && basename(s.cwd)}
           {branch && `${s.worktree ? "" : " · "}⎇ ${branch}`}
@@ -58,6 +55,18 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
       </div>
       <SessionRowLinks session={s} branchPull={pull} />
     </>
+  );
+}
+
+/** The "+N" chip of a collapsed orchestrator, marked when a worker under it waits on the user or has news. */
+function HiddenWorkers({ hidden }: { hidden: Session[] }) {
+  const attention = hiddenAttention(hidden);
+  const lines = hidden.map((w) => (w.attention ? `${w.title} · ${ATTENTION[w.attention].label.toLowerCase()}` : w.title));
+  return (
+    <span className={clsx("chip", "workers", hidden.some((w) => w.pending_count > 0) && "warn")} title={lines.join("\n")}>
+      +{hidden.length}
+      {attention && <span className={clsx("attention", ATTENTION[attention].className)} />}
+    </span>
   );
 }
 
@@ -138,6 +147,8 @@ export function Sidebar() {
   const select = useStore((s) => s.select);
   const setCursor = useStore((s) => s.setSidebarCursor);
   const focus = useStore((s) => s.focus);
+  // Opening a session clears its marker (see useMarkViewedSeen); until the daemon has, it is not shown.
+  const viewedId = useViewedSessionId();
   const listRef = useRef<HTMLDivElement>(null);
   useSidebarLinks(useMemo(() => sessions.map((s) => s.id), [sessions]));
 
@@ -298,6 +309,7 @@ export function Sidebar() {
               const workers = list.filter((w) => w.orchestrator_id === s.id && w !== s);
               const collapsed = workers.length > 0 && collapsedOrchestras.includes(s.id);
               const hidden = collapsed ? list.filter((l) => !visibleIds.has(l.id) && orchestratorsOf(l, list).includes(s)) : [];
+              const attention = s.id !== viewedId ? s.attention : null;
               return (
                 <div
                   key={s.id}
@@ -306,6 +318,7 @@ export function Sidebar() {
                     s.id === selectedId && "selected",
                     s.id === cursor && cursor !== selectedId && "cursor",
                     s.archived && "archived",
+                    attention && "unseen",
                     isNestedWorker(s, list) && "worker",
                     hidden.some((w) => w.id === selectedId || w.id === cursor) && "cursor",
                     s.id === dragging && "drag-source",
@@ -344,6 +357,7 @@ export function Sidebar() {
                       )}
                       {s.pinned && <span className="pin" title="pinned">📌</span>}
                       <span className="title">{s.title}</span>
+                      {attention && <span className={clsx("attention", ATTENTION[attention].className)} role="img" aria-label={ATTENTION[attention].label} title={ATTENTION[attention].label} />}
                       {s.archived && <span className="chip">archived</span>}
                       {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
                       {idx < 9 && <kbd>{idx + 1}</kbd>}

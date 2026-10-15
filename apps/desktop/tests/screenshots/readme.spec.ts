@@ -8,7 +8,7 @@ const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
 const usage = (input: number, output: number, cost: number | null, used: number | null = null) => ({ input_tokens: input, output_tokens: output, cached_input_tokens: Math.round(input * 0.7), total_cost_usd: cost, context_window: used ? 200_000 : null, context_used: used });
 
 function session(id: string, over: Partial<Session>): Session {
-  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-api", worktree: null, group: "acme", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(5), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, pulls: [], usage: usage(0, 0, null), ...over };
+  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-api", worktree: null, group: "acme", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(5), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, attention: null, pulls: [], usage: usage(0, 0, null), ...over };
 }
 
 const ids = {
@@ -22,10 +22,10 @@ const ids = {
 
 const sessions: Session[] = [
   session(ids.rate, { title: "Add rate limiting to the public API", model: "claude-opus-5-5", effort: "high", permission_mode: "default", last_activity: at(1), pinned: true, usage: usage(412_000, 18_400, 2.84, 61_000) }),
-  session(ids.billing, { title: "Move billing to Stripe webhooks", provider: "codex", model: "gpt-5.5-codex", effort: "medium", sandbox_mode: "workspace-write", status: "waiting_input", pending_count: 1, last_activity: at(2), usage: usage(198_000, 9_100, null) }),
-  session(ids.flaky, { title: "Fix flaky checkout test", provider: "acp", agent: "gemini", cwd: "/Users/sam/code/acme-web", status: "waiting_approval", pending_count: 1, last_activity: at(3), usage: usage(88_000, 4_200, null) }),
+  session(ids.billing, { title: "Move billing to Stripe webhooks", provider: "codex", model: "gpt-5.5-codex", effort: "medium", sandbox_mode: "workspace-write", status: "waiting_input", pending_count: 1, attention: "waiting", last_activity: at(2), usage: usage(198_000, 9_100, null) }),
+  session(ids.flaky, { title: "Fix flaky checkout test", provider: "acp", agent: "gemini", cwd: "/Users/sam/code/acme-web", status: "waiting_approval", pending_count: 1, attention: "waiting", last_activity: at(3), usage: usage(88_000, 4_200, null) }),
   session(ids.orch, { title: "Release 2.0 checklist", orchestrator: true, cwd: "/Users/sam/code/acme-web", status: "running", model: "claude-opus-5-5", last_activity: at(0), usage: usage(240_000, 12_000, 1.37) }),
-  session(ids.docs, { title: "Update API reference docs", provider: "codex", cwd: "/Users/sam/code/acme-web", orchestrator_id: ids.orch, status: "running", last_activity: at(0), usage: usage(64_000, 3_000, null) }),
+  session(ids.docs, { title: "Update API reference docs", provider: "codex", cwd: "/Users/sam/code/acme-web", orchestrator_id: ids.orch, attention: "done", last_activity: at(0), usage: usage(64_000, 3_000, null) }),
   session(ids.dev, { title: "pnpm dev", provider: "terminal", mode: "terminal", command: ["pnpm", "dev"], status: "running", group: null, cwd: "/Users/sam/code/acme-web", last_activity: at(12) }),
 ];
 

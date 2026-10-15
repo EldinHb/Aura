@@ -1,16 +1,17 @@
 import { PullWorkspace } from "./features/reviews/PullWorkspace";
 import { registerReviewCommands } from "./features/reviews/state";
 import { isHandlingReview, registerWatchCommands, useWatchSync } from "./features/watches/state";
-import { unreadChanges, usePullChangeSync, usePullChanges } from "./features/reviews/changes";
+import { usePullChangeSync } from "./features/reviews/changes";
 import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
 import { useDetectedLinksSync } from "./state/sessionLinkPreferences";
+import { inboxCount, useInboxCount, useMarkViewedSeen } from "./state/attention";
 import { connectDaemon, isTauri } from "./lib/connection";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
 import { registerGitCommands } from "./commands/git";
-import { setCommandErrorHandler } from "./lib/commands";
+import { runCommand, setCommandErrorHandler } from "./lib/commands";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { TerminalView } from "./views/TerminalView";
@@ -33,6 +34,8 @@ export default function App() {
   useWatchSync(windowMode !== "session");
   usePullChangeSync(windowMode !== "session");
   useDetectedLinksSync();
+  useMarkViewedSeen();
+  const inbox = useInboxCount();
   const connection = useStore((s) => s.connection);
   const connectionError = useStore((s) => s.connectionError);
   const selected = useStore(selectSelected);
@@ -158,8 +161,7 @@ export default function App() {
     import("@tauri-apps/api/event").then(({ listen }) =>
       listen("aura://summon", () => {
         const st = useStore.getState();
-        const changed = unreadChanges(usePullChanges.getState().changes, st.settings.pullChangesMuted).length > 0;
-        if (changed || Object.values(st.sessions).some((s) => s.pending_count > 0)) st.openDialog({ kind: "inbox" });
+        if (inboxCount(st) > 0) st.openDialog({ kind: "inbox" });
         else setFocus("sidebar");
       }).then((u) => (un = u)),
     );
@@ -172,6 +174,19 @@ export default function App() {
         <span className="title">Aura</span>
         {selected && <span style={{ color: "var(--fg-dim)" }}>› {selected.title}</span>}
         <span className="spacer" />
+        <button
+          type="button"
+          className="titlebar-inbox"
+          data-hint
+          data-command="inbox.open"
+          title={inbox > 0 ? `Inbox: ${inbox} waiting on you or unread (⌘I)` : "Inbox: nothing waiting (⌘I)"}
+          aria-label={inbox > 0 ? `Inbox, ${inbox} items` : "Inbox"}
+          onClick={() => void runCommand("inbox.open")}
+        >
+          <span className="inbox-icon" aria-hidden />
+          Inbox
+          {inbox > 0 && <span className="badge">{inbox}</span>}
+        </button>
         <span className="conn">
           <span className={`dot ${connection === "open" ? "ok" : connection === "connecting" ? "warn pulse" : "err"}`} />
           {connection}

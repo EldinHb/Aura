@@ -49,6 +49,20 @@ pub enum SessionStatus {
     Exited,
 }
 
+/// Why a session wants the user to look at it. Set when the agent stops and
+/// kept until the user opens the session (see [`Session::attention`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Attention {
+    /// A turn ended, or a terminal command exited cleanly.
+    Done,
+    /// A turn failed, the agent crashed or a terminal command exited with an error.
+    Failed,
+    /// The agent waits on an approval or an answer.
+    Waiting,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -126,6 +140,11 @@ pub struct Session {
     /// branch is deleted or the session moves to another one.
     #[serde(default)]
     pub pulls: Vec<String>,
+    /// What happened since the user last opened the session, if anything.
+    /// Cleared by [`crate::Manager::mark_seen`]. A `Waiting` one also ends
+    /// once nothing waits any more, e.g. after an answer from the inbox.
+    #[serde(default)]
+    pub attention: Option<Attention>,
     /// The complete system prompt Aura hands the agent when it starts: global,
     /// per-agent and per-session prompts with their placeholders filled in.
     /// Set by the manager just before `Provider::start`; never stored or sent.
@@ -597,6 +616,7 @@ impl Session {
             orchestrator: opts.orchestrator,
             orchestrator_id: opts.orchestrator_id.clone(),
             pulls: vec![],
+            attention: None,
             instructions: None,
             mcp_servers: vec![],
         }

@@ -297,6 +297,10 @@ export class RpcClient {
   recordSessionPull(id: string, url: string) {
     return this.call<Session>("session.record_pull", { id, url });
   }
+  /** The user opened the session: clear what it wanted them to see (`Session.attention`). */
+  markSeen(id: string) {
+    return this.call<Session>("session.mark_seen", { id });
+  }
   setArchived(id: string, archived: boolean) {
     return this.call<Session>("session.set_archived", { id, archived });
   }

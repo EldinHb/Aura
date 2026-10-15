@@ -364,6 +364,10 @@ impl Manager {
                 }
             }
             s.pending_count = 0;
+            // What it waited on went with the old daemon; it has stopped.
+            if s.attention == Some(Attention::Waiting) {
+                s.attention = Some(Attention::Done);
+            }
             let _ = self.inner.store.upsert_session(&s);
             self.inner.runtimes.lock().entry(s.id.clone()).or_default();
             sessions.insert(s.id.clone(), s);
@@ -760,6 +764,23 @@ impl Manager {
         self.save_session(updated)
     }
 
+    /// The user opened the session: forget what it wanted them to see.
+    /// Not activity either, and a session without attention is left alone.
+    pub fn mark_seen(&self, id: &str) -> Result<Session> {
+        let updated = {
+            let mut sessions = self.inner.sessions.lock();
+            let s = sessions
+                .get_mut(id)
+                .ok_or_else(|| anyhow!("unknown session {id}"))?;
+            if s.attention.is_none() {
+                return Ok(s.clone());
+            }
+            s.attention = None;
+            s.clone()
+        };
+        self.save_session(updated)
+    }
+
     pub async fn set_archived(&self, id: &str, archived: bool) -> Result<Session> {
         if archived {
             self.stop(id).await?;
@@ -790,6 +811,10 @@ impl Manager {
                 SessionMode::Structured => SessionStatus::Idle,
             };
             s.pending_count = 0;
+            // The user stopped it: it no longer waits on them.
+            if s.attention == Some(Attention::Waiting) {
+                s.attention = None;
+            }
         });
         if let Some(rt) = self.inner.runtimes.lock().get_mut(id) {
             rt.pending_approvals.clear();
@@ -1030,6 +1055,7 @@ impl Manager {
         let _ = self.update_session(id, |s| {
             s.status = SessionStatus::Error;
             s.last_error = Some(msg.to_string());
+            s.attention = Some(Attention::Failed);
         });
     }
 
@@ -1160,6 +1186,15 @@ impl Manager {
         // Update the session row.
         let _ = self.update_session(&sid, |s| {
             s.pending_count = pending;
+            // A resumed session replays turns the user has already seen.
+            if let Some(a) = attention_for(&ev, s.mode, pending).filter(|_| !replaying) {
+                s.attention = Some(a);
+            }
+            // Answered, from the inbox say: a turn that goes on asks again when it
+            // ends, one that already ended (it can before the answer is recorded) is done.
+            if pending == 0 && s.attention == Some(Attention::Waiting) {
+                s.attention = (!running).then_some(Attention::Done);
+            }
             match &ev {
                 Event::TurnStarted { .. } => s.status = SessionStatus::Running,
                 Event::TurnCompleted { turn, .. } => {
@@ -1222,6 +1257,31 @@ impl Manager {
         });
         self.on_orchestration_event(&ev);
         self.broadcast(ev);
+    }
+}
+
+/// What an event asks of the user, if it stops the agent: the same stops an
+/// orchestrator hears about, plus a terminal command exiting.
+fn attention_for(ev: &Event, mode: SessionMode, pending: u32) -> Option<Attention> {
+    match ev {
+        Event::ApprovalRequested { .. } | Event::UserInputRequested { .. } => {
+            Some(Attention::Waiting)
+        }
+        Event::TurnCompleted { turn, .. } => Some(match turn.status {
+            TurnStatus::Failed => Attention::Failed,
+            _ if pending > 0 => Attention::Waiting,
+            _ => Attention::Done,
+        }),
+        Event::ProcessExited {
+            message: Some(_), ..
+        } => Some(Attention::Failed),
+        Event::ProcessExited { exit_code, .. } if mode == SessionMode::Terminal => {
+            Some(match exit_code {
+                Some(code) if *code != 0 => Attention::Failed,
+                _ => Attention::Done,
+            })
+        }
+        _ => None,
     }
 }
 

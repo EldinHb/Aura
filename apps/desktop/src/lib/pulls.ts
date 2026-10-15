@@ -40,7 +40,8 @@ export function normalizeInbox(inbox: ReviewInbox): ReviewInbox {
 }
 
 /** Sessions carry the pull requests found for their branch; older daemons send none. */
-export const normalizeSession = (session: Session): Session => ({ ...session, pulls: list(session.pulls) });
+/** Older daemons leave out `pulls`, and up to 0.2.11 `attention`. */
+export const normalizeSession = (session: Session): Session => ({ ...session, pulls: list(session.pulls), attention: session.attention ?? null });
 
 /**
  * A REST comment, review or review comment, as `pulls.get` lists them for apps up to

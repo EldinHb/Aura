@@ -656,6 +656,14 @@ async fn dispatch(
             let P { id, url } = params(p)?;
             ok(m.record_pull(&id, &url)?)
         }
+        "session.mark_seen" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+            }
+            let P { id } = params(p)?;
+            ok(m.mark_seen(&id)?)
+        }
         "session.set_archived" => {
             #[derive(Deserialize)]
             struct P {

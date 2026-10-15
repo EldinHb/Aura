@@ -4,6 +4,7 @@ export * from './Approval';
 export * from './ApprovalDecision';
 export * from './ApprovalKind';
 export * from './ApprovalOption';
+export * from './Attention';
 export * from './BranchPull';
 export * from './BranchStatus';
 export * from './CapabilitySet';

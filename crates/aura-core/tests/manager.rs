@@ -63,7 +63,23 @@ impl Driver for FakeDriver {
             item_id: item.id.clone(),
             delta: ItemDelta::Text { text: "lo".into() },
         });
-        if input.text.contains("approve") {
+        if input.text.contains("crash") {
+            let _ = self.sink.send(Event::ProcessExited {
+                session_id: self.session_id.clone(),
+                exit_code: Some(1),
+                message: Some("crashed".into()),
+            });
+        } else if input.text.contains("fail") {
+            let _ = self.sink.send(Event::TurnCompleted {
+                session_id: self.session_id.clone(),
+                turn: Turn {
+                    status: TurnStatus::Failed,
+                    ended_at: Some(now()),
+                    error: Some("overloaded".into()),
+                    ..turn
+                },
+            });
+        } else if input.text.contains("approve") {
             let approval = Approval {
                 id: "ap1".into(),
                 session_id: self.session_id.clone(),
@@ -207,6 +223,19 @@ async fn wait_status(m: &Manager, id: &str, want: SessionStatus) {
     panic!(
         "status never became {want:?}, is {:?}",
         m.get_session(id).unwrap().status
+    );
+}
+
+async fn wait_attention(m: &Manager, id: &str, want: Option<Attention>) {
+    for _ in 0..100 {
+        if m.get_session(id).unwrap().attention == want {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "attention never became {want:?}, is {:?}",
+        m.get_session(id).unwrap().attention
     );
 }
 
@@ -710,6 +739,129 @@ fn sessions_saved_before_pulls_were_recorded_still_load() {
     json.as_object_mut().unwrap().remove("pulls");
     let old: Session = serde_json::from_value(json).unwrap();
     assert!(old.pulls.is_empty());
+}
+
+#[tokio::test]
+async fn sessions_want_attention_when_they_stop_until_they_are_seen() {
+    let (m, _calls, _starts, store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.attention, None);
+    let send = |text: &str| Input {
+        text: text.into(),
+        ..Default::default()
+    };
+
+    // A finished turn is done.
+    m.send(&s.id, send("hi")).await.unwrap();
+    wait_attention(&m, &s.id, Some(Attention::Done)).await;
+
+    // Seeing it clears it, without counting as activity; seeing it again tells no one.
+    let mut rx = m.subscribe();
+    let before = m.get_session(&s.id).unwrap().last_activity;
+    assert_eq!(m.mark_seen(&s.id).unwrap().attention, None);
+    assert!(drain(&mut rx)
+        .await
+        .iter()
+        .any(|e| matches!(e, Event::SessionUpdated { session } if session.attention.is_none())));
+    m.mark_seen(&s.id).unwrap();
+    assert!(!drain(&mut rx)
+        .await
+        .iter()
+        .any(|e| matches!(e, Event::SessionUpdated { .. })));
+    assert_eq!(m.get_session(&s.id).unwrap().last_activity, before);
+    assert!(m.mark_seen("missing").is_err());
+
+    // An approval waits on the user; answering it, from the inbox say, ends the wait,
+    // and the turn it lets finish is done again.
+    m.send(&s.id, send("please approve")).await.unwrap();
+    wait_status(&m, &s.id, SessionStatus::WaitingApproval).await;
+    wait_attention(&m, &s.id, Some(Attention::Waiting)).await;
+    m.respond_approval(
+        &s.id,
+        "ap1",
+        ApprovalDecision {
+            option: ApprovalOption::Accept,
+            updated_input: None,
+            message: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_attention(&m, &s.id, Some(Attention::Done)).await;
+
+    // A failed turn and a crashed agent are failures.
+    m.send(&s.id, send("fail")).await.unwrap();
+    wait_attention(&m, &s.id, Some(Attention::Failed)).await;
+    m.mark_seen(&s.id).unwrap();
+    m.send(&s.id, send("crash")).await.unwrap();
+    wait_status(&m, &s.id, SessionStatus::Error).await;
+    wait_attention(&m, &s.id, Some(Attention::Failed)).await;
+
+    // It is kept across a restart; a wait the old daemon dropped becomes done.
+    let mut stored = m.get_session(&s.id).unwrap();
+    stored.attention = Some(Attention::Waiting);
+    store.upsert_session(&stored).unwrap();
+    let m2 = Manager::new(
+        store.clone(),
+        vec![Arc::new(FakeProvider {
+            calls: Default::default(),
+            starts: Default::default(),
+            prompts: Default::default(),
+            mcp: Default::default(),
+        })],
+        None,
+    );
+    m2.restore().unwrap();
+    assert_eq!(
+        m2.get_session(&s.id).unwrap().attention,
+        Some(Attention::Done)
+    );
+}
+
+#[tokio::test]
+async fn a_terminal_command_that_exits_wants_attention() {
+    let (m, _calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let opts = |cmd: &str| CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: dir.path().to_string_lossy().to_string(),
+        mode: Some(SessionMode::Terminal),
+        command: Some(vec!["/bin/sh".into(), "-c".into(), cmd.into()]),
+        ..Default::default()
+    };
+    let ok = m.create_session(opts("exit 0")).await.unwrap();
+    let bad = m.create_session(opts("exit 3")).await.unwrap();
+    wait_status(&m, &ok.id, SessionStatus::Exited).await;
+    wait_status(&m, &bad.id, SessionStatus::Exited).await;
+    assert_eq!(
+        m.get_session(&ok.id).unwrap().attention,
+        Some(Attention::Done)
+    );
+    assert_eq!(
+        m.get_session(&bad.id).unwrap().attention,
+        Some(Attention::Failed)
+    );
+}
+
+#[test]
+fn sessions_saved_before_attention_still_load() {
+    let s = Session::new(&CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: "/tmp".into(),
+        ..Default::default()
+    });
+    let mut json = serde_json::to_value(&s).unwrap();
+    json.as_object_mut().unwrap().remove("attention");
+    let old: Session = serde_json::from_value(json).unwrap();
+    assert_eq!(old.attention, None);
 }
 
 /// Every directory is its own repository, except `not-a-repo` directories.

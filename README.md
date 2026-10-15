@@ -31,7 +31,9 @@ If you run several AI coding agents at once, you probably have a pile of termina
 tabs, some waiting on an approval you have not seen yet. Aura puts them in one place.
 
 In short: you start sessions in Aura instead of in terminal tabs. The left side lists
-every session, grouped by project, with a badge on each one that is waiting for you.
+every session, grouped by project, with a badge on each one that is waiting for you
+and a dot on each one that finished, failed or asked you something since you last
+opened it.
 The middle shows what the selected agent is doing and lets you message it. The right
 side shows its model, permissions, token usage and actions. You switch between
 sessions, answer their questions and approve their commands without leaving the
@@ -61,7 +63,8 @@ keyboard, while the agents keep working in the background.
   See [Agents follow up on reviews](#agents-follow-up-on-reviews).
 - **An inbox for approvals and PR changes.** See every session waiting on you, and approve
   or decline with a single key. Changes on the pull requests you follow land there too;
-  click one to open the PR. See [Pull request changes in the inbox](#pull-request-changes-in-the-inbox).
+  click one to open the PR. The top bar shows how many items it holds.
+  See [Pull request changes in the inbox](#pull-request-changes-in-the-inbox).
 - **Git worktrees built in.** Start a session in its own worktree so parallel agents do
   not step on each other. Review the diff, commit and push from Aura. Each session
   shows its branch (unpushed, unpulled and uncommitted counts) and the status of
