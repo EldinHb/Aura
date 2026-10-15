@@ -358,8 +358,18 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Aura");
+        .build(tauri::generate_context!())
+        .expect("error while running Aura")
+        .run(|app, event| {
+            // The main window hides when closed; reopening the app (its Dock icon, a
+            // notification) shows it again.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                focus_main(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]
