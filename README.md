@@ -19,12 +19,23 @@
 
 <p align="center"><strong>🚧 Work in progress: very early stage 🚧</strong></p>
 
+<p align="center">
+  <img src="docs/screenshots/overview.png" width="900" alt="Aura with several agent sessions in the sidebar, a Claude Code transcript in the middle and session details on the right">
+</p>
+
 ---
 
 ## What is Aura?
 
 If you run several AI coding agents at once, you probably have a pile of terminal
 tabs, some waiting on an approval you have not seen yet. Aura puts them in one place.
+
+In short: you start sessions in Aura instead of in terminal tabs. The left side lists
+every session, grouped by project, with a badge on each one that is waiting for you.
+The middle shows what the selected agent is doing and lets you message it. The right
+side shows its model, permissions, token usage and actions. You switch between
+sessions, answer their questions and approve their commands without leaving the
+keyboard, while the agents keep working in the background.
 
 - **Sessions outlive the window.** Agents run in a background daemon (`aurad`), the
   way tmux keeps shells alive. Close Aura, reopen it, and every session is where you
@@ -60,6 +71,24 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
   See [Pull requests and pre-reviews](#pull-requests-and-pre-reviews).
 - **Keyboard only.** Command palette, a leader key with a which-key menu, vim-style
   navigation and hint mode for everything else. Every binding can be changed.
+
+### A quick tour
+
+When an agent needs a decision, its question appears in the transcript and the
+session is marked as waiting. Pick options with `1`–`9`, move between questions with
+`←` `→` or `Tab`, and press `Enter` to send.
+
+<p align="center">
+  <img src="docs/screenshots/question.png" width="900" alt="A Codex session asking two questions, with options picked by keyboard">
+</p>
+
+Pull requests that request your review show up under the sessions. An agent can
+pre-review one: you get its findings next to the diff, edit or delete them, and
+decide yourself what gets posted to GitHub.
+
+<p align="center">
+  <img src="docs/screenshots/pull-request.png" width="900" alt="An agent pre-review of a pull request: the diff with two findings, and the editable summary and verdict">
+</p>
 
 Aura is not an agent and never calls a model API. Logins, billing and model access
 stay with each CLI. Everything runs on your machine; there is no cloud service.
@@ -487,6 +516,14 @@ cargo test -p aura-github -p aura-review -p aura-store
 cd apps/desktop && pnpm test && pnpm lint && pnpm build
 # with pnpm dev running; GitHub and review providers are mocked by this spec
 pnpm e2e tests/e2e/pr-review.spec.ts
+```
+
+The README screenshots are generated from made-up sessions against a fake daemon,
+so they need no daemon, agents or GitHub account and never touch a running Aura.
+Regenerate them into `docs/screenshots` with:
+
+```sh
+cd apps/desktop && pnpm exec playwright test -c playwright.screenshots.config.ts
 ```
 
 ### Project layout

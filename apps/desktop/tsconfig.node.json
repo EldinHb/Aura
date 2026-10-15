@@ -8,5 +8,5 @@
     "strict": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "eslint-rules"]
+  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "playwright.screenshots.config.ts", "eslint-rules"]
 }
