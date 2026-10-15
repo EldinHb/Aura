@@ -106,7 +106,7 @@ it("shows merged and draft pull requests", async () => {
 
 it("counts a comment-only review as reviewed in the row", async () => {
   git.set("/work/a", status());
-  pullResult = pull({ review_decision: "REVIEW_REQUIRED", reviews: [{ reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: "1234567890abcdef" }] });
+  pullResult = pull({ review_decision: "REVIEW_REQUIRED", reviews: [{ bot: false, reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: "1234567890abcdef" }] });
   render(<Sidebar />);
   await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ commented"]));
 });

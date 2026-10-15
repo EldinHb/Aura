@@ -7,4 +7,8 @@ export type ReviewInbox = { account: string | null, pulls: Array<PullRequest>,
 /**
  * Open PRs the user authored.
  */
-mine: Array<PullRequest>, reviews: Array<PreReview>, last_synced: string | null, error: string | null, defaults: ReviewConfig, };
+mine: Array<PullRequest>, 
+/**
+ * Open PRs of others the user reviewed and is not asked to review again.
+ */
+reviewed: Array<PullRequest>, reviews: Array<PreReview>, last_synced: string | null, error: string | null, defaults: ReviewConfig, };

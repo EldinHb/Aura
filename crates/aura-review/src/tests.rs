@@ -73,6 +73,10 @@ struct MockGithub {
     merge_state: Mutex<String>,
     /// Merges and branch deletions, as `METHOD path`.
     writes: Mutex<Vec<String>>,
+    /// PR numbers in o/r each search filter finds, by the start of its filter.
+    searches: Mutex<Vec<(&'static str, Vec<u32>)>>,
+    /// PRs whose read fails inside an otherwise fine batch.
+    unreadable: Mutex<Vec<u32>>,
 }
 impl Default for MockGithub {
     fn default() -> Self {
@@ -85,6 +89,8 @@ impl Default for MockGithub {
             posted: Mutex::new(vec![]),
             merge_state: Mutex::new("CLEAN".into()),
             writes: Mutex::new(vec![]),
+            searches: Mutex::new(vec![("author%3A%40me", vec![1])]),
+            unreadable: Mutex::new(vec![]),
         }
     }
 }
@@ -100,13 +106,11 @@ impl Github for MockGithub {
         if path == "user" {
             return Ok(json!({"login":*self.account.lock()}));
         }
-        if path.starts_with("search/") && path.contains("author%3A%40me") {
-            return Ok(
-                json!({"total_count":1,"incomplete_results":false,"items":[{"repository_url":"https://api.github.com/repos/o/r","number":1}]}),
-            );
-        }
         if path.starts_with("search/") {
-            return Ok(json!({"total_count":0,"incomplete_results":false,"items":[]}));
+            let filter = path.split("archived%3Afalse%20").nth(1).unwrap_or_default();
+            let numbers = self.searches.lock().iter().find(|(f, _)| filter.starts_with(f)).map(|(_, n)| n.clone()).unwrap_or_default();
+            let items: Vec<Value> = numbers.iter().map(|n| json!({"repository_url":"https://api.github.com/repos/o/r","number":n})).collect();
+            return Ok(json!({"total_count":items.len(),"incomplete_results":false,"items":items}));
         }
         if path.contains("/compare/") {
             return Ok(json!({"merge_base_commit":{"sha":"b".repeat(40)}}));
@@ -118,14 +122,22 @@ impl Github for MockGithub {
                 .iter()
                 .map(|_| json!({"state":"COMMENTED","submittedAt":"2026-10-05T10:00:00Z","commit":{"oid":"a".repeat(40)}}))
                 .collect();
-            return Ok(
-                json!({"data":{"repository":{"viewerPermission":"WRITE","mergeCommitAllowed":false,"squashMergeAllowed":true,"rebaseMergeAllowed":true,"viewerDefaultMergeMethod":"SQUASH","deleteBranchOnMerge":false,"pullRequest":{"viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":*self.merge_state.lock(),"isCrossRepository":false,"commits":{"nodes":[]},"reviews":{"nodes":reviews}}}}}),
-            );
-        }
-        if path == "repos/o/r/pulls/1" {
-            return Ok(
-                json!({"title":"PR","state":"open","head":{"sha":*self.head.lock(),"ref":"feature"},"base":{"sha":"b".repeat(40),"ref":"main"},"user":{"login":"bob"}}),
-            );
+            // One batched query: r0 is o/r, holding prN:pullRequest(number:…) per PR.
+            let query = body.unwrap()["query"].as_str().unwrap().to_string();
+            let mut repo = json!({"viewerPermission":"WRITE","mergeCommitAllowed":false,"squashMergeAllowed":true,"rebaseMergeAllowed":true,"viewerDefaultMergeMethod":"SQUASH","deleteBranchOnMerge":false});
+            let mut errors = vec![];
+            for part in query.split(" pr").skip(1) {
+                let (index, rest) = part.split_once(":pullRequest(number:").unwrap();
+                let number: u32 = rest.split(')').next().unwrap().parse().unwrap();
+                let key = format!("pr{index}");
+                if self.unreadable.lock().contains(&number) {
+                    repo[&key] = Value::Null;
+                    errors.push(json!({"path":["r0",key],"message":"Something went wrong"}));
+                    continue;
+                }
+                repo[&key] = json!({"number":number,"title":format!("PR {number}"),"state":"OPEN","author":{"login":"bob"},"headRefOid":*self.head.lock(),"headRefName":"feature","baseRefOid":"b".repeat(40),"baseRefName":"main","viewerCanUpdate":true,"reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":*self.merge_state.lock(),"isCrossRepository":false,"commits":{"nodes":[]},"reviews":{"nodes":reviews}});
+            }
+            return Ok(json!({"data":{"r0":repo},"errors":errors}));
         }
         if (method == "PUT" && path == "repos/o/r/pulls/1/merge") || method == "DELETE" {
             self.writes.lock().push(format!("{method} {path}"));
@@ -336,6 +348,45 @@ async fn refresh_lists_authored_pulls_separately_and_hides_them() {
     assert!(svc.snapshot().mine[0].hidden);
     svc.refresh().await.unwrap();
     assert!(svc.snapshot().mine[0].hidden);
+}
+#[tokio::test]
+async fn refresh_lists_requested_reviewed_and_authored_pulls_in_one_read() {
+    let gh = Arc::new(MockGithub::default());
+    *gh.searches.lock() = vec![
+        ("review-requested%3A%40me", vec![2, 3]),
+        ("reviewed-by%3A%40me", vec![3, 4]),
+        ("author%3A%40me", vec![1]),
+    ];
+    let svc = service(gh, draft());
+    svc.refresh().await.unwrap();
+    let inbox = svc.snapshot();
+    let numbers = |pulls: &[PullRequest]| pulls.iter().map(|p| p.number).collect::<Vec<_>>();
+    assert_eq!(numbers(&inbox.pulls), vec![2, 3]);
+    assert_eq!(numbers(&inbox.reviewed), vec![4], "a PR asked again is listed as a request only");
+    assert_eq!(numbers(&inbox.mine), vec![1]);
+    svc.handle("pulls.hide", json!({"id":"o/r#4","account":"github.com:alice"})).await.unwrap();
+    assert!(svc.snapshot().reviewed[0].hidden);
+}
+#[tokio::test]
+async fn a_pull_request_that_fails_to_read_keeps_its_last_copy() {
+    let gh = Arc::new(MockGithub::default());
+    *gh.searches.lock() = vec![("review-requested%3A%40me", vec![2, 3]), ("author%3A%40me", vec![1])];
+    let svc = service(gh.clone(), draft());
+    svc.refresh().await.unwrap();
+    *gh.unreadable.lock() = vec![3];
+    *gh.head.lock() = "c".repeat(40);
+    *gh.searches.lock() = vec![("review-requested%3A%40me", vec![2, 3, 5]), ("author%3A%40me", vec![1])];
+    gh.unreadable.lock().push(5);
+    svc.refresh().await.unwrap();
+    let inbox = svc.snapshot();
+    assert_eq!(inbox.pulls.iter().map(|p| (p.number, p.head_sha.clone())).collect::<Vec<_>>(), vec![(2, "c".repeat(40)), (3, "a".repeat(40))],
+        "the others update, #3 keeps its last copy and the never-read #5 is left out");
+    assert_eq!(inbox.mine.len(), 1);
+    assert_eq!(inbox.error.as_deref(), Some("Unable to read o/r#3: Something went wrong\nUnable to read o/r#5: Something went wrong"));
+    gh.unreadable.lock().clear();
+    svc.refresh().await.unwrap();
+    assert_eq!(svc.snapshot().pulls.len(), 3);
+    assert_eq!(svc.snapshot().error, None);
 }
 #[tokio::test]
 async fn mocked_runner_produces_frozen_diff_and_cleans_workspace() {

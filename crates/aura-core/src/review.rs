@@ -35,10 +35,16 @@ pub struct PullRequest {
     /// Your latest submitted review of this PR on GitHub.
     #[serde(default)]
     pub my_review: Option<SubmittedReview>,
-    /// The latest submitted review of each other person, comment-only ones included;
-    /// the author's replies and bots are left out.
+    /// The latest submitted review of each other person or bot, comment-only ones included;
+    /// the author's replies are left out.
     #[serde(default)]
     pub reviews: Vec<SubmittedReview>,
+    /// Reviews requested and not given yet.
+    #[serde(default)]
+    pub requested: Vec<RequestedReviewer>,
+    /// Open review threads whose latest comment is a person's other than yours.
+    #[serde(default)]
+    pub unanswered_threads: u32,
     /// When your review, or a team's, was last requested.
     #[serde(default)]
     pub review_requested_at: Option<String>,
@@ -106,10 +112,22 @@ pub struct SubmittedReview {
     /// Login of whoever submitted it.
     #[serde(default)]
     pub reviewer: String,
+    /// Submitted by an app such as Copilot; such reviews do not count as reviewed.
+    #[serde(default)]
+    pub bot: bool,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
     pub state: String,
     pub submitted_at: String,
     pub commit_sha: String,
+}
+/// A person, team or bot asked to review a pull request.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RequestedReviewer {
+    /// A login, or `org/team` for a team.
+    pub name: String,
+    /// user | team | bot
+    pub kind: String,
 }
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -237,6 +255,9 @@ pub struct ReviewInbox {
     /// Open PRs the user authored.
     #[serde(default)]
     pub mine: Vec<PullRequest>,
+    /// Open PRs of others the user reviewed and is not asked to review again.
+    #[serde(default)]
+    pub reviewed: Vec<PullRequest>,
     pub reviews: Vec<PreReview>,
     pub last_synced: Option<String>,
     pub error: Option<String>,

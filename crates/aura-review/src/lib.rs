@@ -192,27 +192,65 @@ impl ReviewService {
                 if s.account.as_ref() != Some(&account) {
                     s.pulls.clear();
                     s.mine.clear();
+                    s.reviewed.clear();
                     s.last_synced = None;
                     s.account = Some(account.clone());
                 }
             }
-            let (pulls, mine) = tokio::join!(
-                aura_github::inbox(&*self.gh, &account),
-                aura_github::authored(&*self.gh, &account)
+            let (requested, reviewed, mine) = tokio::join!(
+                aura_github::requested(&*self.gh),
+                aura_github::reviewed(&*self.gh),
+                aura_github::authored(&*self.gh)
             );
-            let (mut pulls, mut mine) = (pulls?, mine?);
+            let (requested, mut reviewed, mine) = (requested?, reviewed?, mine?);
+            // Asked again after reviewing: listed as a request only.
+            reviewed.retain(|id| !requested.contains(id) && !mine.contains(id));
+            let mut ids: Vec<(String, u32)> = vec![];
+            for id in requested.iter().chain(&reviewed).chain(&mine) {
+                if !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+            let fetched = aura_github::pulls(&*self.gh, &account, &ids).await?;
             self.ensure_account(&account).await?;
             let hidden = self.store.feature_records(&format!("hidden:{account}"))?;
-            for p in pulls.iter_mut().chain(&mut mine) {
-                p.hidden = hidden.iter().any(|(id, v)| id == &p.id && v == "true");
+            let mut s = self.state.lock();
+            // A PR GitHub could not return this time keeps its last copy rather than vanishing.
+            let previous: HashMap<String, PullRequest> = s
+                .pulls
+                .iter()
+                .chain(&s.reviewed)
+                .chain(&s.mine)
+                .map(|p| (p.id.clone(), p.clone()))
+                .collect();
+            let mut read = HashMap::new();
+            let mut failures = vec![];
+            for ((repo, number), result) in ids.iter().zip(fetched) {
+                let id = format!("{repo}#{number}");
+                match result {
+                    Ok(mut p) => {
+                        p.hidden = hidden.iter().any(|(h, v)| h == &p.id && v == "true");
+                        read.insert(id, p);
+                    }
+                    Err(e) => {
+                        tracing::warn!("{e:#}");
+                        failures.push(format!("{e:#}"));
+                        if let Some(p) = previous.get(&id) {
+                            read.insert(id, p.clone());
+                        }
+                    }
+                }
             }
-            {
-                let mut s = self.state.lock();
-                s.pulls = pulls;
-                s.mine = mine;
-                s.last_synced = Some(now().to_rfc3339());
-                s.error = None;
-            }
+            let list = |ids: &[(String, u32)]| -> Vec<PullRequest> {
+                ids.iter()
+                    .filter_map(|(repo, number)| read.get(&format!("{repo}#{number}")).cloned())
+                    .collect()
+            };
+            s.pulls = list(&requested);
+            s.reviewed = list(&reviewed);
+            s.mine = list(&mine);
+            s.last_synced = Some(now().to_rfc3339());
+            s.error = (!failures.is_empty()).then(|| failures.join("\n"));
             Ok::<_, anyhow::Error>(())
         }
         .await;
@@ -252,7 +290,7 @@ impl ReviewService {
             if state.account.as_deref() != Some(account) {
                 return Ok(());
             }
-            for list in [&mut state.pulls, &mut state.mine] {
+            for list in [&mut state.pulls, &mut state.reviewed, &mut state.mine] {
                 if let Some(i) = list.iter().position(|p| p.id == live.id) {
                     if live.state == "open" {
                         live.hidden = list[i].hidden;
@@ -317,7 +355,7 @@ impl ReviewService {
                 {
                     let mut state = self.state.lock();
                     let state = &mut *state;
-                    for pull in state.pulls.iter_mut().chain(&mut state.mine) {
+                    for pull in state.pulls.iter_mut().chain(&mut state.reviewed).chain(&mut state.mine) {
                         if pull.id == id && pull.account == account {
                             pull.hidden = hidden;
                         }

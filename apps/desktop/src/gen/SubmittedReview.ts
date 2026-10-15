@@ -6,6 +6,10 @@ export type SubmittedReview = {
  */
 reviewer: string, 
 /**
+ * Submitted by an app such as Copilot; such reviews do not count as reviewed.
+ */
+bot: boolean, 
+/**
  * `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED` or `DISMISSED`.
  */
 state: string, submitted_at: string, commit_sha: string, };

@@ -72,13 +72,13 @@ it("lists your own pull requests with their status, separately from review reque
   expect(screen.getByTitle(pullFixture.title)).toBeTruthy();
 });
 it("shows your pull request as reviewed when someone only left comments", () => {
-  const commented = { ...pullFixture, author: "reviewer", reviews: [{ reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: pullFixture.head_sha }] };
+  const commented = { ...pullFixture, author: "reviewer", reviews: [{ bot: false, reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: pullFixture.head_sha }] };
   useReviews.setState({ inbox: { ...inboxFixture, pulls: [], mine: [commented] } });
   render(<ReviewSidebar />);
   expect([...screen.getByTitle(pullFixture.title).querySelectorAll(".chip")].map((c) => c.textContent)).toEqual(["checks pass", "commented"]);
 });
 it("derives the review state from other people's reviews when GitHub made no decision", () => {
-  const by = (...states: string[]) => states.map((state, i) => ({ reviewer: `r${i}`, state, submitted_at: "", commit_sha: "" }));
+  const by = (...states: string[]) => states.map((state, i) => ({ bot: false, reviewer: `r${i}`, state, submitted_at: "", commit_sha: "" }));
   expect(reviewStatus({ review_decision: "APPROVED", reviews: by("COMMENTED") })).toEqual({ label: "approved", tone: "ok" });
   expect(reviewStatus({ review_decision: "REVIEW_REQUIRED", reviews: [] })).toEqual({ label: "review required" });
   expect(reviewStatus({ review_decision: "REVIEW_REQUIRED", reviews: by("COMMENTED") })).toEqual({ label: "commented" });
@@ -142,7 +142,7 @@ it("preview is inert until its explicit Post button is clicked", async () => {
   await waitFor(() => expect(call).toHaveBeenCalledWith("reviews.submit", { id: reviewFixture.id, token: "token" }));
 });
 it("marks a PR whose review was requested again after you reviewed it", () => {
-  const again = { ...pullFixture, my_review: { reviewer: "reviewer", state: "APPROVED", submitted_at: "2026-10-01T10:00:00Z", commit_sha: "c".repeat(40) }, review_requested_at: "2026-10-02T10:00:00Z" };
+  const again = { ...pullFixture, my_review: { bot: false, reviewer: "reviewer", state: "APPROVED", submitted_at: "2026-10-01T10:00:00Z", commit_sha: "c".repeat(40) }, review_requested_at: "2026-10-02T10:00:00Z" };
   const earlier = { ...reviewFixture, status: "submitted", created_at: "2026-10-01T09:00:00Z" };
   useReviews.setState({ inbox: { ...inboxFixture, pulls: [again], reviews: [earlier] } });
   render(<ReviewSidebar />);
@@ -151,7 +151,7 @@ it("marks a PR whose review was requested again after you reviewed it", () => {
   expect(row.closest(".pr-sidebar-row")!.className).toContain("rerequested");
 });
 it("shows your verdict on a PR you already reviewed in this round", () => {
-  const reviewed = { ...pullFixture, my_review: { reviewer: "reviewer", state: "CHANGES_REQUESTED", submitted_at: "2026-10-02T10:00:00Z", commit_sha: pullFixture.head_sha }, review_requested_at: "2026-10-01T10:00:00Z" };
+  const reviewed = { ...pullFixture, my_review: { bot: false, reviewer: "reviewer", state: "CHANGES_REQUESTED", submitted_at: "2026-10-02T10:00:00Z", commit_sha: pullFixture.head_sha }, review_requested_at: "2026-10-01T10:00:00Z" };
   useReviews.setState({ inbox: { ...inboxFixture, pulls: [reviewed] } });
   render(<ReviewSidebar />);
   const row = screen.getByTitle(pullFixture.title);

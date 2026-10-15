@@ -36,6 +36,7 @@ export * from './PullRequest';
 export * from './Question';
 export * from './QuestionOption';
 export * from './RepoIssue';
+export * from './RequestedReviewer';
 export * from './ReviewAgent';
 export * from './ReviewComment';
 export * from './ReviewConfig';

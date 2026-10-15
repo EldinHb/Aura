@@ -1,7 +1,7 @@
 //! GitHub transport. Only the daemon invokes gh; credentials never reach the webview.
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use aura_core::{PullRequest, SubmittedReview};
+use aura_core::{PullRequest, RequestedReviewer, SubmittedReview};
 use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{process::Stdio, time::Duration};
@@ -140,6 +140,12 @@ fn is_server_error(message: &str) -> bool {
         .any(|status| message.contains(status))
 }
 
+/// gh fails a GraphQL query that reports any error, even when GitHub still answered the rest
+/// of it. Such a partial answer is kept; callers read its `errors`.
+fn has_data(stdout: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(stdout).is_ok_and(|v| v["data"].is_object())
+}
+
 /// Reads can be repeated. A write that failed with a server error may still have
 /// been applied, so it is never retried.
 fn is_read(method: &str, path: &str, body: Option<&Value>) -> bool {
@@ -202,7 +208,8 @@ impl GhCli {
         let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
             .await
             .context("GitHub request timed out")??;
-        if !output.status.success() {
+        let partial = path == "graphql" && has_data(&output.stdout);
+        if !output.status.success() && !partial {
             let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
             if [
                 "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 405", "HTTP 422", "HTTP 429",
@@ -329,17 +336,91 @@ pub async fn pages(gh: &dyn Github, path: &str) -> Result<Vec<Value>> {
     }
     bail!("GitHub pagination limit exceeded; previous cache retained")
 }
+/// One pull request, read like [`pulls`] reads many.
 pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Result<PullRequest> {
-    validate_repo(repo)?;
-    let v = gh
-        .request("GET", &format!("repos/{repo}/pulls/{number}"), None)
+    pulls(gh, account, &[(repo.to_string(), number)])
+        .await?
+        .pop()
+        .context("GitHub returned no pull request")?
+}
+/// PRs read per GraphQL query.
+const BATCH: usize = 20;
+/// Read the PRs `ids` (`owner/repo`, number) in order, a batch per GraphQL query. A PR GitHub
+/// cannot return fails on its own, so the rest of its batch still reads; a query that fails as
+/// a whole fails the read.
+pub async fn pulls(gh: &dyn Github, account: &str, ids: &[(String, u32)]) -> Result<Vec<Result<PullRequest>>> {
+    for (repo, _) in ids {
+        validate_repo(repo)?;
+    }
+    let login = account.split_once(':').map_or(account, |(_, login)| login);
+    // Owned chunks: a closure over borrowed slices makes the future unusable from tokio::spawn.
+    let batches: Vec<_> = stream::iter(ids.chunks(BATCH).map(<[_]>::to_vec))
+        .map(|chunk| async move { batch(gh, account, login, &chunk).await })
+        .buffered(3)
+        .try_collect()
         .await?;
-    let strings = |key: &str, field: &str| {
-        v[key]
+    Ok(batches.into_iter().flatten().collect())
+}
+/// One query for `ids`: an aliased `repository` per repo (`r0`, `r1`, …) holding an aliased
+/// `pullRequest` per PR (`pr0`, `pr1`, … by position in `ids`).
+async fn batch(gh: &dyn Github, account: &str, login: &str, ids: &[(String, u32)]) -> Result<Vec<Result<PullRequest>>> {
+    let mut repos: Vec<&str> = vec![];
+    for (repo, _) in ids {
+        if !repos.iter().any(|r| r.eq_ignore_ascii_case(repo)) {
+            repos.push(repo);
+        }
+    }
+    let repo_of = |repo: &str| repos.iter().position(|r| r.eq_ignore_ascii_case(repo)).unwrap();
+    let mut query = String::from("query($login:String!){");
+    for (i, repo) in repos.iter().enumerate() {
+        // validate_repo allows no quotes or braces, so the names are safe to inline.
+        let (owner, name) = repo.split_once('/').context("Invalid repository")?;
+        query += &format!("r{i}:repository(owner:\"{owner}\",name:\"{name}\"){{{REPO}");
+        for (j, (_, number)) in ids.iter().enumerate().filter(|(_, (r, _))| repo_of(r) == i) {
+            query += &format!(" pr{j}:pullRequest(number:{number}){{...pull}}");
+        }
+        query += "}";
+    }
+    query += "}";
+    query += PULL;
+    let q = gh
+        .request("POST", "graphql", Some(json!({"query": query, "variables": {"login": login}})))
+        .await?;
+    if !q["data"].is_object() {
+        bail!("Unable to read pull requests: {}", q["errors"]);
+    }
+    let errors = q["errors"].as_array().cloned().unwrap_or_default();
+    Ok(ids
+        .iter()
+        .enumerate()
+        .map(|(j, (repo, number))| {
+            let (r, pr) = (format!("r{}", repo_of(repo)), format!("pr{j}"));
+            // An error on the repository itself, or anywhere inside this PR, fails this PR.
+            let error = errors.iter().find(|e| {
+                let path = &e["path"];
+                path[0] == r.as_str() && path[1].as_str().is_none_or(|seg| seg == pr || !is_pull_alias(seg))
+            });
+            if let Some(e) = error {
+                bail!("Unable to read {repo}#{number}: {}", e["message"].as_str().unwrap_or("GitHub returned an error"));
+            }
+            let node = &q["data"][&r][&pr];
+            if !node.is_object() {
+                bail!("Unable to read {repo}#{number}: not found");
+            }
+            Ok(from_graphql(account, login, repo, *number, &q["data"][&r], node))
+        })
+        .collect())
+}
+fn is_pull_alias(seg: &str) -> bool {
+    seg.strip_prefix("pr").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+fn from_graphql(account: &str, login: &str, repo: &str, number: u32, r: &Value, d: &Value) -> PullRequest {
+    let names = |conn: &Value, field: &str| {
+        conn["nodes"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|a| a[field].as_str().map(String::from))
+            .filter_map(|n| n[field].as_str().map(String::from))
             .collect()
     };
     let mut p = PullRequest {
@@ -347,49 +428,29 @@ pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Re
         account: account.into(),
         repo: repo.into(),
         number,
-        title: s(&v, "title"),
-        body: s(&v, "body"),
-        url: s(&v, "html_url"),
-        author: s(&v["user"], "login"),
-        state: if v["merged"] == true {
-            "merged".into()
-        } else {
-            s(&v, "state")
-        },
-        draft: v["draft"].as_bool().unwrap_or(false),
-        base_ref: s(&v["base"], "ref"),
-        head_ref: s(&v["head"], "ref"),
-        base_sha: s(&v["base"], "sha"),
-        head_sha: s(&v["head"], "sha"),
-        created_at: s(&v, "created_at"),
-        updated_at: s(&v, "updated_at"),
-        additions: v["additions"].as_u64().unwrap_or(0) as u32,
-        deletions: v["deletions"].as_u64().unwrap_or(0) as u32,
-        changed_files: v["changed_files"].as_u64().unwrap_or(0) as u32,
-        assignees: strings("assignees", "login"),
-        labels: strings("labels", "name"),
-        milestone: v["milestone"]["number"].as_u64().map(|n| n as u32),
+        title: s(d, "title"),
+        body: s(d, "body"),
+        url: s(d, "url"),
+        author: s(&d["author"], "login"),
+        state: s(d, "state").to_lowercase(),
+        draft: d["isDraft"].as_bool().unwrap_or(false),
+        base_ref: s(d, "baseRefName"),
+        head_ref: s(d, "headRefName"),
+        base_sha: s(d, "baseRefOid"),
+        head_sha: s(d, "headRefOid"),
+        created_at: s(d, "createdAt"),
+        updated_at: s(d, "updatedAt"),
+        additions: d["additions"].as_u64().unwrap_or(0) as u32,
+        deletions: d["deletions"].as_u64().unwrap_or(0) as u32,
+        changed_files: d["changedFiles"].as_u64().unwrap_or(0) as u32,
+        assignees: names(&d["assignees"], "login"),
+        labels: names(&d["labels"], "name"),
+        milestone: d["milestone"]["number"].as_u64().map(|n| n as u32),
+        can_edit: d["viewerCanUpdate"].as_bool().unwrap_or(false),
+        review_decision: s(d, "reviewDecision"),
+        checks: s(&d["commits"]["nodes"][0]["commit"]["statusCheckRollup"], "state"),
         ..Default::default()
     };
-    let (owner, name) = repo.split_once('/').unwrap();
-    let login = account.split_once(':').map_or(account, |(_, login)| login);
-    let q = gh
-        .request(
-            "POST",
-            "graphql",
-            Some(json!({"query": PULL, "variables": {"owner": owner, "name": name, "number": number, "login": login}})),
-        )
-        .await?;
-    if q.get("errors").is_some() {
-        bail!("Unable to read PR capabilities: {}", q["errors"]);
-    }
-    let d = &q["data"]["repository"]["pullRequest"];
-    p.can_edit = d["viewerCanUpdate"].as_bool().unwrap_or(false);
-    p.review_decision = s(d, "reviewDecision");
-    p.checks = s(
-        &d["commits"]["nodes"][0]["commit"]["statusCheckRollup"],
-        "state",
-    );
     let review = &d["reviews"]["nodes"][0];
     p.my_review = review["submittedAt"]
         .as_str()
@@ -398,10 +459,12 @@ pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Re
             state: s(review, "state"),
             submitted_at: submitted_at.into(),
             commit_sha: s(&review["commit"], "oid"),
+            bot: false,
         });
     p.reviews = reviews_by_others(d, &[&p.author, login]);
+    p.requested = requested_reviewers(&d["reviewRequests"]["nodes"]);
+    p.unanswered_threads = unanswered_threads(&d["reviewThreads"]["nodes"], login);
     p.review_requested_at = requested_at(&d["timelineItems"]["nodes"], login);
-    let r = &q["data"]["repository"];
     p.merge_state = s(d, "mergeStateStatus");
     p.merge_methods = [("merge", "mergeCommitAllowed"), ("squash", "squashMergeAllowed"), ("rebase", "rebaseMergeAllowed")]
         .into_iter()
@@ -413,7 +476,7 @@ pub async fn pull(gh: &dyn Github, account: &str, repo: &str, number: u32) -> Re
     p.can_delete_branch = p.can_merge && d["isCrossRepository"] == false;
     p.auto_delete_branch = r["deleteBranchOnMerge"] == true;
     p.merge_blocked_by = p.merge_blocker().map(String::from);
-    Ok(p)
+    p
 }
 /// Merge `p` with `method` as `account`. GitHub refuses when the head moved past
 /// `p.head_sha`, so only the commits that were shown are merged.
@@ -454,14 +517,21 @@ fn ref_path(branch: &str) -> Result<String> {
         })
         .collect())
 }
-/// Your latest review, recent review requests and what a merge may do ride along with the
-/// capability query.
-const PULL: &str = concat!(r#"query($owner:String!,$name:String!,$number:Int!,$login:String!){repository(owner:$owner,name:$name){viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod deleteBranchOnMerge pullRequest(number:$number){viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} "#,
+/// What a merge may do, read once per repository in a batch.
+const REPO: &str = "viewerPermission mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod deleteBranchOnMerge";
+/// A PR with your latest review, who reviewed and was asked to, and open review threads.
+const PULL: &str = concat!(
+    "fragment pull on PullRequest{number title body url author{login} state isDraft baseRefName headRefName baseRefOid headRefOid createdAt updatedAt additions deletions changedFiles assignees(first:20){nodes{login}} labels(first:50){nodes{name}} milestone{number} ",
+    "viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} ",
+    "timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}} ",
+    "reviewRequests(first:20){nodes{requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login} ... on Mannequin{login}}}} ",
+    "reviewThreads(first:100){nodes{isResolved comments(last:1){nodes{author{__typename login}}}}} ",
     reviews_query!(),
-    r#" timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}}}}}"#);
+    "}"
+);
 /// Who has reviewed the PR in `pull` (GraphQL, queried with `reviews_query!()`), skipping `skip`
-/// (the author, whose replies to threads are comment-only reviews too) and bots. A
-/// reviewer's verdict is their latest approval or change request, else a comment.
+/// (the author, whose replies to threads are comment-only reviews too). A reviewer's verdict
+/// is their latest approval or change request, else a comment.
 pub fn reviews_by_others(pull: &Value, skip: &[&str]) -> Vec<SubmittedReview> {
     const RESPONSES: [&str; 3] = ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"];
     let opinion = |login: &str| {
@@ -477,20 +547,53 @@ pub fn reviews_by_others(pull: &Value, skip: &[&str]) -> Vec<SubmittedReview> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|n| RESPONSES.contains(&n["state"].as_str().unwrap_or_default()) && n["author"]["__typename"] != "Bot")
+        .filter(|n| RESPONSES.contains(&n["state"].as_str().unwrap_or_default()))
         .filter_map(|n| {
             let reviewer = s(&n["author"], "login");
-            if reviewer.is_empty() || reviewer.ends_with("[bot]") || skip.iter().any(|l| l.eq_ignore_ascii_case(&reviewer)) {
+            if reviewer.is_empty() || skip.iter().any(|l| l.eq_ignore_ascii_case(&reviewer)) {
                 return None;
             }
             Some(SubmittedReview {
                 state: opinion(&reviewer).unwrap_or_else(|| s(n, "state")),
                 submitted_at: s(n, "submittedAt"),
                 commit_sha: s(&n["commit"], "oid"),
+                bot: n["author"]["__typename"] == "Bot" || reviewer.ends_with("[bot]"),
                 reviewer,
             })
         })
         .collect()
+}
+/// Pending review requests: users, teams as `org/team`, and bots.
+fn requested_reviewers(nodes: &Value) -> Vec<RequestedReviewer> {
+    nodes
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let who = &n["requestedReviewer"];
+            let (name, kind) = match who["__typename"].as_str()? {
+                "Team" => (s(who, "combinedSlug"), "team"),
+                "Bot" => (s(who, "login"), "bot"),
+                _ => (s(who, "login"), "user"),
+            };
+            (!name.is_empty()).then(|| RequestedReviewer { name, kind: kind.into() })
+        })
+        .collect()
+}
+/// Open review threads whose latest comment is a person's other than `login`; a bot's
+/// remark does not wait on you.
+fn unanswered_threads(threads: &Value, login: &str) -> u32 {
+    threads
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| t["isResolved"] == false)
+        .filter(|t| {
+            let author = &t["comments"]["nodes"][0]["author"];
+            author["__typename"] != "Bot"
+                && author["login"].as_str().is_some_and(|l| !l.is_empty() && !l.eq_ignore_ascii_case(login))
+        })
+        .count() as u32
 }
 /// The latest request addressed to `login` or to a team. Team membership is not
 /// resolved, so a request to any team counts.
@@ -514,23 +617,23 @@ pub fn s(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().to_string()
 }
 
-/// Open PRs that request the user's review.
-pub async fn inbox(gh: &dyn Github, account: &str) -> Result<Vec<PullRequest>> {
-    search(gh, account, "review-requested%3A%40me", "inbox").await
+/// Open PRs that request the user's review, as (`owner/repo`, number) for [`pulls`].
+pub async fn requested(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
+    search(gh, "review-requested%3A%40me", "inbox").await
+}
+
+/// Open PRs of others the user reviewed.
+pub async fn reviewed(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
+    search(gh, "reviewed-by%3A%40me%20-author%3A%40me", "list of reviewed pull requests").await
 }
 
 /// Open PRs the user authored.
-pub async fn authored(gh: &dyn Github, account: &str) -> Result<Vec<PullRequest>> {
-    search(gh, account, "author%3A%40me", "list of your pull requests").await
+pub async fn authored(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
+    search(gh, "author%3A%40me", "list of your pull requests").await
 }
 
-async fn search(
-    gh: &dyn Github,
-    account: &str,
-    filter: &str,
-    what: &str,
-) -> Result<Vec<PullRequest>> {
-    let mut items = vec![];
+async fn search(gh: &dyn Github, filter: &str, what: &str) -> Result<Vec<(String, u32)>> {
+    let mut ids = vec![];
     for page in 1..=10 {
         let response=gh.request("GET",&format!("search/issues?q=is%3Apr%20is%3Aopen%20archived%3Afalse%20{filter}&per_page=100&page={page}"),None).await?;
         if response["incomplete_results"] == true
@@ -541,31 +644,21 @@ async fn search(
         let rows = response["items"]
             .as_array()
             .context("Invalid search response")?;
-        let ids = rows
-            .iter()
-            .map(|row| {
-                let url = s(row, "repository_url");
-                let repo = url
-                    .split("/repos/")
-                    .nth(1)
-                    .context("Invalid repository URL")?
-                    .to_string();
-                let number = row["number"].as_u64().context("Missing PR number")? as u32;
-                Ok((repo, number))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        // Each PR costs two gh invocations; fetching them one by one made large inboxes slow.
-        let fetched: Vec<PullRequest> = stream::iter(ids)
-            .map(|(repo, number)| async move { pull(gh, account, &repo, number).await })
-            .buffered(6)
-            .try_collect()
-            .await?;
-        items.extend(fetched);
+        for row in rows {
+            let url = s(row, "repository_url");
+            let repo = url
+                .split("/repos/")
+                .nth(1)
+                .context("Invalid repository URL")?
+                .to_string();
+            let number = row["number"].as_u64().context("Missing PR number")? as u32;
+            ids.push((repo, number));
+        }
         if rows.len() < 100 {
             break;
         }
     }
-    Ok(items)
+    Ok(ids)
 }
 
 /// Project associations and fields are cursor-paginated separately from REST conversation lists.
@@ -790,10 +883,119 @@ mod tests {
         });
         let reviews = reviews_by_others(&pull, &["Me"]);
         assert_eq!(
-            reviews.iter().map(|r| (r.reviewer.as_str(), r.state.as_str(), r.commit_sha.as_str())).collect::<Vec<_>>(),
-            vec![("alice", "COMMENTED", "c1"), ("bob", "APPROVED", "c1")],
-            "the author's own replies, bots, drafts and dismissed reviews are skipped"
+            reviews.iter().map(|r| (r.reviewer.as_str(), r.state.as_str(), r.commit_sha.as_str(), r.bot)).collect::<Vec<_>>(),
+            vec![("alice", "COMMENTED", "c1", false), ("bob", "APPROVED", "c1", false), ("copilot-pull-request-reviewer", "COMMENTED", "c1", true)],
+            "the author's own replies, drafts and dismissed reviews are skipped; bots are kept and marked"
         );
         assert!(reviews_by_others(&json!({}), &[]).is_empty());
+    }
+
+    /// Answers batched PR queries from `repos` (`owner/repo` -> PR numbers that exist).
+    struct Batched {
+        queries: std::sync::Mutex<Vec<String>>,
+        repos: Vec<(&'static str, Vec<u32>)>,
+        fail: bool,
+    }
+    #[async_trait]
+    impl Github for Batched {
+        fn host(&self) -> &str {
+            "github.com"
+        }
+        async fn diff(&self, _: &str, _: &str, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        async fn request(&self, _: &str, path: &str, body: Option<Value>) -> Result<Value> {
+            assert_eq!(path, "graphql");
+            let body = body.unwrap();
+            assert_eq!(body["variables"], json!({"login": "me"}));
+            let query = body["query"].as_str().unwrap().to_string();
+            self.queries.lock().unwrap().push(query.clone());
+            if self.fail {
+                return Ok(json!({"errors": [{"message": "Something went wrong"}]}));
+            }
+            let (mut data, mut errors) = (json!({}), vec![]);
+            // r0:repository(owner:"o",name:"r"){… pr0:pullRequest(number:1){...pull} …}
+            for part in query.split("repository(owner:\"").skip(1) {
+                let alias = query[..query.find(&format!("repository(owner:\"{part}")).unwrap()].rsplit(['{', '}']).next().unwrap().trim_end_matches(':').to_string();
+                let (owner, rest) = part.split_once("\",name:\"").unwrap();
+                let name = rest.split('"').next().unwrap();
+                let Some((_, numbers)) = self.repos.iter().find(|(r, _)| *r == format!("{owner}/{name}")) else {
+                    data[&alias] = Value::Null;
+                    errors.push(json!({"path": [alias], "message": "Could not resolve to a Repository"}));
+                    continue;
+                };
+                data[&alias] = json!({"viewerPermission": "WRITE", "squashMergeAllowed": true});
+                for pr in rest.split(" pr").skip(1) {
+                    let (index, rest) = pr.split_once(":pullRequest(number:").unwrap();
+                    let number: u32 = rest.split(')').next().unwrap().parse().unwrap();
+                    let key = format!("pr{index}");
+                    if numbers.contains(&number) {
+                        data[&alias][&key] = json!({"number": number, "title": format!("PR {number}"), "state": "OPEN", "author": {"login": "bob"}, "headRefOid": "h",
+                            "reviewThreads": {"nodes": [
+                                {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "User", "login": "alice"}}]}},
+                                {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "User", "login": "me"}}]}},
+                                {"isResolved": false, "comments": {"nodes": [{"author": {"__typename": "Bot", "login": "copilot"}}]}},
+                                {"isResolved": true, "comments": {"nodes": [{"author": {"__typename": "User", "login": "alice"}}]}},
+                            ]},
+                            "reviewRequests": {"nodes": [
+                                {"requestedReviewer": {"__typename": "User", "login": "carol"}},
+                                {"requestedReviewer": {"__typename": "Team", "combinedSlug": "o/core"}},
+                                {"requestedReviewer": {"__typename": "Bot", "login": "copilot"}},
+                            ]}});
+                    } else {
+                        data[&alias][&key] = Value::Null;
+                        errors.push(json!({"path": [alias, key], "message": format!("Could not resolve to a PullRequest with the number of {number}.")}));
+                    }
+                }
+            }
+            Ok(json!({"data": data, "errors": errors}))
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_pull_requests_in_batches_of_one_query() {
+        let ids: Vec<(String, u32)> = (1..=25).map(|n| (if n % 2 == 0 { "o/r" } else { "o/other" }.to_string(), n)).collect();
+        let gh = Batched { queries: Default::default(), repos: vec![("o/r", (1..=25).collect()), ("o/other", (1..=25).collect())], fail: false };
+        let pulls = pulls(&gh, "github.com:me", &ids).await.unwrap();
+        assert_eq!(gh.queries.lock().unwrap().len(), 2, "25 PRs take two queries of at most {BATCH}");
+        let pulls: Vec<_> = pulls.into_iter().map(Result::unwrap).collect();
+        assert_eq!(pulls.iter().map(|p| (p.repo.as_str(), p.number)).collect::<Vec<_>>(), ids.iter().map(|(r, n)| (r.as_str(), *n)).collect::<Vec<_>>());
+        let p = &pulls[1];
+        assert_eq!((p.id.as_str(), p.title.as_str(), p.state.as_str(), p.author.as_str(), p.can_merge), ("o/r#2", "PR 2", "open", "bob", true));
+        assert_eq!(p.unanswered_threads, 1, "your own last word, a bot's remark and resolved threads wait on no one");
+        assert_eq!(
+            p.requested.iter().map(|r| (r.name.as_str(), r.kind.as_str())).collect::<Vec<_>>(),
+            vec![("carol", "user"), ("o/core", "team"), ("copilot", "bot")]
+        );
+        let first = &gh.queries.lock().unwrap()[0];
+        assert_eq!(first.matches("repository(").count(), 2, "one repository block per repo");
+        assert!(first.contains("pr19:pullRequest(number:20)") && !first.contains("pr20:"));
+    }
+
+    #[tokio::test]
+    async fn one_unreadable_pull_request_does_not_fail_its_batch() {
+        let gh = Batched { queries: Default::default(), repos: vec![("o/r", vec![1, 3])], fail: false };
+        let ids = [("o/r".to_string(), 1), ("o/r".to_string(), 2), ("o/gone".to_string(), 7), ("o/r".to_string(), 3)];
+        let pulls = pulls(&gh, "github.com:me", &ids).await.unwrap();
+        assert_eq!(pulls[0].as_ref().unwrap().number, 1);
+        assert_eq!(pulls[1].as_ref().unwrap_err().to_string(), "Unable to read o/r#2: Could not resolve to a PullRequest with the number of 2.");
+        assert_eq!(pulls[2].as_ref().unwrap_err().to_string(), "Unable to read o/gone#7: Could not resolve to a Repository");
+        assert_eq!(pulls[3].as_ref().unwrap().number, 3);
+        assert_eq!(pull(&gh, "github.com:me", "o/r", 3).await.unwrap().number, 3);
+        assert!(pull(&gh, "github.com:me", "o/r", 2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_query_github_rejects_as_a_whole_fails_the_read() {
+        let gh = Batched { queries: Default::default(), repos: vec![], fail: true };
+        assert!(pulls(&gh, "github.com:me", &[("o/r".into(), 1)]).await.unwrap_err().to_string().contains("Something went wrong"));
+        assert!(pulls(&gh, "github.com:me", &[("o/../r".into(), 1)]).await.is_err(), "unsafe names never reach the query");
+    }
+
+    #[test]
+    fn keeps_partial_graphql_answers_from_gh() {
+        assert!(has_data(br#"{"data":{"r0":null},"errors":[{"message":"x"}]}"#));
+        assert!(!has_data(br#"{"data":null,"errors":[{"type":"RATE_LIMITED"}]}"#));
+        assert!(!has_data(b"gh: not json"));
     }
 }
