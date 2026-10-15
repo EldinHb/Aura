@@ -191,8 +191,8 @@ inspector (`⌘K` → Make orchestrator). From the command line:
   the sidebar, in its group. Open one to read along, message it, approve its
   commands, or switch it to the agent's TUI. The chevron on the orchestrator (or `←`
   / `→` in the sidebar) hides and shows its workers; Aura remembers that per
-  orchestrator. While the workers are shown, `j` / `k` in the sidebar stay among the
-  orchestrator and its workers.
+  orchestrator. In the sidebar, `j` / `k` step over the workers of other
+  orchestrators; from an orchestrator they go through its workers and out again.
 - **Reports come back by themselves.** When a worker stops (done, failed, or waiting
   for your approval or answer), Aura sends the orchestrator a short report with the
   worker's last reply as soon as the orchestrator is idle. It does not have to poll,

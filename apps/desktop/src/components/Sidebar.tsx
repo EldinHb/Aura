@@ -171,11 +171,12 @@ export function Sidebar() {
       if (st.focus !== "sidebar") return false;
       const all = selectVisibleSessions(st);
       const current = st.prSelection ? undefined : sidebarCurrent(st, all);
-      // Inside an open orchestra the keys stay among its orchestrator and workers.
+      // Up and down step over the workers of other orchestras; they are reached from
+      // their orchestrator. First and last still go to the ends of the sidebar.
       const orchestra = current && selectOrchestra(st, current.id);
-      const sessions = orchestra ?? all;
+      const sessions = Math.abs(delta) > 1 ? all : selectSessionSections(st).flatMap(([, list]) => list.filter((s) => orchestra?.includes(s) || orchestratorsOf(s, list).length === 0));
       const { review, mine } = visiblePulls(useReviews.getState());
-      const pulls = orchestra ? [] : [...review, ...mine];
+      const pulls = [...review, ...mine];
       const count = sessions.length + pulls.length;
       if (!count) return true;
       const cur = st.prSelection ? sessions.length + pulls.findIndex((p) => p.id === st.prSelection?.id) : current ? sessions.indexOf(current) : -1;

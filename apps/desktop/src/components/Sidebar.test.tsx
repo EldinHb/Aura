@@ -169,27 +169,59 @@ it("shows matching workers of a collapsed orchestrator while filtering", () => {
   expect(rows()).toEqual(["w3"]);
 });
 
-it("keeps the arrow keys inside an open orchestra", () => {
+it("walks into an orchestra from its orchestrator and out past its last worker", () => {
   orchestras();
   render(<Sidebar />);
-  act(() => useStore.getState().select("o1"));
-  press("sidebar.nav.up");
-  expect(current()).toBe("o1");
-  for (const id of ["w1", "w2", "w3", "w3"]) {
+  act(() => useStore.getState().select("p"));
+  // The orchestrator belongs to its orchestra, so down from it goes through every worker, nested ones included.
+  for (const id of ["o1", "w1", "w2", "w3", "o2", "v1", "q", "q"]) {
     press("sidebar.nav.down");
     expect(current()).toBe(id);
   }
-  press("sidebar.nav.first");
-  expect(current()).toBe("o1");
-  press("sidebar.nav.last");
-  expect(current()).toBe("w3");
+});
+
+it("skips the workers of open orchestras when moving up from outside them", () => {
+  orchestras();
+  render(<Sidebar />);
+  act(() => useStore.getState().select("q"));
+  for (const id of ["o2", "o1", "p", "p"]) {
+    press("sidebar.nav.up");
+    expect(current()).toBe(id);
+  }
+  // Up from a worker stays in its orchestra until the orchestrator, then leaves it.
+  act(() => useStore.getState().select("w3"));
+  for (const id of ["w2", "w1", "o1", "p"]) {
+    press("sidebar.nav.up");
+    expect(current()).toBe(id);
+  }
+  // Up from the orchestrator below lands on the orchestrator above, not its last worker.
   act(() => useStore.getState().select("v1"));
-  press("sidebar.nav.down");
+  press("sidebar.nav.up");
+  expect(current()).toBe("o2");
+  press("sidebar.nav.up");
+  expect(current()).toBe("o1");
+});
+
+it("steps over a collapsed nested orchestra inside an open one", () => {
+  orchestras();
+  useStore.setState({ collapsedOrchestras: ["w2"] });
+  render(<Sidebar />);
+  act(() => useStore.getState().select("o1"));
+  for (const id of ["w1", "w2", "o2"]) {
+    press("sidebar.nav.down");
+    expect(current()).toBe(id);
+  }
+});
+
+it("keeps first and last at the ends of the sidebar", () => {
+  orchestras();
+  useStore.setState({ sessionOrder: ["p", "q", "o1", "w1", "w2", "w3", "o2", "v1"] });
+  render(<Sidebar />);
+  act(() => useStore.getState().select("w1"));
+  press("sidebar.nav.first");
+  expect(current()).toBe("p");
+  press("sidebar.nav.last");
   expect(current()).toBe("v1");
-  press("sidebar.nav.up");
-  expect(current()).toBe("o2");
-  press("sidebar.nav.up");
-  expect(current()).toBe("o2");
 });
 
 it("moves through every session as before outside an orchestra and past collapsed ones", () => {
@@ -229,7 +261,7 @@ it("opens and closes orchestras with left and right like a tree", () => {
   expect(current()).toBe("o1");
   press("sidebar.nav.collapse");
   expect(rows()).toEqual(["p", "o1", "o2", "v1", "q"]);
-  // A collapsed orchestrator is a single row: up and down leave it, into the next open orchestra.
+  // A collapsed orchestrator is a single row that up and down move past.
   press("sidebar.nav.up");
   expect(current()).toBe("p");
   press("sidebar.nav.down");
@@ -237,8 +269,7 @@ it("opens and closes orchestras with left and right like a tree", () => {
   press("sidebar.nav.down");
   expect(current()).toBe("o2");
   press("sidebar.nav.up");
-  expect(current()).toBe("o2");
-  act(() => useStore.getState().select("o1"));
+  expect(current()).toBe("o1");
   press("sidebar.nav.expand");
   expect(rows()).toEqual(["p", "o1", "w1", "w2", "o2", "v1", "q"]);
   expect(current()).toBe("o1");
