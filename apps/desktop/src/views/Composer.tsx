@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import type { ImageInput, SlashCommand } from "../gen";
+import type { SlashCommand } from "../gen";
 import { useStore } from "../state/store";
 import { setFocus } from "../commands/core";
 import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
 import { filterSlashCommands, mergeSlashCommands, mentionQuery, slashQuery, type SlashEntry } from "./transcript/slash";
 import { fmtTokens, fmtUsd } from "./transcript/format";
-import { acpSessionInfo, acpSlashCommands } from "../lib/acp";
+import { acpSessionInfo, acpSlashCommands, sessionProviderLabel } from "../lib/acp";
+import { fmtSize, imageCaption, imageSupport, prepareImage, toImageInput, type DraftImage } from "../lib/images";
 import { emptyDraft, updateDraft, useComposerDrafts } from "../state/composerDrafts";
+import { ImageThumb } from "./ImageThumbs";
 
 /** Sent-message history per session (survives remounts, not reloads). */
 const history = new Map<string, string[]>();
@@ -19,34 +21,34 @@ type Popover =
   | { kind: "slash"; query: string; idx: number }
   | { kind: "mention"; start: number; query: string; idx: number; results: string[] };
 
-async function readImage(file: File): Promise<ImageInput> {
-  const buf = await file.arrayBuffer();
-  let bin = "";
-  const bytes = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return { path: null, data: btoa(bin), media_type: file.type || "image/png" };
-}
+const isImageFile = (f: File) => f.type.startsWith("image/") || (!f.type && /\.(png|jpe?g|gif|webp|heic|bmp|tiff?)$/i.test(f.name));
+const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files");
 
 export function Composer({ sessionId }: { sessionId: string }) {
   const client = useStore((s) => s.client);
   const session = useStore((s) => s.sessions[sessionId]);
   const provider = useStore((s) => s.providers.find((p) => p.kind === session?.provider));
+  const agentName = useStore((s) => (session ? sessionProviderLabel(session, s.providers) : "This agent"));
   const acpInfo = useStore((s) => acpSessionInfo(s.transcripts[sessionId]?.providerInfo));
   const toast = useStore((s) => s.toast);
   const openDialog = useStore((s) => s.openDialog);
   const { text, images, sending } = useComposerDrafts((s) => s.drafts[sessionId] ?? emptyDraft);
   const setText = (value: string) => updateDraft(sessionId, () => ({ text: value, start: value.length, end: value.length }));
-  const setImages = (value: ImageInput[] | ((images: ImageInput[]) => ImageInput[])) => updateDraft(sessionId, (draft) => ({ images: typeof value === "function" ? value(draft.images) : value }));
+  const setImages = (value: (images: DraftImage[]) => DraftImage[]) => updateDraft(sessionId, (draft) => ({ images: value(draft.images) }));
   const [pop, setPop] = useState<Popover>({ kind: "none" });
   const [slashEntries, setSlashEntries] = useState<SlashEntry[]>([]);
   const [histIdx, setHistIdx] = useState<number | null>(null);
   const historyDraft = useRef("");
+  const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
   const mentionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const caps = provider?.capabilities;
   const running = session?.status === "running";
   const errored = session?.status === "error";
   const canSteer = !!caps?.steer && running;
+  const imageSupported = imageSupport(caps, acpInfo, agentName);
 
   useLayoutEffect(() => {
     const draft = useComposerDrafts.getState().drafts[sessionId] ?? emptyDraft;
@@ -117,9 +119,14 @@ export function Composer({ sessionId }: { sessionId: string }) {
     if (!client || !session || useComposerDrafts.getState().drafts[sessionId]?.sending) return;
     const body = text.trim();
     if (!body && images.length === 0) return;
+    if (images.length > 0 && !imageSupported.ok) {
+      toast(`${imageSupported.reason}; remove the images to send`, "warn");
+      return;
+    }
     updateDraft(sessionId, () => ({ sending: true }));
     try {
-      await client.send(sessionId, { text: body, images, steer: steer && canSteer });
+      const inputs = images.length ? await Promise.all(images.map(toImageInput)) : [];
+      await client.send(sessionId, { text: body, images: inputs, steer: steer && canSteer });
       const h = history.get(sessionId) ?? [];
       if (body && h[h.length - 1] !== body) h.push(body);
       history.set(sessionId, h.slice(-100));
@@ -197,7 +204,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
       void client?.interrupt(sessionId).catch((err) => toast(String(err), "error"));
       return;
     }
-    if (e.key === "Backspace" && ta.selectionStart === 0 && ta.selectionEnd === 0 && images.length > 0) {
+    if (e.key === "Backspace" && !text && images.length > 0) {
       e.preventDefault();
       setImages((imgs) => imgs.slice(0, -1));
       return;
@@ -230,16 +237,66 @@ export function Composer({ sessionId }: { sessionId: string }) {
     }
   };
 
-  const onPaste = async (e: React.ClipboardEvent) => {
+  const addImages = async (files: File[]) => {
+    if (files.length === 0) return;
+    if (!imageSupported.ok) {
+      toast(imageSupported.reason, "warn");
+      return;
+    }
+    const results = await Promise.allSettled(files.map(prepareImage));
+    const added = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    for (const r of results) if (r.status === "rejected") toast(r.reason instanceof Error ? r.reason.message : String(r.reason), "warn");
+    if (added.length) setImages((cur) => [...cur, ...added]);
+  };
+
+  const onPaste = (e: React.ClipboardEvent) => {
     const files = [...e.clipboardData.items].filter((i) => i.kind === "file" && i.type.startsWith("image/")).map((i) => i.getAsFile()).filter((f): f is File => !!f);
     if (files.length === 0) return;
     e.preventDefault();
-    if (!caps?.images) {
-      toast("This provider does not accept images", "warn");
-      return;
+    void addImages(files);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    setDragging(false);
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const files = [...e.dataTransfer.files];
+    const other = files.filter((f) => !isImageFile(f));
+    if (other.length) toast(`Only images can be attached; not ${other.map((f) => f.name).join(", ")}`, "warn");
+    void addImages(files.filter(isImageFile));
+    taRef.current?.focus();
+  };
+
+  const removeImage = (key: string, refocus: boolean) => {
+    const idx = images.findIndex((img) => img.key === key);
+    setImages((imgs) => imgs.filter((img) => img.key !== key));
+    if (!refocus) return;
+    // Keep the keyboard in the strip: the next thumbnail, else the previous, else the textbox.
+    requestAnimationFrame(() => {
+      const thumbs = stripRef.current?.querySelectorAll<HTMLElement>(".image-thumb-open");
+      const next = thumbs?.[Math.min(idx, thumbs.length - 1)];
+      (next ?? taRef.current)?.focus();
+    });
+  };
+
+  const openImage = (img: DraftImage) => {
+    openDialog({ kind: "image", caption: imageCaption(img), preview: img.thumbnail, load: () => Promise.resolve(img.blob) });
+  };
+
+  const onThumbKey = (img: DraftImage) => (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      removeImage(img.key, true);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const thumbs = [...(stripRef.current?.querySelectorAll<HTMLElement>(".image-thumb-open") ?? [])];
+      const i = thumbs.indexOf(e.currentTarget) + (e.key === "ArrowLeft" ? -1 : 1);
+      (i >= thumbs.length ? taRef.current : thumbs[Math.max(0, i)])?.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      taRef.current?.focus();
     }
-    const imgs = await Promise.all(files.map(readImage));
-    setImages((cur) => [...cur, ...imgs]);
   };
 
   if (!session) return null;
@@ -248,7 +305,21 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const modKey = formatKeys("mod+enter", isMac);
 
   return (
-    <div className="composer" data-region="composer" style={{ position: "relative" }}>
+    <div
+      className={clsx("composer", dragging && "dragging")}
+      data-region="composer"
+      style={{ position: "relative" }}
+      onDragOver={(e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={onDrop}
+    >
       {pop.kind === "slash" && slashResults.length > 0 && (
         <div className="popover list" role="listbox">
           {slashResults.map((s, i) => (
@@ -271,15 +342,21 @@ export function Composer({ sessionId }: { sessionId: string }) {
         </div>
       )}
       {images.length > 0 && (
-        <div className="row chips">
-          {images.map((img, i) => (
-            <span key={i} className="chip image-chip">
-              🖼 {img.media_type?.replace("image/", "") ?? "image"} {Math.round(((img.data?.length ?? 0) * 3) / 4 / 1024)}k
-              <button data-command="composer.remove-image" title="remove" onClick={() => setImages((imgs) => imgs.filter((_, j) => j !== i))}>✕</button>
-            </span>
+        <div className="image-strip" ref={stripRef} aria-label="Attached images">
+          {images.map((img) => (
+            <ImageThumb
+              key={img.key}
+              src={img.thumbnail}
+              caption={`${imageCaption(img)} · ${fmtSize(img.blob.size)}`}
+              onOpen={() => openImage(img)}
+              onRemove={() => removeImage(img.key, false)}
+              onKeyDown={onThumbKey(img)}
+            />
           ))}
+          {!imageSupported.ok && <span className="warn-text">{imageSupported.reason}; remove them to send.</span>}
         </div>
       )}
+      {dragging && <div className="drop-hint">{imageSupported.ok ? "Drop images to attach" : imageSupported.reason}</div>}
       {errored ? (
         <div className="row err-row">
           <span className="dot err" />
@@ -306,7 +383,20 @@ export function Composer({ sessionId }: { sessionId: string }) {
         }}
         onFocus={() => useStore.getState().setFocus("composer")}
         onKeyDown={onKeyDown}
-        onPaste={(e) => void onPaste(e)}
+        onPaste={onPaste}
+      />
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp,image/*"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = [...(e.currentTarget.files ?? [])];
+          e.currentTarget.value = "";
+          void addImages(files);
+          taRef.current?.focus();
+        }}
       />
       <div className="row">
         {running && (
@@ -319,6 +409,11 @@ export function Composer({ sessionId }: { sessionId: string }) {
           {canSteer && <> · <kbd>{modKey}</kbd> steer</>} · <kbd>⇧Enter</kbd> newline
         </span>
         <span className="spacer" />
+        {caps?.images && (
+          <button className="chip" data-command="composer.attach-image" onClick={() => fileRef.current?.click()} title={imageSupported.ok ? "Attach images (or paste / drop them)" : imageSupported.reason}>
+            + image
+          </button>
+        )}
         {caps?.models && (
           <button className="chip" data-command="session.pick-model" onClick={() => openDialog({ kind: "models", sessionId })} title="Change model">
             {session.model ?? "model"}

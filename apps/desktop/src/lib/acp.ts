@@ -23,7 +23,7 @@ type ConfigOption = {
   options?: (SelectValue | { group: string; name: string; options: SelectValue[] })[];
 };
 export type AcpSessionInfo = {
-  agent?: { id?: string; name?: string; info?: { name?: string; title?: string | null; version?: string } | null };
+  agent?: { id?: string; name?: string; info?: { name?: string; title?: string | null; version?: string } | null; images?: boolean };
   current_mode?: string | null;
   modes?: Named[];
   config_options?: ConfigOption[];

@@ -8,4 +8,13 @@ path: string | null,
 /**
  * base64 data (no data: prefix) when pasted.
  */
-data: string | null, media_type: string | null, };
+data: string | null, media_type: string | null, 
+/**
+ * File name, when the image came from a file. Display only.
+ */
+name: string | null, 
+/**
+ * Small preview as a `data:` URL, recorded on the sent message so the
+ * transcript can show it without loading the full image.
+ */
+thumbnail: string | null, width: number | null, height: number | null, };

@@ -1,24 +1,46 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Session } from "../gen";
+import type { CapabilitySet, ProviderInfo, Session } from "../gen";
+import type { DraftImage } from "../lib/images";
 import type { RpcClient } from "../lib/rpc";
 import { useStore } from "../state/store";
 import { updateDraft, useComposerDrafts } from "../state/composerDrafts";
 import { Composer } from "./Composer";
 
+// jsdom cannot decode images, so attaching skips the thumbnail step.
+vi.mock("../lib/images", async (orig) => {
+  const real = await orig<typeof import("../lib/images")>();
+  return { ...real, prepareImage: async (file: File) => image(file.name) };
+});
+
 const send = vi.fn().mockResolvedValue(undefined);
+const toast = vi.fn();
+let n = 0;
+function image(name = "shot.png"): DraftImage {
+  return { key: `t${++n}`, blob: new Blob(["png-bytes"], { type: "image/png" }), name, media_type: "image/png", width: 800, height: 600, thumbnail: "data:image/png;base64,AAAA" };
+}
+function provider(images: boolean): ProviderInfo {
+  const capabilities = { images, permission_modes: [], sandbox_modes: [] } as unknown as CapabilitySet;
+  return { kind: "claude", display_name: "Claude Code", available: true, version: null, binary: null, capabilities, agents: [] };
+}
+function pasteImages(count: number) {
+  const items = Array.from({ length: count }, (_, i) => ({ kind: "file", type: "image/png", getAsFile: () => new File(["x"], `p${i}.png`, { type: "image/png" }) }));
+  fireEvent.paste(screen.getByRole("textbox"), { clipboardData: { items } });
+}
+const thumbs = () => screen.queryAllByRole("button", { name: /^Open / });
 function session(id: string): Session {
   return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/tmp", worktree: null, group: null, status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: "", last_activity: "", archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, pulls: [], usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null } };
 }
 beforeEach(() => {
   send.mockReset().mockResolvedValue(undefined);
   useComposerDrafts.setState({ drafts: {} });
-  useStore.setState({ sessions: { a: session("a"), b: session("b") }, providers: [], client: { send } as unknown as RpcClient });
+  toast.mockReset();
+  useStore.setState({ sessions: { a: session("a"), b: session("b") }, providers: [provider(true)], toast, client: { send } as unknown as RpcClient });
 });
 afterEach(cleanup);
 
 it("restores separate drafts, attachments and selection when switching sessions", () => {
-  updateDraft("a", () => ({ images: [{ data: "test", path: null, media_type: "image/png" }] }));
+  updateDraft("a", () => ({ images: [image()] }));
   const { rerender } = render(<Composer key="a" sessionId="a" />);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "unfinished first draft" } });
   const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
@@ -27,12 +49,12 @@ it("restores separate drafts, attachments and selection when switching sessions"
   fireEvent.select(textarea);
   rerender(<Composer key="b" sessionId="b" />);
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
-  expect(screen.queryByTitle("remove")).toBeNull();
+  expect(thumbs()).toHaveLength(0);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "second draft" } });
   rerender(<Composer key="a" sessionId="a" />);
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("unfinished first draft");
   expect((screen.getByRole("textbox") as HTMLTextAreaElement).selectionStart).toBe(3);
-  expect(screen.getByTitle("remove")).toBeTruthy();
+  expect(thumbs()).toHaveLength(1);
   expect(useComposerDrafts.getState().drafts.b.text).toBe("second draft");
 });
 
@@ -56,4 +78,60 @@ it("keeps the draft after a failed send", async () => {
   fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
   await waitFor(() => expect(useComposerDrafts.getState().drafts.a.sending).toBe(false));
   expect(useComposerDrafts.getState().drafts.a.text).toBe("do not lose this");
+});
+
+it("shows a thumbnail per pasted image and removes one with its button", async () => {
+  render(<Composer sessionId="a" />);
+  pasteImages(4);
+  await waitFor(() => expect(thumbs()).toHaveLength(4));
+  expect(thumbs()[0].querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
+  expect(thumbs()[0].title).toContain("800 × 600");
+  fireEvent.click(screen.getByRole("button", { name: /^Remove p1\.png/ }));
+  expect(useComposerDrafts.getState().drafts.a.images.map((i) => i.name)).toEqual(["p0.png", "p2.png", "p3.png"]);
+});
+
+it("attaches dropped images and leaves other files out", async () => {
+  render(<Composer sessionId="a" />);
+  const files = [new File(["x"], "a.png", { type: "image/png" }), new File(["x"], "notes.txt", { type: "text/plain" })];
+  fireEvent.drop(screen.getByRole("textbox"), { dataTransfer: { types: ["Files"], files } });
+  await waitFor(() => expect(thumbs()).toHaveLength(1));
+  expect(toast).toHaveBeenCalledWith(expect.stringContaining("notes.txt"), "warn");
+});
+
+it("removes the last image on backspace only when the textbox is empty", () => {
+  updateDraft("a", () => ({ images: [image("one.png"), image("two.png")] }));
+  render(<Composer sessionId="a" />);
+  const textarea = screen.getByRole("textbox");
+  fireEvent.change(textarea, { target: { value: "x" } });
+  fireEvent.keyDown(textarea, { key: "Backspace" });
+  expect(useComposerDrafts.getState().drafts.a.images).toHaveLength(2);
+  fireEvent.change(textarea, { target: { value: "" } });
+  fireEvent.keyDown(textarea, { key: "Backspace" });
+  expect(useComposerDrafts.getState().drafts.a.images.map((i) => i.name)).toEqual(["one.png"]);
+});
+
+it("removes a focused thumbnail with Delete", () => {
+  updateDraft("a", () => ({ images: [image("one.png"), image("two.png")] }));
+  render(<Composer sessionId="a" />);
+  fireEvent.keyDown(thumbs()[0], { key: "Delete" });
+  expect(useComposerDrafts.getState().drafts.a.images.map((i) => i.name)).toEqual(["two.png"]);
+});
+
+it("sends the images with their previews and clears the strip", async () => {
+  updateDraft("a", () => ({ images: [image()] }));
+  render(<Composer sessionId="a" />);
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "look" } });
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  await waitFor(() => expect(thumbs()).toHaveLength(0));
+  const input = send.mock.calls[0][1];
+  expect(input.text).toBe("look");
+  expect(input.images[0]).toMatchObject({ data: btoa("png-bytes"), media_type: "image/png", name: "shot.png", width: 800, height: 600, thumbnail: "data:image/png;base64,AAAA" });
+});
+
+it("says so when the agent does not take images", async () => {
+  useStore.setState({ providers: [provider(false)] });
+  render(<Composer sessionId="a" />);
+  pasteImages(1);
+  await waitFor(() => expect(toast).toHaveBeenCalledWith("Claude Code does not accept images", "warn"));
+  expect(thumbs()).toHaveLength(0);
 });

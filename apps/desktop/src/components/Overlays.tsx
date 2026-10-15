@@ -23,6 +23,7 @@ import { InboxDialog } from "./dialogs/InboxDialog";
 import { SettingsDialog } from "./dialogs/SettingsDialog";
 import { GitCleanupDialog } from "./dialogs/GitCleanupDialog";
 import { StepsDialog } from "../views/transcript/Steps";
+import { ImageDialog } from "../views/ImageThumbs";
 import { getDialog, onDialogsChanged } from "./dialogRegistry";
 
 function CurrentDialog() {
@@ -59,6 +60,8 @@ function CurrentDialog() {
       return <NewSessionDialog key={`${dialog.provider ?? ""}-${dialog.cwd ?? ""}`} preset={dialog.provider} cwd={dialog.cwd} />;
     case "import":
       return <ImportDialog />;
+    case "image":
+      return <ImageDialog caption={dialog.caption} preview={dialog.preview} load={dialog.load} />;
     case "slash":
       return <SlashDialog sessionId={dialog.sessionId} />;
     case "diff":

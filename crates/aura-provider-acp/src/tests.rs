@@ -117,6 +117,8 @@ async fn runs_a_session_end_to_end() {
     assert!(setup.iter().any(|e| matches!(e, Event::NativeId { native_id, .. } if native_id == "acp-1")));
     assert!(setup.iter().any(|e| matches!(e, Event::SettingChanged { setting: Setting::PermissionMode(p), .. } if p == "ask")));
     assert!(setup.iter().any(|e| matches!(e, Event::ProviderInfo { info, .. } if info["commands"][0]["name"] == "init")));
+    // The composer warns before attaching images this agent would refuse.
+    assert!(setup.iter().any(|e| matches!(e, Event::ProviderInfo { info, .. } if info["agent"]["images"] == false)));
 
     // A turn with a tool call that needs permission.
     driver.send(Input { text: "list files".into(), ..Default::default() }).await.unwrap();
@@ -158,7 +160,7 @@ async fn runs_a_session_end_to_end() {
     assert!(tool < end);
 
     // This agent did not declare image support.
-    let with_image = Input { text: "look".into(), images: vec![ImageInput { path: None, data: Some("AA==".into()), media_type: None }], steer: false };
+    let with_image = Input { text: "look".into(), images: vec![ImageInput { data: Some("AA==".into()), ..Default::default() }], steer: false };
     assert!(driver.send(with_image).await.unwrap_err().to_string().contains("does not accept images"));
 
     // Modes go through session/set_mode.

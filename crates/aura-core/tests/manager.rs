@@ -1137,3 +1137,84 @@ async fn aura_messages_wait_until_the_session_is_free() {
     assert_eq!(reply.as_deref(), Some("hello"));
     assert!(m.send_when_free("nope", "x".into()).await.is_err());
 }
+
+#[tokio::test]
+async fn sent_images_are_kept_and_shown_on_the_user_message() {
+    let (m, _calls, _starts, _store) = setup();
+    let data = tempfile::tempdir().unwrap();
+    m.enable_attachments(data.path().join("attachments"));
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut rx = m.subscribe();
+    m.send(
+        &s.id,
+        Input {
+            text: "look at this".into(),
+            images: vec![ImageInput {
+                data: Some("iVBORw0K".into()),
+                media_type: Some("image/png".into()),
+                name: Some("shot.png".into()),
+                thumbnail: Some("data:image/png;base64,AAAA".into()),
+                width: Some(800),
+                height: Some(600),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &s.id, SessionStatus::Idle).await;
+    let evs = drain(&mut rx).await;
+    let user = evs
+        .iter()
+        .find_map(|e| match e {
+            Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage => Some(item.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let att = &user.data["attachments"][0];
+    assert_eq!(att["name"], "shot.png");
+    assert_eq!(att["width"], 800);
+    assert_eq!(att["thumbnail"], "data:image/png;base64,AAAA");
+    let id = att["id"].as_str().unwrap();
+    assert_eq!(m.attachment(&s.id, id).unwrap(), ("iVBORw0K".to_string(), "image/png".to_string()));
+    // Stored history carries them too, and ids cannot leave the directory.
+    let hist = m.history(&s.id, 0, 100).unwrap();
+    assert!(hist.iter().any(|e| matches!(&e.event, Event::ItemCompleted { item, .. } if item.data["attachments"][0]["id"] == id)));
+    assert!(m.attachment(&s.id, "../aura.db").is_err());
+    assert!(m.attachment("..", id).is_err());
+
+    // A later message without images gets none.
+    m.send(&s.id, Input { text: "look at this".into(), ..Default::default() }).await.unwrap();
+    wait_status(&m, &s.id, SessionStatus::Idle).await;
+    let evs = drain(&mut rx).await;
+    assert!(evs.iter().any(|e| matches!(e, Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage && item.data.get("attachments").is_none())));
+
+    m.delete(&s.id, false).await.unwrap();
+    assert!(!data.path().join("attachments").join(&s.id).exists());
+}
+
+#[tokio::test]
+async fn terminal_sessions_refuse_images() {
+    let (m, _calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            mode: Some(SessionMode::Terminal),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let input = Input { text: "x".into(), images: vec![ImageInput { data: Some("AA==".into()), ..Default::default() }], ..Default::default() };
+    assert!(m.send(&s.id, input).await.unwrap_err().to_string().contains("cannot take images"));
+}

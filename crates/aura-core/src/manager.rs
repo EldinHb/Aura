@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
+mod attachments;
 mod orchestrator;
 pub use orchestrator::{describe_workers, report_message, WaitResult, WorkerReport, WorkerSpec};
 
@@ -39,6 +40,8 @@ struct Runtime {
     /// Set while a resumed driver replays its native history: those items are
     /// already in the store, so they are broadcast but not persisted again.
     replaying: bool,
+    /// Images sent with messages whose user message item has not completed.
+    staged: attachments::Staged,
 }
 
 struct Inner {
@@ -53,6 +56,8 @@ struct Inner {
     /// Serialises read-modify-write updates of the group registry.
     groups: Mutex<()>,
     orchestration: Mutex<orchestrator::State>,
+    /// Where sent images are kept; see `attachments`.
+    attachments_dir: Mutex<Option<std::path::PathBuf>>,
 }
 
 #[derive(Clone)]
@@ -80,6 +85,7 @@ impl Manager {
             sink,
             groups: Mutex::new(()),
             orchestration: Mutex::new(Default::default()),
+            attachments_dir: Mutex::new(None),
         });
         let m = Self { inner };
         m.spawn_event_loop(sink_rx);
@@ -496,13 +502,22 @@ impl Manager {
         let s = self.get_session(id)?;
         match s.mode {
             SessionMode::Terminal => {
+                if !input.images.is_empty() {
+                    bail!("a terminal session cannot take images");
+                }
                 let mut data = input.text.into_bytes();
                 data.push(b'\r');
                 self.pty_input(id, &data)
             }
             SessionMode::Structured => {
                 let driver = self.ensure_driver(id, false).await?;
-                driver.send(input).await
+                self.stage_attachments(id, &input);
+                let staged = (!input.images.is_empty()).then(|| input.text.clone());
+                let sent = driver.send(input).await;
+                if let (Err(_), Some(text)) = (&sent, staged) {
+                    self.unstage_attachments(id, &text);
+                }
+                sent
             }
         }
     }
@@ -803,6 +818,7 @@ impl Manager {
         self.inner.runtimes.lock().remove(id);
         self.inner.sessions.lock().remove(id);
         self.inner.store.delete_session(id)?;
+        self.delete_attachments(id);
         self.forget_orchestrator(id);
         if remove_worktree {
             if let (Some(wt), Some(backend)) = (&s.worktree, &self.inner.worktrees) {
@@ -1047,8 +1063,9 @@ impl Manager {
         });
     }
 
-    fn handle_event(&self, ev: Event) {
+    fn handle_event(&self, mut ev: Event) {
         let sid = ev.session_id().to_string();
+        self.attach_staged(&mut ev);
         // Bookkeeping only: it must not touch the session row, which would
         // bump `last_activity` and reorder the sidebar.
         if matches!(ev, Event::NoticesCleared { .. }) {

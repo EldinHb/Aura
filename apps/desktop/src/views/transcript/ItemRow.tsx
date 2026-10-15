@@ -3,6 +3,7 @@ import clsx from "clsx";
 import type { Item } from "../../gen";
 import { Markdown } from "./MarkdownView";
 import { DiffText } from "./Diff";
+import { MessageImages } from "../ImageThumbs";
 import { useStore } from "../../state/store";
 import { setPlanView } from "../../state/planView";
 import { commandOutput, contextBoundary, durationMs, firstLine, fmtDuration, isCardKind, isSlashCommand, itemChanges, itemLabel, kindIcon, prettyJson, truncate } from "./format";
@@ -171,6 +172,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
   if (item.kind === "user_message") {
     return (
       <div className={clsx("item user_message", isSlashCommand(item.text) && "slash", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+        <MessageImages sessionId={item.session_id} data={item.data} />
         {item.text}
       </div>
     );

@@ -1,5 +1,6 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { RpcClient } from "../../lib/rpc";
 import type { Item } from "../../gen";
 import { emptyTranscript, useStore } from "../../state/store";
 import { Transcript } from "../Transcript";
@@ -73,4 +74,38 @@ it("dims everything above the latest completed boundary", () => {
   const { container } = render(<Transcript sessionId="s" />);
   const stale = [...container.querySelectorAll(".item.stale")].map((el) => el.getAttribute("data-item-id"));
   expect(stale).toEqual(["a", "b"]);
+});
+
+it("shows the images of a sent message as thumbnails and enlarges one on click", async () => {
+  const attachment = vi.fn().mockResolvedValue({ data: btoa("full"), media_type: "image/png" });
+  useStore.setState({ client: { attachment } as unknown as RpcClient, dialog: { kind: "none" } });
+  const thumb = "data:image/webp;base64,AAAA";
+  row(item("u", "user_message", "look at these", { attachments: [{ id: "x.png", name: "shot.png", media_type: "image/png", width: 800, height: 600, thumbnail: thumb }, { id: null, thumbnail: null }] }));
+  const open = screen.getByRole("button", { name: "Open shot.png · 800 × 600" });
+  expect(open.querySelector("img")?.getAttribute("src")).toBe(thumb);
+  expect(screen.getByText("look at these")).toBeTruthy();
+  // Nothing to enlarge without a preview or a kept image.
+  expect((screen.getByRole("button", { name: "Image" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(open);
+  const dialog = useStore.getState().dialog;
+  expect(dialog).toMatchObject({ kind: "image", caption: "shot.png · 800 × 600", preview: thumb });
+  if (dialog.kind !== "image") throw new Error("no image dialog");
+  const blob = await dialog.load!();
+  expect(attachment).toHaveBeenCalledWith("s", "x.png");
+  expect(blob.type).toBe("image/png");
+  await waitFor(() => expect(blob.size).toBe(4));
+});
+
+it("still shows images of messages from before attachments were recorded", () => {
+  // Codex echoed its input; ACP only counted the images; plain old messages have none.
+  const { container } = row(item("c", "user_message", "codex", { content: [{ type: "text", text: "codex" }, { type: "image", url: "data:image/png;base64,BBBB" }, { type: "localImage", path: "/tmp/a/diagram.png" }] }));
+  expect(container.querySelectorAll(".image-thumb")).toHaveLength(2);
+  expect(container.querySelector(".image-thumb img")?.getAttribute("src")).toBe("data:image/png;base64,BBBB");
+  expect(screen.getByTitle("diagram.png")).toBeTruthy();
+  cleanup();
+  expect(row(item("a", "user_message", "acp", { images: 2 })).container.querySelectorAll(".image-thumb")).toHaveLength(2);
+  cleanup();
+  expect(row(item("p", "user_message", "plain", {})).container.querySelector(".message-images")).toBeNull();
+  cleanup();
+  expect(row(item("q", "user_message", "odd", { attachments: "nope", images: "x" })).container.querySelector(".message-images")).toBeNull();
 });

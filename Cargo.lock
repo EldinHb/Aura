@@ -316,6 +316,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aura-pty",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "dirs 5.0.1",

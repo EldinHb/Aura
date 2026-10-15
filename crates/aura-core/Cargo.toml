@@ -18,6 +18,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 ts-rs = { workspace = true }
+base64 = "0.22"
 parking_lot = { workspace = true }
 bytes = { workspace = true }
 

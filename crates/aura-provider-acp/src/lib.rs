@@ -298,6 +298,8 @@ impl AcpDriver {
             "id": spec.id,
             "name": spec.display_name,
             "info": init.get("agentInfo").cloned().unwrap_or(Value::Null),
+            // The composer warns before attaching images the agent would refuse.
+            "images": caps.get("promptCapabilities").and_then(|p| p.get("image")).and_then(Value::as_bool).unwrap_or(false),
         });
         let _ = sink.send(mapper.lock().set_agent(agent));
 

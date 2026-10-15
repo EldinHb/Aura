@@ -67,6 +67,7 @@ export type Dialog =
   | { kind: "slash"; sessionId: string }
   | { kind: "steps"; sessionId: string; groupId: string }
   | { kind: "confirm"; title: string; message: string; onConfirm: () => void; danger?: boolean }
+  | { kind: "image"; caption: string; preview: string | null; load?: () => Promise<Blob> }
   | { kind: "help" };
 
 export type Toast = { id: number; level: "info" | "warn" | "error"; message: string };

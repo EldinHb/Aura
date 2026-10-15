@@ -378,8 +378,29 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .card.input input[type=text] { width: 100%; margin-top: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; }
 /* composer */
 .composer .chips { gap: 6px; }
-.composer .image-chip button { margin-left: 6px; color: var(--fg-dim); }
-.composer .image-chip button:hover { color: var(--err); }
+/* attached images: the composer strip and sent messages */
+.image-strip { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-top: 6px; }
+.image-strip .warn-text { color: var(--warn); font-size: 11px; }
+.image-thumb { position: relative; display: inline-flex; flex: none; }
+.image-thumb-open { width: 60px; height: 60px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-strong); background: var(--bg-elev2); display: flex; align-items: center; justify-content: center; }
+.image-thumb-open:not(:disabled):hover { border-color: var(--accent); }
+.image-thumb-open:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+.image-thumb-open:disabled { cursor: default; }
+.image-thumb-open img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.image-thumb-empty { font-size: 20px; opacity: 0.6; }
+.image-thumb-remove { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; background: var(--bg-elev); border: 1px solid var(--border-strong); color: var(--fg-muted); font-size: 12px; line-height: 1; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.1s; }
+.image-thumb:hover .image-thumb-remove, .image-thumb:focus-within .image-thumb-remove, .image-thumb-remove:focus-visible { opacity: 1; }
+.image-thumb-remove:hover { color: var(--err); border-color: var(--err); }
+.message-images { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.message-images:only-child { margin-bottom: 0; }
+.image-thumb.small .image-thumb-open { width: 72px; height: 72px; }
+.composer.dragging { box-shadow: inset 0 0 0 2px var(--accent); }
+.composer .drop-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--accent-bg); color: var(--fg); font-weight: 600; pointer-events: none; border-radius: 2px; }
+.overlay:has(.image-modal) { padding-top: 4vh; }
+.image-modal { max-height: 92vh; width: auto !important; max-width: 92vw; }
+.image-modal .modal-head .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.image-modal .modal-body { display: flex; flex-direction: column; align-items: center; gap: 8px; background: var(--bg); }
+.image-modal .modal-body img { display: block; max-width: calc(92vw - 30px); max-height: calc(90vh - 90px); object-fit: contain; border-radius: 4px; min-width: 120px; image-rendering: auto; }
 .composer .err-row { color: var(--err); }
 .composer .row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer .chip { cursor: pointer; }

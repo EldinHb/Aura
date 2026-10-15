@@ -315,6 +315,10 @@ export class RpcClient {
   history(id: string, after_seq = 0, limit = 5000) {
     return this.call<StoredEvent[]>("session.history", { id, after_seq, limit });
   }
+  /** A sent image the daemon kept (see `data.attachments` on user messages). */
+  attachment(id: string, attachment: string) {
+    return this.call<{ data: string; media_type: string }>("session.attachment", { id, attachment });
+  }
   pending() {
     return this.call<{ approvals: Approval[]; inputs: UserInputRequest[] }>("session.pending");
   }

@@ -626,6 +626,16 @@ async fn dispatch(
             let P { id, after_seq, limit } = params(p)?;
             ok(m.history(&id, after_seq, limit)?)
         }
+        "session.attachment" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                attachment: String,
+            }
+            let P { id, attachment } = params(p)?;
+            let (data, media_type) = m.attachment(&id, &attachment)?;
+            ok(json!({ "data": data, "media_type": media_type }))
+        }
         "session.pending" => {
             let (approvals, inputs) = m.pending();
             ok(json!({ "approvals": approvals, "inputs": inputs }))

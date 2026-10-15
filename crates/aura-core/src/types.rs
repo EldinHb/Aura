@@ -461,7 +461,7 @@ pub struct NativeSession {
     pub preview: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, Default)]
 #[ts(export)]
 pub struct ImageInput {
     /// Absolute path to an image on disk, or None when `data` is set.
@@ -469,6 +469,17 @@ pub struct ImageInput {
     /// base64 data (no data: prefix) when pasted.
     pub data: Option<String>,
     pub media_type: Option<String>,
+    /// File name, when the image came from a file. Display only.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Small preview as a `data:` URL, recorded on the sent message so the
+    /// transcript can show it without loading the full image.
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, Default)]
