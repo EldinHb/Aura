@@ -352,10 +352,23 @@ run `gh auth login` for github.com, then refresh the section. Aura uses that
 account through the daemon; it does not import Gitbuddy's credentials. Optional
 `AURA_GH_BIN` selects a GitHub CLI executable outside the usual search paths.
 
-Below it, **Your pull requests** lists the open PRs you authored. Each PR in both
-groups shows whether it is a draft, its checks (pass, fail, running or none) and
-GitHub's review decision (approved, changes requested or review required). Both
-groups refresh together once a minute and collapse independently.
+**You reviewed** lists open PRs of others you reviewed and are not asked to review
+again; the ones with new commits since your review come first, marked ↻.
+
+Below it, **Your pull requests** lists the open PRs you authored, each in one
+group, the first that applies: **Needs your response** (changes requested, or a
+review thread where someone else had the last word), **Ready to merge**,
+**Waiting for review** (nobody reviewed it yet, or new commits arrived since every
+review) and **Reviewed**. Empty groups are left out.
+
+Each PR shows whether it is a draft, its checks (pass, fail, running or none) and
+where reviews stand: GitHub's decision, else approved, changes requested or
+commented from the latest reviews. A comment-only review counts as reviewed, as on
+GitHub; a bot's review (such as Copilot's) never does. A line under the title
+names up to three reviewers with their verdict (✓ approved, ✗ changes requested,
+✎ commented, … asked), ↻ when new commits arrived since their review, bots
+dimmed; hover it for everyone. All groups refresh together once a minute and
+collapse independently.
 
 Click a PR to open its description, conversation, existing reviews, metadata and
 current diff in the main workspace. Applicable metadata and project fields can

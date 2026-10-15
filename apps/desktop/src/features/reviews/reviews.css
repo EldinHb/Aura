@@ -75,3 +75,14 @@
 .pr-merge select { max-width:220px; }
 .pr-check { display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
 .pr-merged { border-color:color-mix(in srgb, var(--ok) 40%, var(--border)); }
+.pr-sidebar .pr-group-toggle.sub { padding-left:18px; }
+/* One line whatever the sidebar width: names give way first, marks stay. */
+.pr-reviewers { display:flex; gap:8px; margin-top:2px; font-size:11px; color:var(--fg-dim); white-space:nowrap; overflow:hidden; }
+.pr-reviewer { display:inline-flex; min-width:0; gap:2px; }
+.pr-reviewer .name { overflow:hidden; text-overflow:ellipsis; max-width:10em; }
+.pr-reviewer .mark { flex-shrink:0; }
+.pr-reviewer .mark.ok { color:var(--ok); }
+.pr-reviewer .mark.err { color:var(--err); }
+.pr-reviewer.pending, .pr-reviewer.more { opacity:.7; }
+.pr-reviewer.bot { opacity:.6; font-style:italic; }
+.pr-reviewer.more { flex-shrink:0; }

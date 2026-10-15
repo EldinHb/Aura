@@ -111,6 +111,17 @@ it("counts a comment-only review as reviewed in the row", async () => {
   await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ commented"]));
 });
 
+it("marks new commits since the latest review, which a bot's review does not count as", async () => {
+  git.set("/work/a", status());
+  pullResult = pull({ review_decision: "REVIEW_REQUIRED", reviews: [
+    { bot: false, reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: "old" },
+    { bot: true, reviewer: "copilot", state: "COMMENTED", submitted_at: "2026-10-06T10:00:00Z", commit_sha: "1234567890abcdef" },
+  ] });
+  render(<Sidebar />);
+  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ commented ↻"]));
+  expect(document.querySelector(".branch-pull")?.getAttribute("title")).toContain("new commits since the latest review");
+});
+
 it("shows the selected session's branch and pull request in the status bar", async () => {
   git.set("/work/a", status({ ahead: 1 }));
   pullResult = pull({ checks: "FAILURE", review_decision: "CHANGES_REQUESTED" });

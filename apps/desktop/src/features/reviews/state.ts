@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PullRequest, PreReview, ReviewInbox, ReviewResult } from "../../gen";
+import type { PullRequest, PreReview, ReviewInbox, ReviewResult, SubmittedReview } from "../../gen";
 import { useStore } from "../../state/store";
 import { registerCommands } from "../../lib/commands";
 
@@ -18,16 +18,27 @@ export function startReview(pull: PullRequest, previous?: PreReview) {
   useStore.getState().openDialog({ kind: "review-settings", pull, config: previous?.config });
 }
 const pref = (key: string) => { try { return localStorage.getItem(`aura.reviews.${key}`) === "true"; } catch { return false; } };
+/** Groups of the sidebar list besides the two top ones, each collapsed on its own. */
+export type PullGroupKey = "you-reviewed" | MineGroup;
 type ReviewState = {
   inbox: ReviewInbox | null; error: string | null; busy: boolean; reviewId: string | null;
   collapsed: boolean; mineCollapsed: boolean; hidden: boolean; showHidden: boolean;
+  groupsCollapsed: Partial<Record<PullGroupKey, boolean>>;
   setPreference: (key: "collapsed" | "mineCollapsed" | "hidden" | "showHidden", value: boolean) => void;
+  toggleGroup: (key: PullGroupKey) => void;
   refresh: (remote?: boolean) => Promise<void>;
 };
-export const useReviews = create<ReviewState>((set) => ({
+const GROUP_KEYS: PullGroupKey[] = ["you-reviewed", "respond", "ready", "waiting", "reviewed"];
+export const useReviews = create<ReviewState>((set, get) => ({
   inbox: null, error: null, busy: false, reviewId: null,
   collapsed: pref("collapsed"), mineCollapsed: pref("mineCollapsed"), hidden: pref("hidden"), showHidden: pref("showHidden"),
+  groupsCollapsed: Object.fromEntries(GROUP_KEYS.map((key) => [key, pref(`group.${key}`)])),
   setPreference: (key, value) => { localStorage.setItem(`aura.reviews.${key}`, String(value)); set({ [key]: value }); },
+  toggleGroup: (key) => {
+    const value = !get().groupsCollapsed[key];
+    localStorage.setItem(`aura.reviews.group.${key}`, String(value));
+    set((s) => ({ groupsCollapsed: { ...s.groupsCollapsed, [key]: value } }));
+  },
   refresh: async (remote = false) => {
     if (remote) set({ busy: true });
     try {
@@ -78,20 +89,77 @@ export function pullFilter(pull: PullRequest, rules: string[]): string | undefin
 }
 /** Hidden by hand or by a rule; such PRs are listed only with "Show hidden". */
 export const isPullHidden = (pull: PullRequest, rules: string[]) => pull.hidden || !!pullFilter(pull, rules);
-/** PRs listed in the sidebar, in display order: review requests, then your own. */
+/** PRs listed in the sidebar, in display order: review requests and the PRs you reviewed, then your own by group. */
 export function visiblePulls(s: ReviewState, rules = useStore.getState().settings.pullFilters) {
-  const shown = (pulls: PullRequest[] | undefined, collapsed: boolean) => s.hidden || collapsed ? [] : (pulls ?? []).filter((p) => s.showHidden || !isPullHidden(p, rules));
-  return { review: shown(s.inbox?.pulls, s.collapsed), mine: shown(s.inbox?.mine, s.mineCollapsed) };
+  const shown = (pulls: PullRequest[] | undefined, collapsed = false) => s.hidden || collapsed ? [] : (pulls ?? []).filter((p) => s.showHidden || !isPullHidden(p, rules));
+  const requested = shown(s.inbox?.pulls, s.collapsed), reviewed = sortReviewed(shown(s.inbox?.reviewed));
+  const groups = s.mineCollapsed ? [] : groupMine(shown(s.inbox?.mine));
+  return {
+    requested, reviewed, groups,
+    review: [...requested, ...(s.groupsCollapsed["you-reviewed"] ? [] : reviewed)],
+    mine: groups.flatMap((g) => s.groupsCollapsed[g.key] ? [] : g.pulls),
+  };
+}
+/** New commits arrived since `review`. */
+export const isStale = (review: Pick<SubmittedReview, "commit_sha">, headSha: string) => !!review.commit_sha && review.commit_sha !== headSha;
+/** PRs you reviewed: the ones with new commits since your review first, then the latest updated. */
+export const sortReviewed = (pulls: PullRequest[]) => [...pulls].sort((a, b) =>
+  Number(!!b.my_review && isStale(b.my_review, b.head_sha)) - Number(!!a.my_review && isStale(a.my_review, a.head_sha)) || b.updated_at.localeCompare(a.updated_at));
+export type MineGroup = "respond" | "ready" | "waiting" | "reviewed";
+export const MINE_GROUPS: { key: MineGroup; title: string }[] = [
+  { key: "respond", title: "Needs your response" }, { key: "ready", title: "Ready to merge" },
+  { key: "waiting", title: "Waiting for review" }, { key: "reviewed", title: "Reviewed" },
+];
+type GroupedPull = Pick<PullRequest, "review_decision" | "reviews" | "unanswered_threads" | "head_sha" | "state" | "can_merge" | "merge_blocked_by">;
+/**
+ * The one group a PR of yours goes in, the first that applies: changes were requested or a
+ * review thread waits on you; it can be merged; nobody (no bot) reviewed it, or there are new
+ * commits since every review; else reviewed.
+ */
+export function mineGroup(pull: GroupedPull): MineGroup {
+  if (reviewStatus(pull)?.label === "changes requested" || pull.unanswered_threads > 0) return "respond";
+  if (mergeStatus(pull).length) return "ready";
+  const people = pull.reviews.filter((r) => !r.bot);
+  if (people.every((r) => isStale(r, pull.head_sha))) return "waiting";
+  return "reviewed";
+}
+/** Your PRs by group in display order, the latest updated first; groups without PRs are left out. */
+export function groupMine(pulls: PullRequest[]) {
+  const sorted = [...pulls].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  return MINE_GROUPS.map((g) => ({ ...g, pulls: sorted.filter((p) => mineGroup(p) === g.key) })).filter((g) => g.pulls.length);
+}
+const MARKS: Record<string, { mark: string; verdict: string; tone?: "ok" | "err" }> = {
+  CHANGES_REQUESTED: { mark: "✗", verdict: "requested changes", tone: "err" }, APPROVED: { mark: "✓", verdict: "approved", tone: "ok" }, COMMENTED: { mark: "✎", verdict: "commented" },
+};
+export type ReviewerEntry = { name: string; mark: string; tone?: "ok" | "err"; bot: boolean; pending: boolean; stale: boolean; describe: string };
+/**
+ * Who reviewed and who is asked to, for the reviewer line: people by verdict (changes requested,
+ * approved, commented), then pending requests, then bots. Someone asked again keeps their verdict.
+ */
+export function reviewerEntries(pull: Pick<PullRequest, "reviews" | "requested" | "head_sha">): ReviewerEntry[] {
+  const order = Object.keys(MARKS);
+  const asked = (name: string) => pull.requested.some((r) => r.name.toLowerCase() === name.toLowerCase());
+  const reviews = [...pull.reviews].sort((a, b) => Number(a.bot) - Number(b.bot) || order.indexOf(a.state) - order.indexOf(b.state)).map((r): ReviewerEntry => {
+    const m = MARKS[r.state] ?? { mark: "·", verdict: r.state.toLowerCase() };
+    const stale = isStale(r, pull.head_sha), pending = asked(r.reviewer);
+    return { name: r.reviewer, mark: m.mark, tone: m.tone, bot: r.bot, pending, stale,
+      describe: `${r.reviewer}${r.bot ? " (bot)" : ""}: ${m.verdict}${stale ? ", new commits since" : ""}${pending ? ", asked again" : ""}` };
+  });
+  const requests = pull.requested.filter((r) => !pull.reviews.some((v) => v.reviewer.toLowerCase() === r.name.toLowerCase())).map((r): ReviewerEntry => ({
+    name: r.kind === "team" ? `@${r.name.split("/").pop()}` : r.name, mark: "…", bot: r.kind === "bot", pending: true, stale: false,
+    describe: `${r.kind === "team" ? `team ${r.name}` : r.name}${r.kind === "bot" ? " (bot)" : ""}: review requested`,
+  }));
+  return [...reviews.filter((r) => !r.bot), ...requests.filter((r) => !r.bot), ...reviews.filter((r) => r.bot), ...requests.filter((r) => r.bot)];
 }
 /**
  * Where reviews stand: GitHub's decision when it made one, else what other people's latest
  * reviews say. GitHub only decides on approvals and change requests, but a comment-only
- * review counts as reviewed, as it does on GitHub.
+ * review counts as reviewed, as it does on GitHub. A bot's review never counts.
  */
-export function reviewStatus(pull: Pick<PullRequest, "review_decision" | "reviews">): { label: string; tone?: "ok" | "err" } | undefined {
+export function reviewStatus(pull: { review_decision: string; reviews: Pick<SubmittedReview, "state" | "bot">[] }): { label: string; tone?: "ok" | "err" } | undefined {
   if (pull.review_decision === "APPROVED") return { label: "approved", tone: "ok" };
   if (pull.review_decision === "CHANGES_REQUESTED") return { label: "changes requested", tone: "err" };
-  const states = pull.reviews.map((r) => r.state);
+  const states = pull.reviews.filter((r) => !r.bot).map((r) => r.state);
   if (states.includes("CHANGES_REQUESTED")) return { label: "changes requested", tone: "err" };
   // Without a decision nothing more is needed; with one, the approvals do not suffice yet.
   if (states.includes("APPROVED")) return pull.review_decision ? { label: "approved, review required" } : { label: "approved", tone: "ok" };
@@ -128,7 +196,7 @@ export function registerReviewCommands() {
     { id: "reviews.hidden", title: "Show / hide hidden pull requests", group: "Pull requests", run: () => { const s = useReviews.getState(); s.setPreference("showHidden", !s.showHidden); s.setPreference("hidden", false); s.setPreference("collapsed", false); s.setPreference("mineCollapsed", false); } },
     { id: "reviews.history", title: "Open review history", group: "Pull requests", run: openHistory },
     { id: "reviews.start", title: "Pre-review selected pull request…", group: "Pull requests", run: () => { const p = useStore.getState().prSelection; if (p) startReview(p); } },
-    { id: "reviews.hide", title: "Hide / restore selected pull request", group: "Pull requests", run: async () => { const p = useStore.getState().prSelection; if (p) { const inbox = useReviews.getState().inbox; await hidePull(p, ![...(inbox?.pulls ?? []), ...(inbox?.mine ?? [])].find((x) => x.id === p.id)?.hidden); } } },
+    { id: "reviews.hide", title: "Hide / restore selected pull request", group: "Pull requests", run: async () => { const p = useStore.getState().prSelection; if (p) { const inbox = useReviews.getState().inbox; await hidePull(p, ![...(inbox?.pulls ?? []), ...(inbox?.reviewed ?? []), ...(inbox?.mine ?? [])].find((x) => x.id === p.id)?.hidden); } } },
   ]);
 }
 

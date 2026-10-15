@@ -1,6 +1,6 @@
 import clsx from "clsx";
 import type { BranchPull, BranchStatus, Session } from "../gen";
-import { pullStatus, reviewStatus } from "../features/reviews/state";
+import { isStale, pullStatus, reviewStatus } from "../features/reviews/state";
 import { useSessionBranch } from "../state/branchStatus";
 import { ExternalLink } from "./ExternalLink";
 
@@ -29,15 +29,22 @@ export function branchPullLabels(pull: BranchPull): Label[] {
   return [{ label: "open" }, ...pullStatus(pull)];
 }
 
-/** The shortest form, for a sidebar row: merged/closed, or draft plus a checks mark and the review state once someone reviewed. */
+/** The shortest form, for a sidebar row: merged/closed, or draft plus a checks mark, the review state once someone reviewed, and ↻ for new commits since the latest review. */
 function compactLabels(pull: BranchPull): Label[] {
   if (pull.state !== "open") return branchPullLabels(pull);
   const checks = ({ SUCCESS: { label: "✓", tone: "ok" }, FAILURE: { label: "✗", tone: "err" }, ERROR: { label: "✗", tone: "err" }, PENDING: { label: "…" }, EXPECTED: { label: "…" } } as const)[pull.checks as "SUCCESS"];
   const review = reviewStatus(pull);
-  return [...(pull.draft ? [{ label: "draft" }] : []), ...(checks ? [checks] : []), ...(review && review.label !== "review required" ? [review] : [])];
+  return [...(pull.draft ? [{ label: "draft" }] : []), ...(checks ? [checks] : []), ...(review && review.label !== "review required" ? [review] : []),
+    ...(changedSinceReview(pull) ? [{ label: "↻" }] : [])];
 }
 
-const describe = (pull: BranchPull) => `${pull.repo}#${pull.number} · ${branchPullLabels(pull).map((l) => l.label).join(" · ")}\n${pull.title}`;
+/** New commits arrived since the latest review by a person. */
+function changedSinceReview(pull: BranchPull) {
+  const latest = pull.reviews.filter((r) => !r.bot).sort((a, b) => b.submitted_at.localeCompare(a.submitted_at))[0];
+  return !!latest && isStale(latest, pull.head_sha);
+}
+
+const describe = (pull: BranchPull) => `${pull.repo}#${pull.number} · ${branchPullLabels(pull).map((l) => l.label).join(" · ")}${pull.state === "open" && changedSinceReview(pull) ? " · new commits since the latest review" : ""}\n${pull.title}`;
 
 /** The branch's pull request in a sidebar row. */
 export function BranchPullChip({ pull }: { pull: BranchPull }) {
