@@ -66,6 +66,7 @@ async function mockDaemon(page: Page, history: StoredEvent[]) {
         case "session.get": result = session; break;
         case "session.history": result = history.filter((e) => e.seq > (params.after_seq ?? 0)); break;
         case "session.pending": result = { approvals: [], inputs: [] }; break;
+        case "session.send": sent.push(params.input); result = true; break;
         case "session.attachment": result = { data: fullImage.split(",")[1], media_type: "image/png" }; break;
         case "git.branch_status": result = null; break;
         default:
@@ -77,6 +78,7 @@ async function mockDaemon(page: Page, history: StoredEvent[]) {
 }
 
 let fullImage = "";
+const sent: { text: string; images: { data: string; media_type: string; width: number; height: number; original_width: number | null }[] }[] = [];
 
 function historyWith(thumbs: string[]): StoredEvent[] {
   const out: StoredEvent[] = [];
@@ -99,7 +101,7 @@ function historyWith(thumbs: string[]): StoredEvent[] {
 
 const specs = [
   { name: "settings-dialog.png", w: 1280, h: 800, hue: 220 },
-  { name: "sidebar.png", w: 600, h: 1100, hue: 140 },
+  { name: "retina-capture.png", w: 5120, h: 2880, hue: 140 },
   { name: "error-toast.png", w: 900, h: 300, hue: 10 },
   { name: "diagram.png", w: 1000, h: 1000, hue: 280 },
 ];
@@ -152,3 +154,29 @@ for (const theme of ["dark", "light"] as const) {
     await expect(composer.locator(".image-thumb")).toHaveCount(3);
   });
 }
+
+test("a Retina capture is shrunk to the agent's limits when sent", async ({ page }) => {
+  await page.goto("/");
+  await mockDaemon(page, historyWith([]));
+  await page.goto(`/?port=19997&token=shots&session=${sid}`);
+  await expect(page.locator(".composer textarea")).toBeVisible();
+  await pasteImages(page, [specs[1]]);
+  const thumb = page.locator(".composer .image-thumb-open");
+  await expect(thumb).toHaveAttribute("title", /5120 × 2880 .*will be sent resized to 2000 × 1125/);
+  await expect(thumb.locator(".image-thumb-badge")).toHaveText("resized");
+  await page.locator(".composer textarea").fill("full screen");
+  await page.locator(".composer textarea").press("Enter");
+  await expect(page.locator(".composer .image-thumb")).toHaveCount(0);
+  const image = sent.at(-1)!.images[0];
+  expect(image).toMatchObject({ width: 2000, height: 1125, original_width: 5120 });
+  expect(image.data.length).toBeLessThanOrEqual(5_000_000);
+  // Decodes to what was promised.
+  const size = await page.evaluate(async ({ data, type }) => {
+    const img = new Image();
+    img.src = `data:${type};base64,${data}`;
+    await img.decode();
+    return [img.naturalWidth, img.naturalHeight];
+  }, { data: image.data, type: image.media_type });
+  expect(size).toEqual([2000, 1125]);
+  console.log(`sent ${image.media_type}, ${image.data.length} base64 chars`);
+});

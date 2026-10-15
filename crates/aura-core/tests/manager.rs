@@ -1164,6 +1164,8 @@ async fn sent_images_are_kept_and_shown_on_the_user_message() {
                 thumbnail: Some("data:image/png;base64,AAAA".into()),
                 width: Some(800),
                 height: Some(600),
+                original_width: Some(4000),
+                original_height: Some(3000),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1183,6 +1185,7 @@ async fn sent_images_are_kept_and_shown_on_the_user_message() {
     let att = &user.data["attachments"][0];
     assert_eq!(att["name"], "shot.png");
     assert_eq!(att["width"], 800);
+    assert_eq!(att["original_width"], 4000);
     assert_eq!(att["thumbnail"], "data:image/png;base64,AAAA");
     let id = att["id"].as_str().unwrap();
     assert_eq!(m.attachment(&s.id, id).unwrap(), ("iVBORw0K".to_string(), "image/png".to_string()));

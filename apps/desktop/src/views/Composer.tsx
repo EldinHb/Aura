@@ -8,7 +8,7 @@ import { isMac } from "../lib/platform";
 import { filterSlashCommands, mergeSlashCommands, mentionQuery, slashQuery, type SlashEntry } from "./transcript/slash";
 import { fmtTokens, fmtUsd } from "./transcript/format";
 import { acpSessionInfo, acpSlashCommands, sessionProviderLabel } from "../lib/acp";
-import { fmtSize, imageCaption, imageSupport, prepareImage, toImageInput, type DraftImage } from "../lib/images";
+import { fmtSize, imageCaption, imageLimits, imageSupport, planFor, planNote, prepareImage, toImageInput, type DraftImage } from "../lib/images";
 import { emptyDraft, updateDraft, useComposerDrafts } from "../state/composerDrafts";
 import { ImageThumb } from "./ImageThumbs";
 
@@ -49,6 +49,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const errored = session?.status === "error";
   const canSteer = !!caps?.steer && running;
   const imageSupported = imageSupport(caps, acpInfo, agentName);
+  const limits = imageLimits(session?.provider);
 
   useLayoutEffect(() => {
     const draft = useComposerDrafts.getState().drafts[sessionId] ?? emptyDraft;
@@ -123,9 +124,14 @@ export function Composer({ sessionId }: { sessionId: string }) {
       toast(`${imageSupported.reason}; remove the images to send`, "warn");
       return;
     }
+    const blocked = images.map((img) => planFor(img, limits)).find((plan) => plan.kind === "blocked");
+    if (blocked?.kind === "blocked") {
+      toast(`${blocked.reason}; remove it to send`, "warn");
+      return;
+    }
     updateDraft(sessionId, () => ({ sending: true }));
     try {
-      const inputs = images.length ? await Promise.all(images.map(toImageInput)) : [];
+      const inputs = images.length ? await Promise.all(images.map((img) => toImageInput(img, limits))) : [];
       await client.send(sessionId, { text: body, images: inputs, steer: steer && canSteer });
       const h = history.get(sessionId) ?? [];
       if (body && h[h.length - 1] !== body) h.push(body);
@@ -343,16 +349,21 @@ export function Composer({ sessionId }: { sessionId: string }) {
       )}
       {images.length > 0 && (
         <div className="image-strip" ref={stripRef} aria-label="Attached images">
-          {images.map((img) => (
-            <ImageThumb
-              key={img.key}
-              src={img.thumbnail}
-              caption={`${imageCaption(img)} · ${fmtSize(img.blob.size)}`}
-              onOpen={() => openImage(img)}
-              onRemove={() => removeImage(img.key, false)}
-              onKeyDown={onThumbKey(img)}
-            />
-          ))}
+          {images.map((img) => {
+            const note = planNote(planFor(img, limits));
+            return (
+              <ImageThumb
+                key={img.key}
+                src={img.thumbnail}
+                caption={[imageCaption(img), fmtSize(img.blob.size), note?.detail].filter(Boolean).join(" · ")}
+                badge={note?.badge}
+                badgeKind={note?.badge === "too large" ? "err" : "info"}
+                onOpen={() => openImage(img)}
+                onRemove={() => removeImage(img.key, false)}
+                onKeyDown={onThumbKey(img)}
+              />
+            );
+          })}
           {!imageSupported.ok && <span className="warn-text">{imageSupported.reason}; remove them to send.</span>}
         </div>
       )}

@@ -5,9 +5,12 @@ import { useStore } from "../state/store";
 import { base64ToBlob, imageCaption, messageImages, type MessageImage } from "../lib/images";
 
 /** One square preview; a placeholder when there is no thumbnail. */
-export function ImageThumb({ src, caption, onOpen, onRemove, onKeyDown, small }: {
+export function ImageThumb({ src, caption, badge, badgeKind, onOpen, onRemove, onKeyDown, small }: {
   src: string | null;
   caption: string;
+  /** A word on the corner, e.g. "resized"; the caption says the rest. */
+  badge?: string;
+  badgeKind?: "info" | "err";
   onOpen?: () => void;
   onRemove?: () => void;
   onKeyDown?: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
@@ -30,6 +33,7 @@ export function ImageThumb({ src, caption, onOpen, onRemove, onKeyDown, small }:
         onKeyDown={onKeyDown}
       >
         {src ? <img src={src} alt="" draggable={false} /> : <span className="image-thumb-empty" aria-hidden>🖼</span>}
+        {badge && <span className={clsx("image-thumb-badge", badgeKind)} aria-hidden>{badge}</span>}
       </button>
       {onRemove && (
         <button
@@ -69,7 +73,7 @@ export function MessageImages({ sessionId, data }: { sessionId: string; data: un
   return (
     <div className="message-images">
       {images.map((img) => (
-        <ImageThumb key={img.key} small src={img.thumbnail} caption={imageCaption(img)} onOpen={img.thumbnail || img.attachment ? () => open(img) : undefined} />
+        <ImageThumb key={img.key} small src={img.thumbnail} caption={imageCaption(img)} badge={img.original ? "resized" : undefined} onOpen={img.thumbnail || img.attachment ? () => open(img) : undefined} />
       ))}
     </div>
   );

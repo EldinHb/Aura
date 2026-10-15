@@ -1,7 +1,8 @@
 //! Images sent with a message. Each is copied to
 //! `<data_dir>/attachments/<session>/` so the transcript can enlarge it later,
 //! and the user message it was sent with records them in `data.attachments`:
-//! `{ id, name, media_type, width, height, thumbnail }`.
+//! `{ id, name, media_type, width, height, original_width, original_height,
+//! thumbnail }`. The kept file is what the agent got, after any shrinking.
 //!
 //! Providers emit the user message themselves (Codex only once the server
 //! echoes it), so what a send attached is staged per session and added to the
@@ -63,6 +64,8 @@ impl Manager {
                     "media_type": media_type,
                     "width": img.width,
                     "height": img.height,
+                    "original_width": img.original_width,
+                    "original_height": img.original_height,
                     "thumbnail": img.thumbnail,
                 })
             })

@@ -480,6 +480,12 @@ pub struct ImageInput {
     pub width: Option<u32>,
     #[serde(default)]
     pub height: Option<u32>,
+    /// Size before the app shrank the image to the agent's limits; `width`
+    /// and `height` are what was sent.
+    #[serde(default)]
+    pub original_width: Option<u32>,
+    #[serde(default)]
+    pub original_height: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, Default)]

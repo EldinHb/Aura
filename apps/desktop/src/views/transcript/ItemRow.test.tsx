@@ -109,3 +109,9 @@ it("still shows images of messages from before attachments were recorded", () =>
   cleanup();
   expect(row(item("q", "user_message", "odd", { attachments: "nope", images: "x" })).container.querySelector(".message-images")).toBeNull();
 });
+
+it("says when a sent image was shrunk for the agent", () => {
+  row(item("r", "user_message", "big", { attachments: [{ id: "r.png", name: "retina.png", width: 2000, height: 1125, original_width: 5120, original_height: 2880, thumbnail: "data:image/png;base64,AAAA" }] }));
+  const open = screen.getByRole("button", { name: "Open retina.png · 2000 × 1125 · resized from 5120 × 2880" });
+  expect(open.textContent).toContain("resized");
+});

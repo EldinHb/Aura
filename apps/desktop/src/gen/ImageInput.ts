@@ -17,4 +17,9 @@ name: string | null,
  * Small preview as a `data:` URL, recorded on the sent message so the
  * transcript can show it without loading the full image.
  */
-thumbnail: string | null, width: number | null, height: number | null, };
+thumbnail: string | null, width: number | null, height: number | null, 
+/**
+ * Size before the app shrank the image to the agent's limits; `width`
+ * and `height` are what was sent.
+ */
+original_width: number | null, original_height: number | null, };

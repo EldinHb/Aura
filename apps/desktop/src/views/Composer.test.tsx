@@ -135,3 +135,21 @@ it("says so when the agent does not take images", async () => {
   await waitFor(() => expect(toast).toHaveBeenCalledWith("Claude Code does not accept images", "warn"));
   expect(thumbs()).toHaveLength(0);
 });
+
+it("marks images that will be shrunk and blocks ones that cannot be", async () => {
+  const retina = { ...image("retina.png"), width: 5120, height: 2880 };
+  updateDraft("a", () => ({ images: [retina] }));
+  render(<Composer sessionId="a" />);
+  expect(thumbs()[0].title).toContain("will be sent resized to 2000 × 1125");
+  expect(thumbs()[0].textContent).toContain("resized");
+
+  // Too big to send and not decodable, so it cannot be shrunk.
+  const broken = { ...image("broken.png"), width: null, height: null, blob: new Blob([new Uint8Array(4_000_000)], { type: "image/png" }) };
+  act(() => updateDraft("a", () => ({ images: [broken] })));
+  expect(thumbs()[0].textContent).toContain("too large");
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "look" } });
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.stringMatching(/broken\.png is over the 5 MB.*remove it to send/), "warn"));
+  expect(send).not.toHaveBeenCalled();
+  expect(useComposerDrafts.getState().drafts.a.images).toHaveLength(1);
+});
