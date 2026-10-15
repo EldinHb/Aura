@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { BranchPull, BranchStatus, Item, Session } from "../gen";
-import type { RpcClient } from "../lib/rpc";
+import { RpcClient } from "../lib/rpc";
 import { emptyTranscript, useStore } from "../state/store";
 import { useDetectedLinksStore, useLinkPreferencesStore } from "../state/sessionLinkPreferences";
 import { useGithubRepos } from "../state/githubRepos";
@@ -120,6 +120,18 @@ it("marks new commits since the latest review, which a bot's review does not cou
   render(<Sidebar />);
   await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ commented ↻"]));
   expect(document.querySelector(".branch-pull")?.getAttribute("title")).toContain("new commits since the latest review");
+});
+
+it("shows a pull request from a daemon older than its reviews, in the row and the status bar", async () => {
+  git.set("/work/a", status());
+  const { reviews: _, ...old } = pull({ review_decision: "REVIEW_REQUIRED" });
+  // Through the real client, which fills in what the daemon left out.
+  const call = vi.fn(async () => old);
+  const read = (...args: [string, string, string]) => RpcClient.prototype.githubBranchPull.apply({ call } as unknown as RpcClient, args);
+  useStore.setState({ client: { getSetting: async () => null, setSetting: async () => true, gitGithubRepo, gitBranchStatus, githubBranchPull: read } as unknown as RpcClient });
+  render(<><Sidebar /><StatusBar /></>);
+  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓"]));
+  await waitFor(() => expect(document.querySelector(".statusbar-pull")?.textContent).toBe("PR #42 · open · checks pass · review required"));
 });
 
 it("shows the selected session's branch and pull request in the status bar", async () => {

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { PullRequest, PreReview, ReviewInbox, ReviewResult, SubmittedReview } from "../../gen";
 import { useStore } from "../../state/store";
 import { registerCommands } from "../../lib/commands";
+import { normalizeInbox, normalizePreReview } from "../../lib/pulls";
 
 export function rpc<T>(method: string, params: unknown = {}): Promise<T> {
   const client = useStore.getState().client;
@@ -42,7 +43,7 @@ export const useReviews = create<ReviewState>((set, get) => ({
   refresh: async (remote = false) => {
     if (remote) set({ busy: true });
     try {
-      const inbox = await rpc<ReviewInbox>(remote ? "pulls.refresh" : "pulls.list");
+      const inbox = normalizeInbox(await rpc<ReviewInbox>(remote ? "pulls.refresh" : "pulls.list"));
       const app = useStore.getState();
       if (app.prSelection && inbox.account && app.prSelection.account !== inbox.account) {
         app.select(app.selectedId);
@@ -235,7 +236,7 @@ export async function flushDraft(id: string): Promise<PreReview | undefined> {
   const request = (async () => {
     setDraft(id, { ...draft, saving: true });
     try {
-      const review = await rpc<PreReview>("reviews.save", { id, revision: draft.revision, result: draft.result });
+      const review = normalizePreReview(await rpc<PreReview>("reviews.save", { id, revision: draft.revision, result: draft.result }));
       const current = useReviewDrafts.getState().drafts[id];
       setDraft(id, { ...current, result: current.version === draft.version ? review.result : current.result, revision: review.revision, savedVersion: draft.version, saving: false, error: null });
       return review;

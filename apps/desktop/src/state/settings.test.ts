@@ -10,6 +10,13 @@ it("loads saved settings when the store is created", async () => {
   expect(useStore.getState().settings).toMatchObject({ theme: "light", fontSize: 15, keymapPreset: "default" });
 });
 
+it("falls back to the default for a saved setting of another type", async () => {
+  localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "light", pullFilters: "author:bot", keymapOverrides: null, fontSize: "15" }));
+  vi.resetModules();
+  const { useStore, defaultSettings } = await import("./store");
+  expect(useStore.getState().settings).toEqual({ ...defaultSettings, theme: "light" });
+});
+
 it("loads collapsed orchestrators when the store is created", async () => {
   localStorage.setItem("aura.sidebar-collapsed.v1", JSON.stringify(["o1"]));
   vi.resetModules();

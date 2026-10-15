@@ -35,6 +35,7 @@ import type {
   BranchStatus,
   BranchPull,
 } from "../gen";
+import { normalizeBranchPull } from "./pulls";
 
 export const FRAME_PTY_OUTPUT = 1;
 export const FRAME_PTY_INPUT = 2;
@@ -347,7 +348,7 @@ export class RpcClient {
     return this.call<RepoIssue[]>("github.issues", { repo, query });
   }
   githubBranchPull(repo: string, head_repo: string, branch: string) {
-    return this.call<BranchPull | null>("github.branch_pull", { repo, head_repo, branch });
+    return this.call<BranchPull | null>("github.branch_pull", { repo, head_repo, branch }).then(normalizeBranchPull);
   }
   gitBranchStatus(cwd: string) {
     return this.call<BranchStatus | null>("git.branch_status", { cwd });

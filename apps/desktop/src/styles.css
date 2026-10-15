@@ -141,6 +141,9 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .empty h2 { color: var(--fg-muted); font-weight: 500; margin: 0; }
 .empty .hint { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
 .empty .hint span { display: inline-flex; gap: 6px; align-items: center; }
+.error-screen { padding: 24px; text-align: center; }
+.error-screen code { max-width: 720px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--err); }
+.error-screen-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 .terminal-wrap { flex: 1; min-height: 0; padding: 4px 0 0 6px; background: #0b0d13; }
 .terminal-wrap .xterm { height: 100%; }

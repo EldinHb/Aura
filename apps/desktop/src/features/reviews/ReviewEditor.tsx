@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { PreReview, ReviewComment, SubmissionPreview } from "../../gen";
 import { ExternalLink } from "../../components/ExternalLink";
 import { Modal } from "../../components/Modal";
+import { normalizePreReview } from "../../lib/pulls";
 import { useStore } from "../../state/store";
 import { ReviewDiff } from "./ReviewDiff";
 import { editDraft, ensureDraft, flushDraft, reloadDraft, rpc, startReview, useReviewDrafts, useReviews } from "./state";
@@ -23,7 +24,7 @@ export function ReviewEditor({ id }: { id: string }) {
   const draft = useReviewDrafts((s) => s.drafts[id]);
   const client = useStore((s) => s.client);
   const refresh = useCallback(async () => {
-    try { const review = await rpc<PreReview>("reviews.get", { id }); setReview(review); if (review.status === "ready") ensureDraft(review); setError(null); }
+    try { const review = normalizePreReview(await rpc<PreReview>("reviews.get", { id })); setReview(review); if (review.status === "ready") ensureDraft(review); setError(null); }
     catch (e) { setError(String(e)); }
   }, [id]);
   useEffect(() => {

@@ -121,3 +121,15 @@ it("lists PRs you reviewed with new commits first, and no group when there are n
   render(<ReviewSidebar />);
   expect(screen.queryByRole("button", { name: /You reviewed/ })).toBe(null);
 });
+
+it("lists pull requests from a daemon older than the review fields", async () => {
+  // As 0.2.8 sent them: no reviews, requests or threads on a PR, no reviewer on a review, no "reviewed" list.
+  const old = ({ reviews: _r, requested: _q, unanswered_threads: _t, ...rest }: PullRequest) => rest;
+  const { reviewed: _, ...inbox } = { ...inboxFixture, pulls: [old(pr(1, { my_review: { state: "APPROVED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: "old" } as SubmittedReview }))], mine: [old(pr(2))] };
+  useStore.setState({ client: { call: vi.fn(async () => inbox), onNotification: () => () => {}, onState: () => () => {} } as unknown as RpcClient });
+  await useReviews.getState().refresh();
+  render(<ReviewSidebar />);
+  expect(screen.getByTitle("PR 1")).toBeTruthy();
+  expect(screen.getByTitle("PR 2")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Waiting for review/ })).toBeTruthy();
+});

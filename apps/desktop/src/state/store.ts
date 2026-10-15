@@ -522,7 +522,15 @@ if (typeof window !== "undefined") {
 function loadSettings(): UiSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { ...defaultSettings, ...(JSON.parse(raw) as Partial<UiSettings>) };
+    // Saved by any version: a setting whose type has changed since falls back to the default.
+    const saved: unknown = raw ? JSON.parse(raw) : null;
+    if (saved && typeof saved === "object") {
+      const kept = Object.entries(saved).filter(([key, value]) => {
+        const fallback: unknown = defaultSettings[key as keyof UiSettings];
+        return fallback === undefined || (Array.isArray(fallback) ? Array.isArray(value) : typeof value === typeof fallback);
+      });
+      return { ...defaultSettings, ...Object.fromEntries(kept) };
+    }
   } catch {
     /* ignore */
   }

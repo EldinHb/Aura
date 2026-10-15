@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { PullRequest } from "../../gen";
 import { useStore } from "../../state/store";
 import { ExternalLink } from "../../components/ExternalLink";
+import { normalizePull } from "../../lib/pulls";
 import { Markdown } from "../../views/transcript/MarkdownView";
 import { ReviewDiff } from "./ReviewDiff";
 import { ReviewEditor } from "./ReviewEditor";
@@ -11,6 +12,7 @@ type Conversation = { id: number; body: string; html_url: string; created_at?: s
 type ProjectField = { text?: string; number?: number; date?: string; name?: string; title?: string; optionId?: string; iterationId?: string; field?: { id: string; name: string; dataType: string; options?: { id: string; name: string }[]; configuration?: { iterations: { id: string; title: string }[]; completedIterations: { id: string; title: string }[] } } };
 type ProjectItem = { id: string; project: { id: string; title: string; viewerCanUpdate: boolean }; fieldValues: ProjectField[] };
 type Detail = { pull: PullRequest; comments: Conversation[]; reviews: Conversation[]; threads: Conversation[]; projects: ProjectItem[]; project_error: string | null };
+const normalizeDetail = (d: Detail): Detail => ({ ...d, pull: normalizePull(d.pull) });
 type Options = { labels: { name: string }[]; assignees: { login: string }[]; milestones: { number: number; title: string }[] };
 
 export function PullWorkspace() {
@@ -42,8 +44,8 @@ function PullDetail({ pull: initial }: { pull: PullRequest }) {
   const identity = { repo: initial.repo, number: initial.number, account: initial.account };
   const load = useCallback(async () => {
     setBusy(true);
-    try { const data = await rpc<Detail>("pulls.get", { repo: initial.repo, number: initial.number, account: initial.account }); setDetail(data); setError(null); setDiff(null); setDiffVersion((v) => v + 1); }
-    catch (e) { setError(String(e)); try { const cached = await rpc<Detail>("pulls.cached", { id: initial.id, account: initial.account }); setDetail(cached); } catch { /* retain the inbox snapshot */ } }
+    try { const data = await rpc<Detail>("pulls.get", { repo: initial.repo, number: initial.number, account: initial.account }); setDetail(normalizeDetail(data)); setError(null); setDiff(null); setDiffVersion((v) => v + 1); }
+    catch (e) { setError(String(e)); try { const cached = await rpc<Detail>("pulls.cached", { id: initial.id, account: initial.account }); setDetail(normalizeDetail(cached)); } catch { /* retain the inbox snapshot */ } }
     finally { setBusy(false); }
   }, [initial.account, initial.id, initial.number, initial.repo]);
   useEffect(() => { void load(); }, [load]);
