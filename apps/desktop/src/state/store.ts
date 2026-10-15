@@ -283,6 +283,7 @@ function applyToTranscript(t: Transcript, ev: Event): Transcript {
 }
 
 const ORDER_KEY = "aura.session-order.v1";
+const SETTINGS_KEY = "aura.settings.v1";
 
 export const useStore = create<AppState>((set, get) => ({
   client: null,
@@ -464,8 +465,6 @@ if (typeof window !== "undefined") {
     useStore.setState({ sessionOrder: mergeOrder(loadOrder(), Object.values(st.sessions)) });
   });
 }
-
-const SETTINGS_KEY = "aura.settings.v1";
 
 function loadSettings(): UiSettings {
   try {

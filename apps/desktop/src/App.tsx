@@ -43,9 +43,19 @@ export default function App() {
   const fontSize = useStore((s) => s.settings.fontSize);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme === "system" ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : theme;
+    // Native controls (select menus, scrollbars, checkboxes) follow the window appearance, not our CSS, so pin the
+    // window to the chosen theme; "system" releases it and then tracks the OS as it changes.
+    if (isTauri()) import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme === "system" ? null : theme)).catch(() => {});
+    const media = matchMedia("(prefers-color-scheme: light)");
+    const apply = () => { document.documentElement.dataset.theme = theme === "system" ? (media.matches ? "light" : "dark") : theme; };
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, [theme]);
+
+  useEffect(() => {
     document.documentElement.style.setProperty("--font-size", `${fontSize}px`);
-  }, [theme, fontSize]);
+  }, [fontSize]);
 
   useEffect(() => {
     setCommandErrorHandler((msg) => useStore.getState().toast(msg, "error"));

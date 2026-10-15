@@ -58,8 +58,9 @@
 
 .pr-workspace a,.pr-review-editor a { color:var(--accent); text-decoration:none; }.pr-workspace a:hover,.pr-review-editor a:hover { text-decoration:underline; }.pr-toolbar>.spacer { flex:1; }
 .pr-form input,.pr-form select,.pr-form textarea,.pr-field input,.pr-field select,.pr-field textarea,.pr-form-row input,.pr-form-row select,.pr-finding textarea {
-  background:var(--bg-elev2); color:var(--fg); border:1px solid var(--border-strong); border-radius:5px; padding:7px 8px; font:inherit; line-height:1.5;
+  background-color:var(--bg-elev2); color:var(--fg); border:1px solid var(--border-strong); border-radius:5px; padding:7px 8px; font:inherit; line-height:1.5;
 }
+.pr-form select,.pr-field select,.pr-form-row select { padding-right:28px; }
 .pr-form textarea:focus,.pr-field textarea:focus,.pr-finding textarea:focus { border-color:var(--accent); outline:1px solid var(--accent); }
 .pr-form select:disabled,.pr-field textarea:disabled,.pr-finding textarea:disabled { opacity:.75; }
 .pr-metadata>.btn { margin-bottom:12px; }

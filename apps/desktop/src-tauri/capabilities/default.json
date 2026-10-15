@@ -16,6 +16,7 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:allow-is-focused",
+    "core:window:allow-set-theme",
     "core:webview:default",
     "core:webview:allow-create-webview-window",
     "core:event:default",

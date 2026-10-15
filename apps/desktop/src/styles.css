@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0f1117;
   --bg-elev: #151823;
   --bg-elev2: #1b1f2d;
@@ -26,6 +27,7 @@
   --titlebar-h: 38px;
 }
 :root[data-theme="light"] {
+  color-scheme: light;
   --bg: #f7f7fa;
   --bg-elev: #ffffff;
   --bg-elev2: #f0f1f6;
@@ -52,6 +54,12 @@ body {
 }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { background: none; border: none; padding: 0; cursor: pointer; }
+/* A native select is drawn in the OS appearance, ignores padding and paints over the focus ring, so every select draws its own control. */
+select { appearance: none; -webkit-appearance: none; cursor: pointer; line-height: normal; background: var(--bg-elev2) var(--chevron) no-repeat right 10px center / 10px 6px; border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 28px 5px 8px; }
+select:disabled { cursor: default; opacity: 0.6; }
+select option { background: var(--bg-elev); color: var(--fg); }
+/* A select does not match :focus-visible on click, so bind the ring to plain :focus. */
+select:focus { box-shadow: var(--focus-ring); border-color: var(--accent); }
 :focus { outline: none; }
 :focus-visible { box-shadow: var(--focus-ring); border-radius: 4px; }
 code, pre, .mono { font-family: var(--mono); font-size: 12px; }
@@ -148,12 +156,10 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .modal .modal-head { padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .modal .modal-body { padding: 12px 14px; overflow: auto; }
 .modal .modal-foot { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
-.modal input[type=text], .modal textarea, .modal select { width: 100%; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 7px 9px; }
-/* A native select ignores the padding above and paints over the focus ring, so draw the control ourselves. */
-.modal select { appearance: none; -webkit-appearance: none; cursor: pointer; line-height: normal; padding-right: 28px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 10px center; background-size: 10px 6px; }
-.modal select option { background: var(--bg-elev); color: var(--fg); }
-/* Text fields match :focus-visible even on click; a select does not, so bind the ring to plain :focus for all three. */
-.modal input[type=text]:focus, .modal textarea:focus, .modal select:focus { box-shadow: var(--focus-ring); border-color: var(--accent); }
+.modal input[type=text], .modal input[type=number], .modal textarea, .modal select { width: 100%; background-color: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 7px 9px; }
+.modal select { padding-right: 28px; }
+/* Text fields match :focus-visible even on click; bind the ring to plain :focus like the select. */
+.modal input[type=text]:focus, .modal input[type=number]:focus, .modal textarea:focus, .modal select:focus { box-shadow: var(--focus-ring); border-color: var(--accent); }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .field label { font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; }
 .list { display: flex; flex-direction: column; }
