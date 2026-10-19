@@ -153,3 +153,24 @@ it("marks images that will be shrunk and blocks ones that cannot be", async () =
   expect(send).not.toHaveBeenCalled();
   expect(useComposerDrafts.getState().drafts.a.images).toHaveLength(1);
 });
+
+it("while a question waits, the message box says which key goes to it; the question never takes the keyboard from it", async () => {
+  const { useKeyboard } = await import("../hooks/useKeyboard");
+  const { defaultSettings, emptyTranscript } = await import("../state/store");
+  function Keys() {
+    useKeyboard();
+    return null;
+  }
+  useStore.setState({ settings: { ...defaultSettings }, focus: "main", transcripts: { a: emptyTranscript() } });
+  render(<><Keys /><Composer sessionId="a" /></>);
+  const hint = () => screen.queryByText("The agent has a question", { exact: false });
+  act(() => screen.getByRole("textbox").focus());
+  expect(hint()).toBeNull();
+  const question = { id: "r1", session_id: "a", turn_id: null, item_id: null, created_at: "", questions: [] };
+  act(() => useStore.setState({ transcripts: { a: { ...emptyTranscript(), inputs: { r1: question } } } }));
+  expect(hint()!.textContent).toBe(` The agent has a question · Esc go to it`);
+  expect(document.activeElement).toBe(screen.getByRole("textbox"));
+  // Only while the message box has the keyboard: from elsewhere the card says it itself.
+  act(() => useStore.setState({ focus: "sidebar" }));
+  expect(hint()).toBeNull();
+});

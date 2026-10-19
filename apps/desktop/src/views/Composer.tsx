@@ -7,6 +7,7 @@ import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
 import { filterSlashCommands, mergeSlashCommands, mentionQuery, slashQuery, type SlashEntry } from "./transcript/slash";
 import { fmtTokens, fmtUsd } from "./transcript/format";
+import { useQuestionKey } from "./transcript/questionKey";
 import { acpSessionInfo, acpSlashCommands, sessionProviderLabel } from "../lib/acp";
 import { fmtSize, imageCaption, imageLimits, imageSupport, planFor, planNote, prepareImage, toImageInput, type DraftImage } from "../lib/images";
 import { emptyDraft, updateDraft, useComposerDrafts } from "../state/composerDrafts";
@@ -32,6 +33,9 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const acpInfo = useStore((s) => acpSessionInfo(s.transcripts[sessionId]?.providerInfo));
   const toast = useStore((s) => s.toast);
   const openDialog = useStore((s) => s.openDialog);
+  // A question card never takes the keyboard from here; while one waits, the hint row says how to get to it.
+  const questionWaiting = useStore((s) => Object.keys(s.transcripts[sessionId]?.inputs ?? {}).length > 0 && s.focus === "composer");
+  const questionKey = useQuestionKey();
   const { text, images, sending } = useComposerDrafts((s) => s.drafts[sessionId] ?? emptyDraft);
   const setText = (value: string) => updateDraft(sessionId, () => ({ text: value, start: value.length, end: value.length }));
   const setImages = (value: (images: DraftImage[]) => DraftImage[]) => updateDraft(sessionId, (draft) => ({ images: value(draft.images) }));
@@ -419,6 +423,11 @@ export function Composer({ sessionId }: { sessionId: string }) {
           <kbd>Enter</kbd> {running ? "queue" : "send"}
           {canSteer && <> · <kbd>{modKey}</kbd> steer</>} · <kbd>⇧Enter</kbd> newline
         </span>
+        {questionWaiting && questionKey && (
+          <span className="question-hint" role="status">
+            <span className="dot info pulse" /> The agent has a question · <kbd>{questionKey}</kbd> go to it
+          </span>
+        )}
         <span className="spacer" />
         {caps?.images && (
           <button className="chip" data-command="composer.attach-image" onClick={() => fileRef.current?.click()} title={imageSupported.ok ? "Attach images (or paste / drop them)" : imageSupported.reason}>

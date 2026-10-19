@@ -4,6 +4,7 @@ import type { Question, UserInputRequest } from "../../gen";
 import { useStore } from "../../state/store";
 import { physicalKey } from "../../lib/keymap";
 import { setFocus } from "../../commands/core";
+import { useQuestionKey } from "./questionKey";
 
 /** Per question: the options picked, whether "Other" is chosen, and the text typed for it. */
 type Sel = Record<string, { picked: Set<number>; other: boolean; text: string }>;
@@ -67,6 +68,10 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
   // A dialog holds the keyboard when the question arrives, so the card asks again once it closes: by then the dialog
   // has given focus back to where it was, and the card only takes it when that is nobody's.
   const dialogOpen = useStore((s) => s.dialog.kind !== "none");
+  // Whether the keyboard is on the card (or in one of its fields). The card never takes it from the user, so while it
+  // is elsewhere the card stands out and says which key brings the user here.
+  const [hasKeyboard, setHasKeyboard] = useState(false);
+  const questionKey = useQuestionKey();
   useEffect(() => {
     if (dialogOpen) return;
     const id = requestAnimationFrame(() => {
@@ -264,10 +269,24 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
   };
 
   return (
-    <div ref={rootRef} className={clsx("card input", cursor && "cursor")} data-input-id={request.id} data-keynav tabIndex={0} onKeyDown={onKey}>
+    <div
+      ref={rootRef}
+      className={clsx("card input", cursor && "cursor", !hasKeyboard && "away")}
+      data-input-id={request.id}
+      data-keynav
+      tabIndex={0}
+      onKeyDown={onKey}
+      onFocus={() => setHasKeyboard(true)}
+      onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setHasKeyboard(false)}
+    >
       <div className="card-head">
         <span className="dot info pulse" />
         <span>The agent has a question</span>
+        {!hasKeyboard && (
+          <span className="question-hint" role="status">
+            {questionKey ? <><kbd>{questionKey}</kbd> to answer</> : "Click to answer"}
+          </span>
+        )}
         <span className="spacer" />
         <span className="dim">{qs.length > 1 ? `${qi + 1}/${qs.length} · ←→ / Tab switch question` : ""}</span>
       </div>

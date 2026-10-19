@@ -254,6 +254,12 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .status-ico.failed { background: var(--err); }
 .card { background: var(--bg-elev); border: 1px solid var(--warn); border-radius: var(--radius); padding: 10px 12px; }
 .card.input { border-color: var(--info); }
+/* A waiting question the keyboard is not on: it stands out, and says which key gets there. */
+.card.input.away { box-shadow: 0 0 0 2px var(--info); animation: question-away 1.6s ease-in-out infinite; }
+@keyframes question-away { 0%,100% { box-shadow: 0 0 0 2px var(--info); } 50% { box-shadow: 0 0 0 2px var(--info), 0 0 12px 2px var(--info); } }
+@media (prefers-reduced-motion: reduce) { .card.input.away { animation: none; } }
+.question-hint { color: var(--info); font-weight: 600; }
+.card .card-head .question-hint { font-size: 12px; }
 .card .card-head { display: flex; gap: 8px; align-items: center; font-weight: 600; margin-bottom: 6px; }
 .card .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .diff-add { color: var(--ok); }

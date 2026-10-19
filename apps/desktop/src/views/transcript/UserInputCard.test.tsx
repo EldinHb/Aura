@@ -444,3 +444,45 @@ it("closing a dialog that hands the keyboard back to the message box leaves it t
   await nextFrame();
   expect(document.activeElement).toBe(screen.getByLabelText("Message"));
 });
+
+it("while the keyboard is elsewhere the card stands out and names the key from the keymap; it stops once the keyboard is on it", async () => {
+  const { useKeyboard } = await import("../../hooks/useKeyboard");
+  const { isMac } = await import("../../lib/platform");
+  const { defaultSettings } = await import("../../state/store");
+  function Keys() {
+    useKeyboard();
+    return null;
+  }
+  useStore.setState({ focus: "composer", settings: { ...defaultSettings } });
+  render(
+    <>
+      <Keys />
+      <UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />
+      <textarea aria-label="Message" onFocus={() => useStore.setState({ focus: "composer" })} />
+    </>,
+  );
+  const box = screen.getByLabelText("Message");
+  box.focus();
+  await nextFrame();
+  expect(document.activeElement).toBe(box);
+  const hint = () => card().querySelector(".question-hint");
+  // From the message box Escape gets there.
+  expect(card().className).toContain("away");
+  expect(hint()!.textContent).toBe(`Esc to answer`);
+  act(() => card().focus());
+  expect(hint()).toBeNull();
+  expect(card().className).not.toContain("away");
+  // Inside the card, e.g. in its Other field, the keyboard is still on it.
+  key("2");
+  expect(document.activeElement).toBe(textField());
+  expect(hint()).toBeNull();
+  // From the sidebar Escape does not, so the hint names the binding that does, as the user configured it.
+  act(() => {
+    box.focus();
+    useStore.setState({ focus: "sidebar", settings: { ...defaultSettings, keymapOverrides: [
+      { keys: "mod+l", command: "" }, { keys: "ctrl+k", command: "" }, { keys: "leader t", command: "" }, { keys: "mod+g", command: "focus.main" },
+    ] } });
+  });
+  expect(card().className).toContain("away");
+  expect(hint()!.textContent).toBe(`${isMac ? "⌘G" : "Ctrl+G"} to answer`);
+});
