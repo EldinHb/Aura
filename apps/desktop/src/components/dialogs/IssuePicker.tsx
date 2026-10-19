@@ -35,7 +35,9 @@ export function IssuePicker({ cwd, value, onChange }: { cwd: string; value: Pick
   const [scope, setScope] = useState<Scope>("sprint");
   const [text, setText] = useState("");
   const [found, setFound] = useState<{ query: string; list: RepoIssue[] } | null>(null);
-  const [index, setIndex] = useState(0);
+  // The cursor belongs to the rows it was moved on; new rows start it at the top. Resetting it in an effect instead
+  // left a moment where an arrow key pressed as the rows changed was undone by the reset that ran after it.
+  const [cursor, setCursor] = useState<{ rows: unknown; index: number }>({ rows: null, index: 0 });
   const list = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -87,7 +89,11 @@ export function IssuePicker({ cwd, value, onChange }: { cwd: string; value: Pick
       .map((i) => ({ link: toLink(repo, i), title: i.title, detail: detail(i) }));
   }, [repo, query, loaded, scope, searchable, found, value]);
 
-  useEffect(() => setIndex(0), [rows]);
+  const index = cursor.rows === rows ? cursor.index : 0;
+  const setIndex = (next: number | ((i: number) => number)) => setCursor((c) => {
+    const from = c.rows === rows ? c.index : 0;
+    return { rows, index: typeof next === "function" ? next(from) : next };
+  });
   useEffect(() => {
     list.current?.querySelector<HTMLElement>(".list-item.active")?.scrollIntoView({ block: "nearest" });
   }, [index, rows]);
