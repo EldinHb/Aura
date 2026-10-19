@@ -301,3 +301,97 @@ it("a question with nothing to choose from is just its field, and moving on to i
   expect(screen.getByText("2/2", { exact: false })).toBeTruthy();
   expect(document.activeElement).toBe(textField());
 });
+
+it("does not take the keyboard from the message box when it appears, so typing there cannot answer or dismiss", async () => {
+  render(
+    <div data-region="main">
+      <UserInputCard request={request(question("a", ["a1", "a2"]), question("b", ["b1"]))} sessionId="s" cursor={false} />
+      <div data-region="composer">
+        <textarea aria-label="Message" />
+      </div>
+    </div>,
+  );
+  const box = screen.getByLabelText<HTMLTextAreaElement>("Message");
+  box.focus();
+  await nextFrame();
+  await nextFrame();
+  expect(document.activeElement).toBe(box);
+  for (const ch of "hello world d") fireEvent.keyDown(document.activeElement!, { key: ch });
+  fireEvent.change(box, { target: { value: "hello world d" } });
+  expect(document.activeElement).toBe(box);
+  expect(box.value).toBe("hello world d");
+  expect(respondInput).not.toHaveBeenCalled();
+  expect(screen.getByText("1/2", { exact: false })).toBeTruthy();
+  expect(document.querySelectorAll(".option.picked")).toHaveLength(0);
+});
+
+it("multi-select: Enter after clicking an option next to an open Other keeps both and asks for the Other text", () => {
+  render(<UserInputCard request={request(question("a", ["a1", "a2"], true))} sessionId="s" cursor={false} />);
+  fireEvent.click(screen.getByText("Other"));
+  fireEvent.click(screen.getByText("a2"));
+  expect(document.activeElement).toBe(card());
+  key("Enter");
+  expect(screen.getByText("a2").closest("button")!.className).toContain("picked");
+  expect(screen.getByText("Other").closest("button")!.className).toContain("picked");
+  expect(document.activeElement).toBe(textField());
+  expect(toast).toHaveBeenCalledWith("Type your “Other” answer to “a”, or untick Other", "warn");
+  expect(respondInput).not.toHaveBeenCalled();
+});
+
+it("multi-select: Shift+Tab from the Other field back to the card, then Enter, leaves Other on", () => {
+  render(<UserInputCard request={request(question("a", ["a1", "a2"], true))} sessionId="s" cursor={false} />);
+  key("3");
+  expect(document.activeElement).toBe(textField());
+  // Shift+Tab in the field is the browser's: it moves to the card, which comes before the field.
+  card().focus();
+  key("Enter");
+  expect(screen.getByText("Other").closest("button")!.className).toContain("picked");
+  expect(document.activeElement).toBe(textField());
+  expect(toast).toHaveBeenCalledWith("Type your “Other” answer to “a”, or untick Other", "warn");
+});
+
+it("Tab lands in the next question's open field; the arrows browse and keep the keyboard on the card", () => {
+  render(<UserInputCard request={request(question("a", ["a1"]), question("b", []), question("c", ["c1"]))} sessionId="s" cursor={false} />);
+  card().focus();
+  key("ArrowRight");
+  expect(screen.getByText("2/3", { exact: false })).toBeTruthy();
+  expect(document.activeElement).toBe(card());
+  key("ArrowRight");
+  expect(screen.getByText("3/3", { exact: false })).toBeTruthy();
+  key("Tab", { shiftKey: true });
+  expect(screen.getByText("2/3", { exact: false })).toBeTruthy();
+  expect(document.activeElement).toBe(textField());
+  card().focus();
+  key("Tab");
+  expect(screen.getByText("3/3", { exact: false })).toBeTruthy();
+  expect(document.activeElement).toBe(card());
+});
+
+it("Escape in a text-only question's field goes back to the card and a second Escape leaves for the transcript", async () => {
+  const { useKeyboard } = await import("../../hooks/useKeyboard");
+  const { registerCoreCommands } = await import("../../commands/core");
+  const { Transcript } = await import("../Transcript");
+  const { emptyTranscript } = await import("../../state/store");
+  const unregister = registerCoreCommands();
+  function Keys() {
+    useKeyboard();
+    return null;
+  }
+  useStore.setState({ focus: "main", transcripts: { s: { ...emptyTranscript(), loaded: true, inputs: { r1: request(question("a", ["a1"]), question("b", [])) } } } });
+  render(
+    <div data-region="main">
+      <Keys />
+      <Transcript sessionId="s" />
+    </div>,
+  );
+  await nextFrame();
+  key("1");
+  expect(document.activeElement).toBe(textField());
+  fireEvent.keyDown(textField()!, { key: "Escape" });
+  expect(document.activeElement).toBe(card());
+  expect(textField()).not.toBeNull();
+  fireEvent.keyDown(card(), { key: "Escape" });
+  expect(document.activeElement).toBe(document.querySelector(".transcript"));
+  expect(respondInput).not.toHaveBeenCalled();
+  unregister();
+});

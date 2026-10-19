@@ -24,6 +24,11 @@ export function otherIndex(q: Question): number {
   return own >= 0 ? own : q.options.length;
 }
 
+/** Focus that is nobody's in particular: the card may take it. Never a field, the message box or another control. */
+function idleFocus(el: Element | null): boolean {
+  return !el || el === document.body || (el as HTMLElement).matches?.(".transcript, [data-region='main']") === true;
+}
+
 /** Nothing to choose from: the only way to answer is to type. */
 const textOnly = (q: Question) => q.options.length === 0 && q.allow_free_text;
 
@@ -55,9 +60,11 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
 
   const textField = (id: string) => [...(rootRef.current?.querySelectorAll<HTMLInputElement>("input[data-q]") ?? [])].find((el) => el.dataset.q === id);
 
-  // Take the keyboard as soon as the question shows; a frame later so a region focus queued for the same frame does not win.
+  // Take the keyboard as soon as the question shows, unless the user is busy elsewhere: keys meant for the message box
+  // would pick, switch and even dismiss here. A frame later so a region focus queued for the same frame does not win.
   useEffect(() => {
     const id = requestAnimationFrame(() => {
+      if (!idleFocus(document.activeElement)) return;
       const field = qs[0] && textOnly(qs[0]) ? textField(qs[0].id) : undefined;
       (field ?? rootRef.current)?.focus({ preventScroll: true });
     });
@@ -153,10 +160,11 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
     if (await send({}, true)) setFocus("composer");
   };
 
-  /** Enter: send when every question has an answer, otherwise move on to the next open one. */
+  /** Enter: send when every question has an answer, otherwise move on to the next open one. When only this one is
+   * open, submit says what it still needs and puts the keyboard there. */
   const confirm = (s: Sel) => {
     const open = nextOpen(qi, s);
-    if (open === null) void submit(s);
+    if (open === null || open === qi) void submit(s);
     else landOn(open, s);
   };
 
@@ -170,9 +178,9 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
         if (qq && answered(selRef.current[qq.id])) confirm(selRef.current);
       } else if (e.key === "Escape") {
         e.preventDefault();
-        // Back to the options; an "Other" left empty is closed again. (A text-only field leaves Escape to the app.)
+        // Back to the card; an "Other" left empty is closed again. A text-only field has nothing to close.
         const a = qq && selRef.current[qq.id];
-        if (qq && a && !a.text.trim()) setSel({ ...selRef.current, [qq.id]: { ...a, other: false } });
+        if (qq && a && !textOnly(qq) && !a.text.trim()) setSel({ ...selRef.current, [qq.id]: { ...a, other: false } });
         rootRef.current?.focus();
       }
       // Everything typed here is text, not an option hotkey or an app shortcut.
@@ -200,16 +208,21 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
       case "ArrowLeft":
         goTo(Math.max(0, qi - 1));
         break;
+      // Tab lands like Enter does, in the question's field when it is open; Tab in a field moves on natively, back
+      // to the card or to the buttons, so it never traps. The arrows only browse and keep the keyboard on the card:
+      // inside a field they move the text cursor, so landing there would end the browsing.
       case "Tab":
-        goTo((qi + (e.shiftKey ? -1 : 1) + qs.length) % qs.length);
+        landOn((qi + (e.shiftKey ? -1 : 1) + qs.length) % qs.length, selRef.current);
         break;
       case " ":
       case "x":
         if (oi < n) pick(qi, oi);
         break;
       case "Enter": {
-        if (!answered(selRef.current[q.id]) && oi < n) {
-          // Nothing chosen yet: Enter takes the row under the cursor; on "Other" that opens the field instead of sending.
+        const cur = selRef.current[q.id];
+        if (cur.picked.size === 0 && !cur.other && oi < n) {
+          // Nothing chosen at all: Enter takes the row under the cursor; on "Other" that opens the field instead of sending.
+          // Anything chosen already stays as it is, also an Other still waiting for its text.
           const s = pick(qi, oi);
           if (oi !== otherIndex(q)) confirm(s);
         } else confirm(selRef.current);
@@ -295,10 +308,10 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
                 type={qq.secret ? "password" : "text"}
                 className="other-input"
                 data-q={qq.id}
-                // Escape here goes back to the options, so the app keymap must not take it first.
-                data-own-escape={textOnly(qq) ? undefined : ""}
+                // Escape here goes back to the card, so the app keymap must not take it first.
+                data-own-escape=""
                 aria-label={`Your answer to: ${qq.question}`}
-                placeholder={textOnly(qq) ? "Type your answer… (Enter to confirm)" : "Type your answer… (Enter to confirm, Esc back to the options)"}
+                placeholder={textOnly(qq) ? "Type your answer… (Enter to confirm, Esc back to the card)" : "Type your answer… (Enter to confirm, Esc back to the options)"}
                 autoComplete="off"
                 value={s.text}
                 onFocus={() => {
