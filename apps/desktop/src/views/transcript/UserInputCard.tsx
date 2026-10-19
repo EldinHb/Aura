@@ -57,19 +57,26 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
   const rootRef = useRef<HTMLDivElement>(null);
   const qs = request.questions;
   const q = qs[qi];
+  const qiRef = useRef(qi);
+  qiRef.current = qi;
 
   const textField = (id: string) => [...(rootRef.current?.querySelectorAll<HTMLInputElement>("input[data-q]") ?? [])].find((el) => el.dataset.q === id);
 
   // Take the keyboard as soon as the question shows, unless the user is busy elsewhere: keys meant for the message box
   // would pick, switch and even dismiss here. A frame later so a region focus queued for the same frame does not win.
+  // A dialog holds the keyboard when the question arrives, so the card asks again once it closes: by then the dialog
+  // has given focus back to where it was, and the card only takes it when that is nobody's.
+  const dialogOpen = useStore((s) => s.dialog.kind !== "none");
   useEffect(() => {
+    if (dialogOpen) return;
     const id = requestAnimationFrame(() => {
       if (!idleFocus(document.activeElement)) return;
-      const field = qs[0] && textOnly(qs[0]) ? textField(qs[0].id) : undefined;
+      const cur = qs[qiRef.current];
+      const field = cur && selRef.current[cur.id].other ? textField(cur.id) : undefined;
       (field ?? rootRef.current)?.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dialogOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (focusText) textField(focusText.id)?.focus();
@@ -208,8 +215,9 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
       case "ArrowLeft":
         goTo(Math.max(0, qi - 1));
         break;
-      // Tab lands like Enter does, in the question's field when it is open; Tab in a field moves on natively, back
-      // to the card or to the buttons, so it never traps. The arrows only browse and keep the keyboard on the card:
+      // Tab on the card switches questions and lands like Enter does, in the question's field when it is open; it
+      // never moves the keyboard off the card, so Escape (or the mouse) is the way out. Tab in a field is the
+      // browser's, on to the Answer and Dismiss buttons. The arrows only browse and keep the keyboard on the card:
       // inside a field they move the text cursor, so landing there would end the browsing.
       case "Tab":
         landOn((qi + (e.shiftKey ? -1 : 1) + qs.length) % qs.length, selRef.current);

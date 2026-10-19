@@ -395,3 +395,52 @@ it("Escape in a text-only question's field goes back to the card and a second Es
   expect(respondInput).not.toHaveBeenCalled();
   unregister();
 });
+
+it("a question that arrives under a dialog takes the keyboard when the dialog closes, if nothing else has it", async () => {
+  const { ModalC } = await import("../../components/ModalC");
+  function App() {
+    const open = useStore((s) => s.dialog.kind !== "none");
+    return (
+      <>
+        <div className="transcript" tabIndex={0}>
+          <UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />
+        </div>
+        {open && <ModalC title="Search"><input aria-label="Search" data-autofocus /></ModalC>}
+      </>
+    );
+  }
+  // Opened from the transcript, so closing gives the keyboard back to the transcript: nobody's in particular.
+  (document.activeElement as HTMLElement | null)?.blur();
+  useStore.setState({ dialog: { kind: "search" } });
+  render(<App />);
+  await nextFrame();
+  await nextFrame();
+  expect(document.activeElement).toBe(screen.getByLabelText("Search"));
+  act(() => useStore.getState().closeDialog());
+  await nextFrame();
+  expect(document.activeElement).toBe(card());
+});
+
+it("closing a dialog that hands the keyboard back to the message box leaves it there", async () => {
+  const { ModalC } = await import("../../components/ModalC");
+  function App() {
+    const open = useStore((s) => s.dialog.kind !== "none");
+    return (
+      <>
+        <UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />
+        <textarea aria-label="Message" />
+        {open && <ModalC title="Search"><input aria-label="Search" data-autofocus /></ModalC>}
+      </>
+    );
+  }
+  useStore.setState({ dialog: { kind: "none" } });
+  render(<App />);
+  await nextFrame();
+  screen.getByLabelText<HTMLTextAreaElement>("Message").focus();
+  act(() => useStore.setState({ dialog: { kind: "search" } }));
+  expect(document.activeElement).toBe(screen.getByLabelText("Search"));
+  act(() => useStore.getState().closeDialog());
+  await nextFrame();
+  await nextFrame();
+  expect(document.activeElement).toBe(screen.getByLabelText("Message"));
+});
