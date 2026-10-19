@@ -26,7 +26,7 @@ export function ModalC({
   const ref = useRef<HTMLDivElement>(null);
   const closeDialog = useStore((s) => s.closeDialog);
 
-  useRestoreFocus();
+  useRestoreFocus(ref);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -62,6 +62,7 @@ export function ModalC({
         role="dialog"
         aria-modal="true"
         ref={ref}
+        data-focus-scope
         tabIndex={-1}
         style={{ width: width ?? undefined, maxHeight: height ?? undefined, height: height ?? undefined }}
         onKeyDown={trap}

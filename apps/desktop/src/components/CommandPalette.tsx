@@ -1,5 +1,5 @@
 import { useShallow } from "zustand/react/shallow";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useStore, selectVisibleSessions } from "../state/store";
 import { allCommands, listCommands, onCommandsChanged, runCommand, type Command } from "../lib/commands";
 import { currentCommandContext } from "../hooks/useCommandContext";
@@ -8,6 +8,7 @@ import { formatKeys } from "../lib/keymap";
 import { isMac, basename, relTime } from "../lib/platform";
 import { buildSections, flattenSections, filterItems, loadRecent, pushRecent } from "./palette";
 import { useListNav, KeyList, type KeyListItem } from "./Modal";
+import { useRestoreFocus } from "./restoreFocus";
 import { setFocus } from "../commands/core";
 import { HELP_TOPICS } from "./HelpOverlay";
 import clsx from "clsx";
@@ -22,6 +23,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState(initialQuery);
   const [tick, setTick] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const scopeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => onCommandsChanged(() => setTick((t) => t + 1)), []);
   useEffect(() => {
@@ -118,7 +120,8 @@ export function CommandPalette() {
 
   return (
     <div className="overlay palette-overlay" onMouseDown={(e) => e.target === e.currentTarget && setPalette(false)}>
-      <div className="modal palette" role="dialog" aria-label="Command palette" onKeyDown={(e) => {
+      <RestoreFocus scope={scopeRef} />
+      <div ref={scopeRef} className="modal palette" role="dialog" aria-label="Command palette" data-focus-scope onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.preventDefault();
           e.stopPropagation();
@@ -145,4 +148,10 @@ export function CommandPalette() {
       </div>
     </div>
   );
+}
+
+/** Mounted only while the palette is open, so it records what had the keyboard as the palette opens. */
+function RestoreFocus({ scope }: { scope: RefObject<HTMLElement | null> }) {
+  useRestoreFocus(scope);
+  return null;
 }

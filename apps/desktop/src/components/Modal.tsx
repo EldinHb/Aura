@@ -25,7 +25,7 @@ export function Modal({ title, children, footer, width, onClose, onKeyDown, onSu
   const close = onClose ?? closeDialog;
   const submitRef = useRef(onSubmit);
   submitRef.current = onSubmit;
-  useRestoreFocus();
+  useRestoreFocus(ref);
 
   useEffect(() => {
     const root = ref.current;
@@ -70,7 +70,7 @@ export function Modal({ title, children, footer, width, onClose, onKeyDown, onSu
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()} role="presentation">
-      <div ref={ref} className={clsx("modal", className)} style={width ? { width: `min(${width}px, 92vw)` } : undefined} role="dialog" aria-modal="true" onKeyDown={handleKey}>
+      <div ref={ref} className={clsx("modal", className)} style={width ? { width: `min(${width}px, 92vw)` } : undefined} role="dialog" aria-modal="true" data-focus-scope onKeyDown={handleKey}>
         <div className="modal-head">{title}</div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}
