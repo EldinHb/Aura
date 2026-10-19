@@ -76,6 +76,11 @@ function Dialogs() {
           <button type="button" data-hint>Got it</button>
         </Modal>
       )}
+      {kind === "search" && (
+        <ModalC title="Search">
+          <input aria-label="Search" data-autofocus autoFocus />
+        </ModalC>
+      )}
     </>
   );
 }
@@ -115,4 +120,31 @@ it("a dialog opened from another dialog gives the keyboard back to where the fir
   expect(document.activeElement).toBe(screen.getByText("Got it"));
   fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
   expect(document.activeElement).toBe(box);
+});
+
+it("a palette cancelled over a dialog gives the keyboard back to the dialog; one that runs a dialog sends it where the first began", async () => {
+  const unregister = registerCommands([{ id: "test.open-dialog", title: "Open the test dialog", group: "Test", run: () => useStore.getState().openDialog({ kind: "help" }) }]);
+  useStore.setState({ dialog: { kind: "none" }, paletteOpen: false });
+  render(<><Dialogs /><CommandPalette /></>);
+  const box = screen.getByLabelText<HTMLTextAreaElement>("Message");
+  box.focus();
+  act(() => useStore.getState().openDialog({ kind: "search" }));
+  const search = screen.getByLabelText("Search");
+  expect(document.activeElement).toBe(search);
+  // The palette opens over Search and is cancelled: Search is still open, so the keyboard goes back into it.
+  act(() => useStore.getState().setPalette(true));
+  await nextFrame();
+  const palette = () => screen.getByRole("dialog", { name: "Command palette" });
+  fireEvent.keyDown(palette(), { key: "Escape" });
+  expect(document.activeElement).toBe(search);
+  // This time it runs a command whose dialog takes Search's place: closing that goes back to the message box.
+  act(() => useStore.getState().setPalette(true));
+  await nextFrame();
+  const input = screen.getByPlaceholderText(/^Type a command/);
+  fireEvent.change(input, { target: { value: "Open the test dialog" } });
+  await act(async () => void fireEvent.keyDown(input, { key: "Enter" }));
+  expect(document.activeElement).toBe(screen.getByText("Got it"));
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  expect(document.activeElement).toBe(box);
+  unregister();
 });
