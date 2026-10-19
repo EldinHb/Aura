@@ -16,9 +16,14 @@ vi.hoisted(() => {
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => values.set(k, v), removeItem: (k: string) => values.delete(k), clear: () => values.clear() } });
 });
 
+// The list sorts by activity, so each session gets its own time from one reading of the clock. Stamping each with
+// the clock as it is made let a millisecond tick between two of them reorder the list now and then.
+const NOW = Date.now();
+const minutesAgo = (n: number) => new Date(NOW - n * 60_000).toISOString();
+
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", agent: null, status: "idle", mode: "structured", archived: false, pinned: false,
-    pending_count: 0, last_activity: new Date().toISOString(), group: null, worktree: null, model: null, orchestrator: false, orchestrator_id: null, pulls: [], ...patch } as Session;
+    pending_count: 0, last_activity: minutesAgo(0), group: null, worktree: null, model: null, orchestrator: false, orchestrator_id: null, pulls: [], ...patch } as Session;
 }
 
 const getSetting = vi.fn();
@@ -35,11 +40,12 @@ beforeEach(() => {
     prSelection: pullFixture, selectedId: null, showArchived: false, connection: "open",
     client: { getSetting, gitGithubRepo, call: vi.fn().mockResolvedValue(inboxFixture), onNotification: () => () => {}, onState: () => () => {} } as unknown as RpcClient,
     sessions: {
-      orch: session("orch", { title: "Release orchestrator", orchestrator: true, status: "running" }),
-      worker: session("worker", { title: "Fix the empty response", orchestrator_id: "orch", provider: "codex", worktree: { repo_root: "/work/widget", path: "/work/worker", branch: "fix-empty" } }),
-      linker: session("linker", { title: "Talk about the fix", agent: "gemini", provider: "acp" }),
-      old: session("old", { title: "First attempt", archived: true, pulls: [pullFixture.url], status: "waiting_input" }),
-      unrelated: session("unrelated", { title: "Something else", pulls: ["https://github.com/acme/widget/pull/41"] }),
+      orch: session("orch", { title: "Release orchestrator", orchestrator: true, status: "running", last_activity: minutesAgo(1) }),
+      worker: session("worker", { title: "Fix the empty response", orchestrator_id: "orch", provider: "codex", worktree: { repo_root: "/work/widget", path: "/work/worker", branch: "fix-empty" }, last_activity: minutesAgo(2) }),
+      linker: session("linker", { title: "Talk about the fix", agent: "gemini", provider: "acp", last_activity: minutesAgo(3) }),
+      // Archived: listed last although it was active most recently.
+      old: session("old", { title: "First attempt", archived: true, pulls: [pullFixture.url], status: "waiting_input", last_activity: minutesAgo(0) }),
+      unrelated: session("unrelated", { title: "Something else", pulls: ["https://github.com/acme/widget/pull/41"], last_activity: minutesAgo(4) }),
     },
   });
 });
