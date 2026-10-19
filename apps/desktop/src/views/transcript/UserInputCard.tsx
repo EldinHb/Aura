@@ -63,18 +63,24 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
 
   const textField = (id: string) => [...(rootRef.current?.querySelectorAll<HTMLInputElement>("input[data-q]") ?? [])].find((el) => el.dataset.q === id);
 
-  // Take the keyboard as soon as the question shows, unless the user is busy elsewhere: keys meant for the message box
-  // would pick, switch and even dismiss here. A frame later so a region focus queued for the same frame does not win.
-  // A dialog holds the keyboard when the question arrives, so the card asks again once it closes: by then the dialog
-  // has given focus back to where it was, and the card only takes it when that is nobody's.
+  // Take the keyboard once, as soon as the question shows, unless the user is busy elsewhere: keys meant for the message
+  // box would pick, switch and even dismiss here. A frame later so a region focus queued for the same frame does not
+  // win. A question that arrives under a dialog tries on the first frame after it closes, once the dialog has given
+  // focus back; that is the only retry, so closing a later dialog never pulls the user back here.
   const dialogOpen = useStore((s) => s.dialog.kind !== "none");
+  const focusTried = useRef(false);
   // Whether the keyboard is on the card (or in one of its fields). The card never takes it from the user, so while it
-  // is elsewhere the card stands out and says which key brings the user here.
+  // is elsewhere the card stands out and says which key brings the user here; not before the first try, which would
+  // otherwise flash the hint for a frame.
   const [hasKeyboard, setHasKeyboard] = useState(false);
+  const [settled, setSettled] = useState(false);
+  const away = settled && !hasKeyboard;
   const questionKey = useQuestionKey();
   useEffect(() => {
-    if (dialogOpen) return;
+    if (dialogOpen || focusTried.current) return;
     const id = requestAnimationFrame(() => {
+      focusTried.current = true;
+      setSettled(true);
       if (!idleFocus(document.activeElement)) return;
       const cur = qs[qiRef.current];
       const field = cur && selRef.current[cur.id].other ? textField(cur.id) : undefined;
@@ -271,7 +277,7 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
   return (
     <div
       ref={rootRef}
-      className={clsx("card input", cursor && "cursor", !hasKeyboard && "away")}
+      className={clsx("card input", cursor && "cursor", away && "away")}
       data-input-id={request.id}
       data-keynav
       tabIndex={0}
@@ -282,7 +288,7 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
       <div className="card-head">
         <span className="dot info pulse" />
         <span>The agent has a question</span>
-        {!hasKeyboard && (
+        {away && (
           <span className="question-hint" role="status">
             {questionKey ? <><kbd>{questionKey}</kbd> to answer</> : "Click to answer"}
           </span>

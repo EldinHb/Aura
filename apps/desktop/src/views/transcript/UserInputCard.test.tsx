@@ -486,3 +486,71 @@ it("while the keyboard is elsewhere the card stands out and names the key from t
   expect(card().className).toContain("away");
   expect(hint()!.textContent).toBe(`${isMac ? "⌘G" : "Ctrl+G"} to answer`);
 });
+
+it("after a Modal opened from the message box closes, the keyboard is back in the box and typing does not reach the card", async () => {
+  const { Modal } = await import("../../components/Modal");
+  function App() {
+    const open = useStore((s) => s.dialog.kind !== "none");
+    return (
+      <>
+        <UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />
+        <textarea aria-label="Message" />
+        {open && <Modal title="Keyboard shortcuts"><button type="button">Got it</button></Modal>}
+      </>
+    );
+  }
+  useStore.setState({ dialog: { kind: "none" } });
+  render(<App />);
+  const box = screen.getByLabelText<HTMLTextAreaElement>("Message");
+  box.focus();
+  await nextFrame();
+  expect(document.activeElement).toBe(box);
+  act(() => useStore.setState({ dialog: { kind: "help" } }));
+  expect(document.activeElement).toBe(screen.getByText("Got it"));
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  await nextFrame();
+  await nextFrame();
+  expect(document.activeElement).toBe(box);
+  for (const ch of "dd") fireEvent.keyDown(document.activeElement!, { key: ch });
+  expect(respondInput).not.toHaveBeenCalled();
+  expect(card().className).toContain("away");
+});
+
+it("once the keyboard has left the card, closing a later dialog does not pull it back", async () => {
+  const { ModalC } = await import("../../components/ModalC");
+  function App() {
+    const open = useStore((s) => s.dialog.kind !== "none");
+    return (
+      <>
+        <div className="transcript" tabIndex={0} data-testid="transcript">
+          <UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />
+        </div>
+        {open && <ModalC title="Search"><input aria-label="Search" data-autofocus autoFocus /></ModalC>}
+      </>
+    );
+  }
+  (document.activeElement as HTMLElement | null)?.blur();
+  useStore.setState({ dialog: { kind: "none" } });
+  render(<App />);
+  await nextFrame();
+  expect(document.activeElement).toBe(card());
+  // The user leaves the card to read the transcript, then searches.
+  act(() => screen.getByTestId("transcript").focus());
+  act(() => useStore.setState({ dialog: { kind: "search" } }));
+  expect(document.activeElement).toBe(screen.getByLabelText("Search"));
+  act(() => useStore.getState().closeDialog());
+  await nextFrame();
+  await nextFrame();
+  expect(document.activeElement).toBe(screen.getByTestId("transcript"));
+});
+
+it("does not flash the hint before its first try at the keyboard", async () => {
+  (document.activeElement as HTMLElement | null)?.blur();
+  useStore.setState({ dialog: { kind: "none" } });
+  render(<UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />);
+  expect(card().className).not.toContain("away");
+  expect(card().querySelector(".question-hint")).toBeNull();
+  await nextFrame();
+  expect(document.activeElement).toBe(card());
+  expect(card().querySelector(".question-hint")).toBeNull();
+});

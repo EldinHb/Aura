@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useStore } from "../state/store";
+import { useRestoreFocus } from "./restoreFocus";
 
 /**
  * Minimal modal shell: overlay, focus trap, Escape closes via closeDialog.
@@ -25,13 +26,12 @@ export function ModalC({
   const ref = useRef<HTMLDivElement>(null);
   const closeDialog = useStore((s) => s.closeDialog);
 
+  useRestoreFocus();
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const prev = document.activeElement as HTMLElement | null;
     const first = el.querySelector<HTMLElement>("[data-autofocus]") ?? el;
     first.focus();
-    return () => prev?.focus?.();
   }, []);
 
   const trap = (e: React.KeyboardEvent<HTMLDivElement>) => {

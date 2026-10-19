@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useStore } from "../state/store";
 import clsx from "clsx";
+import { useRestoreFocus } from "./restoreFocus";
 
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -17,13 +18,14 @@ export type ModalProps = {
   className?: string;
 };
 
-/** Shared modal shell: backdrop, focus trap, Escape to close, autofocus. */
+/** Shared modal shell: backdrop, focus trap, Escape to close, autofocus, and focus back where it was on close. */
 export function Modal({ title, children, footer, width, onClose, onKeyDown, onSubmit, className }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
   const closeDialog = useStore((s) => s.closeDialog);
   const close = onClose ?? closeDialog;
   const submitRef = useRef(onSubmit);
   submitRef.current = onSubmit;
+  useRestoreFocus();
 
   useEffect(() => {
     const root = ref.current;
