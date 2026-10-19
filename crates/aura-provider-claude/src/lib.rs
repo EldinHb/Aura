@@ -93,6 +93,7 @@ mod tests {
                                 .input_response(&UserInputResponse {
                                     request_id: rid.into(),
                                     answers,
+                                    declined: false,
                                 })
                                 .unwrap();
                             assert_eq!(resp.pointer("/response/response/updatedInput/answers/Do you prefer red or blue?"), Some(&Value::String("Red".into())));
@@ -312,6 +313,32 @@ mod tests {
                 .unwrap(),
             "/tmp/aura-nope/b.txt"
         );
+    }
+
+    #[test]
+    fn declined_question_is_denied_to_the_model() {
+        let mut p = Parser::new("s");
+        let evs = p.handle_line(&serde_json::json!({
+            "type": "control_request", "request_id": "q1",
+            "request": {"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [
+                {"question": "Red or blue?", "header": "Color", "multiSelect": false, "options": [{"label": "Red"}, {"label": "Blue"}]}
+            ]}}
+        }));
+        assert!(matches!(evs[0], Event::UserInputRequested { .. }));
+        let resp = p
+            .input_response(&UserInputResponse {
+                request_id: "q1".into(),
+                answers: Default::default(),
+                declined: true,
+            })
+            .unwrap();
+        assert_eq!(resp.pointer("/response/request_id").unwrap(), "q1");
+        assert_eq!(resp.pointer("/response/response/behavior").unwrap(), "deny");
+        assert!(resp
+            .pointer("/response/response/message")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.contains("dismissed")));
+        assert!(p.pending_approvals.is_empty());
     }
 
     #[test]

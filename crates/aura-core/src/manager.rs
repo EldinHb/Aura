@@ -575,21 +575,18 @@ impl Manager {
         let driver = self
             .driver(id)
             .ok_or_else(|| anyhow!("session is not running"))?;
-        let exists = self
+        let request = self
             .inner
             .runtimes
             .lock()
             .get(id)
-            .map(|r| r.pending_inputs.contains_key(&response.request_id))
-            .unwrap_or(false);
-        if !exists {
-            bail!("unknown input request {}", response.request_id);
-        }
+            .and_then(|r| r.pending_inputs.get(&response.request_id).cloned())
+            .ok_or_else(|| anyhow!("unknown input request {}", response.request_id))?;
         driver.respond_input(response.clone()).await?;
         self.publish(Event::UserInputResolved {
             session_id: id.into(),
             request_id: response.request_id.clone(),
-            response,
+            response: redact_secrets(&request, response),
         });
         Ok(())
     }
@@ -1347,4 +1344,18 @@ pub fn apply_delta(item: &mut Item, delta: &ItemDelta) {
             }
         }
     }
+}
+
+/// The resolved event is stored and broadcast; answers to secret questions
+/// reach the agent but not the log.
+fn redact_secrets(
+    request: &UserInputRequest,
+    mut response: UserInputResponse,
+) -> UserInputResponse {
+    for q in request.questions.iter().filter(|q| q.secret) {
+        if let Some(a) = response.answers.get_mut(&q.id) {
+            *a = vec!["(hidden)".into()];
+        }
+    }
+    response
 }

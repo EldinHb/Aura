@@ -96,10 +96,7 @@ export const coreCommands: Command[] = [
       // from composer -> main; from main -> sidebar stays
       if (s.focus === "composer") setFocus("main");
       else if (document.activeElement instanceof HTMLElement && !document.activeElement.closest(".terminal-wrap")) {
-        // Leaving a question card goes to the transcript; the region focus would land back on the card.
-        const transcript = document.activeElement.closest("[data-input-id]")?.closest<HTMLElement>(".transcript");
         document.activeElement.blur();
-        if (transcript) return transcript.focus();
         focusRegionEl(s.focus);
       }
     },

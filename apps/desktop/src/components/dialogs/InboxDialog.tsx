@@ -75,9 +75,12 @@ export function InboxDialog() {
   }, [rows.length, idx]);
 
   const respond = async (row: Row, option: ApprovalOption) => {
-    if (!client || row.kind !== "approval") return;
+    if (!client || row.kind === "pull") return;
+    // A question is answered on its card; from here it can only be dismissed.
+    if (row.kind === "input" && option !== "decline") return;
     try {
-      await client.respondApproval(row.a.session_id, row.a.id, { option, updated_input: null, message: null });
+      if (row.kind === "input") await client.respondInput(row.r.session_id, { request_id: row.r.id, answers: {}, declined: true });
+      else await client.respondApproval(row.a.session_id, row.a.id, { option, updated_input: null, message: null });
       setResolved((s) => new Set(s).add(rowId(row)));
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), "error");
@@ -122,7 +125,7 @@ export function InboxDialog() {
           <span>Inbox</span>
           <span style={{ flex: 1 }} />
           <span className="dim" style={{ fontWeight: 400, color: "var(--fg-dim)", fontSize: 11 }}>
-            <kbd>y</kbd> accept <kbd>Y</kbd> for session <kbd>n</kbd> decline <kbd>a</kbd> accept all cmds <kbd>x</kbd> mark PR read <kbd>↩</kbd> open
+            <kbd>y</kbd> accept <kbd>Y</kbd> for session <kbd>n</kbd> decline / dismiss question <kbd>a</kbd> accept all cmds <kbd>x</kbd> mark PR read <kbd>↩</kbd> open
           </span>
         </>
       }

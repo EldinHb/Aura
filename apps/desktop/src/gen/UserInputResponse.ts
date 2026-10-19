@@ -4,4 +4,9 @@ export type UserInputResponse = { request_id: string,
 /**
  * question id -> selected labels / free text
  */
-answers: { [key in string]?: Array<string> }, };
+answers: { [key in string]?: Array<string> }, 
+/**
+ * The user dismissed the question without answering; `answers` is empty.
+ * The provider tells the agent so, and the agent carries on without it.
+ */
+declined: boolean, };

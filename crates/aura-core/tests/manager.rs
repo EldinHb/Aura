@@ -86,7 +86,19 @@ impl Driver for FakeDriver {
                     session_id: self.session_id.clone(),
                     turn_id: Some(turn.id.clone()),
                     item_id: None,
-                    questions: vec![],
+                    questions: if input.text.contains("secret") {
+                        vec![Question {
+                            id: "pw".into(),
+                            header: None,
+                            question: "Password?".into(),
+                            options: vec![],
+                            multi_select: false,
+                            allow_free_text: true,
+                            secret: true,
+                        }]
+                    } else {
+                        vec![]
+                    },
                     created_at: now(),
                 },
             });
@@ -1119,6 +1131,61 @@ async fn questions_wait_and_stopping_ends_the_wait() {
     wait_attention(&m, &s.id, Some(Attention::Waiting)).await;
     m.stop(&s.id).await.unwrap();
     assert_eq!(m.get_session(&s.id).unwrap().attention, None);
+}
+
+#[tokio::test]
+async fn answers_to_secret_questions_stay_out_of_the_log() {
+    let (m, _calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    m.send(
+        &s.id,
+        Input {
+            text: "a secret question".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &s.id, SessionStatus::WaitingInput).await;
+    let mut answers = std::collections::HashMap::new();
+    answers.insert("pw".to_string(), vec!["hunter2".to_string()]);
+    m.respond_input(
+        &s.id,
+        UserInputResponse {
+            request_id: "q1".into(),
+            answers,
+            declined: false,
+        },
+    )
+    .await
+    .unwrap();
+    // The event loop stores events after the call returns.
+    let mut resolved = None;
+    for _ in 0..200 {
+        resolved = m
+            .history(&s.id, 0, 1000)
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e.event {
+                Event::UserInputResolved { response, .. } => Some(response),
+                _ => None,
+            });
+        if resolved.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let resolved = resolved.expect("resolved event stored");
+    assert_eq!(resolved.answers["pw"], vec!["(hidden)".to_string()]);
+    assert!(m.pending().1.is_empty());
 }
 
 #[tokio::test]

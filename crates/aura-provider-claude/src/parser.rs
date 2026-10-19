@@ -9,6 +9,10 @@ use aura_core::*;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 
+/// What the model reads when the user dismisses an AskUserQuestion.
+const DECLINED_QUESTION: &str =
+    "The user dismissed the question without answering it. Carry on without the answer.";
+
 /// A `can_use_tool` request we still owe an answer for.
 #[derive(Debug, Clone)]
 pub struct PendingApproval {
@@ -848,6 +852,7 @@ impl Parser {
                                     .and_then(Value::as_bool)
                                     .unwrap_or(false),
                                 allow_free_text: true,
+                                secret: false,
                             }
                         })
                         .collect()
@@ -1175,6 +1180,17 @@ impl Parser {
     /// Build the `control_response` for an AskUserQuestion answer.
     pub fn input_response(&mut self, response: &UserInputResponse) -> Option<Value> {
         let pending = self.pending_approvals.remove(&response.request_id)?;
+        if response.declined {
+            // A denied AskUserQuestion reaches the model as a tool error, so it carries on without an answer.
+            return Some(json!({
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": response.request_id,
+                    "response": {"behavior": "deny", "message": DECLINED_QUESTION}
+                }
+            }));
+        }
         let mut updated = pending.input.clone();
         let mut answers = Map::new();
         // Map question ids (question text) back to labels.

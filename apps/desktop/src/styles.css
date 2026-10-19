@@ -387,7 +387,9 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .card.input .option.picked { background: var(--accent-bg); }
 .card.input .option-box { width: 16px; }
 .card.input .option-desc { margin-left: 4px; }
-.card.input input[type=text] { width: 100%; margin-top: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; }
+.card.input .option.other .option-label { font-style: italic; }
+.card.input input.other-input { width: 100%; margin-top: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; }
+.card.input input.other-input:focus { border-color: var(--accent); outline: none; }
 /* composer */
 .composer .chips { gap: 6px; }
 /* attached images: the composer strip and sent messages */

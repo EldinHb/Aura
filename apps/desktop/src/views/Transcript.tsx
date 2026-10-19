@@ -3,7 +3,6 @@ import clsx from "clsx";
 import type { Item, Turn } from "../gen";
 import { useStore } from "../state/store";
 import { sessionProviderLabel } from "../lib/acp";
-import { setFocus } from "../commands/core";
 import { registerTranscriptCommands, setTranscriptHandle } from "../commands/transcript";
 import { ItemRow } from "./transcript/ItemRow";
 import { ApprovalCard } from "./transcript/ApprovalCard";
@@ -226,7 +225,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="transcript-wrap">
-      <div className="transcript" ref={rootRef} data-autofocus tabIndex={0} onFocus={() => setFocus("main")} onScroll={onScroll}>
+      {/* Only mark the region: focus events bubble up from every control inside, and moving focus here would pull it off the field just clicked. */}
+      <div className="transcript" ref={rootRef} data-autofocus tabIndex={0} onFocus={() => useStore.getState().setFocus("main")} onScroll={onScroll}>
         {t?.loading && <div className="dim transcript-loading">Loading history…</div>}
         {!t?.loading && rows.length === 0 && session && (
           <div className="empty">

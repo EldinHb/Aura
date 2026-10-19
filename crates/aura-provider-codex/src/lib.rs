@@ -985,10 +985,45 @@ mod tests {
             .input_reply(&UserInputResponse {
                 request_id: req.id,
                 answers,
+                declined: false,
             })
             .unwrap();
         assert_eq!(id, json!(9));
         assert_eq!(res, json!({ "answers": { "q1": { "answers": ["Red"] } } }));
+    }
+
+    #[test]
+    fn declined_user_input_replies_with_no_answers() {
+        let mut mapper = ThreadMapper::new("sess", "t");
+        let out = mapper.handle(&Incoming {
+            id: Some(json!(4)),
+            method: "item/tool/requestUserInput".into(),
+            params: json!({ "threadId": "t", "turnId": "u", "itemId": "i", "isBlocking": true,
+                "questions": [{ "id": "q1", "header": "Token", "question": "API token?", "isOther": true, "isSecret": true, "options": null }] }),
+        });
+        let req = match &out.events[0] {
+            Event::UserInputRequested { request, .. } => request.clone(),
+            e => panic!("{e:?}"),
+        };
+        assert!(req.questions[0].secret);
+        assert!(req.questions[0].allow_free_text);
+        let (id, res) = mapper
+            .input_reply(&UserInputResponse {
+                request_id: req.id.clone(),
+                answers: Default::default(),
+                declined: true,
+            })
+            .unwrap();
+        assert_eq!(id, json!(4));
+        assert_eq!(res, json!({ "answers": {} }));
+        // Answered once; a second reply has nothing to go to.
+        assert!(mapper
+            .input_reply(&UserInputResponse {
+                request_id: req.id,
+                answers: Default::default(),
+                declined: true,
+            })
+            .is_err());
     }
 
     #[test]

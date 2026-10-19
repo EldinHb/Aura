@@ -23,6 +23,11 @@ export function isKeyNavEl(el: Element | null): boolean {
   return !!el?.closest("[data-keynav]");
 }
 
+/** A `data-keynav` widget marked `data-own-escape` handles Escape itself, e.g. to dismiss what it shows. */
+export function ownsEscape(el: Element | null): boolean {
+  return !!el?.closest("[data-keynav]")?.hasAttribute("data-own-escape");
+}
+
 /**
  * A focused button or link activates on Enter / Space natively. `nav.activate`
  * and `nav.toggle` are bound to those keys for the list cursor, so without this

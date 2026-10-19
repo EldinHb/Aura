@@ -4,7 +4,7 @@ import { runCommand } from "../lib/commands";
 import { useStore } from "../state/store";
 import { defaultBindings, groupLabels, vimExtraBindings } from "../keymap/default";
 import { isMac } from "../lib/platform";
-import { currentCommandContext, isActivatableEl } from "./useCommandContext";
+import { currentCommandContext, isActivatableEl, ownsEscape } from "./useCommandContext";
 
 let activeKeymap: Keymap | null = null;
 export function getKeymap(): Keymap | null {
@@ -59,6 +59,7 @@ export function useKeyboard() {
       // Dialogs and focused `data-keynav` widgets: only escape and modifier chords
       // reach the keymap; the dialog / widget handles its own keys.
       if ((ctx.dialogOpen || ctx.widgetFocused) && chord !== "escape" && !/(ctrl|cmd|alt)\+/.test(chord) && kmRef.current.pendingPrefix.length === 0) return;
+      if (chord === "escape" && !ctx.dialogOpen && ownsEscape(document.activeElement) && kmRef.current.pendingPrefix.length === 0) return;
       const res = kmRef.current.handle(chord, ctx, () => st.setWhichKey(null));
       if (res.kind === "none") return;
       e.preventDefault();

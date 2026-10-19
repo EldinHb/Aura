@@ -374,6 +374,10 @@ pub struct Question {
     pub options: Vec<QuestionOption>,
     pub multi_select: bool,
     pub allow_free_text: bool,
+    /// The answer is a secret (a password, a token): typed hidden, and kept
+    /// out of the stored event log.
+    #[serde(default)]
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -393,6 +397,10 @@ pub struct UserInputResponse {
     pub request_id: String,
     /// question id -> selected labels / free text
     pub answers: HashMap<String, Vec<String>>,
+    /// The user dismissed the question without answering; `answers` is empty.
+    /// The provider tells the agent so, and the agent carries on without it.
+    #[serde(default)]
+    pub declined: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

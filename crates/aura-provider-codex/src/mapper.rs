@@ -412,6 +412,7 @@ impl ThreadMapper {
                                 multi_select: false,
                                 allow_free_text: q.get("isOther").and_then(|b| b.as_bool()).unwrap_or(false)
                                     || q.get("options").map(|o| o.is_null()).unwrap_or(true),
+                                secret: q.get("isSecret").and_then(|b| b.as_bool()).unwrap_or(false),
                             })
                             .collect()
                     })
@@ -607,6 +608,10 @@ impl ThreadMapper {
             .inputs
             .remove(&resp.request_id)
             .ok_or_else(|| anyhow!("unknown input request {}", resp.request_id))?;
+        // The protocol has no decline: no answers is how a client says the user gave none.
+        if resp.declined {
+            return Ok((rpc_id, json!({ "answers": {} })));
+        }
         let answers: serde_json::Map<String, Value> = resp
             .answers
             .iter()

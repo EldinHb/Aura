@@ -115,12 +115,12 @@ const histories: Record<string, StoredEvent[]> = {
 const question: UserInputRequest = {
   id: "q-billing", session_id: ids.billing, turn_id: `${ids.billing}-t0`, item_id: null, created_at: at(2),
   questions: [
-    { id: "events", header: "Webhook events", question: "Which Stripe events should update a subscription?", multi_select: true, allow_free_text: false, options: [
+    { id: "events", header: "Webhook events", question: "Which Stripe events should update a subscription?", multi_select: true, allow_free_text: false, secret: false, options: [
       { label: "customer.subscription.updated", description: "Plan changes, renewals, cancellations" },
       { label: "invoice.paid", description: "Mark the period as paid" },
       { label: "invoice.payment_failed", description: "Start the dunning flow" },
     ] },
-    { id: "nightly", header: "Nightly job", question: "What should happen to the nightly sync job?", multi_select: false, allow_free_text: true, options: [
+    { id: "nightly", header: "Nightly job", question: "What should happen to the nightly sync job?", multi_select: false, allow_free_text: true, secret: false, options: [
       { label: "Remove it", description: "Webhooks become the only source of truth" },
       { label: "Keep it as a reconciliation check", description: "Runs nightly, only reports drift" },
     ] },
