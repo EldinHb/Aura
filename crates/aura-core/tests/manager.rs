@@ -182,7 +182,11 @@ impl Driver for FakeDriver {
         });
         Ok(())
     }
-    async fn respond_input(&self, _r: UserInputResponse) -> anyhow::Result<()> {
+    async fn respond_input(&self, r: UserInputResponse) -> anyhow::Result<()> {
+        self.calls.lock().push(format!(
+            "respond_input:{}:declined={}",
+            r.request_id, r.declined
+        ));
         Ok(())
     }
     async fn set(&self, setting: Setting) -> anyhow::Result<()> {
@@ -1131,6 +1135,61 @@ async fn questions_wait_and_stopping_ends_the_wait() {
     wait_attention(&m, &s.id, Some(Attention::Waiting)).await;
     m.stop(&s.id).await.unwrap();
     assert_eq!(m.get_session(&s.id).unwrap().attention, None);
+}
+
+#[tokio::test]
+async fn a_dismissed_question_stops_waiting_and_the_turn_carries_on() {
+    let (m, calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let s = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    m.send(
+        &s.id,
+        Input {
+            text: "a question".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &s.id, SessionStatus::WaitingInput).await;
+    assert_eq!(m.get_session(&s.id).unwrap().pending_count, 1);
+    m.respond_input(
+        &s.id,
+        UserInputResponse {
+            request_id: "q1".into(),
+            answers: Default::default(),
+            declined: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(calls
+        .lock()
+        .iter()
+        .any(|c| c == "respond_input:q1:declined=true"));
+    // The agent's turn is still going, so the session runs again instead of waiting.
+    wait_status(&m, &s.id, SessionStatus::Running).await;
+    assert!(m.pending().1.is_empty());
+    assert_eq!(m.get_session(&s.id).unwrap().pending_count, 0);
+    // Gone for good: a second dismissal has nothing to go to.
+    assert!(m
+        .respond_input(
+            &s.id,
+            UserInputResponse {
+                request_id: "q1".into(),
+                answers: Default::default(),
+                declined: true,
+            },
+        )
+        .await
+        .is_err());
 }
 
 #[tokio::test]

@@ -155,23 +155,49 @@ it("offers no Other when the agent takes no typed answer", () => {
 it("a question with nothing to choose from starts in its text field, hidden when secret", async () => {
   render(<UserInputCard request={request({ ...question("a", []), secret: true })} sessionId="s" cursor={false} />);
   await nextFrame();
+  expect(document.querySelectorAll(".option")).toHaveLength(0);
   expect(document.activeElement).toBe(textField());
   expect(textField()!.type).toBe("password");
 });
 
-it("Escape on the card and the Dismiss button tell the agent the user declined", async () => {
+it("d and the Dismiss button tell the agent the user declined, once however often they are pressed", async () => {
+  // The card stays up until the resolved event removes it; a second send in that gap would only fail.
+  let finish: () => void = () => {};
+  respondInput.mockImplementation(() => new Promise<void>((r) => (finish = r)));
   const { unmount } = render(<UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />);
-  await act(async () => void key("Escape"));
+  key("d");
+  key("d");
+  fireEvent.click(screen.getByText("Dismiss"));
+  await act(async () => finish());
+  key("d");
+  expect(respondInput).toHaveBeenCalledTimes(1);
   expect(respondInput).toHaveBeenCalledWith("s", { request_id: "r1", answers: {}, declined: true });
+  expect(toast).not.toHaveBeenCalled();
   unmount();
-  respondInput.mockClear();
+  respondInput.mockReset().mockResolvedValue(undefined);
   render(<UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />);
   await act(async () => void fireEvent.click(screen.getByText("Dismiss")));
   expect(respondInput).toHaveBeenCalledWith("s", { request_id: "r1", answers: {}, declined: true });
 });
 
-it("is where focus lands when the session's main region is focused", async () => {
-  const { focusRegionEl } = await import("../../commands/core");
+it("a failed dismissal can be tried again", async () => {
+  respondInput.mockRejectedValueOnce(new Error("daemon away"));
+  render(<UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />);
+  await act(async () => void key("d"));
+  expect(toast).toHaveBeenCalledWith("dismiss: daemon away", "error");
+  await act(async () => void key("d"));
+  expect(respondInput).toHaveBeenCalledTimes(2);
+});
+
+it("d typed in the Other field is text, not a dismissal", () => {
+  render(<UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />);
+  key("2");
+  fireEvent.keyDown(textField()!, { key: "d" });
+  expect(respondInput).not.toHaveBeenCalled();
+});
+
+it("is where focus lands when the session's main region is focused, and Escape leaves it for the transcript", async () => {
+  const { focusRegionEl, coreCommands } = await import("../../commands/core");
   render(
     <div data-region="main">
       <div className="transcript" data-autofocus tabIndex={0}>
@@ -181,6 +207,9 @@ it("is where focus lands when the session's main region is focused", async () =>
   );
   focusRegionEl("main");
   expect(document.activeElement).toBe(card());
+  useStore.setState({ focus: "main" });
+  await coreCommands.find((c) => c.id === "ui.escape")!.run(undefined);
+  expect(document.activeElement).toBe(document.querySelector(".transcript"));
 });
 
 it("inside the transcript, the Other field keeps the keyboard after the region notices the focus", async () => {
@@ -202,22 +231,73 @@ it("inside the transcript, the Other field keeps the keyboard after the region n
   expect(document.activeElement).toBe(textField());
 });
 
-it("Escape reaches the card past the app keymap, which would otherwise take it away", async () => {
+it("with the app keymap: Escape on the card goes to the transcript and stays, Escape in the Other field goes back to the card", async () => {
   const { useKeyboard } = await import("../../hooks/useKeyboard");
   const { registerCoreCommands } = await import("../../commands/core");
+  const { Transcript } = await import("../Transcript");
+  const { emptyTranscript } = await import("../../state/store");
   const unregister = registerCoreCommands();
   function Keys() {
     useKeyboard();
     return null;
   }
+  useStore.setState({ focus: "main", transcripts: { s: { ...emptyTranscript(), loaded: true, inputs: { r1: request(question("a", ["a1"])) } } } });
   render(
-    <>
+    <div data-region="main">
       <Keys />
-      <UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />
-    </>,
+      <Transcript sessionId="s" />
+    </div>,
   );
-  card().focus();
-  await act(async () => void fireEvent.keyDown(card(), { key: "Escape" }));
-  expect(respondInput).toHaveBeenCalledWith("s", { request_id: "r1", answers: {}, declined: true });
+  await nextFrame();
+  expect(document.activeElement).toBe(card());
+  key("2");
+  expect(document.activeElement).toBe(textField());
+  fireEvent.keyDown(textField()!, { key: "Escape" });
+  expect(document.activeElement).toBe(card());
+  fireEvent.keyDown(card(), { key: "Escape" });
+  expect(document.activeElement).toBe(document.querySelector(".transcript"));
+  await nextFrame();
+  await nextFrame();
+  expect(document.activeElement).toBe(document.querySelector(".transcript"));
+  expect(respondInput).not.toHaveBeenCalled();
   unregister();
+});
+
+it("multi-select: turning Other off by click gives the keyboard back to the card", () => {
+  render(<UserInputCard request={request(question("a", ["a1"], true))} sessionId="s" cursor={false} />);
+  fireEvent.click(screen.getByText("Other"));
+  expect(document.activeElement).toBe(textField());
+  fireEvent.click(screen.getByText("Other"));
+  expect(textField()).toBeNull();
+  expect(document.activeElement).toBe(card());
+});
+
+it("multi-select: an open but empty Other is not dropped next to picked options", async () => {
+  render(<UserInputCard request={request(question("a", ["a1", "a2"], true))} sessionId="s" cursor={false} />);
+  key("1");
+  key("3");
+  fireEvent.click(screen.getByText("Answer"));
+  expect(respondInput).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledWith("Type your “Other” answer to “a”, or untick Other", "warn");
+  expect(document.activeElement).toBe(textField());
+  fireEvent.click(screen.getByText("Other"));
+  await act(async () => void fireEvent.click(screen.getByText("Answer")));
+  expect(respondInput).toHaveBeenCalledWith("s", { request_id: "r1", answers: { a: ["a1"] }, declined: false });
+});
+
+it("single-select: an open but empty Other is not an answer either", () => {
+  render(<UserInputCard request={request(question("a", ["a1"]))} sessionId="s" cursor={false} />);
+  key("2");
+  fireEvent.click(screen.getByText("Answer"));
+  expect(respondInput).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledWith("Type your answer to “a”, or pick an option", "warn");
+  expect(document.activeElement).toBe(textField());
+});
+
+it("a question with nothing to choose from is just its field, and moving on to it puts the keyboard there", () => {
+  render(<UserInputCard request={request({ ...question("a", ["a1"]), allow_free_text: false }, question("b", []))} sessionId="s" cursor={false} />);
+  expect(document.querySelectorAll(".question")[1].querySelectorAll(".option")).toHaveLength(0);
+  key("1");
+  expect(screen.getByText("2/2", { exact: false })).toBeTruthy();
+  expect(document.activeElement).toBe(textField());
 });

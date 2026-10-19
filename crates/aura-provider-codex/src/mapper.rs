@@ -608,7 +608,9 @@ impl ThreadMapper {
             .inputs
             .remove(&resp.request_id)
             .ok_or_else(|| anyhow!("unknown input request {}", resp.request_id))?;
-        // The protocol has no decline: no answers is how a client says the user gave none.
+        // The protocol has no decline, so the model cannot be told the user dismissed it. No answers is the
+        // closest: Codex's own prompt says to carry on with best judgment then, without asking again. A made-up
+        // answer text would be worse, since Codex trusts these answers as the user's words.
         if resp.declined {
             return Ok((rpc_id, json!({ "answers": {} })));
         }

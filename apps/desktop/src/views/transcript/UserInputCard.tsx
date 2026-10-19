@@ -8,7 +8,8 @@ import { setFocus } from "../../commands/core";
 /** Per question: the options picked, whether "Other" is chosen, and the text typed for it. */
 type Sel = Record<string, { picked: Set<number>; other: boolean; text: string }>;
 
-const answered = (s: Sel[string]) => s.picked.size > 0 || (s.other && !!s.text.trim());
+/** An open "Other" needs its text, also next to picked options: an empty one is never dropped silently. */
+const answered = (s: Sel[string]) => (s.other ? !!s.text.trim() : s.picked.size > 0);
 
 /** An option the agent wrote itself that means "something else", e.g. "Other" or "Other (please specify)". */
 const OTHER_LABEL = /^other\s*(\(.*\))?\s*(…|\.\.\.|:)?$/i;
@@ -26,8 +27,8 @@ export function otherIndex(q: Question): number {
 /** Nothing to choose from: the only way to answer is to type. */
 const textOnly = (q: Question) => q.options.length === 0 && q.allow_free_text;
 
-/** The rows shown for a question: its options, plus an "Other" row when the agent did not write one. */
-const rowCount = (q: Question) => (otherIndex(q) === q.options.length ? q.options.length + 1 : q.options.length);
+/** The rows shown for a question: its options, plus an "Other" row when the agent did not write one. A text-only question shows just its field. */
+const rowCount = (q: Question) => (!textOnly(q) && otherIndex(q) === q.options.length ? q.options.length + 1 : q.options.length);
 
 export function UserInputCard({ request, sessionId, cursor }: { request: UserInputRequest; sessionId: string; cursor: boolean }) {
   const client = useStore((s) => s.client);
@@ -43,6 +44,9 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
     setSelState(next);
   };
   const [busy, setBusy] = useState(false);
+  // Set as a send starts and kept once it lands: the card stays up until the resolved event removes it, and a second
+  // send in that gap would only hit "unknown input request". The state alone is a render late for a quick double press.
+  const sentRef = useRef(false);
   // The question whose "Other" field should take the keyboard once it is on screen; the count makes a repeat request count.
   const [focusText, setFocusText] = useState<{ id: string; n: number } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -70,6 +74,14 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
     setQi(idx);
     const first = s[nq.id].other ? otherIndex(nq) : [...s[nq.id].picked].sort((a, b) => a - b)[0];
     setOi(first ?? 0);
+  };
+
+  /** Move to question `idx` and give it the keyboard: its field when "Other" is open there, else the card. */
+  const landOn = (idx: number, s: Sel) => {
+    goTo(idx, s);
+    const nq = qs[idx];
+    if (nq && s[nq.id].other) setFocusText((f) => ({ id: nq.id, n: (f?.n ?? 0) + 1 }));
+    else rootRef.current?.focus();
   };
 
   /** The first unanswered question after `from`, wrapping; null when every question has an answer. */
@@ -103,53 +115,49 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
   };
 
   const submit = async (s: Sel = selRef.current) => {
-    if (!client || busy) return;
+    if (!client || sentRef.current) return;
     const answers: Record<string, string[]> = {};
     for (const [idx, qq] of qs.entries()) {
       const a = s[qq.id];
       const labels = [...a.picked].sort((x, y) => x - y).map((i) => qq.options[i]?.label).filter((x): x is string => !!x);
       if (a.other && a.text.trim()) labels.push(a.text.trim());
-      if (labels.length === 0) {
-        toast(a.other ? `Type your answer to “${qq.header ?? qq.question}” first` : `Answer “${qq.header ?? qq.question}” first`, "warn");
-        goTo(idx, s);
-        if (a.other) setFocusText((f) => ({ id: qq.id, n: (f?.n ?? 0) + 1 }));
-        else rootRef.current?.focus();
+      if (!answered(a)) {
+        const name = qq.header ?? qq.question;
+        toast(!a.other ? `Answer “${name}” first` : textOnly(qq) ? `Type your answer to “${name}” first` : qq.multi_select ? `Type your “Other” answer to “${name}”, or untick Other` : `Type your answer to “${name}”, or pick an option`, "warn");
+        landOn(idx, s);
         return;
       }
       answers[qq.id] = labels;
     }
+    await send(answers, false);
+  };
+
+  /** Send once; only a failed send lets the user try again. */
+  const send = async (answers: Record<string, string[]>, declined: boolean) => {
+    if (!client || sentRef.current) return false;
+    sentRef.current = true;
     setBusy(true);
     try {
-      await client.respondInput(sessionId, { request_id: request.id, answers, declined: false });
+      await client.respondInput(sessionId, { request_id: request.id, answers, declined });
+      return true;
     } catch (e) {
-      toast(`answer: ${e instanceof Error ? e.message : String(e)}`, "error");
-    } finally {
+      sentRef.current = false;
       setBusy(false);
+      toast(`${declined ? "dismiss" : "answer"}: ${e instanceof Error ? e.message : String(e)}`, "error");
+      return false;
     }
   };
 
   /** Tell the agent the user will not answer, then hand the keyboard to the composer for a normal message. */
   const dismiss = async () => {
-    if (!client || busy) return;
-    setBusy(true);
-    try {
-      await client.respondInput(sessionId, { request_id: request.id, answers: {}, declined: true });
-      setFocus("composer");
-    } catch (e) {
-      toast(`dismiss: ${e instanceof Error ? e.message : String(e)}`, "error");
-    } finally {
-      setBusy(false);
-    }
+    if (await send({}, true)) setFocus("composer");
   };
 
   /** Enter: send when every question has an answer, otherwise move on to the next open one. */
   const confirm = (s: Sel) => {
     const open = nextOpen(qi, s);
     if (open === null) void submit(s);
-    else {
-      goTo(open, s);
-      rootRef.current?.focus();
-    }
+    else landOn(open, s);
   };
 
   const onKey = (e: React.KeyboardEvent) => {
@@ -162,7 +170,7 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
         if (qq && answered(selRef.current[qq.id])) confirm(selRef.current);
       } else if (e.key === "Escape") {
         e.preventDefault();
-        // Back to the options; an "Other" left empty is closed again.
+        // Back to the options; an "Other" left empty is closed again. (A text-only field leaves Escape to the app.)
         const a = qq && selRef.current[qq.id];
         if (qq && a && !a.text.trim()) setSel({ ...selRef.current, [qq.id]: { ...a, other: false } });
         rootRef.current?.focus();
@@ -173,12 +181,6 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
     }
     // A focused button (Answer, Dismiss) does its own Enter and Space.
     if (target.tagName === "BUTTON" && (e.key === "Enter" || e.key === " ")) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      void dismiss();
-      return;
-    }
     if (!q) return;
     const n = rowCount(q);
     switch (e.key) {
@@ -213,6 +215,9 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
         } else confirm(selRef.current);
         break;
       }
+      case "d":
+        void dismiss();
+        break;
       case "i":
         if (otherIndex(q) >= 0) {
           setOi(otherIndex(q));
@@ -227,7 +232,7 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
           setOi(num - 1);
           // A single answer is complete once chosen, so move straight on to the next open question.
           const open = q.multi_select || num - 1 === otherIndex(q) ? null : nextOpen(qi, s);
-          if (open !== null) goTo(open, s);
+          if (open !== null) landOn(open, s);
           break;
         }
         return;
@@ -238,7 +243,7 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
   };
 
   return (
-    <div ref={rootRef} className={clsx("card input", cursor && "cursor")} data-input-id={request.id} data-keynav data-own-escape tabIndex={0} onKeyDown={onKey}>
+    <div ref={rootRef} className={clsx("card input", cursor && "cursor")} data-input-id={request.id} data-keynav tabIndex={0} onKeyDown={onKey}>
       <div className="card-head">
         <span className="dot info pulse" />
         <span>The agent has a question</span>
@@ -249,7 +254,7 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
         const active = qIdx === qi;
         const s = sel[qq.id];
         const oIdx = otherIndex(qq);
-        const rows = oIdx === qq.options.length ? [...qq.options, { label: "Other", description: "type your own answer" }] : qq.options;
+        const rows = rowCount(qq) > qq.options.length ? [...qq.options, { label: "Other", description: "type your own answer" }] : qq.options;
         const isPicked = (idx: number) => (idx === oIdx ? s.other : s.picked.has(idx));
         return (
           <div key={qq.id} className={clsx("question", active && "active")} data-hint onClick={() => qIdx !== qi && goTo(qIdx)}>
@@ -272,9 +277,10 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
                     e.stopPropagation();
                     setQi(qIdx);
                     setOi(idx);
-                    pick(qIdx, idx);
-                    // Keep the keyboard on the card after a click, so number keys and Enter keep working; "Other" sends it to its field.
-                    if (idx !== oIdx) rootRef.current?.focus();
+                    const next = pick(qIdx, idx);
+                    // Keep the keyboard on the card after a click, so number keys and Enter keep working; an "Other" turned on
+                    // sends it to its field. One turned off takes its focused field away, so the card takes the keyboard back.
+                    if (idx !== oIdx || !next[qq.id].other) rootRef.current?.focus();
                   }}
                 >
                   <span className="option-box">{qq.multi_select ? (isPicked(idx) ? "☑" : "☐") : isPicked(idx) ? "◉" : "○"}</span>
@@ -289,8 +295,10 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
                 type={qq.secret ? "password" : "text"}
                 className="other-input"
                 data-q={qq.id}
+                // Escape here goes back to the options, so the app keymap must not take it first.
+                data-own-escape={textOnly(qq) ? undefined : ""}
                 aria-label={`Your answer to: ${qq.question}`}
-                placeholder="Type your answer… (Enter to confirm, Esc back to the options)"
+                placeholder={textOnly(qq) ? "Type your answer… (Enter to confirm)" : "Type your answer… (Enter to confirm, Esc back to the options)"}
                 autoComplete="off"
                 value={s.text}
                 onFocus={() => {
@@ -305,8 +313,8 @@ export function UserInputCard({ request, sessionId, cursor }: { request: UserInp
       })}
       <div className="actions">
         <button className="btn small primary" type="button" disabled={busy} data-command="input.submit" onClick={() => void submit()}>Answer <kbd>Enter</kbd></button>
-        <button className="btn small" type="button" disabled={busy} data-command="input.dismiss" title="Tell the agent you will not answer" onClick={() => void dismiss()}>Dismiss <kbd>Esc</kbd></button>
-        <span className="dim">↑↓ move · 1-9 / space pick{qs.length > 1 ? " · ←→ question" : ""}{qs.some((x) => otherIndex(x) >= 0) ? " · i other" : ""} · Enter {qs.length > 1 ? "next / answer" : "answer"} · Esc dismiss</span>
+        <button className="btn small" type="button" disabled={busy} data-command="input.dismiss" title="Tell the agent you will not answer" onClick={() => void dismiss()}>Dismiss <kbd>d</kbd></button>
+        <span className="dim">↑↓ move · 1-9 / space pick{qs.length > 1 ? " · ←→ question" : ""}{qs.some((x) => otherIndex(x) >= 0) ? " · i other" : ""} · Enter {qs.length > 1 ? "next / answer" : "answer"} · d dismiss</span>
       </div>
     </div>
   );

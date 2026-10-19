@@ -398,7 +398,9 @@ pub struct UserInputResponse {
     /// question id -> selected labels / free text
     pub answers: HashMap<String, Vec<String>>,
     /// The user dismissed the question without answering; `answers` is empty.
-    /// The provider tells the agent so, and the agent carries on without it.
+    /// Claude is told so in a denied tool result. Codex has no way to say it:
+    /// it gets no answers, which its own instructions read as "carry on with
+    /// best judgment, do not ask again".
     #[serde(default)]
     pub declined: bool,
 }
@@ -638,5 +640,22 @@ impl CreateSessionOpts {
             (ProviderKind::Acp, Some(agent)) => agent,
             (p, _) => p.as_str(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answers_and_questions_from_before_dismissal_and_secrets_read_as_false() {
+        let r: UserInputResponse =
+            serde_json::from_str(r#"{"request_id":"r1","answers":{"q":["a"]}}"#).unwrap();
+        assert!(!r.declined);
+        let q: Question = serde_json::from_str(
+            r#"{"id":"q","header":null,"question":"?","options":[],"multi_select":false,"allow_free_text":true}"#,
+        )
+        .unwrap();
+        assert!(!q.secret);
     }
 }

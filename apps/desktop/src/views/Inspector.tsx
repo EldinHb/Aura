@@ -191,7 +191,8 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
   };
 
   return (
-    <div className={clsx("region inspector", focus === "inspector" && "focused")} data-region="inspector" tabIndex={0} onFocus={() => setFocus("inspector")}>
+    // Only mark the region: focus events bubble up from every control inside, and moving focus here would pull it off the control just focused.
+    <div className={clsx("region inspector", focus === "inspector" && "focused")} data-region="inspector" tabIndex={0} onFocus={() => useStore.getState().setFocus("inspector")}>
       {!s && <div className="empty" style={{ padding: 20 }}><span className="dim">No session selected</span></div>}
       {s && (
         <>

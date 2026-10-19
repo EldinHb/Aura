@@ -23,9 +23,9 @@ export function isKeyNavEl(el: Element | null): boolean {
   return !!el?.closest("[data-keynav]");
 }
 
-/** A `data-keynav` widget marked `data-own-escape` handles Escape itself, e.g. to dismiss what it shows. */
+/** An element marked `data-own-escape` (or inside one) handles Escape itself, e.g. a field that steps back out to its widget. */
 export function ownsEscape(el: Element | null): boolean {
-  return !!el?.closest("[data-keynav]")?.hasAttribute("data-own-escape");
+  return !!el?.closest("[data-own-escape]");
 }
 
 /**
