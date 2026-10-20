@@ -11,6 +11,7 @@ import { useEffect, useMemo } from "react";
 import type { BranchPull, BranchStatus, PullRequest, Session } from "../gen";
 import { selectedSessionLinks, type LinkPreferences, type SessionLink } from "../views/issueLinks";
 import { pullKey, useBranches } from "./branchStatus";
+import { folderOf } from "../lib/sessionFolder";
 import { loadGithubRepo, useGithubRepos } from "./githubRepos";
 import { loadDetectedLinks, loadLinkPreferences, useDetectedLinksStore, useLinkPreferencesStore } from "./sessionLinkPreferences";
 import { useStore } from "./store";
@@ -41,8 +42,11 @@ const isPull = (pull: PullRef, other: { repo: string; number: number | string } 
 
 /** The pull request of the branch checked out in the session's folder, as its sidebar row last read it. */
 function currentBranchPull(session: Session, sources: PullSessionSources): BranchPull | null {
-  const git = sources.git[session.cwd];
-  const repo = sources.repos[session.cwd];
+  // An orchestrator without a folder has no branch.
+  const folder = folderOf(session);
+  if (folder === null) return null;
+  const git = sources.git[folder];
+  const repo = sources.repos[folder];
   const branch = git?.upstream_branch ?? git?.branch;
   if (!git || !repo || !branch) return null;
   return sources.branchPulls[pullKey({ repo, headRepo: git.upstream_repo ?? repo, branch })]?.pull ?? null;
@@ -52,7 +56,8 @@ function reasonsFor(pull: PullRef, session: Session, sources: PullSessionSources
   const reasons: PullSessionReason[] = [];
   const links = selectedSessionLinks(sources.detected[session.id] ?? [], sources.preferences[session.id]);
   if (links.some((link) => link.kind === "PR" && isPull(pull, link))) reasons.push("linked");
-  const repo = sources.repos[session.cwd];
+  const folder = folderOf(session);
+  const repo = folder !== null ? sources.repos[folder] : undefined;
   const branch = (session.pulls ?? []).some((url) => isPull(pull, pullOfUrl(url)))
     || isPull(pull, currentBranchPull(session, sources))
     // A worktree's branch is the session's own; this finds workers whose rows were never shown.

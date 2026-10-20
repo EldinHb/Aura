@@ -1,7 +1,8 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Session } from "../gen";
 import type { RpcClient } from "../lib/rpc";
-import { runCommand } from "../lib/commands";
+import { evaluateWhen, getCommand, runCommand } from "../lib/commands";
+import { currentCommandContext } from "../hooks/useCommandContext";
 import { useStore } from "../state/store";
 import { registerCoreCommands } from "./core";
 
@@ -65,4 +66,23 @@ it("keeps an orchestrator without a folder out of git and terminal mode", async 
   expect(toast).toHaveBeenCalledWith(expect.stringContaining("structured view"), "warn");
   await runCommand("session.copy-cwd");
   expect(toast).toHaveBeenCalledWith("This orchestrator belongs to no folder", "warn");
+});
+
+it("lets an orchestrator left in terminal mode go back to the structured view, and no further", async () => {
+  const switchMode = vi.fn(() => Promise.resolve(null));
+  const shown = (id: string) => evaluateWhen(getCommand(id)!.when, currentCommandContext());
+  useStore.setState({
+    client: { deleteSession, switchMode } as unknown as RpcClient,
+    sessions: { ...useStore.getState().sessions, lead: session("lead", { orchestrator: true, folderless: true, provider: "claude", mode: "terminal" }) },
+  });
+  expect(shown("session.toggle-mode")).toBe(true);
+  await runCommand("session.toggle-mode");
+  expect(switchMode).toHaveBeenCalledWith("lead", "structured");
+
+  useStore.setState({ sessions: { ...useStore.getState().sessions, lead: { ...useStore.getState().sessions.lead, mode: "structured" } } });
+  expect(shown("session.toggle-mode")).toBe(false);
+  expect(shown("session.mode-terminal")).toBe(false);
+  switchMode.mockClear();
+  await runCommand("session.toggle-mode");
+  expect(switchMode).not.toHaveBeenCalled();
 });

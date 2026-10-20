@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
 import { useGithubRepo } from "../../state/githubRepos";
+import { folderOf } from "../../lib/sessionFolder";
 import { loadLinkPreferences, saveLinkPreferences, useSessionLinkPreferences } from "../../state/sessionLinkPreferences";
 import { mentionedSessionLinks, parseSessionLink, sessionLinks, type LinkPreferences, type SessionLink } from "../../views/issueLinks";
 
@@ -88,7 +89,7 @@ function Editor({ sessionId, preferences }: { sessionId: string; preferences: Li
   const session = useStore((state) => state.sessions[sessionId]);
   const transcript = useStore((state) => state.transcripts[sessionId]);
   const client = useStore((state) => state.client);
-  const repo = useGithubRepo(session?.cwd);
+  const repo = useGithubRepo(session ? folderOf(session) ?? undefined : undefined);
   const close = useStore((state) => state.closeDialog);
   const [issues, setIssues] = useState<string[] | null>(preferences.issues ?? null);
   const [prs, setPrs] = useState<string[] | null>(preferences.prs ?? null);

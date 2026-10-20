@@ -11,6 +11,7 @@ import { desktopNotify } from "../../lib/notify";
 import { selectSelected, useStore } from "../../state/store";
 import { useLinkPreferencesStore } from "../../state/sessionLinkPreferences";
 import { useGithubRepos } from "../../state/githubRepos";
+import { folderOf } from "../../lib/sessionFolder";
 import { selectedSessionLinks, sessionLinks } from "../../views/issueLinks";
 import { rpc } from "../reviews/state";
 
@@ -133,7 +134,9 @@ export function currentWatchTarget(): WatchTarget | null {
   if (!session) return null;
   const items = app.transcripts[session.id]?.items ?? {};
   const preferences = useLinkPreferencesStore.getState().entries[session.id]?.preferences;
-  const pr = selectedSessionLinks(sessionLinks(items, session.title, useGithubRepos.getState().repos[session.cwd] ?? undefined), preferences).find((l) => l.kind === "PR");
+  const folder = folderOf(session);
+  const repo = folder !== null ? useGithubRepos.getState().repos[folder] ?? undefined : undefined;
+  const pr = selectedSessionLinks(sessionLinks(items, session.title, repo), preferences).find((l) => l.kind === "PR");
   return pr ? { repo: pr.repo, number: Number(pr.number) } : null;
 }
 

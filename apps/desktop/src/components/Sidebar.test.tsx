@@ -323,7 +323,7 @@ it("lists orchestrators in no group in their own section above the other session
   useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
   render(<Sidebar />);
   expect(rows()).toEqual(["o", "w", "old", "p", "g", "og", "gw"]);
-  expect([...document.querySelectorAll(".section-title")].map((el) => el.textContent)).toEqual(["Orchestrators", "G"]);
+  expect([...document.querySelectorAll(".section-title")].map((el) => el.textContent)).toEqual(["Orchestrators", "Sessions", "G"]);
   expect(document.querySelector('[data-session-id="w"]')?.classList.contains("worker")).toBe(true);
   // A plain session cannot be moved in among them, nor they out.
   act(() => useStore.getState().moveSessionTo("p", "o"));
@@ -331,6 +331,15 @@ it("lists orchestrators in no group in their own section above the other session
   expect(rows()).toEqual(["o", "w", "old", "p", "g", "og", "gw"]);
   act(() => useStore.getState().moveSessionTo("old", "o"));
   expect(rows()).toEqual(["old", "o", "w", "p", "g", "og", "gw"]);
+});
+
+it("gives the ungrouped sessions no heading while there is no orchestrators section", () => {
+  orchestras();
+  const sessions = { ...useStore.getState().sessions, p: session("p", "Plain") };
+  useStore.setState({ sessions });
+  render(<Sidebar />);
+  expect([...document.querySelectorAll(".section-title")].map((el) => el.textContent)).toEqual(["Work"]);
+  expect(rows()[0]).toBe("p");
 });
 
 it("shows no folder for an orchestrator that belongs to none, and its workers' folders", () => {

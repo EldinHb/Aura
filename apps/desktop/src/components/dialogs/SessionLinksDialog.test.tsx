@@ -88,3 +88,14 @@ it("exposes the editor in the command palette", () => {
   expect(command?.when).toBe("hasSelection");
   expect(command?.hidden).not.toBe(true);
 });
+
+it("looks up no GitHub repository for an orchestrator without a folder", async () => {
+  const gitGithubRepo = vi.fn().mockResolvedValue("owner/home");
+  useStore.setState({
+    client: { getSetting, setSetting, gitGithubRepo } as unknown as RpcClient,
+    sessions: { session: { id: "session", title: "Chat", cwd: "/data/orchestrators/session", folderless: true, orchestrator: true } as never },
+  });
+  render(<SessionLinksDialog sessionId="session" />);
+  await screen.findByRole("group", { name: "Issues" });
+  expect(gitGithubRepo).not.toHaveBeenCalled();
+});

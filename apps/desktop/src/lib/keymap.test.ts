@@ -13,6 +13,7 @@ const ctx: CommandContext = {
   hasSelection: true,
   hasFolder: true,
   orchestrator: false,
+  modeLocked: false,
   mode: "structured",
   provider: "claude",
   status: "idle",

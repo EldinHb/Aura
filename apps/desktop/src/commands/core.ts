@@ -235,7 +235,8 @@ export const coreCommands: Command[] = [
     id: "session.toggle-mode",
     title: "Toggle terminal / structured mode",
     group: "Session",
-    when: "hasSelection,!orchestrator,provider:claude|codex",
+    // An orchestrator left in terminal mode can still go back.
+    when: "hasSelection,!modeLocked,provider:claude|codex",
     run: async () => {
       const s = selected();
       const mode: SessionMode = s.mode === "terminal" ? "structured" : "terminal";

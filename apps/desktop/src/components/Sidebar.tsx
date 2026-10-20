@@ -304,7 +304,10 @@ export function Sidebar() {
         )}
         {groups.map(([group, list]) => (
           <div key={group || "__none"}>
-            {group === ORCHESTRATORS_SECTION ? <div className="section-title">Orchestrators</div> : group && <div className="section-title group-title">{group}</div>}
+            {group === ORCHESTRATORS_SECTION ? <div className="section-title">Orchestrators</div>
+              : group ? <div className="section-title group-title">{group}</div>
+              // Below the orchestrators, the other ungrouped sessions need a heading of their own.
+              : groups.some(([g]) => g === ORCHESTRATORS_SECTION) && <div className="section-title">Sessions</div>}
             {list.map((s) => {
               if (!visibleIds.has(s.id)) return null;
               const idx = sessions.indexOf(s);
