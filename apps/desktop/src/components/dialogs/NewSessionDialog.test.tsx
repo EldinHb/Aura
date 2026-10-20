@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import type { DirEntry } from "../../gen";
+import type { DirEntry, ProviderInfo } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { useStore } from "../../state/store";
 import { NewSessionDialog } from "./NewSessionDialog";
@@ -102,4 +102,55 @@ it("turns spaces in the worktree branch name into hyphens", async () => {
   const branch = screen.getByPlaceholderText("branch name") as HTMLInputElement;
   fireEvent.change(branch, { target: { value: "aura/fix login  bug" } });
   expect(branch.value).toBe("aura/fix-login--bug");
+});
+
+const claude = { kind: "claude", display_name: "Claude Code", available: true, version: null, binary: null, agents: [],
+  capabilities: { structured: true, models: true, effort: true, permission_modes: [], sandbox_modes: [], terminal_mode: true } } as unknown as ProviderInfo;
+
+it("creates an orchestrator in no folder unless the user gives it one", async () => {
+  const createSession = vi.fn((opts: { cwd: string }) => Promise.resolve({ id: `new-${opts.cwd || "none"}` }));
+  useStore.setState({ providers: [claude], client: { ...useStore.getState().client, createSession, gitRepoRoot: () => Promise.resolve("/repo") } as unknown as RpcClient });
+  render(<NewSessionDialog cwd="/repo/" />);
+  await screen.findByLabelText("Create a git worktree for this session");
+  fireEvent.click(screen.getByLabelText("Orchestrator: starts and directs other sessions"));
+  expect(screen.getByText("None: the orchestrator names a folder for each worker.")).toBeTruthy();
+  // No directory, worktree or terminal mode: it is a chat that names a folder per worker.
+  expect(screen.queryByPlaceholderText("~/projects/…")).toBeNull();
+  expect(screen.queryByLabelText("Create a git worktree for this session")).toBeNull();
+  expect(screen.queryByText("Native TUI in terminal")).toBeNull();
+  expect(screen.getByPlaceholderText("claude · orchestrator")).toBeTruthy();
+  await act(async () => { fireEvent.click(screen.getByText(/^Create/)); });
+  expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: "", orchestrator: true, mode: "structured", worktree: null }));
+
+  cleanup();
+  createSession.mockClear();
+  render(<NewSessionDialog cwd="/repo/" />);
+  fireEvent.click(screen.getByLabelText("Orchestrator: starts and directs other sessions"));
+  fireEvent.click(screen.getByText("Use a folder"));
+  expect((screen.getByPlaceholderText("~/projects/…") as HTMLInputElement).value).toBe("/repo/");
+  await act(async () => { fireEvent.click(screen.getByText(/^Create/)); });
+  expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/repo", orchestrator: true }));
+});
+
+it("does not offer an orchestrator's own directory as the folder of a new session", async () => {
+  useStore.setState({
+    sessions: { o: { id: "o", cwd: "/data/orchestrators/o", folderless: true, orchestrator: true } as never },
+    selectedId: "o",
+  });
+  render(<NewSessionDialog />);
+  const input = screen.getByPlaceholderText("~/projects/…") as HTMLInputElement;
+  await waitFor(() => expect(input.value).toBe("/home/me"));
+});
+
+it("gives a terminal its folder back after the orchestrator box was ticked for another provider", async () => {
+  const createSession = vi.fn(() => Promise.resolve({ id: "t" }));
+  const terminal = { kind: "terminal", display_name: "Terminal", available: true, version: null, binary: null, agents: [], capabilities: { structured: false, permission_modes: [], sandbox_modes: [] } } as unknown as ProviderInfo;
+  useStore.setState({ providers: [claude, terminal], client: { ...useStore.getState().client, createSession } as unknown as RpcClient });
+  render(<NewSessionDialog cwd="/work/" />);
+  fireEvent.click(screen.getByLabelText("Orchestrator: starts and directs other sessions"));
+  expect(screen.queryByPlaceholderText("~/projects/…")).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: /Terminal/ }));
+  expect(screen.getByPlaceholderText("~/projects/…")).toBeTruthy();
+  await act(async () => { fireEvent.click(screen.getByText(/^Create/)); });
+  expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ provider: "terminal", cwd: "/work", orchestrator: false, mode: "terminal" }));
 });

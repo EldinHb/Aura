@@ -1,7 +1,8 @@
 import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, canReorder, isNestedWorker, orchestratorsOf, type AppState } from "../state/store";
+import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, canReorder, isNestedWorker, orchestratorsOf, sectionOf, ORCHESTRATORS_SECTION, type AppState } from "../state/store";
+import { folderOf } from "../lib/sessionFolder";
 import type { BranchPull, Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
 import { registerCommands } from "../lib/commands";
@@ -32,7 +33,8 @@ function sidebarCurrent(st: AppState, sessions: Session[]): Session | undefined 
 /**
  * The quiet second line: agent, orchestrator mark, workers hidden under a
  * collapsed orchestrator, then folder or worktree, branch state, terminal mode
- * and model, which give way first. Then the session's issues and PRs.
+ * and model, which give way first. An orchestrator without a folder has none
+ * of the folder's. Then the session's issues and PRs.
  */
 function SessionRowDetails({ session: s, selected, hidden }: { session: Session; selected: boolean; hidden: Session[] }) {
   const { git, pull } = useSessionBranch(s, selected);
@@ -46,11 +48,11 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
         {s.orchestrator && <span className="orchestrator-mark" role="img" aria-label="Orchestrator" title="Orchestrator: starts and directs the sessions under it" />}
         {hidden.length > 0 && <HiddenWorkers hidden={hidden} />}
         <span className="where">
-          {!s.worktree && basename(s.cwd)}
-          {branch && `${s.worktree ? "" : " · "}⎇ ${branch}`}
+          {!s.worktree && folderOf(s) !== null && basename(s.cwd)}
+          {branch && `${s.worktree || folderOf(s) === null ? "" : " · "}⎇ ${branch}`}
           {git && <GitCounts git={git} />}
           {s.mode === "terminal" && s.provider !== "terminal" ? " · tui" : ""}
-          {s.model ? ` · ${s.model}` : ""}
+          {s.model ? `${folderOf(s) === null && !branch ? "" : " · "}${s.model}` : ""}
         </span>
       </div>
       <SessionRowLinks session={s} branchPull={pull} />
@@ -107,7 +109,7 @@ function SessionRowLinks({ session, branchPull }: { session: Session; branchPull
   const transcript = useStore((s) => s.transcripts[session.id]);
   const preferences = useLinkPreferencesStore((s) => s.entries[session.id]?.preferences);
   const detected = useDetectedLinksStore((s) => s.links[session.id]);
-  const repo = useGithubRepo(session.cwd);
+  const repo = useGithubRepo(folderOf(session) ?? undefined);
   const links = useMemo(() => {
     const automatic = transcript?.loaded ? sessionLinks(transcript.items, session.title, repo) : detected ?? sessionLinks({}, session.title, repo);
     return selectedSessionLinks(automatic, preferences);
@@ -155,9 +157,10 @@ export function Sidebar() {
   // Rows are already in section order; split them without re-sorting so they
   // read top to bottom in ⌘1–9 order. Collapsed workers stay in to count them.
   const groups = useMemo(() => {
+    const shown = new Map(rows.map((s) => [s.id, s]));
     const m = new Map<string, Session[]>();
     for (const s of rows) {
-      const g = s.group ?? "";
+      const g = sectionOf(s, shown);
       if (!m.has(g)) m.set(g, []);
       m.get(g)!.push(s);
     }
@@ -301,7 +304,7 @@ export function Sidebar() {
         )}
         {groups.map(([group, list]) => (
           <div key={group || "__none"}>
-            {group && <div className="section-title group-title">{group}</div>}
+            {group === ORCHESTRATORS_SECTION ? <div className="section-title">Orchestrators</div> : group && <div className="section-title group-title">{group}</div>}
             {list.map((s) => {
               if (!visibleIds.has(s.id)) return null;
               const idx = sessions.indexOf(s);
@@ -336,7 +339,7 @@ export function Sidebar() {
                     select(s.id);
                     setFocus("main");
                   }}
-                  title={s.cwd}
+                  title={folderOf(s) ?? "Orchestrator: belongs to no folder"}
                 >
                   <span className={clsx("dot", statusClass(s))} />
                   <div className="session-row-body">

@@ -12,6 +12,10 @@ export type CommandContext = {
   widgetFocused: boolean;
   paletteOpen: boolean;
   hasSelection: boolean;
+  /** The selected session works in a folder of the user's (see `folderOf`). */
+  hasFolder: boolean;
+  /** The selected session is an orchestrator. */
+  orchestrator: boolean;
   mode: string | null; // structured | terminal
   provider: string | null;
   status: string | null;
@@ -96,7 +100,7 @@ export function setCommandErrorHandler(h: (msg: string) => void) {
  *   mode:terminal      ctx.mode === "terminal"
  *   provider:claude    ctx.provider === "claude"
  *   pending            ctx.pending > 0
- *   hasSelection, running, terminalFocused, inputFocused, dialogOpen, widgetFocused, paletteOpen
+ *   hasSelection, hasFolder, orchestrator, running, terminalFocused, inputFocused, dialogOpen, widgetFocused, paletteOpen
  *   focus:sidebar|main  alternatives with |
  */
 export function evaluateWhen(expr: string | undefined, ctx: CommandContext): boolean {

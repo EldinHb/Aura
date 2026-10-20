@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session } from "../gen";
-import { selectVisibleSessions, useStore } from "./store";
+import { ORCHESTRATORS_SECTION, selectSessionSections, selectVisibleSessions, useStore } from "./store";
 
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false, pending_count: 0,
@@ -64,7 +64,7 @@ describe("session order", () => {
       session("c", { orchestrator_id: "a" }),
       session("d", { orchestrator_id: "a" }),
       session("e", { orchestrator_id: "z" }),
-    ]);
+    ].map((s) => ({ ...s, group: "g" })));
     // An orchestrator that is not shown leaves its worker where it is.
     expect(visible()).toEqual(["a", "c", "d", "b", "e"]);
     useStore.getState().moveSessionBy("d", -1);
@@ -74,6 +74,23 @@ describe("session order", () => {
     // Moving the orchestrator takes its workers along.
     useStore.getState().moveSessionTo("b", "a");
     expect(visible()).toEqual(["b", "a", "d", "c", "e"]);
+  });
+
+  it("puts orchestrators in no group first, in a section of their own with their workers", () => {
+    useStore.getState().setSessions([
+      session("a"),
+      session("b", { orchestrator: true }),
+      session("c", { orchestrator_id: "b" }),
+      session("d", { group: "g", orchestrator: true }),
+      session("e", { orchestrator_id: "d" }),
+    ]);
+    // A worker in another group than its orchestrator's stays in its own.
+    expect(useStore.getState().sessions.e.group).toBeNull();
+    expect(selectSessionSections(useStore.getState()).map(([key, list]) => [key, list.map((s) => s.id)])).toEqual([
+      [ORCHESTRATORS_SECTION, ["b", "c"]],
+      ["", ["a", "e"]],
+      ["g", ["d"]],
+    ]);
   });
 
   it("shows the workers of a worker that orchestrates in turn", () => {

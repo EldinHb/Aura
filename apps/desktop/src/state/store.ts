@@ -20,6 +20,7 @@ import type {
 } from "../gen";
 import type { RpcClient, ConnectionState } from "../lib/rpc";
 import { normalizeSession } from "../lib/pulls";
+import { folderOf } from "../lib/sessionFolder";
 import { planContent, type SessionPlan } from "../views/sessionPlans";
 
 export type Notice = { id: string; level: "info" | "warn" | "error"; message: string; ts: number };
@@ -455,11 +456,12 @@ export function mergeOrder(order: string[], list: Session[]): string[] {
 }
 
 /**
- * Sessions can only be reordered among their own group, pinned among pinned,
+ * Sessions can only be reordered among their own section, pinned among pinned,
  * and workers among the workers of the same orchestrator.
  */
 export function canReorder(a: Session, b: Session): boolean {
-  return (a.group ?? "") === (b.group ?? "") && a.pinned === b.pinned && (a.orchestrator_id ?? null) === (b.orchestrator_id ?? null);
+  const ownSection = (s: Session) => !!s.orchestrator && !s.group && !s.orchestrator_id;
+  return (a.group ?? "") === (b.group ?? "") && a.pinned === b.pinned && (a.orchestrator_id ?? null) === (b.orchestrator_id ?? null) && ownSection(a) === ownSection(b);
 }
 
 function loadOrder(): string[] {
@@ -552,22 +554,46 @@ function saveSettings(s: UiSettings) {
 
 // ---- selectors --------------------------------------------------------------
 
+/** Key of the sidebar section of the orchestrators that are in no group, with their workers. */
+export const ORCHESTRATORS_SECTION = "\u0000orchestrators";
+
 /**
- * The sidebar's sections, top to bottom: ungrouped sessions first, then each
- * group in the order its first session appears. Within a section, pinned
- * sessions come first, then the saved order. Workers of a collapsed
- * orchestrator are left out, unless `withCollapsed` or a filter is set.
+ * The sidebar section of `s` among the `shown` sessions: a worker's is its
+ * orchestrator's when they share a group, an orchestrator in no group has the
+ * orchestrators section, and any other session its group.
+ */
+export function sectionOf(s: Session, shown: Map<string, Session>): string {
+  let top = s;
+  const seen = new Set([s.id]);
+  for (let o = top.orchestrator_id ? shown.get(top.orchestrator_id) : undefined; o && !seen.has(o.id) && (o.group ?? "") === (top.group ?? ""); o = o.orchestrator_id ? shown.get(o.orchestrator_id) : undefined) {
+    seen.add(o.id);
+    top = o;
+  }
+  return top.orchestrator && !top.group ? ORCHESTRATORS_SECTION : top.group ?? "";
+}
+
+/**
+ * The sidebar's sections, top to bottom: the orchestrators in no group, then
+ * the other ungrouped sessions, then each group in the order its first session
+ * appears. Within a section, pinned sessions come first, then the saved order.
+ * Workers of a collapsed orchestrator are left out, unless `withCollapsed` or
+ * a filter is set.
  */
 export function selectSessionSections(st: AppState, withCollapsed = false): [string, Session[]][] {
   const q = st.sidebarFilter.trim().toLowerCase();
-  const sections = new Map<string, Session[]>([["", []]]);
+  const shown: Session[] = [];
   for (const id of st.sessionOrder) {
     const s = st.sessions[id];
     if (!s || (!st.showArchived && s.archived)) continue;
-    if (q && !s.title.toLowerCase().includes(q) && !s.cwd.toLowerCase().includes(q) && !(s.group ?? "").toLowerCase().includes(q)) continue;
-    const g = s.group ?? "";
-    if (!sections.has(g)) sections.set(g, []);
-    sections.get(g)!.push(s);
+    if (q && !s.title.toLowerCase().includes(q) && !(folderOf(s) ?? "").toLowerCase().includes(q) && !(s.group ?? "").toLowerCase().includes(q)) continue;
+    shown.push(s);
+  }
+  const byId = new Map(shown.map((s) => [s.id, s]));
+  const sections = new Map<string, Session[]>([[ORCHESTRATORS_SECTION, []], ["", []]]);
+  for (const s of shown) {
+    const key = sectionOf(s, byId);
+    if (!sections.has(key)) sections.set(key, []);
+    sections.get(key)!.push(s);
   }
   return [...sections]
     .filter(([, list]) => list.length > 0)

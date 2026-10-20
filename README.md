@@ -53,10 +53,11 @@ keyboard, while the agents keep working in the background.
   See [ACP agents](#acp-agents).
 - **Any CLI works.** Anything else runs in a real terminal with saved scrollback. A
   Claude Code or Codex session can also switch to the agent's own TUI and back.
-- **Orchestrators.** Make a session an orchestrator and talk to it alone: it starts
-  worker sessions with any agent (Claude Code, Codex, ACP agents, mixed as it likes),
-  hands them tasks and hears back when they finish. Every worker is a normal session
-  you can open and message yourself. See [Orchestrators](#orchestrators).
+- **Orchestrators.** Start an orchestrator and talk to it like in a chat: it needs no
+  folder, starts worker sessions with any agent (Claude Code, Codex, ACP agents, mixed
+  as it likes) in any of your repositories, hands them tasks and hears back when they
+  finish. Every worker is a normal session you can open and message yourself. See
+  [Orchestrators](#orchestrators).
 - **Agents follow up on reviews.** Link a session to several issues and PRs; new
   reviews and comments on your PRs go to its agent, which fixes and pushes, and
   you are told when they arrive and when the agent is done.
@@ -182,17 +183,26 @@ message; one that is working keeps its prompt until it next starts.
 
 ## Orchestrators
 
-An orchestrator is a session that owns a project: you talk to it, and it splits the
-work over worker sessions that it starts and directs. Tick **Orchestrator** in the
-new-session dialog, or turn an existing session into one with **Orchestrate** in the
-inspector (`⌘K` → Make orchestrator). From the command line:
+An orchestrator is a session you talk to like in a chat: it splits the work over
+worker sessions that it starts and directs. Tick **Orchestrator** in the new-session
+dialog, or turn an existing session into one with **Orchestrate** in the inspector
+(`⌘K` → Make orchestrator). From the command line:
 `aura new -p claude --orchestrator --prompt "…"`.
+
+- **No folder of its own.** A new orchestrator belongs to no folder or repository
+  (choose **Use a folder** in the dialog, or pass `--cwd`, to give it one anyway). It
+  runs in a directory Aura keeps for it under its data directory and names the
+  folder or repository of every worker it starts, so one orchestrator can drive work
+  in several repositories. It finds them with `list_projects`: the folders your
+  sessions work in and the repositories linked to your groups. It has no diff, git or
+  terminal mode, and stays an orchestrator.
 
 - **Any agent, both ways.** The orchestrator can be Claude Code, Codex or an ACP
   agent, and each worker can be any of them too, so a Claude Code orchestrator can
   have Codex implement and Claude review, or the other way round.
-- **Workers are normal sessions.** They show up indented under their orchestrator in
-  the sidebar, in its group. Open one to read along, message it, approve its
+- **Workers are normal sessions.** Orchestrators in no group have their own
+  **Orchestrators** section at the top of the sidebar; workers show up indented under
+  their orchestrator, in its section. Open one to read along, message it, approve its
   commands, or switch it to the agent's TUI. The chevron on the orchestrator (or `←`
   / `→` in the sidebar) hides and shows its workers; Aura remembers that per
   orchestrator. In the sidebar, `j` / `k` step over the workers of other
@@ -207,16 +217,19 @@ inspector (`⌘K` → Make orchestrator). From the command line:
   sandbox mode; other agents start with their defaults.
 - **Parallel work in worktrees.** The orchestrator can give each worker its own git
   worktree, so workers changing the same repository do not overwrite each other.
+- **Deleting goes down the tree.** Deleting an orchestrator deletes the workers it
+  started, and theirs; the confirmation says how many. The orchestrator can delete
+  its own workers too (`delete_session`), never anyone else's. Worktrees are kept.
 
 The orchestrator gets its tools from `aura mcp`, a small MCP server that comes with
 Aura. Aura hands it to Claude Code (`--mcp-config`, with the tools allowed), Codex
 (config override, with the tools approved) and ACP agents (`mcpServers`). The tools
-are `list_agents`, `start_session`, `send_message`, `list_sessions`, `read_session`,
-`wait_for_sessions`, `interrupt_session` and `stop_session`, and they only reach the
-orchestrator's own workers. ACP agents decide themselves whether to ask before an
-MCP tool call; if yours does, the requests show up as approvals like any other.
-Deleting an orchestrator, or turning it back into a regular session, leaves its
-workers as regular sessions.
+are `list_agents`, `list_projects`, `start_session`, `send_message`, `list_sessions`,
+`read_session`, `wait_for_sessions`, `interrupt_session`, `stop_session` and
+`delete_session`, and they only reach the orchestrator's own workers. ACP agents
+decide themselves whether to ask before an MCP tool call; if yours does, the requests
+show up as approvals like any other. Turning an orchestrator that has a folder back
+into a regular session leaves its workers as regular sessions.
 
 ## ACP agents
 

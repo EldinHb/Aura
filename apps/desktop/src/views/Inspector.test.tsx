@@ -30,3 +30,31 @@ it("a control inside keeps the keyboard after the region notices the focus", asy
   await nextFrame();
   expect(document.activeElement).toBe(select);
 });
+
+function lead(patch: Partial<Session>): Session {
+  return { id: "o", title: "Lead", cwd: "/work/repo", provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false,
+    pending_count: 0, last_activity: "2026-09-30T00:00:00Z", created_at: "2026-09-30T00:00:00Z", group: null, worktree: null, model: null, orchestrator: true, orchestrator_id: null, folderless: false,
+    usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null }, ...patch } as unknown as Session;
+}
+const caps = { structured: true, terminal_mode: true, fork: false, models: false, effort: false, permission_modes: [], sandbox_modes: [] };
+
+it("shows an orchestrator without a folder as a chat: no folder, diff or terminal mode", () => {
+  useStore.setState({ sessions: { o: lead({ folderless: true, cwd: "/data/orchestrators/o" }) }, transcripts: {}, client: null, providers: [{ kind: "claude", capabilities: caps } as never] });
+  render(<Inspector sessionId="o" />);
+  expect(screen.getByText(/^Belongs to no folder/)).toBeTruthy();
+  expect(screen.queryByText("cwd")).toBeNull();
+  expect(screen.queryByText("/data/orchestrators/o")).toBeNull();
+  expect(screen.queryByText("Diff")).toBeNull();
+  expect(screen.queryByText("Stop orchestrating")).toBeNull();
+  expect(screen.queryByText("Terminal")).toBeNull();
+  expect(screen.getByText("Delete")).toBeTruthy();
+});
+
+it("keeps the folder and diff of an orchestrator that has one, without terminal mode", () => {
+  useStore.setState({ sessions: { o: lead({}) }, transcripts: {}, client: null, providers: [{ kind: "claude", capabilities: caps } as never] });
+  render(<Inspector sessionId="o" />);
+  expect(screen.getByText("/work/repo")).toBeTruthy();
+  expect(screen.getByText("Diff")).toBeTruthy();
+  expect(screen.getByText("Stop orchestrating")).toBeTruthy();
+  expect(screen.queryByText("Terminal")).toBeNull();
+});

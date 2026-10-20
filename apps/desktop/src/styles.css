@@ -479,6 +479,9 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .two-col .field { margin-bottom: 8px; }
 .dir-browser { margin-top: 4px; border: 1px solid var(--border); border-radius: 6px; max-height: 220px; overflow: auto; background: var(--bg); }
 .dir-browser .list-item { padding: 5px 10px; border-radius: 0; }
+/* An orchestrator's directory: none, with the switch to one. */
+.new-session .no-folder { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 6px 0; }
+.new-session .folder-toggle { margin-left: 8px; text-transform: none; letter-spacing: normal; }
 .issue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .issue-head .radio-row { flex-wrap: nowrap; }
 .issue-list { max-height: 180px; }

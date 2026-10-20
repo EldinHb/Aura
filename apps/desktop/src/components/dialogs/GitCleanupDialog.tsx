@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { CleanupReport, ProviderKind } from "../../gen";
 import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
+import { folderOf } from "../../lib/sessionFolder";
 
 type Repo = { root: string; github: string | null };
 
@@ -33,7 +34,7 @@ export function GitCleanupDialog({ cwd, repo }: { cwd?: string; repo?: string })
   const [error, setError] = useState("");
 
   // The repositories Aura knows are the ones sessions run in.
-  const cwds = useMemo(() => [...new Set([cwd, ...Object.values(sessions).map((s) => s.cwd)].filter((c): c is string => !!c))], [cwd, sessions]);
+  const cwds = useMemo(() => [...new Set([cwd, ...Object.values(sessions).map(folderOf)].filter((c): c is string => !!c))], [cwd, sessions]);
   useEffect(() => {
     if (!client) return;
     let active = true;

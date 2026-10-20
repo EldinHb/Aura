@@ -35,8 +35,8 @@ const press = (command: string) => act(() => { void runCommand(command); });
 const current = () => useStore.getState().selectedId;
 
 /**
- * Two orchestras between plain sessions: o1 with w1 and w2 (which runs w3), o2 with v1.
- * No daemon, so the rows do not load links behind the test's back.
+ * Two orchestras between plain sessions of one group: o1 with w1 and w2 (which
+ * runs w3), o2 with v1. No daemon, so the rows do not load links behind the test's back.
  */
 function orchestras() {
   const list = [
@@ -48,7 +48,7 @@ function orchestras() {
     session("o2", "Other lead", { orchestrator: true }),
     session("v1", "Other worker", { orchestrator_id: "o2" }),
     session("q", "Plain too"),
-  ];
+  ].map((s) => ({ ...s, group: "Work" }));
   useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), focus: "sidebar", client: null });
 }
 
@@ -296,7 +296,7 @@ it("navigates from the orchestrator when the selected worker was collapsed away 
 
 it("shows the session's agent, orchestrator mark and hidden workers on the second line, the title alone on the first", () => {
   orchestras();
-  useStore.setState({ collapsedOrchestras: ["o1"], sessions: { ...useStore.getState().sessions, w3: session("w3", "Worker 3", { orchestrator_id: "w2", pending_count: 1 }) } });
+  useStore.setState({ collapsedOrchestras: ["o1"], sessions: { ...useStore.getState().sessions, w3: session("w3", "Worker 3", { group: "Work", orchestrator_id: "w2", pending_count: 1 }) } });
   render(<Sidebar />);
   const row = document.querySelector('[data-session-id="o1"]')!;
   expect(row.querySelector(".title")?.textContent).toBe("Lead");
@@ -308,6 +308,44 @@ it("shows the session's agent, orchestrator mark and hidden workers on the secon
   expect(workers.classList.contains("warn")).toBe(true);
   expect(workers.getAttribute("title")).toBe("Worker 1\nWorker 2\nWorker 3");
   expect(document.querySelector('[data-session-id="p"] [aria-label=Orchestrator]')).toBeNull();
+});
+
+it("lists orchestrators in no group in their own section above the other sessions, with their workers under them", () => {
+  const list = [
+    session("p", "Plain"),
+    session("o", "Chat", { orchestrator: true, folderless: true, cwd: "/data/orchestrators/o" }),
+    session("w", "Worker", { orchestrator_id: "o", cwd: "/work/repo" }),
+    session("g", "Grouped", { group: "G" }),
+    session("og", "Grouped lead", { group: "G", orchestrator: true }),
+    session("gw", "Grouped worker", { group: "G", orchestrator_id: "og" }),
+    session("old", "Lead with a folder", { orchestrator: true }),
+  ];
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
+  render(<Sidebar />);
+  expect(rows()).toEqual(["o", "w", "old", "p", "g", "og", "gw"]);
+  expect([...document.querySelectorAll(".section-title")].map((el) => el.textContent)).toEqual(["Orchestrators", "G"]);
+  expect(document.querySelector('[data-session-id="w"]')?.classList.contains("worker")).toBe(true);
+  // A plain session cannot be moved in among them, nor they out.
+  act(() => useStore.getState().moveSessionTo("p", "o"));
+  act(() => useStore.getState().moveSessionTo("old", "p"));
+  expect(rows()).toEqual(["o", "w", "old", "p", "g", "og", "gw"]);
+  act(() => useStore.getState().moveSessionTo("old", "o"));
+  expect(rows()).toEqual(["old", "o", "w", "p", "g", "og", "gw"]);
+});
+
+it("shows no folder for an orchestrator that belongs to none, and its workers' folders", () => {
+  const list = [
+    session("o", "Chat", { orchestrator: true, folderless: true, cwd: "/data/orchestrators/o", model: "opus" }),
+    session("w", "Worker", { orchestrator_id: "o", cwd: "/work/repo" }),
+  ];
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
+  render(<Sidebar />);
+  const lead = document.querySelector<HTMLElement>('[data-session-id="o"]')!;
+  expect(lead.querySelector(".sub .where")?.textContent).toBe("opus");
+  expect(lead.title).toBe("Orchestrator: belongs to no folder");
+  const worker = document.querySelector<HTMLElement>('[data-session-id="w"]')!;
+  expect(worker.querySelector(".sub .where")?.textContent).toBe("repo");
+  expect(worker.title).toBe("/work/repo");
 });
 
 it("shows only whole link chips that fit, then +N with the rest in its tooltip, and adapts as the sidebar resizes", async () => {

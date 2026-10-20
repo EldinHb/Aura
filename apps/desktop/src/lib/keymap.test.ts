@@ -11,6 +11,8 @@ const ctx: CommandContext = {
   widgetFocused: false,
   paletteOpen: false,
   hasSelection: true,
+  hasFolder: true,
+  orchestrator: false,
   mode: "structured",
   provider: "claude",
   status: "idle",

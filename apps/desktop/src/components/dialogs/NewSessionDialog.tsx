@@ -10,6 +10,7 @@ import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
 import { saveLinkPreferences } from "../../state/sessionLinkPreferences";
 import { IssuePicker, type PickedIssue } from "./IssuePicker";
+import { folderOf } from "../../lib/sessionFolder";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
 /** Rows the directory browser renders; the arrow keys stay within them. */
@@ -77,7 +78,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   // ACP agents only report their models and modes once a session exists, and
   // have no terminal mode Aura could switch to.
   const isAcp = provider === "acp";
-  const [dir, setDir] = useState(presetCwd ?? selected?.cwd ?? settings.defaultCwd ?? "");
+  const [dir, setDir] = useState(presetCwd ?? (selected && folderOf(selected)) ?? settings.defaultCwd ?? "");
   const [home, setHome] = useState<string>("");
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [dirIndex, setDirIndex] = useState(0);
@@ -98,6 +99,11 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [prompt, setPrompt] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [orchestrator, setOrchestrator] = useState(false);
+  // A terminal cannot orchestrate, whatever the box said before the provider changed.
+  const orchestrates = provider !== "terminal" && orchestrator;
+  // An orchestrator belongs to no folder unless the user gives it one.
+  const [orchestratorFolder, setOrchestratorFolder] = useState(false);
+  const noFolder = orchestrates && !orchestratorFolder;
   const [issues, setIssues] = useState<PickedIssue[]>([]);
   const [busy, setBusy] = useState(false);
   const dirInput = useRef<HTMLInputElement>(null);
@@ -166,7 +172,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
 
   useEffect(() => {
     if (!client || groupTouched) return;
-    if (!expandedDir) {
+    if (!expandedDir || noFolder) {
       setGroup("");
       setGroupFromRepo(false);
       return;
@@ -187,7 +193,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     return () => {
       cancelled = true;
     };
-  }, [client, expandedDir, groupTouched]);
+  }, [client, expandedDir, groupTouched, noFolder]);
 
   const recentDirs = useMemo(() => loadRecentDirs(), []);
   const showRecent = !partial && recentDirs.length > 0 && (dir === "" || dir === home || dir === home + "/");
@@ -212,7 +218,8 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
 
   const submit = useCallback(async () => {
     if (!client || busy) return;
-    const cwd = expandedDir.replace(/\/+$/, "") || home || "/";
+    // An empty directory gives an orchestrator none: the daemon makes it one of its own.
+    const cwd = noFolder ? "" : expandedDir.replace(/\/+$/, "") || home || "/";
     setBusy(true);
     try {
       const argv = command.trim() ? command.trim().split(/\s+/) : null;
@@ -222,19 +229,19 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         cwd,
         title: title.trim() || null,
         group: group.trim() || null,
-        mode,
+        mode: orchestrates ? "structured" : mode,
         command: provider === "terminal" && argv ? argv : null,
         model: model || null,
         permission_mode: permission || null,
         sandbox_mode: sandbox || null,
-        worktree: worktree && repoRoot && branch.trim() ? { branch: branch.trim(), base: null, path: null } : null,
-        initial_prompt: mode === "structured" && prompt.trim() ? prompt.trim() : null,
+        worktree: !noFolder && worktree && repoRoot && branch.trim() ? { branch: branch.trim(), base: null, path: null } : null,
+        initial_prompt: (mode === "structured" || orchestrates) && prompt.trim() ? prompt.trim() : null,
         system_prompt: provider !== "terminal" && systemPrompt.trim() ? systemPrompt : null,
-        orchestrator: provider !== "terminal" && orchestrator,
+        orchestrator: orchestrates,
         orchestrator_id: null,
       });
-      pushRecentDir(cwd);
-      if (issues.length) {
+      if (cwd) pushRecentDir(cwd);
+      if (issues.length && !noFolder) {
         await saveLinkPreferences(client, s.id, { issues: issues.map((issue) => issue.url) }).catch((e) =>
           toast(`Session created, but linking ${issues.map((issue) => `${issue.repo} #${issue.number}`).join(", ")} failed: ${e instanceof Error ? e.message : e}`, "error"));
       }
@@ -246,7 +253,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrator, issues, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, issues, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -316,8 +323,30 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       </div>
 
+      {provider !== "terminal" && (
+        <div className="field">
+          <label>
+            <input type="checkbox" checked={orchestrator} onChange={(e) => setOrchestrator(e.target.checked)} style={{ marginRight: 6 }} />
+            Orchestrator: starts and directs other sessions
+          </label>
+          {orchestrator && <span className="dim" style={{ fontSize: 11 }}>You talk to this agent like in a chat; it hands work to worker sessions of any agent, in any folder or repository, which show up under it.</span>}
+        </div>
+      )}
+
+      {noFolder ? (
+        <div className="field">
+          <label>Directory</label>
+          <div className="no-folder">
+            <span className="dim">None: the orchestrator names a folder for each worker.</span>
+            <button type="button" className="btn small" data-command="new-session.folder" onClick={() => setOrchestratorFolder(true)}>Use a folder</button>
+          </div>
+        </div>
+      ) : (
       <div className="field">
-        <label>Directory {repoRoot && <span className="chip">⎇ git repo</span>}</label>
+        <label>
+          Directory {repoRoot && <span className="chip">⎇ git repo</span>}
+          {orchestrates && <button type="button" className="btn small folder-toggle" data-command="new-session.folder" onClick={() => setOrchestratorFolder(false)}>No folder</button>}
+        </label>
         <input ref={dirInput} type="text" value={dir} onChange={(e) => setDir(e.target.value)} onKeyDown={onDirKey} placeholder="~/projects/…" spellCheck={false} autoComplete="off" />
         {browserRows.length > 0 && (
           <div className="dir-browser" ref={dirBrowser}>
@@ -333,11 +362,12 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
           </div>
         )}
       </div>
+      )}
 
       <div className="two-col">
         <div className="field">
           <label>Title (optional)</label>
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`${choice.agent ?? provider} · ${basename(expandedDir || "")}`} />
+          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`${choice.agent ?? provider} · ${noFolder ? "orchestrator" : basename(expandedDir || "")}`} />
         </div>
         <div className="field">
           <label>Group (optional) {groupFromRepo && !groupTouched && <span className="dim">· from this repository</span>}</label>
@@ -358,7 +388,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       </div>
 
-      <IssuePicker cwd={expandedDir.replace(/\/+$/, "")} value={issues} onChange={setIssues} />
+      {!noFolder && <IssuePicker cwd={expandedDir.replace(/\/+$/, "")} value={issues} onChange={setIssues} />}
 
       {isAcp ? (
         <div className="field">
@@ -366,6 +396,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       ) : provider !== "terminal" ? (
         <>
+          {!orchestrates && (
           <div className="field">
             <label>Mode</label>
             <div className="radio-row" role="radiogroup">
@@ -376,6 +407,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
               ))}
             </div>
           </div>
+          )}
           <div className="two-col">
             <div className="field">
               <label>Model</label>
@@ -415,7 +447,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       )}
 
-      {repoRoot && (
+      {repoRoot && !noFolder && (
         <div className="field">
           <label>
             <input type="checkbox" checked={worktree} onChange={(e) => setWorktree(e.target.checked)} style={{ marginRight: 6 }} />
@@ -426,17 +458,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       )}
 
-      {provider !== "terminal" && (
-        <div className="field">
-          <label>
-            <input type="checkbox" checked={orchestrator} onChange={(e) => setOrchestrator(e.target.checked)} style={{ marginRight: 6 }} />
-            Orchestrator: starts and directs other sessions
-          </label>
-          {orchestrator && <span className="dim" style={{ fontSize: 11 }}>You talk to this agent; it hands work to worker sessions of any agent, which show up under it.</span>}
-        </div>
-      )}
-
-      {mode === "structured" && provider !== "terminal" && (
+      {(mode === "structured" || orchestrates) && provider !== "terminal" && (
         <div className="field">
           <label>Initial prompt (optional)</label>
           <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="First message to the agent… (⌘↩ to create)" />

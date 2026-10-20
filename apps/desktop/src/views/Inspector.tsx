@@ -12,6 +12,7 @@ import { acpSessionInfo } from "../lib/acp";
 import { WatchSection } from "../features/watches/WatchSection";
 import { selectedSessionLinks, sessionLinks } from "./issueLinks";
 import { useMemo } from "react";
+import { folderOf } from "../lib/sessionFolder";
 
 function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boolean; title?: string }) {
   return (
@@ -76,7 +77,11 @@ function OrchestrationSection({ s }: { s: Session }) {
       <h4>{s.orchestrator ? "Orchestrator" : "Worker"}</h4>
       {s.orchestrator ? (
         <>
-          <div className="dim" style={{ marginBottom: 6 }}>Starts and directs the sessions below and hears back when each one stops.</div>
+          <div className="dim" style={{ marginBottom: 6 }}>
+            {s.folderless
+              ? "Belongs to no folder. Starts the sessions below, each in the folder it names, directs them and hears back when each one stops."
+              : "Starts and directs the sessions below and hears back when each one stops."}
+          </div>
           <div className="list">
             {workers.length === 0 && <span className="dim">No workers yet</span>}
             {workers.map(row)}
@@ -172,7 +177,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
   const linkPreferences = useSessionLinkPreferences(sessionId);
   const s = useStore((st) => (sessionId ? st.sessions[sessionId] : null));
   const t = useStore((st) => (sessionId ? st.transcripts[sessionId] : null));
-  const repo = useGithubRepo(s?.cwd);
+  const repo = useGithubRepo(s ? folderOf(s) ?? undefined : undefined);
   const focus = useStore((st) => st.focus);
   const caps = useStore((st) => st.providers.find((p) => p.kind === s?.provider)?.capabilities);
   const openDialog = useStore((st) => st.openDialog);
@@ -209,7 +214,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
               <KV k="provider" v={<span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>} />
               <KV k="status" v={<><span className={clsx("dot", statusDot(s))} /> {s.status}{s.pending_count ? ` (${s.pending_count} pending)` : ""}</>} />
               <KV k="mode" v={s.mode} />
-              <KV k="cwd" v={s.cwd} mono title={s.cwd} />
+              {!s.folderless && <KV k="cwd" v={s.cwd} mono title={s.cwd} />}
               {s.worktree && <KV k="worktree" v={`⎇ ${s.worktree.branch}`} title={s.worktree.path} />}
               {s.command && s.mode === "terminal" && <KV k="command" v={s.command.join(" ")} mono title={s.command.join(" ")} />}
               <KV
@@ -297,10 +302,10 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
               {caps?.fork && s.native_id && <Action cmd="session.fork" label="Fork" />}
               <Action cmd="session.rename" label="Rename" />
               {s.provider !== "terminal" && <Action cmd="session.system-prompt" label="Prompt" />}
-              {s.provider !== "terminal" && <Action cmd="session.toggle-orchestrator" label={s.orchestrator ? "Stop orchestrating" : "Orchestrate"} />}
-              {caps?.terminal_mode && s.provider !== "terminal" && <Action cmd="session.toggle-mode" label={s.mode === "terminal" ? "Structured" : "Terminal"} />}
+              {s.provider !== "terminal" && !s.folderless && <Action cmd="session.toggle-orchestrator" label={s.orchestrator ? "Stop orchestrating" : "Orchestrate"} />}
+              {caps?.terminal_mode && s.provider !== "terminal" && (!s.orchestrator || s.mode === "terminal") && <Action cmd="session.toggle-mode" label={s.mode === "terminal" ? "Structured" : "Terminal"} />}
               {s.mode === "terminal" && s.status === "exited" && <Action cmd="session.restart" label="Restart" />}
-              <Action cmd="git.diff" label="Diff" />
+              {!s.folderless && <Action cmd="git.diff" label="Diff" />}
               <Action cmd="session.open-window" label="Window" />
               <Action cmd="session.stop" label="Stop" />
               <Action cmd="session.archive" label={s.archived ? "Unarchive" : "Archive"} />

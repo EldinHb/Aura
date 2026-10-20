@@ -3,6 +3,7 @@ import { ModalC } from "../ModalC";
 import { useStore } from "../../state/store";
 import type { SearchHit } from "../../gen";
 import { relTime } from "../../lib/platform";
+import { folderOf } from "../../lib/sessionFolder";
 import { setFocus } from "../../commands/core";
 import clsx from "clsx";
 
@@ -67,7 +68,7 @@ export function SearchDialog() {
     const q = query.trim().toLowerCase();
     if (!q) return [];
     return Object.values(sessions)
-      .filter((s) => s.title.toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q) || (s.group ?? "").toLowerCase().includes(q))
+      .filter((s) => s.title.toLowerCase().includes(q) || (folderOf(s) ?? "").toLowerCase().includes(q) || (s.group ?? "").toLowerCase().includes(q))
       .slice(0, 8);
   }, [query, sessions]);
 
@@ -134,7 +135,7 @@ export function SearchDialog() {
             <button key={s.id} type="button" data-hint data-search-row={i} className={clsx("list-item", i === idx && "active")} onClick={() => activate({ kind: "session", id: s.id })}>
               <span className={clsx("chip", s.provider)}>{s.provider}</span>
               <span className="grow">{s.title}</span>
-              <span className="dim">{s.cwd}</span>
+              <span className="dim">{folderOf(s) ?? "orchestrator"}</span>
             </button>
           );
         })}

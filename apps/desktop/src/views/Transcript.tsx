@@ -231,11 +231,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         {!t?.loading && rows.length === 0 && session && (
           <div className="empty">
             <h2>{sessionProviderLabel(session, providers)}</h2>
-            <span className="mono">{session.cwd}</span>
+            {session.folderless ? <span>Orchestrator: tell it what you want done; it starts workers in the folders the work is in.</span> : <span className="mono">{session.cwd}</span>}
             {session.status === "error" && session.last_error && <code className="err-text">{session.last_error}</code>}
             <div className="hint">
               <span><kbd>i</kbd> type a message</span>
-              {session.provider !== "acp" && <span><kbd>⌘T</kbd> terminal mode</span>}
+              {session.provider !== "acp" && !session.orchestrator && <span><kbd>⌘T</kbd> terminal mode</span>}
               <span><kbd>⌘K</kbd> commands</span>
             </div>
           </div>

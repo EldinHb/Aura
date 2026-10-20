@@ -4,6 +4,7 @@ import type { RpcClient } from "../lib/rpc";
 import { parseSessionLink, sessionLinks, type LinkPreferences, type SessionLink } from "../views/issueLinks";
 import { useStore } from "./store";
 import { loadGithubRepo, useGithubRepos } from "./githubRepos";
+import { folderOf } from "../lib/sessionFolder";
 
 type Entry = { preferences: LinkPreferences; error?: string };
 export const useLinkPreferencesStore = create<{ entries: Record<string, Entry> }>(() => ({ entries: {} }));
@@ -163,8 +164,9 @@ export function useDetectedLinksSync() {
         const session = sessions[id];
         // A partial transcript (live events only) can pick the wrong target.
         if (!session || !transcript.loaded) continue;
-        if (!(session.cwd in repos)) void loadGithubRepo(client, session.cwd);
-        const repo = repos[session.cwd] ?? undefined;
+        const folder = folderOf(session);
+        if (folder !== null && !(folder in repos)) void loadGithubRepo(client, folder);
+        const repo = folder !== null ? repos[folder] ?? undefined : undefined;
         const last = seen.get(id);
         if (last?.items === transcript.items && last.title === session.title && last.repo === repo) continue;
         seen.set(id, { items: transcript.items, title: session.title, repo });

@@ -1,6 +1,7 @@
 import { useStore, selectSelected, selectPendingCount } from "../state/store";
 import type { CommandContext } from "../lib/commands";
 import { isMac } from "../lib/platform";
+import { folderOf } from "../lib/sessionFolder";
 
 export function isEditable(el: Element | null): boolean {
   if (!el) return false;
@@ -53,6 +54,8 @@ export function currentCommandContext(): CommandContext {
     widgetFocused: isKeyNavEl(active),
     paletteOpen: st.paletteOpen,
     hasSelection: !!s,
+    hasFolder: !!s && folderOf(s) !== null,
+    orchestrator: !!s?.orchestrator,
     mode: s?.mode ?? null,
     provider: s?.provider ?? null,
     status: s?.status ?? null,

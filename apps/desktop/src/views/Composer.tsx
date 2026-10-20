@@ -5,6 +5,7 @@ import { useStore } from "../state/store";
 import { setFocus } from "../commands/core";
 import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
+import { folderOf } from "../lib/sessionFolder";
 import { filterSlashCommands, mergeSlashCommands, mentionQuery, slashQuery, type SlashEntry } from "./transcript/slash";
 import { fmtTokens, fmtUsd } from "./transcript/format";
 import { useQuestionKey } from "./transcript/questionKey";
@@ -103,7 +104,8 @@ export function Composer({ sessionId }: { sessionId: string }) {
         setPop((p) => ({ kind: "slash", query: sq, idx: p.kind === "slash" ? Math.min(p.idx, 11) : 0 }));
         return;
       }
-      const mq = mentionQuery(value, caret);
+      // An orchestrator without a folder has no files to mention.
+      const mq = session && folderOf(session) !== null ? mentionQuery(value, caret) : null;
       if (mq && client && session) {
         setPop((p) => ({ kind: "mention", start: mq.start, query: mq.query, idx: p.kind === "mention" ? p.idx : 0, results: p.kind === "mention" ? p.results : [] }));
         if (mentionTimer.current) clearTimeout(mentionTimer.current);
@@ -383,7 +385,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
         ref={taRef}
         data-autofocus
         value={text}
-        placeholder={running ? (canSteer ? "Steer the running turn…" : "Queue a message…") : `Message ${session.agent ?? session.provider}…  / commands · @ files`}
+        placeholder={running ? (canSteer ? "Steer the running turn…" : "Queue a message…") : `Message ${session.agent ?? session.provider}…  / commands${folderOf(session) === null ? "" : " · @ files"}`}
         disabled={sending}
         rows={1}
         onChange={(e) => {

@@ -4,6 +4,7 @@ import { useStore, selectVisibleSessions, selectSelected } from "../state/store"
 import type { ApprovalOption, SessionMode } from "../gen";
 import { isTauri } from "../lib/connection";
 import { setPlanView, usePlanViews } from "../state/planView";
+import { folderOf, workersUnder } from "../lib/sessionFolder";
 
 function st() {
   return useStore.getState();
@@ -13,6 +14,11 @@ function client() {
   if (!c) throw new Error("not connected to the daemon");
   return c;
 }
+/** Worker reports only reach an orchestrator in the structured view, which is its chat. */
+function orchestratorsStayStructured() {
+  st().toast("Orchestrators stay in the structured view, where their workers report", "warn");
+}
+
 function selected() {
   const s = selectSelected(st());
   if (!s) throw new Error("no session selected");
@@ -141,7 +147,8 @@ export const coreCommands: Command[] = [
     title: "New terminal here",
     group: "Session",
     run: async () => {
-      const cwd = selectSelected(st())?.cwd || st().settings.defaultCwd || (await client().home()) || "/";
+      const here = selectSelected(st());
+      const cwd = (here && folderOf(here)) || st().settings.defaultCwd || (await client().home()) || "/";
       const s = await client().createSession({ provider: "terminal", cwd });
       st().select(s.id);
       setFocus("main");
@@ -176,6 +183,7 @@ export const coreCommands: Command[] = [
     run: async () => {
       const s = selected();
       if (s.provider === "terminal") return st().toast("Terminal sessions cannot orchestrate", "error");
+      if (s.folderless) return st().toast(`“${s.title}” belongs to no folder, so it stays an orchestrator`, "error");
       const updated = await client().setOrchestrator(s.id, !s.orchestrator);
       st().toast(updated.orchestrator ? `“${s.title}” is an orchestrator from its next message` : `“${s.title}” is a regular session again; its workers are on their own`);
     },
@@ -209,27 +217,34 @@ export const coreCommands: Command[] = [
     when: "hasSelection",
     run: () => {
       const s = selected();
+      // The daemon deletes an orchestrator's workers with it, and theirs.
+      const workers = workersUnder(s.id, st().sessions).length;
+      const along = workers === 1 ? "the worker session it started" : `the ${workers} worker sessions it started`;
       const doIt = async () => {
         await client().deleteSession(s.id, false);
-        st().toast(`Deleted “${s.title}”`);
+        st().toast(workers ? `Deleted “${s.title}” and ${along}` : `Deleted “${s.title}”`);
       };
       if (!st().settings.confirmDelete) return doIt();
-      st().openDialog({ kind: "confirm", title: "Delete session", message: `Delete “${s.title}” and its history? The provider's own transcript is kept.`, danger: true, onConfirm: () => void doIt() });
+      const message = workers
+        ? `Delete “${s.title}”, ${along} and their history? The providers' own transcripts and the workers' worktrees are kept.`
+        : `Delete “${s.title}” and its history? The provider's own transcript is kept.`;
+      st().openDialog({ kind: "confirm", title: workers ? "Delete orchestrator and workers" : "Delete session", message, danger: true, onConfirm: () => void doIt() });
     },
   },
   {
     id: "session.toggle-mode",
     title: "Toggle terminal / structured mode",
     group: "Session",
-    when: "hasSelection,provider:claude|codex",
+    when: "hasSelection,!orchestrator,provider:claude|codex",
     run: async () => {
       const s = selected();
       const mode: SessionMode = s.mode === "terminal" ? "structured" : "terminal";
+      if (s.orchestrator && mode === "terminal") return orchestratorsStayStructured();
       await client().switchMode(s.id, mode);
       setFocus("main");
     },
   },
-  { id: "session.mode-terminal", title: "Switch to terminal mode", group: "Session", when: "hasSelection,mode:structured,provider:claude|codex", run: async () => { await client().switchMode(selected().id, "terminal"); setFocus("main"); } },
+  { id: "session.mode-terminal", title: "Switch to terminal mode", group: "Session", when: "hasSelection,!orchestrator,mode:structured,provider:claude|codex", run: async () => { if (selected().orchestrator) return orchestratorsStayStructured(); await client().switchMode(selected().id, "terminal"); setFocus("main"); } },
   { id: "session.mode-structured", title: "Switch to structured mode", group: "Session", when: "hasSelection,mode:terminal,provider:claude|codex", run: async () => { await client().switchMode(selected().id, "structured"); setFocus("main"); } },
   { id: "session.interrupt", title: "Interrupt running turn", group: "Session", when: "hasSelection", run: async () => { await client().interrupt(selected().id); } },
   { id: "session.compact", title: "Compact context", group: "Session", when: "hasSelection,mode:structured,provider:claude|codex", run: async () => { await client().action(selected().id, "compact"); st().toast("Compaction requested"); } },
@@ -254,7 +269,7 @@ export const coreCommands: Command[] = [
     },
   },
   { id: "session.copy-id", title: "Copy session id", group: "Session", when: "hasSelection", run: async () => { await navigator.clipboard.writeText(selected().id); st().toast("Session id copied"); } },
-  { id: "session.copy-cwd", title: "Copy working directory", group: "Session", when: "hasSelection", run: async () => { await navigator.clipboard.writeText(selected().cwd); st().toast("Path copied"); } },
+  { id: "session.copy-cwd", title: "Copy working directory", group: "Session", when: "hasSelection,hasFolder", run: async () => { const cwd = folderOf(selected()); if (cwd === null) return st().toast("This orchestrator belongs to no folder", "warn"); await navigator.clipboard.writeText(cwd); st().toast("Path copied"); } },
   // approvals
   { id: "approval.accept-oldest", title: "Accept oldest pending approval", group: "Approvals", when: "pending", run: () => respondOldest("accept") },
   { id: "approval.accept-session-oldest", title: "Accept oldest approval for the session", group: "Approvals", when: "pending", run: () => respondOldest("accept_for_session") },

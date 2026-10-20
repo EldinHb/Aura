@@ -9,6 +9,7 @@ import { create } from "zustand";
 import type { BranchPull, BranchStatus, Session } from "../gen";
 import type { RpcClient } from "../lib/rpc";
 import { useGithubRepo } from "./githubRepos";
+import { folderOf } from "../lib/sessionFolder";
 import { useStore } from "./store";
 
 /** Where to look for a branch's pull request. */
@@ -70,12 +71,12 @@ export async function refreshPull(client: RpcClient, target: PullTarget, ttl: nu
 
 /**
  * Branch state and pull request of a session's folder, kept up to date while
- * mounted. `selected` reads them more often.
+ * mounted. `selected` reads them more often. An orchestrator without a folder has neither.
  */
-export function useSessionBranch(session: Pick<Session, "cwd" | "last_activity" | "status"> | null | undefined, selected = false) {
+export function useSessionBranch(session: (Pick<Session, "cwd" | "last_activity" | "status"> & { folderless?: boolean }) | null | undefined, selected = false) {
   const client = useStore((state) => state.client);
   const open = useStore((state) => state.connection === "open");
-  const cwd = session?.cwd;
+  const cwd = session ? folderOf(session) ?? undefined : undefined;
   const repo = useGithubRepo(cwd);
   const git = useBranches((state) => (cwd ? state.git[cwd] : undefined));
   const branch = git?.upstream_branch ?? git?.branch;
