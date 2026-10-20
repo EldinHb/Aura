@@ -12,7 +12,10 @@ use tokio::sync::{broadcast, mpsc};
 
 mod attachments;
 mod orchestrator;
-pub use orchestrator::{describe_workers, report_message, WaitResult, WorkerReport, WorkerSpec};
+pub use orchestrator::{
+    describe_projects, describe_workers, report_message, Project, WaitResult, WorkerReport,
+    WorkerSpec,
+};
 
 /// Git worktree creation is provided by `aura-git`; the manager only needs this.
 pub trait WorktreeBackend: Send + Sync {
@@ -368,6 +371,12 @@ impl Manager {
                 }
             }
             s.pending_count = 0;
+            // Its directory is Aura's; make it again if it went missing.
+            if s.folderless {
+                if let Err(e) = std::fs::create_dir_all(&s.cwd) {
+                    tracing::warn!("orchestrator directory {}: {e}", s.cwd);
+                }
+            }
             // What it waited on went with the old daemon; it has stopped.
             if s.attention == Some(Attention::Waiting) {
                 s.attention = Some(Attention::Done);
@@ -397,10 +406,17 @@ impl Manager {
     }
 
     pub async fn create_session(&self, mut opts: CreateSessionOpts) -> Result<Session> {
-        if opts.cwd.is_empty() {
+        // An orchestrator needs no folder; a fork of one without a folder
+        // resumes in the directory Aura made for it.
+        let folderless = opts.orchestrator
+            && (opts.cwd.trim().is_empty() || self.is_orchestrator_dir(&opts.cwd));
+        if folderless && opts.worktree.is_some() {
+            bail!("an orchestrator without a folder cannot have a worktree");
+        }
+        if opts.cwd.is_empty() && !folderless {
             opts.cwd = std::env::current_dir()?.to_string_lossy().to_string();
         }
-        if !std::path::Path::new(&opts.cwd).is_dir() {
+        if !folderless && !std::path::Path::new(&opts.cwd).is_dir() {
             bail!("cwd does not exist: {}", opts.cwd);
         }
         let provider = self.provider(opts.provider)?;
@@ -408,6 +424,17 @@ impl Manager {
             bail!("ACP sessions need an agent (e.g. `gemini`)");
         }
         let mut session = Session::new(&opts);
+        if folderless {
+            session.folderless = true;
+            if opts.cwd.trim().is_empty() {
+                session.cwd = self.make_orchestrator_dir(&session.id)?;
+            } else {
+                std::fs::create_dir_all(&session.cwd)?;
+            }
+            if opts.title.is_none() {
+                session.title = format!("{} · orchestrator", opts.label());
+            }
+        }
         if let Some(wt) = &opts.worktree {
             let backend = self
                 .inner
@@ -824,25 +851,31 @@ impl Manager {
         self.get_session(id)
     }
 
-    /// Stop and permanently remove a session and its history.
+    /// Stop and permanently remove a session and its history. An orchestrator
+    /// takes its workers with it, and a worker that orchestrates takes its own.
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> Result<()> {
-        let s = self.get_session(id)?;
-        self.stop(id).await?;
-        self.inner.runtimes.lock().remove(id);
-        self.inner.sessions.lock().remove(id);
-        self.inner.store.delete_session(id)?;
-        self.delete_attachments(id);
-        self.forget_orchestrator(id);
-        if remove_worktree {
-            if let (Some(wt), Some(backend)) = (&s.worktree, &self.inner.worktrees) {
-                if let Err(e) = backend.remove(wt) {
-                    tracing::warn!("remove worktree failed: {e}");
+        self.get_session(id)?;
+        // Each orchestrator goes before its workers, so a worker stopped on the
+        // way has no one left to report to.
+        for s in self.with_workers(id) {
+            self.stop(&s.id).await?;
+            self.inner.runtimes.lock().remove(&s.id);
+            self.inner.sessions.lock().remove(&s.id);
+            self.inner.store.delete_session(&s.id)?;
+            self.delete_attachments(&s.id);
+            self.drop_reports(&s.id);
+            if remove_worktree {
+                if let (Some(wt), Some(backend)) = (&s.worktree, &self.inner.worktrees) {
+                    if let Err(e) = backend.remove(wt) {
+                        tracing::warn!("remove worktree failed: {e}");
+                    }
                 }
             }
+            self.remove_orchestrator_dir(&s);
+            self.broadcast(Event::SessionRemoved {
+                session_id: s.id.clone(),
+            });
         }
-        self.broadcast(Event::SessionRemoved {
-            session_id: id.into(),
-        });
         Ok(())
     }
 

@@ -68,18 +68,28 @@ pub struct SystemPrompts {
 
 /// Added to an orchestrator's system prompt. `tools` says whether Aura could
 /// hand it the `aura` MCP server.
-pub fn orchestrator_prompt(session_id: &str, tools: bool) -> String {
+pub fn orchestrator_prompt(session: &Session, tools: bool) -> String {
+    let id = &session.id;
+    let folder = if session.folderless {
+        format!("You belong to no folder or repository: you run in a directory Aura made for you (`{}`), which is not the user's work. Every worker you start needs a `cwd`, the absolute path of the folder or repository it works in, so different workers can work in different repositories. Ask the user where the work is when you do not know; `list_projects` shows the folders and repositories Aura knows.", session.cwd)
+    } else {
+        format!("You run in `{}`. Workers work there too unless you give them a `cwd`, the folder or repository they work in; different workers can work in different repositories. `list_projects` shows the folders and repositories Aura knows.", session.cwd)
+    };
     let mut p = format!("## You are an orchestrator
 
-The user made this session (Aura session id `{session_id}`) an orchestrator. The user talks to you; you plan the work and hand it to worker sessions that you start and direct with the tools of the `aura` MCP server:
+The user made this session (Aura session id `{id}`) an orchestrator. The user talks to you; you plan the work and hand it to worker sessions that you start and direct with the tools of the `aura` MCP server:
 
 - `list_agents`: the agents you can start (Claude Code, Codex and any installed ACP agent).
-- `start_session`: start a worker with an agent and a first task.
+- `list_projects`: the folders and repositories the user's sessions work in.
+- `start_session`: start a worker with an agent, a folder and a first task.
 - `send_message`: give one of your workers a follow-up task or an answer.
 - `list_sessions`: your workers, their status and last reply.
 - `read_session`: a worker's recent conversation and what it did.
 - `wait_for_sessions`: block until workers stop working.
 - `interrupt_session` and `stop_session`.
+- `delete_session`: delete a worker you no longer need, with its history.
+
+{folder}
 
 How to work:
 
@@ -89,7 +99,8 @@ How to work:
 - When a worker stops (its task is done, it failed, or it waits for the user's approval or answer), Aura sends you a message that starts with `[Aura] Worker report`. You do not have to poll: after handing out work you can end your turn and continue when the reports come in. Use `wait_for_sessions` when you need a result before you can go on; workers it returns are not reported again.
 - Workers ask the user, not you, to approve commands and answer questions. When a report says a worker is waiting on the user, tell the user which worker and what it needs.
 - The user sees every worker as a normal session and may message them directly.
-- Coordinate and check the work yourself. Leave the implementation to workers unless a task is trivial.");
+- Coordinate and check the work yourself. Leave the implementation to workers unless a task is trivial.
+- Delete only workers whose work is finished and reported, or that the user asked you to remove. Deleting keeps the worker's git worktree and branch.");
     if !tools {
         p.push_str("\n\nAura could not give you the `aura` tools in this session (the `aura` command-line tool was not found next to the daemon). Tell the user, and do not pretend to start workers.");
     }

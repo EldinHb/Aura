@@ -562,6 +562,24 @@ async fn dispatch(
             }
             ok(true)
         }
+        "orchestrator.delete" => {
+            #[derive(Deserialize)]
+            struct P {
+                orchestrator: String,
+                worker: String,
+            }
+            let P {
+                orchestrator,
+                worker,
+            } = params(p)?;
+            ok(m.delete_worker(&orchestrator, &worker).await?)
+        }
+        "orchestrator.projects" => {
+            let m = m.clone();
+            ok(tokio::task::spawn_blocking(move || m.projects())
+                .await
+                .map_err(|e| anyhow!(e))??)
+        }
         "session.rename" => {
             #[derive(Deserialize)]
             struct P {

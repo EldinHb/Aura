@@ -7,6 +7,8 @@ export type UserInputResponse = { request_id: string,
 answers: { [key in string]?: Array<string> }, 
 /**
  * The user dismissed the question without answering; `answers` is empty.
- * The provider tells the agent so, and the agent carries on without it.
+ * Claude is told so in a denied tool result. Codex has no way to say it:
+ * it gets no answers, which its own instructions read as "carry on with
+ * best judgment, do not ask again".
  */
 declined: boolean, };

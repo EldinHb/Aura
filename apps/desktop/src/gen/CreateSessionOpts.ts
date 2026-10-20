@@ -7,7 +7,13 @@ export type CreateSessionOpts = { provider: ProviderKind,
 /**
  * ACP agent id, required when `provider` is `Acp`.
  */
-agent: string | null, cwd: string, title: string | null, group: string | null, 
+agent: string | null, 
+/**
+ * Where the session works. Empty for an orchestrator gives it no folder
+ * (see [`Session::folderless`]); for other sessions it means the daemon's
+ * own directory.
+ */
+cwd: string, title: string | null, group: string | null, 
 /**
  * Structured (default for AI providers) or Terminal.
  */

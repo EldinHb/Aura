@@ -152,6 +152,20 @@ impl Server {
         let o = &self.orchestrator;
         match tool {
             "list_agents" => self.list_agents().await,
+            "list_projects" => {
+                let projects: Vec<Project> = serde_json::from_value(
+                    self.rpc("orchestrator.projects", json!({ "orchestrator": o }))
+                        .await?,
+                )?;
+                Ok(if projects.is_empty() {
+                    "Aura knows no folders yet. Ask the user where the work is and pass the absolute path as `cwd` to start_session.".into()
+                } else {
+                    format!(
+                        "Folders and repositories the user's sessions work in, most recently used first (pass one as `cwd` to start_session):\n{}",
+                        describe_projects(&projects)
+                    )
+                })
+            }
             "start_session" => {
                 let mut p = json!({ "orchestrator": o, "agent": req(a, "agent")?, "prompt": req(a, "prompt")? });
                 for key in ["title", "cwd", "branch", "base", "model", "effort"] {
@@ -245,6 +259,29 @@ impl Server {
                 .await?;
                 Ok("Stopped. The session is kept; a new message resumes it.".into())
             }
+            "delete_session" => {
+                let deleted: Vec<Session> = serde_json::from_value(
+                    self.rpc(
+                        "orchestrator.delete",
+                        json!({ "orchestrator": o, "worker": req(a, "session")? }),
+                    )
+                    .await?,
+                )?;
+                let Some(w) = deleted.first() else {
+                    bail!("nothing was deleted");
+                };
+                Ok(match deleted.len() - 1 {
+                    0 => format!("Deleted {} (`{}`) and its history.", w.title, w.id),
+                    1 => format!(
+                        "Deleted {} (`{}`) and its history, with the 1 worker it started.",
+                        w.title, w.id
+                    ),
+                    n => format!(
+                        "Deleted {} (`{}`) and its history, with the {n} workers it started.",
+                        w.title, w.id
+                    ),
+                })
+            }
             _ => bail!("unknown tool {tool}"),
         }
     }
@@ -310,17 +347,23 @@ fn tools() -> Value {
             "annotations": { "readOnlyHint": true },
         },
         {
+            "name": "list_projects",
+            "description": "List the folders and git repositories the user's Aura sessions work in and the user's groups are linked to, most recently used first. Use one as `cwd` when you start a worker.",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": { "readOnlyHint": true },
+        },
+        {
             "name": "start_session",
-            "description": "Start a worker: a new Aura session running the given agent, which starts on `prompt` right away. The worker does not see your conversation, so the prompt must be a complete brief. The user can open and message the worker too.",
+            "description": "Start a worker: a new Aura session running the given agent in a folder or repository, which starts on `prompt` right away. Workers can each work in a different repository. The worker does not see your conversation, so the prompt must be a complete brief. The user can open and message the worker too.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "agent": { "type": "string", "description": "`claude`, `codex`, or an ACP agent id from list_agents." },
                     "prompt": { "type": "string", "description": "The task, complete and self-contained." },
                     "title": { "type": "string", "description": "Short title shown in Aura's sidebar." },
-                    "cwd": { "type": "string", "description": "Working directory. Defaults to yours; relative paths resolve against it." },
-                    "branch": { "type": "string", "description": "Run the worker in a new git worktree on this branch. Use one per worker when several change the same repository at once." },
-                    "base": { "type": "string", "description": "Base ref for `branch`. Defaults to HEAD." },
+                    "cwd": { "type": "string", "description": "Absolute path of the folder or repository the worker works in; list_projects shows the ones Aura knows. Required when you have no folder of your own; otherwise it defaults to your folder, and relative paths resolve against it." },
+                    "branch": { "type": "string", "description": "Run the worker in a new git worktree of the repository at `cwd`, on this branch. Use one per worker when several change the same repository at once." },
+                    "base": { "type": "string", "description": "Base ref for `branch` in that repository. Defaults to its HEAD." },
                     "model": { "type": "string", "description": "Model id. Defaults to the agent's default." },
                     "effort": { "type": "string", "description": "Reasoning effort, for agents that have it." },
                 },
@@ -377,6 +420,12 @@ fn tools() -> Value {
             "name": "stop_session",
             "description": "Stop a worker's agent process. The session and its history are kept; a new message resumes it.",
             "inputSchema": { "type": "object", "properties": { "session": session_arg() }, "required": ["session"] },
+        },
+        {
+            "name": "delete_session",
+            "description": "Delete one of your workers, as the user deletes a session in Aura: it is stopped and removed with its history, and so are the workers it started. Its git worktree and branch are kept. Only your own workers can be deleted.",
+            "inputSchema": { "type": "object", "properties": { "session": session_arg() }, "required": ["session"] },
+            "annotations": { "destructiveHint": true },
         },
     ])
 }

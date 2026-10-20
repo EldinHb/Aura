@@ -47,6 +47,11 @@ orchestrator: boolean,
  */
 orchestrator_id: string | null, 
 /**
+ * An orchestrator that belongs to no folder of the user's. It runs in a
+ * directory Aura made for it (`cwd`) and names a folder for each worker.
+ */
+folderless: boolean, 
+/**
  * URLs of the pull requests opened from this session's branch, recorded
  * as the app finds them, so a PR keeps listing the session after the
  * branch is deleted or the session moves to another one.

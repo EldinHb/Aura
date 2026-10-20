@@ -94,6 +94,11 @@ async fn main() -> Result<()> {
 
     let manager = Manager::new(store.clone(), providers, Some(Arc::new(aura_git::Git)));
     manager.enable_attachments(data_dir.join("attachments"));
+    manager.enable_orchestrator_dirs(
+        std::fs::canonicalize(&data_dir)
+            .unwrap_or_else(|_| data_dir.clone())
+            .join("orchestrators"),
+    );
     // Orchestrators get their tools from `aura mcp`, installed next to aurad.
     match std::env::current_exe()
         .map(|exe| exe.with_file_name(if cfg!(windows) { "aura.exe" } else { "aura" }))

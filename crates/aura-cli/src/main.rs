@@ -41,6 +41,7 @@ enum Cmd {
         /// ACP agent id (gemini, opencode, goose, ... or one from acp-agents.json). Implies --provider acp
         #[arg(long)]
         agent: Option<String>,
+        /// Working directory. Defaults to the current one; an orchestrator without it belongs to no folder
         #[arg(short, long)]
         cwd: Option<String>,
         #[arg(short, long)]
@@ -193,12 +194,12 @@ async fn main() -> Result<()> {
                 }
                 provider = ProviderKind::Acp;
             }
-            let cwd = cwd.unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string()
-            });
+            // An orchestrator without --cwd belongs to no folder.
+            let cwd = match cwd {
+                Some(c) => c,
+                None if orchestrator && branch.is_none() => String::new(),
+                None => std::env::current_dir()?.to_string_lossy().to_string(),
+            };
             let opts = CreateSessionOpts {
                 provider,
                 agent,

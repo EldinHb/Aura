@@ -6,13 +6,18 @@
 //! Whenever a worker stops (its turn ends, it fails, or it waits on the user),
 //! the orchestrator is sent a report once it is idle. Workers that `wait`
 //! already returned are not reported again.
+//!
+//! An orchestrator need not belong to a folder. One created without one runs
+//! in a directory of its own under [`Manager::enable_orchestrator_dirs`] and
+//! names the folder of every worker it starts.
 use super::Manager;
 use crate::event::*;
 use crate::types::*;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Longest last reply included in a report; longer ones keep their end, where
@@ -24,6 +29,8 @@ pub(super) struct State {
     /// `aura` binary and data directory the MCP server is started with.
     /// Without them orchestrators get no tools.
     cli: Option<(PathBuf, PathBuf)>,
+    /// Where orchestrators without a folder get their directories.
+    dirs: Option<PathBuf>,
     /// Orchestrator id -> workers with a report not yet delivered.
     queued: HashMap<SessionId, BTreeSet<SessionId>>,
     /// Orchestrators sent a report whose turn has not started yet.
@@ -42,7 +49,9 @@ pub struct WorkerSpec {
     /// The worker's first message.
     pub prompt: String,
     pub title: Option<String>,
-    /// Defaults to the orchestrator's directory; relative paths resolve against it.
+    /// The folder the worker works in. Defaults to the orchestrator's folder,
+    /// which relative paths resolve against; an orchestrator without a folder
+    /// must give an absolute path.
     pub cwd: Option<String>,
     /// Run the worker in a new git worktree on this branch.
     pub branch: Option<String>,
@@ -68,6 +77,20 @@ pub struct WorkerReport {
     pub last_reply: Option<String>,
 }
 
+/// A folder or repository the user's sessions work in, for an orchestrator
+/// choosing where a worker goes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Project {
+    /// Root of the main working tree, or the folder when it is not in a repository.
+    pub path: String,
+    pub repo: bool,
+    /// Groups linked to it.
+    pub groups: Vec<String>,
+    /// Sessions that work in it, its worktrees included. Archived ones are not counted.
+    pub sessions: usize,
+    pub last_used: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WaitResult {
     pub timed_out: bool,
@@ -79,6 +102,53 @@ impl Manager {
     /// daemon in `data_dir`.
     pub fn enable_orchestration(&self, aura: PathBuf, data_dir: PathBuf) {
         self.inner.orchestration.lock().cli = Some((aura, data_dir));
+    }
+
+    /// Keep the directories of orchestrators without a folder under `dir`.
+    /// Without it they go to the system's temporary directory.
+    pub fn enable_orchestrator_dirs(&self, dir: PathBuf) {
+        self.inner.orchestration.lock().dirs = Some(dir);
+    }
+
+    fn orchestrator_dirs(&self) -> PathBuf {
+        self.inner
+            .orchestration
+            .lock()
+            .dirs
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("aura-orchestrators"))
+    }
+
+    /// Whether `cwd` is a directory Aura made for an orchestrator, such as
+    /// the one a fork of a folderless orchestrator resumes in.
+    pub(super) fn is_orchestrator_dir(&self, cwd: &str) -> bool {
+        let base = self.orchestrator_dirs();
+        let dir = Path::new(cwd);
+        dir != base && dir.starts_with(&base)
+    }
+
+    /// Make the directory of a new orchestrator without a folder.
+    pub(super) fn make_orchestrator_dir(&self, id: &str) -> Result<String> {
+        let dir = self.orchestrator_dirs().join(id);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("create the orchestrator's directory {}", dir.display()))?;
+        Ok(dir.to_string_lossy().into_owned())
+    }
+
+    /// Remove the directory of a deleted orchestrator without a folder, unless
+    /// a session still works in it (a fork resumes in the same one).
+    pub(super) fn remove_orchestrator_dir(&self, s: &Session) {
+        if !s.folderless
+            || !self.is_orchestrator_dir(&s.cwd)
+            || self.list_sessions().iter().any(|o| o.cwd == s.cwd)
+        {
+            return;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&s.cwd) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("remove orchestrator directory {}: {e}", s.cwd);
+            }
+        }
     }
 
     pub(super) fn mcp_servers_for(&self, s: &Session) -> Vec<McpServer> {
@@ -105,7 +175,7 @@ impl Manager {
     pub(super) fn orchestration_prompt(&self, s: &Session) -> Option<String> {
         if s.orchestrator {
             let tools = self.inner.orchestration.lock().cli.is_some();
-            return Some(crate::prompts::orchestrator_prompt(&s.id, tools));
+            return Some(crate::prompts::orchestrator_prompt(s, tools));
         }
         let orchestrator = self.get_session(s.orchestrator_id.as_deref()?).ok()?;
         Some(crate::prompts::worker_prompt(&orchestrator.title))
@@ -114,6 +184,9 @@ impl Manager {
     /// Make a session an orchestrator or a regular session again. Takes effect
     /// the next time its agent starts.
     pub async fn set_orchestrator(&self, id: &str, on: bool) -> Result<Session> {
+        if !on && self.get_session(id)?.folderless {
+            bail!("this orchestrator has no folder, so it cannot be a regular session");
+        }
         self.update_session(id, |s| {
             s.orchestrator = on;
             if on {
@@ -127,9 +200,9 @@ impl Manager {
         self.get_session(id)
     }
 
-    /// Forget a deleted session or a demoted orchestrator: detach its workers
-    /// and drop the reports from and to it.
-    pub(super) fn forget_orchestrator(&self, id: &str) {
+    /// Forget a demoted orchestrator: detach its workers and drop the reports
+    /// from and to it.
+    fn forget_orchestrator(&self, id: &str) {
         let workers: Vec<String> = self
             .list_sessions()
             .into_iter()
@@ -139,6 +212,11 @@ impl Manager {
         for w in workers {
             let _ = self.update_session(&w, |s| s.orchestrator_id = None);
         }
+        self.drop_reports(id);
+    }
+
+    /// Drop the reports from and to a session that is deleted or no longer orchestrates.
+    pub(super) fn drop_reports(&self, id: &str) {
         let mut st = self.inner.orchestration.lock();
         st.queued.remove(id);
         st.delivering.remove(id);
@@ -174,6 +252,26 @@ impl Manager {
         }
     }
 
+    /// The session and everything under it: its workers, theirs, and so on,
+    /// each orchestrator before its workers.
+    pub(super) fn with_workers(&self, id: &str) -> Vec<Session> {
+        let all = self.list_sessions();
+        let mut out: Vec<Session> = all.iter().filter(|s| s.id == id).cloned().collect();
+        let mut i = 0;
+        while i < out.len() {
+            let parent = out[i].id.clone();
+            for s in &all {
+                if s.orchestrator_id.as_deref() == Some(parent.as_str())
+                    && !out.iter().any(|o| o.id == s.id)
+                {
+                    out.push(s.clone());
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
     fn workers_of(&self, orchestrator: &str) -> Vec<Session> {
         let mut v: Vec<Session> = self
             .list_sessions()
@@ -192,7 +290,17 @@ impl Manager {
         }
         let (provider, agent) = parse_agent(&spec.agent)?;
         let cwd = match spec.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(c) if orch.folderless => {
+                let dir = resolve_dir("", c);
+                if !Path::new(&dir).is_absolute() {
+                    bail!("`cwd` must be an absolute path: you have no folder of your own for `{c}` to be relative to");
+                }
+                dir
+            }
             Some(c) => resolve_dir(&orch.cwd, c),
+            None if orch.folderless => bail!(
+                "`cwd` is required: you have no folder of your own, so name the absolute path of the folder or repository the worker works in (list_projects shows the ones Aura knows)"
+            ),
             None => orch.cwd.clone(),
         };
         // Permission and sandbox modes only mean something to the same agent.
@@ -276,6 +384,87 @@ impl Manager {
         let w = self.worker(orchestrator, worker)?;
         self.inner.orchestration.lock().dispatched.remove(&w.id);
         self.stop(&w.id).await
+    }
+
+    /// Delete one of the orchestrator's workers as the user would: stopped,
+    /// with its history and its own workers, its worktree kept. Returns what
+    /// was deleted, the worker first.
+    pub async fn delete_worker(&self, orchestrator: &str, worker: &str) -> Result<Vec<Session>> {
+        self.orchestrator(orchestrator)?;
+        let w = self.worker(orchestrator, worker)?;
+        let deleted = self.with_workers(&w.id);
+        self.delete(&w.id, false).await?;
+        Ok(deleted)
+    }
+
+    /// The folders and repositories the user's sessions work in and their
+    /// groups are linked to, most recently used first. Asks git about each
+    /// folder, so call it off the async runtime.
+    pub fn projects(&self) -> Result<Vec<Project>> {
+        fn add(
+            found: &mut BTreeMap<String, Project>,
+            path: String,
+            repo: bool,
+            last_used: DateTime<Utc>,
+        ) -> &mut Project {
+            let p = found.entry(path.clone()).or_insert_with(|| Project {
+                path,
+                repo,
+                groups: vec![],
+                sessions: 0,
+                last_used,
+            });
+            p.repo |= repo;
+            p.last_used = p.last_used.max(last_used);
+            p
+        }
+        let mut found: BTreeMap<String, Project> = BTreeMap::new();
+        let mut roots: HashMap<String, Option<String>> = HashMap::new();
+        for s in self.list_sessions() {
+            if s.folderless || self.is_orchestrator_dir(&s.cwd) {
+                continue;
+            }
+            let root = match &s.worktree {
+                Some(wt) => Some(wt.repo_root.clone()),
+                None => roots
+                    .entry(s.cwd.clone())
+                    .or_insert_with(|| self.repo_root(&s.cwd))
+                    .clone(),
+            };
+            let repo = root.is_some();
+            let p = add(
+                &mut found,
+                root.unwrap_or_else(|| s.cwd.clone()),
+                repo,
+                s.last_activity,
+            );
+            if !s.archived {
+                p.sessions += 1;
+            }
+            if let Some(g) = s.group.filter(|g| !g.trim().is_empty()) {
+                if !p.groups.contains(&g) {
+                    p.groups.push(g);
+                }
+            }
+        }
+        for g in self.list_groups()? {
+            for r in g.repos {
+                let p = add(&mut found, r.path, true, r.last_used);
+                if !p.groups.contains(&g.name) {
+                    p.groups.push(g.name.clone());
+                }
+            }
+        }
+        let mut v: Vec<Project> = found
+            .into_values()
+            .filter(|p| Path::new(&p.path).is_dir())
+            .map(|mut p| {
+                p.groups.sort();
+                p
+            })
+            .collect();
+        v.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.path.cmp(&b.path)));
+        Ok(v)
     }
 
     pub fn worker_reports(&self, orchestrator: &str) -> Result<Vec<WorkerReport>> {
@@ -718,6 +907,29 @@ pub fn describe_workers(reports: &[WorkerReport]) -> String {
             Some(reply) => out.push_str(&format!("Last reply:\n{reply}\n")),
             None => out.push_str("No reply yet.\n"),
         }
+    }
+    out
+}
+
+/// Projects as text for the orchestrator.
+pub fn describe_projects(projects: &[Project]) -> String {
+    let mut out = String::new();
+    for p in projects {
+        out.push_str(&format!(
+            "- `{}`{}{}{}\n",
+            p.path,
+            if p.repo { " (git repository)" } else { "" },
+            match p.sessions {
+                0 => String::new(),
+                1 => " · 1 session".into(),
+                n => format!(" · {n} sessions"),
+            },
+            if p.groups.is_empty() {
+                String::new()
+            } else {
+                format!(" · group {}", p.groups.join(", "))
+            },
+        ));
     }
     out
 }

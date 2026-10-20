@@ -1713,9 +1713,313 @@ async fn orchestrators_get_tools_and_workers_report_back() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].last_reply.as_deref(), Some("hello"));
 
-    // Deleting the orchestrator leaves the worker as a plain session.
+    // Deleting the orchestrator deletes its worker; the plain session stays.
     m.delete(&orch.id, false).await.unwrap();
-    assert_eq!(m.get_session(&worker.id).unwrap().orchestrator_id, None);
+    assert!(m.get_session(&worker.id).is_err());
+    assert!(m.get_session(&plain.id).is_ok());
+}
+
+async fn wait_native_id(m: &Manager, id: &str) {
+    for _ in 0..100 {
+        if m.get_session(id).unwrap().native_id.is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("no native id");
+}
+
+#[tokio::test]
+async fn orchestrators_need_no_folder_and_name_one_for_each_worker() {
+    let (m, calls, provider) = orchestrator_setup();
+    let data = tempfile::tempdir().unwrap();
+    let base = data.path().join("orchestrators");
+    m.enable_orchestrator_dirs(base.clone());
+    let repo = tempfile::tempdir().unwrap();
+    let repo = repo.path().to_string_lossy().to_string();
+
+    let orch = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(orch.folderless);
+    assert_eq!(orch.cwd, base.join(&orch.id).to_string_lossy());
+    assert!(std::path::Path::new(&orch.cwd).is_dir());
+    assert_eq!(orch.title, "claude · orchestrator");
+    let prompt = provider.prompts.lock()[0].clone().unwrap();
+    assert!(
+        prompt.contains("You belong to no folder") && prompt.contains("list_projects"),
+        "{prompt}"
+    );
+
+    // Its workers need a folder, named in full.
+    let spec = |cwd: Option<&str>| WorkerSpec {
+        agent: "claude".into(),
+        prompt: "build it".into(),
+        cwd: cwd.map(Into::into),
+        ..Default::default()
+    };
+    let err = m.start_worker(&orch.id, spec(None)).await.unwrap_err();
+    assert!(err.to_string().contains("`cwd` is required"), "{err}");
+    let err = m
+        .start_worker(&orch.id, spec(Some("sub")))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("absolute path"), "{err}");
+    let worker = m.start_worker(&orch.id, spec(Some(&repo))).await.unwrap();
+    assert_eq!(worker.cwd, repo);
+    assert!(!worker.folderless);
+    assert!(calls.lock().iter().any(|c| c == "send:build it"));
+
+    // Other sessions still belong to a folder, and it cannot leave its role.
+    let plain = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!plain.folderless && !std::path::Path::new(&plain.cwd).starts_with(&base));
+    assert!(m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            orchestrator: true,
+            worktree: Some(WorktreeOpts {
+                branch: "b".into(),
+                base: None,
+                path: None,
+            }),
+            ..Default::default()
+        })
+        .await
+        .is_err());
+    assert!(m.set_orchestrator(&orch.id, false).await.is_err());
+
+    // A fork resumes in the same directory, which goes with the last of them.
+    wait_native_id(&m, &orch.id).await;
+    let fork = m.fork(&orch.id).await.unwrap();
+    assert!(fork.folderless && fork.orchestrator);
+    assert_eq!(fork.cwd, orch.cwd);
+    m.delete(&orch.id, false).await.unwrap();
+    assert!(
+        m.get_session(&worker.id).is_err(),
+        "its worker went with it"
+    );
+    assert!(std::path::Path::new(&orch.cwd).is_dir());
+    m.delete(&fork.id, false).await.unwrap();
+    assert!(!std::path::Path::new(&orch.cwd).exists());
+    assert!(
+        std::path::Path::new(&repo).is_dir(),
+        "the worker's folder is the user's"
+    );
+}
+
+#[tokio::test]
+async fn folderless_orchestrators_restore_with_their_directory() {
+    let store = Arc::new(MemoryStore::default());
+    let data = tempfile::tempdir().unwrap();
+    let dir = data.path().join("orchestrators").join("gone");
+    let mut s = Session::new(&CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: dir.to_string_lossy().to_string(),
+        orchestrator: true,
+        ..Default::default()
+    });
+    s.folderless = true;
+    store.upsert_session(&s).unwrap();
+    // Saved before orchestrators could lack a folder: one with a folder.
+    let old = r#"{"id":"old","provider":"claude","native_id":null,"cwd":"/tmp","worktree":null,"title":"Lead","group":null,"status":"idle","mode":"structured","model":null,"effort":null,"permission_mode":null,"sandbox_mode":null,"command":null,"created_at":"2026-01-01T00:00:00Z","last_activity":"2026-01-01T00:00:00Z","archived":false,"pinned":false,"usage":{"input_tokens":0,"output_tokens":0,"cached_input_tokens":0,"total_cost_usd":null,"context_window":null,"context_used":null},"last_error":null,"pending_count":0,"exit_code":null,"orchestrator":true}"#;
+    store
+        .upsert_session(&serde_json::from_str::<Session>(old).unwrap())
+        .unwrap();
+    let m = Manager::new(store, vec![], None);
+    m.enable_orchestrator_dirs(data.path().join("orchestrators"));
+    m.restore().unwrap();
+    assert!(dir.is_dir());
+    let old = m.get_session("old").unwrap();
+    assert!(old.orchestrator && !old.folderless && old.cwd == "/tmp");
+}
+
+#[tokio::test]
+async fn orchestrators_delete_only_their_own_workers() {
+    let (m, _calls, _provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let lead = |title: &str| CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: cwd.clone(),
+        title: Some(title.into()),
+        orchestrator: true,
+        ..Default::default()
+    };
+    let a = m.create_session(lead("A")).await.unwrap();
+    let b = m.create_session(lead("B")).await.unwrap();
+    let plain = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let spec = |title: &str| WorkerSpec {
+        agent: "claude".into(),
+        prompt: "work".into(),
+        title: Some(title.into()),
+        ..Default::default()
+    };
+    let wa = m.start_worker(&a.id, spec("a's worker")).await.unwrap();
+    let wb = m.start_worker(&b.id, spec("b's worker")).await.unwrap();
+
+    for other in [&wb.id, &plain.id, &a.id, &b.id] {
+        let err = m.delete_worker(&a.id, other).await.unwrap_err();
+        assert!(
+            err.to_string().contains("no worker of this orchestrator"),
+            "{err}"
+        );
+    }
+    assert!(
+        m.delete_worker(&plain.id, &wa.id).await.is_err(),
+        "only orchestrators delete"
+    );
+    assert_eq!(m.list_sessions().len(), 5, "nothing was deleted");
+
+    let deleted = m.delete_worker(&a.id, "a's worker").await.unwrap();
+    assert_eq!(
+        deleted.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec![wa.id.as_str()]
+    );
+    assert!(m.get_session(&wa.id).is_err());
+    for kept in [&a.id, &b.id, &wb.id, &plain.id] {
+        assert!(m.get_session(kept).is_ok());
+    }
+    assert!(m.worker_reports(&a.id).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn deleting_an_orchestrator_deletes_every_session_under_it() {
+    let store = Arc::new(MemoryStore::default());
+    let session = |id: &str, orchestrator: bool, under: Option<&str>| {
+        let mut s = Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: "/tmp".into(),
+            orchestrator,
+            orchestrator_id: under.map(Into::into),
+            ..Default::default()
+        });
+        s.id = id.into();
+        s
+    };
+    let mut archived = session("archived", false, Some("lead"));
+    archived.archived = true;
+    for s in [
+        session("lead", true, None),
+        session("w1", false, Some("lead")),
+        session("sub", true, Some("lead")),
+        session("w2", false, Some("sub")),
+        archived,
+        session("other", true, None),
+        session("w3", false, Some("other")),
+        session("plain", false, None),
+    ] {
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let mut rx = m.subscribe();
+
+    m.delete("lead", false).await.unwrap();
+    let mut left: Vec<String> = m.list_sessions().into_iter().map(|s| s.id).collect();
+    left.sort();
+    assert_eq!(left, vec!["other", "plain", "w3"]);
+    let mut stored: Vec<String> = store
+        .list_sessions()
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    stored.sort();
+    assert_eq!(stored, left);
+    let removed: Vec<String> = drain(&mut rx)
+        .await
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::SessionRemoved { session_id } => Some(session_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(removed.len(), 5, "{removed:?}");
+    assert_eq!(removed[0], "lead", "the orchestrator goes first");
+    let at = |id: &str| removed.iter().position(|r| r == id).unwrap();
+    assert!(at("sub") < at("w2"));
+
+    // A worker goes alone.
+    m.delete("w3", false).await.unwrap();
+    assert!(m.get_session("other").is_ok());
+}
+
+#[tokio::test]
+async fn orchestrators_see_the_folders_and_repositories_aura_knows() {
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: Default::default(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: Default::default(),
+    });
+    let m = Manager::new(
+        Arc::new(MemoryStore::default()),
+        vec![provider],
+        Some(Arc::new(DirRepos)),
+    );
+    let data = tempfile::tempdir().unwrap();
+    m.enable_orchestrator_dirs(data.path().join("orchestrators"));
+    let repo = tempfile::tempdir().unwrap();
+    let plain = tempfile::tempdir().unwrap();
+    let plain_dir = plain.path().join("not-a-repo");
+    std::fs::create_dir(&plain_dir).unwrap();
+    let (repo, plain) = (
+        repo.path().to_string_lossy().to_string(),
+        plain_dir.to_string_lossy().to_string(),
+    );
+    let create = |cwd: &str, group: Option<&str>, orchestrator: bool| {
+        let m = m.clone();
+        let opts = CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.into(),
+            group: group.map(Into::into),
+            orchestrator,
+            ..Default::default()
+        };
+        async move { m.create_session(opts).await.unwrap() }
+    };
+    create(&repo, Some("backend"), false).await;
+    create(&repo, None, false).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    create(&plain, None, false).await;
+    create("", None, true).await;
+
+    let projects = m.projects().unwrap();
+    assert_eq!(
+        projects
+            .iter()
+            .map(|p| (p.path.as_str(), p.repo, p.sessions))
+            .collect::<Vec<_>>(),
+        vec![(plain.as_str(), false, 1), (repo.as_str(), true, 2)],
+        "most recent first, without the orchestrator's own directory"
+    );
+    assert_eq!(projects[1].groups, vec!["backend"]);
+    let text = describe_projects(&projects);
+    assert!(
+        text.contains(&format!(
+            "`{repo}` (git repository) · 2 sessions · group backend"
+        )),
+        "{text}"
+    );
 }
 
 #[tokio::test]

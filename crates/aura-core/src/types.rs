@@ -135,6 +135,10 @@ pub struct Session {
     /// The orchestrator that started this session, if any.
     #[serde(default)]
     pub orchestrator_id: Option<SessionId>,
+    /// An orchestrator that belongs to no folder of the user's. It runs in a
+    /// directory Aura made for it (`cwd`) and names a folder for each worker.
+    #[serde(default)]
+    pub folderless: bool,
     /// URLs of the pull requests opened from this session's branch, recorded
     /// as the app finds them, so a PR keeps listing the session after the
     /// branch is deleted or the session moves to another one.
@@ -557,6 +561,9 @@ pub struct CreateSessionOpts {
     pub provider: ProviderKind,
     /// ACP agent id, required when `provider` is `Acp`.
     pub agent: Option<String>,
+    /// Where the session works. Empty for an orchestrator gives it no folder
+    /// (see [`Session::folderless`]); for other sessions it means the daemon's
+    /// own directory.
     pub cwd: String,
     pub title: Option<String>,
     pub group: Option<String>,
@@ -625,6 +632,7 @@ impl Session {
             system_prompt: opts.system_prompt.clone().filter(|p| !p.trim().is_empty()),
             orchestrator: opts.orchestrator,
             orchestrator_id: opts.orchestrator_id.clone(),
+            folderless: false,
             pulls: vec![],
             attention: None,
             instructions: None,
