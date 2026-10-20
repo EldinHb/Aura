@@ -78,9 +78,10 @@ enum Cmd {
     Interrupt { id: String },
     /// Stop the process behind a session (keeps it resumable)
     Kill { id: String },
-    /// Delete a session and its history
+    /// Delete a session and its history. An orchestrator takes the workers it started with it, and theirs
     Rm {
         id: String,
+        /// Also remove this session's git worktree, uncommitted changes included. Its workers keep theirs
         #[arg(long)]
         worktree: bool,
     },
@@ -164,7 +165,11 @@ async fn main() -> Result<()> {
                         ),
                         format!("{:?}", s.mode),
                         truncate(&s.title, 30),
-                        s.cwd
+                        if s.folderless {
+                            "(orchestrator, no folder)"
+                        } else {
+                            &s.cwd
+                        }
                     );
                 }
             }

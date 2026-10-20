@@ -711,8 +711,15 @@ async fn dispatch(
                 id,
                 remove_worktree,
             } = params(p)?;
-            attached.lock().remove(&id);
-            m.delete(&id, remove_worktree).await?;
+            // Its workers go with it; none of them streams to this client any more.
+            let gone: Vec<String> = m.with_workers(&id).into_iter().map(|s| s.id).collect();
+            let result = m.delete(&id, remove_worktree).await;
+            let mut attached = attached.lock();
+            for id in &gone {
+                attached.remove(id);
+            }
+            drop(attached);
+            result?;
             ok(true)
         }
         "session.switch_mode" => {

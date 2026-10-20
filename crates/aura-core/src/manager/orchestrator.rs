@@ -17,7 +17,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 /// Longest last reply included in a report; longer ones keep their end, where
@@ -119,12 +119,21 @@ impl Manager {
             .unwrap_or_else(|| std::env::temp_dir().join("aura-orchestrators"))
     }
 
-    /// Whether `cwd` is a directory Aura made for an orchestrator, such as
-    /// the one a fork of a folderless orchestrator resumes in.
+    /// Whether `cwd` has the shape of a directory Aura made for an
+    /// orchestrator: a plainly named, direct child of the base directory.
+    /// Nothing else is ever created or removed as one.
     pub(super) fn is_orchestrator_dir(&self, cwd: &str) -> bool {
-        let base = self.orchestrator_dirs();
         let dir = Path::new(cwd);
-        dir != base && dir.starts_with(&base)
+        matches!(dir.components().next_back(), Some(Component::Normal(_)))
+            && dir.parent() == Some(self.orchestrator_dirs().as_path())
+    }
+
+    /// Whether the existing directory `dir` lies in the base directory of
+    /// orchestrators, with `..` and links resolved. Only orchestrators without
+    /// a folder work there, each in the one Aura made for it.
+    pub(super) fn in_orchestrator_dirs(&self, dir: &str) -> bool {
+        let base = canonical(&self.orchestrator_dirs());
+        std::fs::canonicalize(dir).is_ok_and(|d| d.starts_with(base))
     }
 
     /// Make the directory of a new orchestrator without a folder.
@@ -184,8 +193,12 @@ impl Manager {
     /// Make a session an orchestrator or a regular session again. Takes effect
     /// the next time its agent starts.
     pub async fn set_orchestrator(&self, id: &str, on: bool) -> Result<Session> {
-        if !on && self.get_session(id)?.folderless {
+        let s = self.get_session(id)?;
+        if !on && s.folderless {
             bail!("this orchestrator has no folder, so it cannot be a regular session");
+        }
+        if on && s.mode == SessionMode::Terminal {
+            bail!("an orchestrator runs in the structured view, where its workers' reports reach it; switch the session to it first");
         }
         self.update_session(id, |s| {
             s.orchestrator = on;
@@ -234,12 +247,27 @@ impl Manager {
         Ok(s)
     }
 
-    /// The orchestrator's worker matching `key`: an id, an id prefix or a title.
+    /// The orchestrator's worker matching `key`: an id, a title or an id
+    /// prefix. A title or prefix that several workers share matches none.
     pub fn worker(&self, orchestrator: &str, key: &str) -> Result<Session> {
         let key = key.trim();
         let workers: Vec<Session> = self.workers_of(orchestrator);
-        if let Some(s) = workers.iter().find(|s| s.id == key || s.title == key) {
+        if let Some(s) = workers.iter().find(|s| s.id == key) {
             return Ok(s.clone());
+        }
+        let titled: Vec<&Session> = workers.iter().filter(|s| s.title == key).collect();
+        match titled.as_slice() {
+            [one] => return Ok((*one).clone()),
+            [] => {}
+            several => bail!(
+                "{} workers are titled `{key}`; use the id of the one you mean: {}",
+                several.len(),
+                several
+                    .iter()
+                    .map(|s| format!("`{}`", s.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
         let matches: Vec<&Session> = workers
             .iter()
@@ -253,8 +281,8 @@ impl Manager {
     }
 
     /// The session and everything under it: its workers, theirs, and so on,
-    /// each orchestrator before its workers.
-    pub(super) fn with_workers(&self, id: &str) -> Vec<Session> {
+    /// each orchestrator before its workers. Deleting the session deletes them all.
+    pub fn with_workers(&self, id: &str) -> Vec<Session> {
         let all = self.list_sessions();
         let mut out: Vec<Session> = all.iter().filter(|s| s.id == id).cloned().collect();
         let mut i = 0;
@@ -303,6 +331,9 @@ impl Manager {
             ),
             None => orch.cwd.clone(),
         };
+        if self.in_orchestrator_dirs(&cwd) {
+            bail!("`{cwd}` is where Aura keeps the directories of orchestrators; give the worker the folder or repository it works in");
+        }
         // Permission and sandbox modes only mean something to the same agent.
         let same_agent = provider == orch.provider && agent == orch.agent;
         let session = self
@@ -328,6 +359,12 @@ impl Manager {
                 ..Default::default()
             })
             .await?;
+        // Deleted while the worker started: it goes too, rather than be left
+        // pointing at an orchestrator that is gone.
+        if self.orchestrator(orchestrator).is_err() {
+            let _ = self.delete(&session.id, false).await;
+            bail!("the orchestrator was deleted while the worker started");
+        }
         self.dispatch(&session.id, spec.prompt).await?;
         self.get_session(&session.id)
     }
@@ -421,7 +458,7 @@ impl Manager {
         let mut found: BTreeMap<String, Project> = BTreeMap::new();
         let mut roots: HashMap<String, Option<String>> = HashMap::new();
         for s in self.list_sessions() {
-            if s.folderless || self.is_orchestrator_dir(&s.cwd) {
+            if s.folderless || self.in_orchestrator_dirs(&s.cwd) {
                 continue;
             }
             let root = match &s.worktree {
@@ -963,6 +1000,19 @@ fn resolve_dir(base: &str, dir: &str) -> String {
     }
     .to_string_lossy()
     .into_owned()
+}
+
+/// `p` with links and `..` resolved, also when only its parent exists yet.
+fn canonical(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+            .map(|c| c.join(name))
+            .unwrap_or_else(|_| p.to_path_buf()),
+        _ => p.to_path_buf(),
+    }
 }
 
 fn dirs_home() -> PathBuf {

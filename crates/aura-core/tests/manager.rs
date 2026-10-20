@@ -28,6 +28,8 @@ struct Knob {
     fail_start: bool,
     /// A resumed agent replays a failed turn from its history.
     replay_failed_turn: bool,
+    /// Stopping this session takes a moment, so other calls run meanwhile.
+    slow_stop: Option<String>,
 }
 type Knobs = Arc<Mutex<Knob>>;
 
@@ -195,6 +197,10 @@ impl Driver for FakeDriver {
     }
     async fn stop(&self) -> anyhow::Result<()> {
         self.calls.lock().push("stop".into());
+        let slow = self.knobs.lock().slow_stop.as_deref() == Some(self.session_id.as_str());
+        if slow {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
         if let Some(message) = self.knobs.lock().exit_on_stop.clone() {
             let _ = self.sink.send(Event::ProcessExited {
                 session_id: self.session_id.clone(),
@@ -2294,4 +2300,373 @@ async fn terminal_sessions_refuse_images() {
         .unwrap_err()
         .to_string()
         .contains("cannot take images"));
+}
+
+#[tokio::test]
+async fn only_aura_names_an_orchestrators_directory_and_only_it_is_removed() {
+    let (m, _calls, _provider) = orchestrator_setup();
+    let data = tempfile::tempdir().unwrap();
+    let base = data.path().join("orchestrators");
+    m.enable_orchestrator_dirs(base.clone());
+    let victim = data.path().join("victim");
+    std::fs::create_dir(&victim).unwrap();
+    std::fs::write(victim.join("keep"), "x").unwrap();
+    let opts = |cwd: String, orchestrator: bool| CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd,
+        orchestrator,
+        ..Default::default()
+    };
+    let own = m.create_session(opts(String::new(), true)).await.unwrap();
+
+    // A path through the base directory is an ordinary folder, not Aura's.
+    let sneaky = format!("{}/../victim", base.display());
+    let lead = m.create_session(opts(sneaky.clone(), true)).await.unwrap();
+    assert!(!lead.folderless);
+    m.delete(&lead.id, false).await.unwrap();
+    assert!(victim.join("keep").exists());
+
+    // Nothing else may work in the base directory or in an orchestrator's own.
+    for cwd in [
+        own.cwd.clone(),
+        format!("{}/..", own.cwd),
+        base.to_string_lossy().into(),
+    ] {
+        for orchestrator in [false, true] {
+            let err = m
+                .create_session(opts(cwd.clone(), orchestrator))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("where Aura keeps"), "{cwd}: {err}");
+        }
+        let err = m
+            .start_worker(
+                &own.id,
+                WorkerSpec {
+                    agent: "claude".into(),
+                    prompt: "x".into(),
+                    cwd: Some(cwd.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("where Aura keeps"), "{cwd}: {err}");
+    }
+
+    // Stored ones pointing elsewhere are neither made nor removed.
+    let store = Arc::new(MemoryStore::default());
+    for (id, cwd) in [
+        ("up", format!("{}/..", base.display())),
+        ("over", sneaky.clone()),
+        ("new", format!("{}/../made-up", base.display())),
+    ] {
+        let mut s = Session::new(&opts(cwd, true));
+        s.id = id.into();
+        s.folderless = true;
+        store.upsert_session(&s).unwrap();
+    }
+    let restored = Manager::new(store, vec![], None);
+    restored.enable_orchestrator_dirs(base.clone());
+    restored.restore().unwrap();
+    assert!(!data.path().join("made-up").exists());
+    for id in ["up", "over", "new"] {
+        restored.delete(id, false).await.unwrap();
+    }
+    assert!(victim.join("keep").exists() && base.is_dir());
+    assert!(std::path::Path::new(&own.cwd).is_dir());
+}
+
+/// Records the worktrees it makes and removes; each lives in a fresh directory.
+#[derive(Default)]
+struct Worktrees {
+    dirs: Mutex<Vec<tempfile::TempDir>>,
+    removed: Mutex<Vec<String>>,
+}
+
+impl WorktreeBackend for Worktrees {
+    fn create(&self, cwd: &str, opts: &WorktreeOpts) -> anyhow::Result<WorktreeInfo> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().to_string_lossy().to_string();
+        self.dirs.lock().push(dir);
+        Ok(WorktreeInfo {
+            repo_root: cwd.into(),
+            path,
+            branch: opts.branch.clone(),
+        })
+    }
+    fn remove(&self, info: &WorktreeInfo) -> anyhow::Result<()> {
+        self.removed.lock().push(info.branch.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn removing_an_orchestrators_worktree_leaves_its_workers_theirs() {
+    let worktrees = Arc::new(Worktrees::default());
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: Default::default(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: Default::default(),
+    });
+    let m = Manager::new(
+        Arc::new(MemoryStore::default()),
+        vec![provider],
+        Some(worktrees.clone()),
+    );
+    let repo = tempfile::tempdir().unwrap();
+    let repo = repo.path().to_string_lossy().to_string();
+    let lead = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: repo.clone(),
+            orchestrator: true,
+            worktree: Some(WorktreeOpts {
+                branch: "lead".into(),
+                base: None,
+                path: None,
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    for branch in ["one", "two"] {
+        m.start_worker(
+            &lead.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "work".into(),
+                cwd: Some(repo.clone()),
+                branch: Some(branch.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    }
+    m.delete(&lead.id, true).await.unwrap();
+    assert!(m.list_sessions().is_empty());
+    assert_eq!(*worktrees.removed.lock(), vec!["lead"]);
+}
+
+#[tokio::test]
+async fn a_title_two_workers_share_names_neither() {
+    let (m, calls, _provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let lead = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut twins = vec![];
+    for _ in 0..2 {
+        let w = m
+            .start_worker(
+                &lead.id,
+                WorkerSpec {
+                    agent: "claude".into(),
+                    prompt: "work".into(),
+                    title: Some("Same".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        twins.push(w.id);
+    }
+    let ambiguous = |e: anyhow::Error| {
+        let e = e.to_string();
+        assert!(
+            e.contains("2 workers are titled `Same`")
+                && twins.iter().all(|t| e.contains(t.as_str())),
+            "{e}"
+        );
+    };
+    ambiguous(m.delete_worker(&lead.id, "Same").await.unwrap_err());
+    ambiguous(
+        m.message_worker(&lead.id, "Same", "hi".into())
+            .await
+            .unwrap_err(),
+    );
+    ambiguous(m.worker_transcript(&lead.id, "Same", 1).unwrap_err());
+    ambiguous(m.stop_worker(&lead.id, "Same").await.unwrap_err());
+    ambiguous(m.interrupt_worker(&lead.id, "Same").await.unwrap_err());
+    ambiguous(
+        m.wait_workers(&lead.id, &["Same".into()], false, Duration::from_millis(10))
+            .await
+            .unwrap_err(),
+    );
+    assert!(!calls.lock().iter().any(|c| c == "send:hi"));
+    assert_eq!(m.list_sessions().len(), 3);
+    // The id still names one.
+    m.delete_worker(&lead.id, &twins[0]).await.unwrap();
+    assert_eq!(m.worker(&lead.id, "Same").unwrap().id, twins[1]);
+}
+
+#[tokio::test]
+async fn deleting_an_orchestrator_skips_a_worker_deleted_meanwhile() {
+    let (m, knobs) = setup_with_knobs();
+    let dir = tempfile::tempdir().unwrap();
+    let lead = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut workers = vec![];
+    for _ in 0..2 {
+        let w = m
+            .start_worker(
+                &lead.id,
+                WorkerSpec {
+                    agent: "claude".into(),
+                    prompt: "work".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        workers.push(w.id);
+    }
+    knobs.lock().slow_stop = Some(lead.id.clone());
+    // The orchestrator deletes a worker while the user deletes the orchestrator:
+    // the worker is gone by the time the orchestrator has stopped.
+    let (all, one) = tokio::join!(
+        m.delete(&lead.id, false),
+        m.delete_worker(&lead.id, &workers[0])
+    );
+    all.unwrap();
+    one.unwrap();
+    assert!(m.list_sessions().is_empty(), "{:?}", m.list_sessions());
+}
+
+/// A store that cannot delete one session.
+struct StuckSession {
+    inner: MemoryStore,
+    stuck: String,
+}
+
+impl Store for StuckSession {
+    fn upsert_session(&self, s: &Session) -> anyhow::Result<()> {
+        self.inner.upsert_session(s)
+    }
+    fn delete_session(&self, id: &str) -> anyhow::Result<()> {
+        if id == self.stuck {
+            anyhow::bail!("disk full");
+        }
+        self.inner.delete_session(id)
+    }
+    fn list_sessions(&self) -> anyhow::Result<Vec<Session>> {
+        self.inner.list_sessions()
+    }
+    fn append_event(&self, id: &str, event: &Event) -> anyhow::Result<u64> {
+        self.inner.append_event(id, event)
+    }
+    fn events(&self, id: &str, after: u64, limit: usize) -> anyhow::Result<Vec<StoredEvent>> {
+        self.inner.events(id, after, limit)
+    }
+    fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.inner.search(query, limit)
+    }
+    fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {
+        self.inner.get_setting(key)
+    }
+    fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.inner.set_setting(key, value)
+    }
+    fn save_scrollback(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.inner.save_scrollback(id, data)
+    }
+    fn load_scrollback(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        self.inner.load_scrollback(id)
+    }
+}
+
+#[tokio::test]
+async fn a_worker_that_cannot_be_deleted_does_not_keep_the_rest() {
+    let store = Arc::new(StuckSession {
+        inner: MemoryStore::default(),
+        stuck: "w1".into(),
+    });
+    let session = |id: &str, orchestrator: bool, under: Option<&str>| {
+        let mut s = Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: "/tmp".into(),
+            orchestrator,
+            orchestrator_id: under.map(Into::into),
+            ..Default::default()
+        });
+        s.id = id.into();
+        s
+    };
+    for s in [
+        session("lead", true, None),
+        session("w1", true, Some("lead")),
+        session("w1a", false, Some("w1")),
+        session("w2", false, Some("lead")),
+    ] {
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let err = m.delete("lead", false).await.unwrap_err().to_string();
+    assert!(err.contains("w1") && err.contains("disk full"), "{err}");
+    let left: Vec<Session> = m.list_sessions();
+    assert_eq!(
+        left.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["w1"]
+    );
+    assert_eq!(
+        left[0].orchestrator_id, None,
+        "detached from the deleted orchestrator"
+    );
+    assert_eq!(store.list_sessions().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn orchestrators_stay_in_the_structured_view_and_workers_need_one() {
+    let (m, _calls, _provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let opts = |orchestrator: bool, mode: Option<SessionMode>| CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: cwd.clone(),
+        orchestrator,
+        mode,
+        ..Default::default()
+    };
+    let lead = m.create_session(opts(true, None)).await.unwrap();
+    assert!(m
+        .switch_mode(&lead.id, SessionMode::Terminal)
+        .await
+        .is_err());
+    assert_eq!(
+        m.get_session(&lead.id).unwrap().mode,
+        SessionMode::Structured
+    );
+    assert!(m
+        .create_session(opts(true, Some(SessionMode::Terminal)))
+        .await
+        .is_err());
+    let tui = m
+        .create_session(opts(false, Some(SessionMode::Terminal)))
+        .await
+        .unwrap();
+    assert!(m.set_orchestrator(&tui.id, true).await.is_err());
+    // A session can only report to an orchestrator that exists.
+    let plain = m.create_session(opts(false, None)).await.unwrap();
+    for to in [plain.id.as_str(), "gone"] {
+        let mut o = opts(false, None);
+        o.orchestrator_id = Some(to.into());
+        assert!(m.create_session(o).await.is_err());
+    }
 }

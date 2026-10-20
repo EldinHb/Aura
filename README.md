@@ -194,8 +194,9 @@ dialog, or turn an existing session into one with **Orchestrate** in the inspect
   runs in a directory Aura keeps for it under its data directory and names the
   folder or repository of every worker it starts, so one orchestrator can drive work
   in several repositories. It finds them with `list_projects`: the folders your
-  sessions work in and the repositories linked to your groups. It has no diff, git or
-  terminal mode, and stays an orchestrator.
+  sessions work in and the repositories linked to your groups. It has no diff or git,
+  and stays an orchestrator. No orchestrator switches to a terminal TUI: reports only
+  reach it in the structured view.
 
 - **Any agent, both ways.** The orchestrator can be Claude Code, Codex or an ACP
   agent, and each worker can be any of them too, so a Claude Code orchestrator can
@@ -219,7 +220,8 @@ dialog, or turn an existing session into one with **Orchestrate** in the inspect
   worktree, so workers changing the same repository do not overwrite each other.
 - **Deleting goes down the tree.** Deleting an orchestrator deletes the workers it
   started, and theirs; the confirmation says how many. The orchestrator can delete
-  its own workers too (`delete_session`), never anyone else's. Worktrees are kept.
+  its own workers too (`delete_session`), never anyone else's. Worktrees are kept;
+  `aura rm --worktree` removes only the deleted session's own.
 
 The orchestrator gets its tools from `aura mcp`, a small MCP server that comes with
 Aura. Aura hands it to Claude Code (`--mcp-config`, with the tools allowed), Codex

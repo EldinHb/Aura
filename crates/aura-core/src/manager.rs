@@ -6,7 +6,7 @@ use crate::types::*;
 use anyhow::{anyhow, bail, Context, Result};
 use aura_pty::{PtyHandle, PtySpec};
 use parking_lot::Mutex;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
@@ -372,7 +372,7 @@ impl Manager {
             }
             s.pending_count = 0;
             // Its directory is Aura's; make it again if it went missing.
-            if s.folderless {
+            if s.folderless && self.is_orchestrator_dir(&s.cwd) {
                 if let Err(e) = std::fs::create_dir_all(&s.cwd) {
                     tracing::warn!("orchestrator directory {}: {e}", s.cwd);
                 }
@@ -405,32 +405,61 @@ impl Manager {
         }
     }
 
-    pub async fn create_session(&self, mut opts: CreateSessionOpts) -> Result<Session> {
-        // An orchestrator needs no folder; a fork of one without a folder
-        // resumes in the directory Aura made for it.
-        let folderless = opts.orchestrator
-            && (opts.cwd.trim().is_empty() || self.is_orchestrator_dir(&opts.cwd));
+    /// Create a session. An orchestrator with an empty `cwd` belongs to no
+    /// folder: Aura makes it a directory of its own.
+    pub async fn create_session(&self, opts: CreateSessionOpts) -> Result<Session> {
+        self.create(opts, None).await
+    }
+
+    /// `own_dir`: the directory of the orchestrator without a folder that a
+    /// fork resumes in. Only Aura names one; callers cannot.
+    async fn create(
+        &self,
+        mut opts: CreateSessionOpts,
+        own_dir: Option<String>,
+    ) -> Result<Session> {
+        let folderless = own_dir.is_some() || (opts.orchestrator && opts.cwd.trim().is_empty());
         if folderless && opts.worktree.is_some() {
             bail!("an orchestrator without a folder cannot have a worktree");
         }
         if opts.cwd.is_empty() && !folderless {
             opts.cwd = std::env::current_dir()?.to_string_lossy().to_string();
         }
-        if !folderless && !std::path::Path::new(&opts.cwd).is_dir() {
-            bail!("cwd does not exist: {}", opts.cwd);
+        if !folderless {
+            if !std::path::Path::new(&opts.cwd).is_dir() {
+                bail!("cwd does not exist: {}", opts.cwd);
+            }
+            if self.in_orchestrator_dirs(&opts.cwd) {
+                bail!(
+                    "{} is where Aura keeps the directories of orchestrators; sessions cannot work there",
+                    opts.cwd
+                );
+            }
+        }
+        if let Some(o) = &opts.orchestrator_id {
+            if !self.get_session(o).is_ok_and(|o| o.orchestrator) {
+                bail!("session {o} is not an orchestrator");
+            }
         }
         let provider = self.provider(opts.provider)?;
         if opts.provider == ProviderKind::Acp && opts.agent.as_deref().unwrap_or("").is_empty() {
             bail!("ACP sessions need an agent (e.g. `gemini`)");
         }
         let mut session = Session::new(&opts);
+        if session.orchestrator && session.mode == SessionMode::Terminal {
+            bail!(
+                "an orchestrator runs in the structured view, where its workers' reports reach it"
+            );
+        }
         if folderless {
             session.folderless = true;
-            if opts.cwd.trim().is_empty() {
-                session.cwd = self.make_orchestrator_dir(&session.id)?;
-            } else {
-                std::fs::create_dir_all(&session.cwd)?;
-            }
+            session.cwd = match own_dir {
+                Some(dir) => {
+                    std::fs::create_dir_all(&dir)?;
+                    dir
+                }
+                None => self.make_orchestrator_dir(&session.id)?,
+            };
             if opts.title.is_none() {
                 session.title = format!("{} · orchestrator", opts.label());
             }
@@ -508,28 +537,34 @@ impl Manager {
         if !self.provider(s.provider)?.capabilities().fork {
             bail!("provider does not support fork");
         }
-        self.create_session(CreateSessionOpts {
-            provider: s.provider,
-            agent: s.agent.clone(),
-            cwd: s.cwd.clone(),
-            title: Some(format!("{} (fork)", s.title)),
-            group: s.group.clone(),
-            mode: Some(SessionMode::Structured),
-            command: None,
-            model: s.model.clone(),
-            effort: s.effort.clone(),
-            permission_mode: s.permission_mode.clone(),
-            sandbox_mode: s.sandbox_mode.clone(),
-            worktree: None,
-            initial_prompt: None,
-            resume_native_id: Some(native),
-            fork: true,
-            system_prompt: s.system_prompt.clone(),
-            // A fork of an orchestrator still expects its tools; a fork of a
-            // worker was not started by the orchestrator, so it reports to no one.
-            orchestrator: s.orchestrator,
-            orchestrator_id: None,
-        })
+        // The native session is found from the directory it ran in, so a fork
+        // of an orchestrator without a folder resumes in that one.
+        let own_dir = s.folderless.then(|| s.cwd.clone());
+        self.create(
+            CreateSessionOpts {
+                provider: s.provider,
+                agent: s.agent.clone(),
+                cwd: s.cwd.clone(),
+                title: Some(format!("{} (fork)", s.title)),
+                group: s.group.clone(),
+                mode: Some(SessionMode::Structured),
+                command: None,
+                model: s.model.clone(),
+                effort: s.effort.clone(),
+                permission_mode: s.permission_mode.clone(),
+                sandbox_mode: s.sandbox_mode.clone(),
+                worktree: None,
+                initial_prompt: None,
+                resume_native_id: Some(native),
+                fork: true,
+                system_prompt: s.system_prompt.clone(),
+                // A fork of an orchestrator still expects its tools; a fork of a
+                // worker was not started by the orchestrator, so it reports to no one.
+                orchestrator: s.orchestrator,
+                orchestrator_id: None,
+            },
+            own_dir,
+        )
         .await
     }
 
@@ -853,30 +888,110 @@ impl Manager {
 
     /// Stop and permanently remove a session and its history. An orchestrator
     /// takes its workers with it, and a worker that orchestrates takes its own.
+    /// `remove_worktree` applies to this session only: the workers keep their
+    /// worktrees, and what is uncommitted in them.
+    ///
+    /// A session already gone (deleted at the same time) is skipped, and one
+    /// that cannot be deleted does not stop the rest: it is detached from its
+    /// deleted orchestrator and reported in the error at the end.
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> Result<()> {
         self.get_session(id)?;
+        let mut deleted: HashSet<SessionId> = HashSet::new();
+        let mut failed: Vec<(Session, anyhow::Error)> = vec![];
         // Each orchestrator goes before its workers, so a worker stopped on the
         // way has no one left to report to.
-        for s in self.with_workers(id) {
-            self.stop(&s.id).await?;
-            self.inner.runtimes.lock().remove(&s.id);
-            self.inner.sessions.lock().remove(&s.id);
-            self.inner.store.delete_session(&s.id)?;
-            self.delete_attachments(&s.id);
-            self.drop_reports(&s.id);
-            if remove_worktree {
-                if let (Some(wt), Some(backend)) = (&s.worktree, &self.inner.worktrees) {
-                    if let Err(e) = backend.remove(wt) {
-                        tracing::warn!("remove worktree failed: {e}");
+        let mut queue: VecDeque<Session> = self.with_workers(id).into();
+        loop {
+            while let Some(s) = queue.pop_front() {
+                if deleted.contains(&s.id) || failed.iter().any(|(f, _)| f.id == s.id) {
+                    continue;
+                }
+                match self.remove_session(&s, remove_worktree && s.id == id).await {
+                    Ok(true) => {
+                        deleted.insert(s.id);
                     }
+                    Ok(false) => {}
+                    Err(e) => failed.push((s, e)),
                 }
             }
-            self.remove_orchestrator_dir(&s);
-            self.broadcast(Event::SessionRemoved {
-                session_id: s.id.clone(),
-            });
+            // Workers that started while their orchestrator was being deleted.
+            let late: Vec<Session> = self
+                .list_sessions()
+                .into_iter()
+                .filter(|s| {
+                    s.orchestrator_id
+                        .as_ref()
+                        .is_some_and(|o| deleted.contains(o))
+                        && !failed.iter().any(|(f, _)| f.id == s.id)
+                })
+                .collect();
+            if late.is_empty() {
+                break;
+            }
+            for s in late {
+                queue.extend(self.with_workers(&s.id));
+            }
         }
-        Ok(())
+        if failed.is_empty() {
+            return Ok(());
+        }
+        for (s, _) in &failed {
+            if s.orchestrator_id
+                .as_ref()
+                .is_some_and(|o| deleted.contains(o))
+            {
+                let _ = self.update_session(&s.id, |s| s.orchestrator_id = None);
+            }
+        }
+        bail!(
+            "could not delete {}",
+            failed
+                .iter()
+                .map(|(s, e)| format!("{} ({}): {e:#}", s.title, s.id))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    }
+
+    /// Delete one session. False when it was already gone.
+    async fn remove_session(&self, s: &Session, remove_worktree: bool) -> Result<bool> {
+        if self.get_session(&s.id).is_err() {
+            return Ok(false);
+        }
+        if let Err(e) = self.stop(&s.id).await {
+            return if self.get_session(&s.id).is_err() {
+                Ok(false)
+            } else {
+                Err(e)
+            };
+        }
+        // Under the sessions lock, which a change holds while storing the
+        // session, so none can store it again. One the store keeps stays.
+        {
+            let mut sessions = self.inner.sessions.lock();
+            let Some(gone) = sessions.remove(&s.id) else {
+                return Ok(false);
+            };
+            if let Err(e) = self.inner.store.delete_session(&s.id) {
+                sessions.insert(s.id.clone(), gone);
+                return Err(e);
+            }
+        }
+        self.inner.runtimes.lock().remove(&s.id);
+        self.delete_attachments(&s.id);
+        self.drop_reports(&s.id);
+        if remove_worktree {
+            if let (Some(wt), Some(backend)) = (&s.worktree, &self.inner.worktrees) {
+                if let Err(e) = backend.remove(wt) {
+                    tracing::warn!("remove worktree failed: {e}");
+                }
+            }
+        }
+        self.remove_orchestrator_dir(s);
+        self.broadcast(Event::SessionRemoved {
+            session_id: s.id.clone(),
+        });
+        Ok(true)
     }
 
     /// Switch between the structured view and the provider's own TUI. The
@@ -888,6 +1003,9 @@ impl Manager {
         }
         let provider = self.provider(s.provider)?;
         match mode {
+            SessionMode::Terminal if s.orchestrator => {
+                bail!("an orchestrator stays in the structured view, where its workers' reports reach it")
+            }
             SessionMode::Terminal => {
                 let argv = provider.terminal_command(&self.with_instructions(&s)?);
                 if argv.is_empty() {
