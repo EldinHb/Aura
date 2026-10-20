@@ -711,11 +711,12 @@ async fn dispatch(
                 id,
                 remove_worktree,
             } = params(p)?;
-            // Its workers go with it; none of them streams to this client any more.
-            let gone: Vec<String> = m.with_workers(&id).into_iter().map(|s| s.id).collect();
+            // Its workers go with it; those deleted stream to this client no more.
+            let tree: Vec<String> = m.with_workers(&id).into_iter().map(|s| s.id).collect();
             let result = m.delete(&id, remove_worktree).await;
+            let gone: Vec<&String> = tree.iter().filter(|t| m.get_session(t).is_err()).collect();
             let mut attached = attached.lock();
-            for id in &gone {
+            for id in gone {
                 attached.remove(id);
             }
             drop(attached);

@@ -361,9 +361,22 @@ impl Manager {
             .await?;
         // Deleted while the worker started: it goes too, rather than be left
         // pointing at an orchestrator that is gone.
-        if self.orchestrator(orchestrator).is_err() {
-            let _ = self.delete(&session.id, false).await;
-            bail!("the orchestrator was deleted while the worker started");
+        match self.get_session(orchestrator) {
+            Err(_) => {
+                let _ = self.delete(&session.id, false).await;
+                bail!("the orchestrator was deleted while the worker started");
+            }
+            // Made a regular session meanwhile: like its other workers, this
+            // one is on its own now, and its task is not sent.
+            Ok(o) if !o.orchestrator => {
+                let _ = self.update_session(&session.id, |s| s.orchestrator_id = None);
+                bail!(
+                    "this session stopped orchestrating while the worker started; {} (`{}`) is kept as a regular session and was not given the task",
+                    session.title,
+                    session.id
+                );
+            }
+            Ok(_) => {}
         }
         self.dispatch(&session.id, spec.prompt).await?;
         self.get_session(&session.id)

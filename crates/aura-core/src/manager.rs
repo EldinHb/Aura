@@ -893,17 +893,28 @@ impl Manager {
     ///
     /// A session already gone (deleted at the same time) is skipped, and one
     /// that cannot be deleted does not stop the rest: it is detached from its
-    /// deleted orchestrator and reported in the error at the end.
+    /// deleted orchestrator and reported in the error at the end. Its own
+    /// workers stay with it.
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> Result<()> {
         self.get_session(id)?;
         let mut deleted: HashSet<SessionId> = HashSet::new();
         let mut failed: Vec<(Session, anyhow::Error)> = vec![];
+        // Workers under a session that failed, left attached to it.
+        let mut kept: Vec<Session> = vec![];
         // Each orchestrator goes before its workers, so a worker stopped on the
         // way has no one left to report to.
         let mut queue: VecDeque<Session> = self.with_workers(id).into();
         loop {
             while let Some(s) = queue.pop_front() {
                 if deleted.contains(&s.id) || failed.iter().any(|(f, _)| f.id == s.id) {
+                    continue;
+                }
+                // Its orchestrator comes first, so this knows whether it stayed.
+                let under = |o: &str| {
+                    failed.iter().any(|(f, _)| f.id == o) || kept.iter().any(|k| k.id == o)
+                };
+                if s.orchestrator_id.as_deref().is_some_and(under) {
+                    kept.push(s);
                     continue;
                 }
                 match self.remove_session(&s, remove_worktree && s.id == id).await {
@@ -943,14 +954,25 @@ impl Manager {
                 let _ = self.update_session(&s.id, |s| s.orchestrator_id = None);
             }
         }
-        bail!(
+        let mut msg = format!(
             "could not delete {}",
             failed
                 .iter()
                 .map(|(s, e)| format!("{} ({}): {e:#}", s.title, s.id))
                 .collect::<Vec<_>>()
                 .join("; ")
-        )
+        );
+        if !kept.is_empty() {
+            msg.push_str(&format!(
+                ". The workers under {0} are kept with {0}: {1}",
+                if failed.len() == 1 { "it" } else { "them" },
+                kept.iter()
+                    .map(|s| format!("{} ({})", s.title, s.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        bail!(msg)
     }
 
     /// Delete one session. False when it was already gone.
@@ -1166,12 +1188,23 @@ impl Manager {
         let s = self.with_instructions(&s)?;
         let driver: Arc<dyn Driver> =
             Arc::from(provider.start(&s, fork, self.inner.sink.clone()).await?);
-        self.inner
-            .runtimes
-            .lock()
-            .entry(id.to_string())
-            .or_default()
-            .driver = Some(driver.clone());
+        // Deleted while its agent started (with its orchestrator, say): the
+        // agent would run on with no session to stop it.
+        let kept = {
+            let sessions = self.inner.sessions.lock();
+            let mut rts = self.inner.runtimes.lock();
+            if sessions.contains_key(id) {
+                rts.entry(id.to_string()).or_default().driver = Some(driver.clone());
+                true
+            } else {
+                rts.remove(id);
+                false
+            }
+        };
+        if !kept {
+            let _ = driver.stop().await;
+            bail!("the session was deleted while its agent started");
+        }
         let _ = self.update_session(id, |x| {
             if x.status == SessionStatus::Exited || x.status == SessionStatus::Error {
                 x.status = SessionStatus::Idle;

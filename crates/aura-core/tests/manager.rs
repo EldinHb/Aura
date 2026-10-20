@@ -30,6 +30,8 @@ struct Knob {
     replay_failed_turn: bool,
     /// Stopping this session takes a moment, so other calls run meanwhile.
     slow_stop: Option<String>,
+    /// Starting an agent takes a moment, so other calls run meanwhile.
+    slow_start: bool,
 }
 type Knobs = Arc<Mutex<Knob>>;
 
@@ -254,6 +256,10 @@ impl Provider for FakeProvider {
     ) -> anyhow::Result<Box<dyn Driver>> {
         if self.knobs.lock().fail_start {
             anyhow::bail!("agent not found");
+        }
+        let slow = self.knobs.lock().slow_start;
+        if slow {
+            tokio::time::sleep(Duration::from_millis(60)).await;
         }
         self.starts.lock().push((session.native_id.clone(), fork));
         self.prompts.lock().push(session.instructions.clone());
@@ -2620,16 +2626,143 @@ async fn a_worker_that_cannot_be_deleted_does_not_keep_the_rest() {
     m.restore().unwrap();
     let err = m.delete("lead", false).await.unwrap_err().to_string();
     assert!(err.contains("w1") && err.contains("disk full"), "{err}");
-    let left: Vec<Session> = m.list_sessions();
+    assert!(err.contains("kept with it: claude · tmp (w1a)"), "{err}");
+    let mut left: Vec<Session> = m.list_sessions();
+    left.sort_by(|a, b| a.id.cmp(&b.id));
     assert_eq!(
         left.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
-        vec!["w1"]
+        vec!["w1", "w1a"]
     );
     assert_eq!(
         left[0].orchestrator_id, None,
         "detached from the deleted orchestrator"
     );
-    assert_eq!(store.list_sessions().unwrap().len(), 1);
+    assert_eq!(
+        left[1].orchestrator_id.as_deref(),
+        Some("w1"),
+        "still under the orchestrator that stayed"
+    );
+    assert_eq!(store.list_sessions().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn an_orchestrator_that_cannot_be_deleted_keeps_its_workers() {
+    let store = Arc::new(StuckSession {
+        inner: MemoryStore::default(),
+        stuck: "lead".into(),
+    });
+    for (id, orchestrator, under) in [
+        ("lead", true, None),
+        ("w1", true, Some("lead")),
+        ("w1a", false, Some("w1")),
+        ("plain", false, None),
+    ] {
+        let mut s = Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: "/tmp".into(),
+            orchestrator,
+            orchestrator_id: under.map(Into::into),
+            ..Default::default()
+        });
+        s.id = id.into();
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let err = m.delete("lead", false).await.unwrap_err().to_string();
+    assert!(
+        err.contains("(lead): disk full")
+            && err.contains("kept with it: claude · tmp (w1), claude · tmp (w1a)"),
+        "{err}"
+    );
+    assert_eq!(m.list_sessions().len(), 4, "nothing was deleted");
+    assert_eq!(
+        m.get_session("w1").unwrap().orchestrator_id.as_deref(),
+        Some("lead")
+    );
+    assert_eq!(
+        m.get_session("w1a").unwrap().orchestrator_id.as_deref(),
+        Some("w1")
+    );
+}
+
+#[tokio::test]
+async fn an_agent_started_for_a_session_deleted_meanwhile_is_stopped() {
+    let (m, calls, provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let lead = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    provider.knobs.lock().slow_start = true;
+    let starting = m.start_worker(
+        &lead.id,
+        WorkerSpec {
+            agent: "claude".into(),
+            prompt: "task".into(),
+            ..Default::default()
+        },
+    );
+    let deleting = async {
+        // The worker exists, its agent still starting.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(m.list_sessions().len(), 2);
+        m.delete(&lead.id, false).await
+    };
+    let (started, deleted) = tokio::join!(starting, deleting);
+    deleted.unwrap();
+    let err = started.unwrap_err().to_string();
+    assert!(err.contains("deleted while its agent started"), "{err}");
+    assert!(m.list_sessions().is_empty());
+    let stops = calls.lock().iter().filter(|c| *c == "stop").count();
+    assert_eq!(stops, 2, "the orchestrator's agent and the worker's");
+    assert!(!calls.lock().iter().any(|c| c == "send:task"));
+}
+
+#[tokio::test]
+async fn a_worker_started_while_its_orchestrator_stops_orchestrating_is_left_on_its_own() {
+    let (m, calls, provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let lead = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    provider.knobs.lock().slow_start = true;
+    let starting = m.start_worker(
+        &lead.id,
+        WorkerSpec {
+            agent: "claude".into(),
+            prompt: "task".into(),
+            title: Some("Late".into()),
+            ..Default::default()
+        },
+    );
+    let demoting = async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        m.set_orchestrator(&lead.id, false).await
+    };
+    let (started, demoted) = tokio::join!(starting, demoting);
+    demoted.unwrap();
+    let err = started.unwrap_err().to_string();
+    assert!(err.contains("stopped orchestrating"), "{err}");
+    let worker = m
+        .list_sessions()
+        .into_iter()
+        .find(|s| s.title == "Late")
+        .expect("the worker is kept");
+    assert_eq!(worker.orchestrator_id, None);
+    assert!(m.get_session(&lead.id).is_ok());
+    assert!(!calls.lock().iter().any(|c| c == "send:task"));
 }
 
 #[tokio::test]
