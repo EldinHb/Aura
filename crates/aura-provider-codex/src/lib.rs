@@ -911,6 +911,62 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_carries_what_it_spent_not_the_thread_totals() {
+        let mut mapper = ThreadMapper::new("sess", "t");
+        let mut call = |method: &str, params: Value| {
+            mapper
+                .handle(&Incoming {
+                    id: None,
+                    method: method.into(),
+                    params,
+                })
+                .events
+        };
+        let usage = |total: u64| {
+            json!({ "threadId": "t", "turnId": "u", "tokenUsage": {
+            "total": { "inputTokens": total, "outputTokens": total / 10, "cachedInputTokens": total / 2, "totalTokens": total },
+            "last": { "totalTokens": 5000 }, "modelContextWindow": 258400 } })
+        };
+        let turn_usage = |events: Vec<Event>| {
+            events
+                .into_iter()
+                .find_map(|e| match e {
+                    Event::TurnCompleted { turn, .. } => turn.usage,
+                    _ => None,
+                })
+                .unwrap()
+        };
+        call(
+            "turn/started",
+            json!({ "threadId": "t", "turn": { "id": "u1" } }),
+        );
+        call("thread/tokenUsage/updated", usage(1000));
+        let first = turn_usage(call(
+            "turn/completed",
+            json!({ "threadId": "t", "turn": { "id": "u1", "status": "completed" } }),
+        ));
+        assert_eq!(first.input_tokens, 1000);
+        call(
+            "turn/started",
+            json!({ "threadId": "t", "turn": { "id": "u2" } }),
+        );
+        call("thread/tokenUsage/updated", usage(1600));
+        let second = turn_usage(call(
+            "turn/completed",
+            json!({ "threadId": "t", "turn": { "id": "u2", "status": "completed" } }),
+        ));
+        assert_eq!(
+            (
+                second.input_tokens,
+                second.output_tokens,
+                second.cached_input_tokens
+            ),
+            (600, 60, 300)
+        );
+        assert_eq!(second.context_used, Some(5000));
+    }
+
+    #[test]
     fn maps_file_change_and_approval() {
         let mut mapper = ThreadMapper::new("sess", "t");
         let item = json!({

@@ -26,6 +26,8 @@ pub struct ThreadMapper {
     approvals: HashMap<String, PendingApproval>,
     inputs: HashMap<String, Value>,
     last_usage: Option<Usage>,
+    /// Session totals when the active turn started, to tell what it spent.
+    turn_start_usage: Usage,
     approval_seq: u64,
 }
 
@@ -57,6 +59,7 @@ impl ThreadMapper {
             approvals: HashMap::new(),
             inputs: HashMap::new(),
             last_usage: None,
+            turn_start_usage: Usage::default(),
             approval_seq: 0,
         }
     }
@@ -147,6 +150,7 @@ impl ThreadMapper {
                 let turn = p.get("turn").cloned().unwrap_or(Value::Null);
                 let id = s(&turn, "id").unwrap_or_else(aura_core::new_id);
                 self.active_turn = Some(id.clone());
+                self.turn_start_usage = self.last_usage.clone().unwrap_or_default();
                 ev.push(Event::TurnStarted {
                     session_id: sid,
                     turn: Turn {
@@ -188,7 +192,7 @@ impl ThreadMapper {
                         status,
                         started_at: epoch_secs(&turn, "startedAt").unwrap_or_else(aura_core::now),
                         ended_at: Some(epoch_secs(&turn, "completedAt").unwrap_or_else(aura_core::now)),
-                        usage: self.last_usage.clone(),
+                        usage: self.last_usage.as_ref().map(|u| u.since(&self.turn_start_usage)),
                         error,
                     },
                 });

@@ -56,6 +56,8 @@ pub struct SessionMapper {
     plan: Option<Item>,
     approvals: HashMap<String, PendingPermission>,
     usage: Usage,
+    /// Session usage when the open turn began, to tell what it spent.
+    turn_start_usage: Usage,
     state: AgentState,
     /// True while `session/load` replays history Aura already has: content
     /// updates are dropped, session state (modes, options, commands) is kept.
@@ -72,6 +74,7 @@ impl SessionMapper {
             plan: None,
             approvals: HashMap::new(),
             usage: Usage::default(),
+            turn_start_usage: Usage::default(),
             state: AgentState::default(),
             replaying: false,
         }
@@ -104,6 +107,7 @@ impl SessionMapper {
             error: None,
         };
         self.turn = Some(turn.clone());
+        self.turn_start_usage = self.usage.clone();
         out.push(Event::TurnStarted {
             session_id: self.sid(),
             turn,
@@ -173,7 +177,7 @@ impl SessionMapper {
             turn.status = status;
             turn.ended_at = Some(now());
             turn.error = error;
-            turn.usage = Some(self.usage.clone());
+            turn.usage = Some(self.usage.since(&self.turn_start_usage));
             out.push(Event::TurnCompleted {
                 session_id: self.sid(),
                 turn,
@@ -1035,6 +1039,33 @@ mod tests {
             ),
             e => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn a_turn_carries_the_cost_it_added() {
+        let mut m = SessionMapper::new("s");
+        let cost = |m: &mut SessionMapper, amount: f64| {
+            m.handle_update(&json!({"sessionUpdate":"usage_update","used":1200,"size":200000,"cost":{"amount":amount,"currency":"USD"}}));
+        };
+        let turn_cost = |events: Vec<Event>| {
+            events
+                .into_iter()
+                .find_map(|e| match e {
+                    Event::TurnCompleted { turn, .. } => turn.usage?.total_cost_usd,
+                    _ => None,
+                })
+                .unwrap()
+        };
+        m.begin_turn("one", 0);
+        cost(&mut m, 0.25);
+        assert_eq!(
+            turn_cost(m.end_turn(TurnOutcome::Stopped("end_turn".into()))),
+            0.25
+        );
+        m.begin_turn("two", 0);
+        cost(&mut m, 0.4);
+        let second = turn_cost(m.end_turn(TurnOutcome::Stopped("end_turn".into())));
+        assert!((second - 0.15).abs() < 1e-9, "{second}");
     }
 
     #[test]
