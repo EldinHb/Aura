@@ -1,7 +1,8 @@
 //! Small filesystem helpers exposed over RPC: directory listing for the cwd
-//! picker and fuzzy file search for `@` mentions.
+//! picker, fuzzy file search for `@` mentions and the images agents show in
+//! their messages.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use ts_rs::TS;
@@ -51,6 +52,67 @@ pub fn list_dir(path: &str, show_hidden: bool) -> Result<Vec<DirEntry>> {
             .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(out)
+}
+
+/// Images larger than this are not shown in messages.
+pub const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// The image at `path` (absolute, or under `~/`) with its media type, for an
+/// agent's message that shows it. Reads image files only: the type comes from
+/// the file's first bytes, and anything else is refused unread past them.
+pub fn read_image(path: &str) -> Result<(Vec<u8>, &'static str)> {
+    let p = match path.strip_prefix("~/") {
+        Some(rest) => match dirs::home_dir() {
+            Some(home) => home.join(rest),
+            None => bail!("no home folder"),
+        },
+        None => Path::new(path).to_path_buf(),
+    };
+    if !p.is_absolute() {
+        bail!("not an absolute path: {path}");
+    }
+    let meta = std::fs::metadata(&p)?;
+    if !meta.is_file() {
+        bail!("not a file: {path}");
+    }
+    if meta.len() > MAX_IMAGE_BYTES {
+        bail!("image over {} MB: {path}", MAX_IMAGE_BYTES / 1024 / 1024);
+    }
+    let mut head = [0u8; 512];
+    let n = {
+        use std::io::Read;
+        let mut f = std::fs::File::open(&p)?;
+        let mut n = 0;
+        while n < head.len() {
+            match f.read(&mut head[n..])? {
+                0 => break,
+                k => n += k,
+            }
+        }
+        n
+    };
+    let svg = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+    let Some(media_type) = image_type(&head[..n], svg) else {
+        bail!("not an image: {path}");
+    };
+    Ok((std::fs::read(&p)?, media_type))
+}
+
+/// The media type of an image starting with `head`; SVG only for `.svg` files.
+fn image_type(head: &[u8], svg: bool) -> Option<&'static str> {
+    match head {
+        [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        _ if svg => {
+            let text = String::from_utf8_lossy(head);
+            let text = text.trim_start_matches('\u{feff}').trim_start();
+            (text.starts_with("<svg") || (text.starts_with("<?xml") && text.contains("<svg")))
+                .then_some("image/svg+xml")
+        }
+        _ => None,
+    }
 }
 
 /// Fuzzy file search honouring .gitignore. Scores subsequence matches, prefers
@@ -134,5 +196,42 @@ mod tests {
         let b = fuzzy_score("m/g/r/other.txt", &q).unwrap();
         assert!(a > b);
         assert!(fuzzy_score("nothing.txt", &q).is_none());
+    }
+
+    #[test]
+    fn reads_images_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("shot.png");
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        let (bytes, media_type) = read_image(png.to_str().unwrap()).unwrap();
+        assert_eq!(media_type, "image/png");
+        assert!(bytes.starts_with(b"\x89PNG"));
+
+        // Named like an image, but not one.
+        let fake = dir.path().join("secret.png");
+        std::fs::write(&fake, b"password=hunter2").unwrap();
+        assert!(read_image(fake.to_str().unwrap()).is_err());
+        let svg = dir.path().join("d.svg");
+        std::fs::write(
+            &svg,
+            b"<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        )
+        .unwrap();
+        assert_eq!(
+            read_image(svg.to_str().unwrap()).unwrap().1,
+            "image/svg+xml"
+        );
+        let xml = dir.path().join("d.xml");
+        std::fs::write(&xml, b"<svg/>").unwrap();
+        assert!(read_image(xml.to_str().unwrap()).is_err());
+
+        assert!(
+            read_image("shot.png").is_err(),
+            "relative paths are refused"
+        );
+        assert!(
+            read_image(dir.path().to_str().unwrap()).is_err(),
+            "folders are refused"
+        );
     }
 }

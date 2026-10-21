@@ -7,6 +7,7 @@ import { Markdown } from "./transcript/MarkdownView";
 
 export function PlanSection({ sessionId }: { sessionId: string }) {
   const transcript = useStore((state) => state.transcripts[sessionId]);
+  const cwd = useStore((state) => state.sessions[sessionId]?.cwd);
   const view = usePlanViews((state) => state.views[sessionId]);
   const plans = useMemo(() => sessionPlans(transcript, view?.selectedId), [transcript, view?.selectedId]);
   const plan = plans.find((entry) => entry.id === view?.selectedId) ?? plans.at(-1);
@@ -24,7 +25,7 @@ export function PlanSection({ sessionId }: { sessionId: string }) {
           {plans.map((entry, index) => <option key={entry.id} value={entry.id}>{index + 1}. {entry.title}</option>)}
         </select>}
         <div className="plan-content">
-          {plan.text && <Markdown text={plan.text} />}
+          {plan.text && <Markdown text={plan.text} cwd={cwd} />}
           {plan.steps.length > 0 && <ul className="plan">{plan.steps.map((step, index) => <li key={index} className={clsx("plan-step", step.status)}>
             <span className="plan-box" aria-label={step.status.replaceAll("_", " ")}>{step.status === "completed" ? "☑" : /in_progress|inProgress/.test(step.status) ? "◐" : "☐"}</span> {step.step}
           </li>)}</ul>}

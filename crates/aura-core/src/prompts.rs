@@ -1,5 +1,6 @@
-//! System prompts Aura adds to every agent it starts: one global prompt, one
-//! per agent and one per session, joined in that order.
+//! System prompts Aura adds to every agent it starts: one global prompt,
+//! Aura's formatting note, one per agent and one per session, joined in that
+//! order.
 //!
 //! Prompts may use `{{agent}}`, `{{model}}` and `{{effort}}`, filled in with the
 //! values the agent is started with.
@@ -16,6 +17,10 @@ Rule: whenever you post anything on GitHub or another issue tracker on the user'
 > 🤖 Written by an AI agent on behalf of the user · {{agent}} · model <model name> (<exact model id>) · effort {{effort}}
 
 Use your exact model id as you know it from your own instructions; it is more precise than the model Aura started you with, and the user may have switched models since. Never leave this line out, even when asked to keep a comment short, unless the user tells you to leave it out of that specific post.";
+
+/// Always added after the global prompt: the desktop app renders replies as
+/// markdown, so links, paths and images only work when written that way.
+pub const FORMAT_PROMPT: &str = "Formatting: Aura shows your replies as GitHub-flavoured markdown. Write links as markdown links or full URLs so they are clickable. Refer to files by path, relative to your working directory or absolute, with a line number where it helps (`src/main.rs:42`), so the user can open them. Show an image with `![description](path or URL)`; a local image file can be given by absolute path or relative to your working directory.";
 
 /// Ends the first line of every message Aura, not the user, sends an agent.
 /// The desktop app keeps such messages out of the user's chat by this line,
@@ -130,23 +135,20 @@ pub fn worker_prompt(orchestrator_title: &str) -> String {
 Another agent, the orchestrator session \"{orchestrator_title}\", started this session and sends you tasks. The user can read along and may also message you directly. Your final message of each turn is forwarded to the orchestrator, so end every task with a short report: what you did, which files you changed, how you verified it, and anything that is still open or blocking.")
 }
 
-/// Global, agent and session prompts joined with blank lines, placeholders
-/// filled in. `None` when all three are empty.
-pub fn compose(
-    global: &str,
-    agent: Option<&str>,
-    session: &Session,
-    agent_name: &str,
-) -> Option<String> {
-    let parts: Vec<&str> = [Some(global), agent, session.system_prompt.as_deref()]
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
-    if parts.is_empty() {
-        return None;
-    }
+/// Global prompt, [`FORMAT_PROMPT`], agent and session prompts joined with
+/// blank lines, placeholders filled in.
+pub fn compose(global: &str, agent: Option<&str>, session: &Session, agent_name: &str) -> String {
+    let parts: Vec<&str> = [
+        Some(global),
+        Some(FORMAT_PROMPT),
+        agent,
+        session.system_prompt.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|p| !p.is_empty())
+    .collect();
     let model = session
         .model
         .as_deref()
@@ -157,13 +159,11 @@ pub fn compose(
         .as_deref()
         .filter(|e| !e.is_empty())
         .unwrap_or("default");
-    Some(
-        parts
-            .join("\n\n")
-            .replace("{{agent}}", agent_name)
-            .replace("{{model}}", model)
-            .replace("{{effort}}", effort),
-    )
+    parts
+        .join("\n\n")
+        .replace("{{agent}}", agent_name)
+        .replace("{{model}}", model)
+        .replace("{{effort}}", effort)
 }
 
 #[cfg(test)]
@@ -190,28 +190,43 @@ mod tests {
             Some("Agent rule"),
             &s,
             "Claude Code",
-        )
-        .unwrap();
+        );
         assert_eq!(
             out,
-            "Global Claude Code opus high\n\nAgent rule\n\nSession rule"
+            format!(
+                "Global Claude Code opus high\n\n{FORMAT_PROMPT}\n\nAgent rule\n\nSession rule"
+            )
         );
     }
 
     #[test]
     fn skips_empty_parts_and_names_defaults() {
         let s = session(None, Some("  "));
-        assert_eq!(compose("", None, &s, "Codex"), None);
+        assert_eq!(compose("", None, &s, "Codex"), FORMAT_PROMPT);
         assert_eq!(
-            compose("{{model}}", Some(""), &s, "Codex").unwrap(),
-            "default"
+            compose("{{model}}", Some(""), &s, "Codex"),
+            format!("default\n\n{FORMAT_PROMPT}")
         );
+    }
+
+    #[test]
+    fn every_agent_is_asked_for_markdown_with_clickable_links_paths_and_images() {
+        let s = session(None, None);
+        for agent in ["Claude Code", "Codex", "Gemini CLI"] {
+            let out = compose("", None, &s, agent);
+            assert!(out.contains("GitHub-flavoured markdown"), "{out}");
+            assert!(out.contains("markdown links or full URLs"), "{out}");
+            assert!(out.contains("`src/main.rs:42`"), "{out}");
+            assert!(out.contains("`![description](path or URL)`"), "{out}");
+        }
+        // Agent-neutral: no agent's own tools or conventions named.
+        assert!(!FORMAT_PROMPT.contains("Claude") && !FORMAT_PROMPT.contains("Codex"));
     }
 
     #[test]
     fn default_prompt_asks_for_attribution_with_model_and_effort() {
         let s = session(Some("claude-opus-5-5"), None);
-        let out = compose(DEFAULT_GLOBAL_PROMPT, None, &s, "Claude Code").unwrap();
+        let out = compose(DEFAULT_GLOBAL_PROMPT, None, &s, "Claude Code");
         assert!(out.contains("written by an AI agent"));
         assert!(out.contains("model `claude-opus-5-5`"));
         assert!(out.contains("effort high"));

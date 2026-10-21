@@ -434,7 +434,7 @@ function PromptsTab() {
   return (
     <div className="prompts-tab">
       <p className="dim prompt-help">
-        Every agent Aura starts gets the global prompt, then its agent's prompt, then the session's own (set from the inspector or <span className="mono">⌘K</span> → Session system prompt). <span className="mono">{"{{agent}}"}</span>, <span className="mono">{"{{model}}"}</span> and <span className="mono">{"{{effort}}"}</span> are filled in when the agent starts. Idle agents restart with a changed prompt on their next message.
+        Every agent Aura starts gets the global prompt, then a short note asking for markdown replies (so links, file paths and images work), then its agent's prompt, then the session's own (set from the inspector or <span className="mono">⌘K</span> → Session system prompt). <span className="mono">{"{{agent}}"}</span>, <span className="mono">{"{{model}}"}</span> and <span className="mono">{"{{effort}}"}</span> are filled in when the agent starts. Idle agents restart with a changed prompt on their next message.
       </p>
       <PromptEditor
         key={`global:${prompts.global}`}

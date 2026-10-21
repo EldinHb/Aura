@@ -844,6 +844,18 @@ async fn dispatch(
             let P { path, show_hidden } = params(p)?;
             ok(crate::fs::list_dir(&path, show_hidden)?)
         }
+        "fs.read_image" => {
+            #[derive(Deserialize)]
+            struct P {
+                path: String,
+            }
+            let P { path } = params(p)?;
+            let (data, media_type) =
+                tokio::task::spawn_blocking(move || crate::fs::read_image(&path))
+                    .await
+                    .map_err(|e| anyhow!(e))??;
+            ok(json!({ "data": b64.encode(data), "media_type": media_type }))
+        }
         "fs.search_files" => {
             #[derive(Deserialize)]
             struct P {

@@ -42,7 +42,7 @@ function OutputPre({ text, streaming }: { text: string; streaming: boolean }) {
 
 type Plan = { steps?: { step: string; status?: string }[]; text?: string };
 
-function CardBody({ item }: { item: Item }) {
+function CardBody({ item, cwd }: { item: Item; cwd: string | undefined }) {
   const d = item.data as Record<string, unknown>;
   const streaming = item.status === "in_progress";
   switch (item.kind) {
@@ -103,13 +103,13 @@ function CardBody({ item }: { item: Item }) {
           </ul>
         );
       }
-      return <Markdown text={String(p.text ?? item.text)} />;
+      return <Markdown text={String(p.text ?? item.text)} cwd={cwd} />;
     }
     case "subagent":
       return (
         <>
           {d.agent_type ? <div className="dim">type: {String(d.agent_type)}</div> : null}
-          {item.text && <Markdown text={item.text} />}
+          {item.text && <Markdown text={item.text} cwd={cwd} />}
         </>
       );
     case "error":
@@ -175,6 +175,7 @@ function ReportThreads({ item }: { item: Item }) {
 }
 
 export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle, onCursor, nested, showReasoning, stale, fromOrchestrator }: ItemRowProps) {
+  const cwd = useStore((s) => s.sessions[item.session_id]?.cwd);
   const dur = fmtDuration(durationMs(item.started_at, item.ended_at));
   const boundary = contextBoundary(item);
   if (boundary) {
@@ -204,7 +205,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
           <span className="dim">{command.name ? "output" : "Command output"}</span>
         </div>
         <div className="command-output-body">
-          <Markdown text={item.text} />
+          <Markdown text={item.text} cwd={cwd} />
         </div>
       </div>
     );
@@ -219,7 +220,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
           <span className="spacer" />
           <ReportThreads item={item} />
         </div>
-        {aura.body && <Markdown text={aura.body} />}
+        {aura.body && <Markdown text={aura.body} cwd={cwd} />}
       </div>
     );
   }
@@ -228,7 +229,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
       <div className={clsx("item user_message from-orchestrator", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
         <FromOrchestrator orchestratorId={fromOrchestrator} workerId={item.session_id} />
         <MessageImages sessionId={item.session_id} data={item.data} />
-        <Markdown text={item.text} />
+        <Markdown text={item.text} cwd={cwd} />
       </div>
     );
   }
@@ -236,14 +237,14 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
     return (
       <div className={clsx("item user_message", isSlashCommand(item.text) && "slash", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
         <MessageImages sessionId={item.session_id} data={item.data} />
-        {item.text}
+        <Markdown text={item.text} cwd={cwd} />
       </div>
     );
   }
   if (item.kind === "agent_message") {
     return (
       <div className={clsx("item agent_message", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
-        <Markdown text={item.text} />
+        <Markdown text={item.text} cwd={cwd} />
         {item.status !== "in_progress" && <button className="btn small keep-plan" data-hint onClick={(event) => {
           event.stopPropagation();
           setPlanView(item.session_id, { selectedId: item.id, open: true });
@@ -283,7 +284,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
       </button>
       {open && (
         <div className="item-body">
-          <CardBody item={item} />
+          <CardBody item={item} cwd={cwd} />
         </div>
       )}
     </div>

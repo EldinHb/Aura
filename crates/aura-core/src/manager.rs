@@ -343,7 +343,7 @@ impl Manager {
     }
 
     /// The system prompt a session's agent starts with.
-    pub fn instructions_for(&self, s: &Session) -> Result<Option<String>> {
+    pub fn instructions_for(&self, s: &Session) -> Result<String> {
         let stored = self.stored_prompts()?;
         let global = stored
             .global
@@ -368,10 +368,7 @@ impl Manager {
             &name,
         );
         Ok(match self.orchestration_prompt(s) {
-            Some(extra) => Some(match composed {
-                Some(c) => format!("{c}\n\n{extra}"),
-                None => extra,
-            }),
+            Some(extra) => format!("{composed}\n\n{extra}"),
             None => composed,
         })
     }
@@ -380,7 +377,7 @@ impl Manager {
     /// servers to start with.
     fn with_instructions(&self, s: &Session) -> Result<Session> {
         let mut s = s.clone();
-        s.instructions = self.instructions_for(&s)?;
+        s.instructions = Some(self.instructions_for(&s)?);
         s.mcp_servers = self.mcp_servers_for(&s);
         Ok(s)
     }

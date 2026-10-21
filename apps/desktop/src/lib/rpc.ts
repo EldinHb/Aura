@@ -283,7 +283,7 @@ export class RpcClient {
   }
   /** The complete system prompt the session's agent starts with. */
   effectivePrompt(id: string) {
-    return this.call<string | null>("prompts.preview", { id });
+    return this.call<string>("prompts.preview", { id });
   }
   setGroup(id: string, group: string | null) {
     return this.call<Session>("session.set_group", { id, group });
@@ -358,6 +358,10 @@ export class RpcClient {
   }
   listDir(path: string, show_hidden = false) {
     return this.call<DirEntry[]>("fs.list_dir", { path, show_hidden });
+  }
+  /** An image file an agent's message shows, by absolute path; only image files are read. */
+  readImage(path: string) {
+    return this.call<{ data: string; media_type: string }>("fs.read_image", { path });
   }
   searchFiles(cwd: string, query: string, limit = 30) {
     return this.call<string[]>("fs.search_files", { cwd, query, limit });

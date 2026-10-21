@@ -1,5 +1,6 @@
 //! Manager behaviour with a scripted fake provider.
 
+use aura_core::prompts::FORMAT_PROMPT;
 use aura_core::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -438,17 +439,18 @@ async fn agents_start_with_the_global_agent_and_session_prompts() {
     .await
     .unwrap();
     assert_eq!(
-        prompts.lock().last().unwrap().as_deref(),
-        Some("Global rule\n\nClaude rule\n\nSession rule")
+        prompts.lock().last().unwrap().clone().unwrap(),
+        format!("Global rule\n\n{FORMAT_PROMPT}\n\nClaude rule\n\nSession rule")
     );
 
     // An empty global prompt is kept as empty; resetting brings the default back.
     m.set_global_prompt(Some(String::new())).await.unwrap();
     m.set_agent_prompt("claude", None).await.unwrap();
     m.set_session_prompt(&s.id, None).await.unwrap();
+    // Aura's formatting note stays: the app renders replies as markdown.
     assert_eq!(
         m.instructions_for(&m.get_session(&s.id).unwrap()).unwrap(),
-        None
+        FORMAT_PROMPT
     );
     let reset = m.set_global_prompt(None).await.unwrap();
     assert!(reset.global_is_default && reset.agents.is_empty());
@@ -1649,6 +1651,7 @@ async fn orchestrators_get_tools_and_workers_report_back() {
     );
     let prompt = provider.prompts.lock()[0].clone().unwrap();
     assert!(prompt.contains("You are an orchestrator"), "{prompt}");
+    assert!(prompt.contains(FORMAT_PROMPT), "{prompt}");
     assert!(prompt.contains(&orch.id), "{prompt}");
 
     // Only orchestrators start workers.
@@ -1703,6 +1706,7 @@ async fn orchestrators_get_tools_and_workers_report_back() {
         wprompt.contains("You are a worker") && wprompt.contains("\"Lead\""),
         "{wprompt}"
     );
+    assert!(wprompt.contains(FORMAT_PROMPT), "{wprompt}");
 
     // The worker's turn ends; the idle orchestrator is told, with the reply.
     wait_status(&m, &worker.id, SessionStatus::Idle).await;
@@ -2059,7 +2063,7 @@ async fn a_busy_orchestrator_gets_reports_once_it_is_free_and_not_for_what_it_wa
         .await
         .unwrap();
     // Without the `aura` binary there are no tools, and the prompt says so.
-    let prompt = m.instructions_for(&orch).unwrap().unwrap();
+    let prompt = m.instructions_for(&orch).unwrap();
     assert!(
         prompt.contains("could not give you the `aura` tools"),
         "{prompt}"
@@ -2970,7 +2974,6 @@ async fn the_load_balancer_reaches_orchestrators_only_when_on_and_refuses_forbid
     .unwrap();
     let prompt = m
         .instructions_for(&m.get_session(&lead.id).unwrap())
-        .unwrap()
         .unwrap();
     assert_eq!(
         provider.prompts.lock().last().cloned().flatten().as_deref(),
@@ -2990,7 +2993,7 @@ async fn the_load_balancer_reaches_orchestrators_only_when_on_and_refuses_forbid
         .to_string();
     assert!(err.contains("forbid `opus`"), "{err}");
     let ok = m.start_worker(&lead.id, worker("sonnet")).await.unwrap();
-    let wprompt = m.instructions_for(&ok).unwrap().unwrap();
+    let wprompt = m.instructions_for(&ok).unwrap();
     assert!(!wprompt.contains("Load balancer"), "{wprompt}");
     let listed = describe_workers(&m.worker_reports(&lead.id).unwrap());
     assert!(listed.contains("claude · sonnet · low"), "{listed}");
@@ -3004,7 +3007,6 @@ async fn the_load_balancer_reaches_orchestrators_only_when_on_and_refuses_forbid
     .unwrap();
     let off = m
         .instructions_for(&m.get_session(&lead.id).unwrap())
-        .unwrap()
         .unwrap();
     assert!(!off.contains("## Load balancer"), "{off}");
     m.start_worker(&lead.id, worker("opus")).await.unwrap();

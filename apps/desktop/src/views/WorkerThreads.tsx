@@ -132,7 +132,7 @@ function WorkerThread({ orchestratorId, worker }: { orchestratorId: string; work
               <span className="spacer" />
               <When at={e.item.started_at} />
             </div>
-            <Markdown text={e.item.text} />
+            <Markdown text={e.item.text} cwd={worker.cwd} />
           </div>
         );
       case "user":
@@ -144,7 +144,7 @@ function WorkerThread({ orchestratorId, worker }: { orchestratorId: string; work
               <span className="spacer" />
               <When at={e.item.started_at} />
             </div>
-            <Markdown text={e.item.text} />
+            <Markdown text={e.item.text} cwd={worker.cwd} />
           </div>
         );
       case "reply":
@@ -156,7 +156,7 @@ function WorkerThread({ orchestratorId, worker }: { orchestratorId: string; work
               <span className="spacer" />
               <When at={e.item.started_at} />
             </div>
-            <Markdown text={e.item.text} />
+            <Markdown text={e.item.text} cwd={worker.cwd} />
             {e.item.status === "in_progress" && <span className="caret" />}
           </div>
         );
@@ -173,7 +173,7 @@ function WorkerThread({ orchestratorId, worker }: { orchestratorId: string; work
               <When at={e.item.started_at} />
               <span className="dim">{shown ? "▾" : "▸"}</span>
             </button>
-            {shown && body && <Markdown text={body} />}
+            {shown && body && <Markdown text={body} cwd={worker.cwd} />}
           </div>
         );
       }

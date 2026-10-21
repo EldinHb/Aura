@@ -115,3 +115,11 @@ it("says when a sent image was shrunk for the agent", () => {
   const open = screen.getByRole("button", { name: "Open retina.png · 2000 × 1125 · resized from 5120 × 2880" });
   expect(open.textContent).toContain("resized");
 });
+
+it("renders the user's own messages as markdown, as the agent reads them", () => {
+  const { container } = row(item("u", "user_message", "Please fix **this**:\n\n```ts\nconst a = 1;\n```\n\n- first\n- second"));
+  const message = container.querySelector(".user_message")!;
+  expect(message.querySelector("strong")?.textContent).toBe("this");
+  expect(message.querySelector(".code-block code")?.textContent).toBe("const a = 1;");
+  expect(message.querySelectorAll("li")).toHaveLength(2);
+});
