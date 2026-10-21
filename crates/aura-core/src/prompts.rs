@@ -17,6 +17,22 @@ Rule: whenever you post anything on GitHub or another issue tracker on the user'
 
 Use your exact model id as you know it from your own instructions; it is more precise than the model Aura started you with, and the user may have switched models since. Never leave this line out, even when asked to keep a comment short, unless the user tells you to leave it out of that specific post.";
 
+/// Ends the first line of every message Aura, not the user, sends an agent.
+/// The desktop app keeps such messages out of the user's chat by this line,
+/// in transcripts stored long ago too, so it must not change.
+pub const AURA_MARK: &str = "This message comes from Aura, not the user.";
+
+/// The first line of a message from Aura titled `title`, newline included.
+pub fn aura_header(title: &str) -> String {
+    format!("[Aura] {title}. {AURA_MARK}\n")
+}
+
+/// Whether `text` is a message from Aura rather than the user.
+pub fn is_aura_message(text: &str) -> bool {
+    let first = text.lines().next().unwrap_or("");
+    first.starts_with("[Aura] ") && first.ends_with(AURA_MARK)
+}
+
 /// Setting that holds [`Stored`] as JSON.
 pub const SETTING_KEY: &str = "prompts";
 
@@ -96,7 +112,7 @@ How to work:
 - Pick the agent per task and mix them when that helps, for example one agent implements and another reviews.
 - A worker does not see this conversation. Give each one a complete brief: the goal, the relevant files and paths, constraints, how to verify the result and what to report back.
 - Workers that change files in the same repository at the same time should each get their own git worktree (`branch` on `start_session`), so they do not overwrite each other's work.
-- When a worker stops (its task is done, it failed, or it waits for the user's approval or answer), Aura sends you a message that starts with `[Aura] Worker report`. You do not have to poll: after handing out work you can end your turn and continue when the reports come in. Use `wait_for_sessions` when you need a result before you can go on; workers it returns are not reported again.
+- When a worker stops (its task is done, it failed, or it waits for the user's approval or answer), Aura sends you a message that starts with `[Aura] Worker report`. The user does not see these reports in your chat, only what you reply to them: after a report, tell the user briefly what they need to know (a worker finished, failed or waits on them), by the worker's title, and keep it to one short line when nothing changed for them. You do not have to poll: after handing out work you can end your turn and continue when the reports come in. Use `wait_for_sessions` when you need a result before you can go on; workers it returns are not reported again.
 - Workers ask the user, not you, to approve commands and answer questions. When a report says a worker is waiting on the user, tell the user which worker and what it needs.
 - The user sees every worker as a normal session and may message them directly.
 - Coordinate and check the work yourself. Leave the implementation to workers unless a task is trivial.
@@ -200,5 +216,19 @@ mod tests {
         assert!(out.contains("model `claude-opus-5-5`"));
         assert!(out.contains("effort high"));
         assert!(!out.contains("{{"));
+    }
+
+    #[test]
+    fn messages_from_aura_are_told_apart_by_their_first_line() {
+        let report = format!("{}\n### Builder", aura_header("Worker report"));
+        assert_eq!(
+            report,
+            "[Aura] Worker report. This message comes from Aura, not the user.\n\n### Builder"
+        );
+        assert!(is_aura_message(&report));
+        assert!(is_aura_message(&aura_header("New review activity")));
+        assert!(!is_aura_message("[Aura] Worker report, can you check it?"));
+        assert!(!is_aura_message(&format!("Quoting: {}", aura_header("x"))));
+        assert!(!is_aura_message(""));
     }
 }

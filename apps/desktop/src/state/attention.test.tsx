@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { PullChange, Session } from "../gen";
+import type { Item, PullChange, Session } from "../gen";
 import type { RpcClient } from "../lib/rpc";
 import { usePullChanges } from "../features/reviews/changes";
 import { Sidebar } from "../components/Sidebar";
@@ -10,8 +10,8 @@ import { useKeyboard } from "../hooks/useKeyboard";
 import { registerCoreCommands } from "../commands/core";
 import { formatKeys, normalizeChord } from "../lib/keymap";
 import { isMac } from "../lib/platform";
-import { inboxCount, useInboxCount, useMarkViewedSeen } from "./attention";
-import { defaultSettings, useStore } from "./store";
+import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./attention";
+import { defaultSettings, emptyTranscript, useStore } from "./store";
 
 vi.mock("../features/reviews/ReviewSidebar", () => ({ ReviewSidebar: () => null }));
 
@@ -224,4 +224,22 @@ it("shows the shortcuts the keymap has, also after they are rebound", () => {
   act(() => useStore.getState().setSettings({ keymapOverrides: [{ keys: "mod+i", command: "" }, { keys: "mod+shift+i", command: "inbox.open" }] }));
   expect(kbds()[0]).toBe(keys("mod+shift+i"));
   expect(screen.getByRole("button", { name: /^Inbox/ }).title).toContain(keys("mod+shift+i"));
+});
+
+it("keeps quiet about a turn on a worker report while other workers still work", () => {
+  const message = (id: string, text: string): Item =>
+    ({ id, session_id: "o", turn_id: null, kind: "user_message", status: "completed", title: null, text, data: {}, parent_id: null, started_at: "", ended_at: null });
+  const reply: Item = { ...message("a", "Noted."), kind: "agent_message" };
+  const transcript = (...items: Item[]) => ({ o: { ...emptyTranscript(), order: items.map((i) => i.id), items: Object.fromEntries(items.map((i) => [i.id, i])) } });
+  const report = message("r", "[Aura] Worker report. This message comes from Aura, not the user.\n\n### Builder");
+  const sessions = (status: Session["status"]) => ({ o: session("o", { orchestrator: true }), w: session("w", { orchestrator_id: "o", status }) });
+
+  useStore.setState({ sessions: sessions("running"), transcripts: transcript(report, reply) });
+  expect(quietReportTurn(useStore.getState(), "o")).toBe(true);
+  // The last worker stopped: the turn on its report is news.
+  useStore.setState({ sessions: sessions("idle") });
+  expect(quietReportTurn(useStore.getState(), "o")).toBe(false);
+  // The user's own turn always is.
+  useStore.setState({ sessions: sessions("running"), transcripts: transcript(report, message("u", "and now?"), reply) });
+  expect(quietReportTurn(useStore.getState(), "o")).toBe(false);
 });

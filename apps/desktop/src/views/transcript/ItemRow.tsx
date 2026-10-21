@@ -6,6 +6,7 @@ import { DiffText } from "./Diff";
 import { MessageImages } from "../ImageThumbs";
 import { useStore } from "../../state/store";
 import { setPlanView } from "../../state/planView";
+import { auraMessage } from "../../lib/auraMessage";
 import { commandOutput, contextBoundary, durationMs, firstLine, fmtDuration, isCardKind, isSlashCommand, itemChanges, itemLabel, kindIcon, prettyJson, truncate } from "./format";
 
 const JSON_LIMIT = 4000;
@@ -166,6 +167,18 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
         <div className="command-output-body">
           <Markdown text={item.text} />
         </div>
+      </div>
+    );
+  }
+  const aura = auraMessage(item);
+  if (aura) {
+    return (
+      <div className={clsx("item aura_message", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+        <div className="aura-message-head">
+          <span className="name">{aura.title}</span>
+          <span className="dim">from Aura</span>
+        </div>
+        {aura.body && <Markdown text={aura.body} />}
       </div>
     );
   }

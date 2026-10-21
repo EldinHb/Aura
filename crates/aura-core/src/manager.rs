@@ -1384,17 +1384,26 @@ impl Manager {
             .map(|r| r.current_turn.is_some())
             .unwrap_or(false);
 
+        // A turn a worker report started is the orchestrator's own business:
+        // what finished before it is still news, and it is only news itself
+        // once the orchestrator's workers are done.
+        let report_turn = self.report_turn(&ev);
+        let quiet = report_turn && self.quiet_report_turn(&ev, pending);
+
         // Update the session row.
         let _ = self.update_session(&sid, |s| {
             s.pending_count = pending;
             // A resumed session replays turns the user has already seen.
-            if !replaying && !requested {
+            if !replaying && !requested && !quiet {
                 if let Some(a) = attention_for(&ev, s.mode, pending) {
                     s.attention = Some(merge_attention(s.attention, a));
                 }
             }
             // It is running again: what finished before is no longer news.
-            if matches!(ev, Event::TurnStarted { .. }) && s.attention == Some(Attention::Done) {
+            if matches!(ev, Event::TurnStarted { .. })
+                && !report_turn
+                && s.attention == Some(Attention::Done)
+            {
                 s.attention = None;
             }
             // Answered, from the inbox say: a turn that goes on asks again when it

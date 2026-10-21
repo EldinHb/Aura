@@ -22,7 +22,7 @@ export const StepsButton = memo(function StepsButton({ group, sessionId, cursor,
   return (
     <button
       type="button"
-      className={clsx("item steps-row", s.running && "running", cursor && "cursor", stale && "stale")}
+      className={clsx("item steps-row", group.aura && "aura", s.running && "running", cursor && "cursor", stale && "stale")}
       data-steps-id={group.id}
       data-hint
       onClick={() => {
@@ -31,7 +31,7 @@ export const StepsButton = memo(function StepsButton({ group, sessionId, cursor,
       }}
     >
       <span className={clsx("status-ico", s.running ? "in_progress" : s.failed ? "failed" : "completed")} />
-      <span className="steps-title">{s.running ? "Working" : `${s.count} ${s.count === 1 ? "step" : "steps"}`}</span>
+      <span className="steps-title">{s.running ? "Working" : (s.aura ?? `${s.count} ${s.count === 1 ? "step" : "steps"}`)}</span>
       <span className="steps-detail dim">{s.running && s.current ? s.current : s.parts}</span>
       {s.failed > 0 && <span className="err-text">{s.failed} failed</span>}
       <span className="spacer" />
@@ -99,7 +99,7 @@ export function StepsDialog({ sessionId, groupId }: { sessionId: string; groupId
       onKeyDown={onKeyDown}
       title={
         <>
-          <span>{summary?.running ? "Working" : "Steps"}</span>
+          <span>{summary?.running ? "Working" : (summary?.aura ?? "Steps")}</span>
           {summary && <span className="dim">{summary.parts}</span>}
           <span className="spacer" />
           {summary?.duration && <span className="dim">{summary.duration}</span>}

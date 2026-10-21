@@ -2813,3 +2813,93 @@ async fn orchestrators_stay_in_the_structured_view_and_workers_need_one() {
         assert!(m.create_session(o).await.is_err());
     }
 }
+
+async fn wait_reports(calls: &Calls, n: usize) {
+    for _ in 0..100 {
+        if sent_reports(calls).len() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{} reports sent, want {n}", sent_reports(calls).len());
+}
+
+#[tokio::test]
+async fn a_turn_on_a_report_marks_the_orchestrator_only_once_its_workers_are_done() {
+    let (m, calls, provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let orch = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let worker = |prompt: &str| WorkerSpec {
+        agent: "claude".into(),
+        prompt: prompt.into(),
+        ..Default::default()
+    };
+
+    // The only worker stops: the turn on its report finishes the work.
+    let b = m.start_worker(&orch.id, worker("task b")).await.unwrap();
+    let b_sink = provider.knobs.lock().sink.clone().unwrap();
+    wait_reports(&calls, 1).await;
+    wait_status(&m, &orch.id, SessionStatus::Idle).await;
+    wait_attention(&m, &orch.id, Some(Attention::Done)).await;
+    assert!(sent_reports(&calls)[0].starts_with(&format!(
+        "send:[Aura] Worker report. {}\n",
+        prompts::AURA_MARK
+    )));
+    assert!(prompts::is_aura_message(
+        sent_reports(&calls)[0].strip_prefix("send:").unwrap()
+    ));
+
+    // B works again while C stops. The turn on C's report is not news yet,
+    // and it does not take away the news the user has not seen.
+    let turn = Turn {
+        id: "b2".into(),
+        session_id: b.id.clone(),
+        status: TurnStatus::Running,
+        started_at: now(),
+        ended_at: None,
+        usage: None,
+        error: None,
+    };
+    b_sink
+        .send(Event::TurnStarted {
+            session_id: b.id.clone(),
+            turn: turn.clone(),
+        })
+        .unwrap();
+    wait_status(&m, &b.id, SessionStatus::Running).await;
+    m.start_worker(&orch.id, worker("task c")).await.unwrap();
+    wait_reports(&calls, 2).await;
+    wait_status(&m, &orch.id, SessionStatus::Idle).await;
+    assert_eq!(
+        m.get_session(&orch.id).unwrap().attention,
+        Some(Attention::Done)
+    );
+    m.mark_seen(&orch.id).unwrap();
+    m.start_worker(&orch.id, worker("task d")).await.unwrap();
+    wait_reports(&calls, 3).await;
+    wait_status(&m, &orch.id, SessionStatus::Idle).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(m.get_session(&orch.id).unwrap().attention, None);
+
+    // B, the last one working, stops: now the orchestrator wants the user.
+    b_sink
+        .send(Event::TurnCompleted {
+            session_id: b.id.clone(),
+            turn: Turn {
+                status: TurnStatus::Completed,
+                ended_at: Some(now()),
+                ..turn
+            },
+        })
+        .unwrap();
+    wait_reports(&calls, 4).await;
+    wait_attention(&m, &orch.id, Some(Attention::Done)).await;
+}

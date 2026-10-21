@@ -9,6 +9,7 @@ import { ApprovalCard } from "./transcript/ApprovalCard";
 import { UserInputCard } from "./transcript/UserInputCard";
 import { StepsButton, openSteps } from "./transcript/Steps";
 import { replySteps, type StepGroup } from "./transcript/replySteps";
+import { auraMessage } from "../lib/auraMessage";
 import { durationMs, fmtDuration, fmtTokens, fmtUsd, isCardKind, lastBoundaryIndex } from "./transcript/format";
 
 let commandsRegistered: (() => void) | null = null;
@@ -111,7 +112,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       if (it.turn_id !== lastTurn) {
         lastTurn = it.turn_id;
         const turn = it.turn_id ? turnsById.get(it.turn_id) : undefined;
-        if (turn && turn.status !== "running") out.push({ kind: "turn", turn, key: `turn:${turn.id}` });
+        // A turn on a message from Aura shows in its group's row, unless it went wrong.
+        const byAura = !!groups.get(it.id)?.aura || (i > 0 && !!auraMessage(top[i - 1]));
+        if (turn && turn.status !== "running" && !(byAura && turn.status === "completed")) out.push({ kind: "turn", turn, key: `turn:${turn.id}` });
       }
       const group = groups.get(it.id);
       if (group) {

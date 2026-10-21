@@ -118,3 +118,53 @@ it("moves a jump to a folded step onto the row that holds it", () => {
   expect(useStore.getState().cursorItemId).toBe("steps:r1");
   expect(container.querySelector(".steps-row.cursor")).toBeTruthy();
 });
+
+const report = (id: string, extra: Partial<Item> = {}) =>
+  item(id, "user_message", { text: `[Aura] Worker report. This message comes from Aura, not the user.\n\n### Builder ${id}\nLast reply:\nDone.`, ...extra });
+
+it("folds worker reports and the turns on them into one row, keeping the replies to the user", () => {
+  load([
+    item("u1", "user_message", { text: "build it" }),
+    item("a1", "agent_message", { text: "Started a worker." }),
+    // Reports the orchestrator only acted on, then one it answers the user on: one row for all three.
+    report("w1", { turn_id: "t2" }),
+    item("c1", "mcp_call", { turn_id: "t2" }),
+    report("w2", { turn_id: null }),
+    item("r2", "reasoning", { turn_id: "t3" }),
+    item("c2", "mcp_call", { turn_id: "t3" }),
+    report("w3", { turn_id: "t4" }),
+    item("a4", "agent_message", { turn_id: "t4", text: "The build is done." }),
+  ]);
+  act(() => {
+    const t = useStore.getState().transcripts.s;
+    const turn = (id: string, status: "completed" | "failed") => ({ id, session_id: "s", status, started_at: "", ended_at: "", usage: null, error: status === "failed" ? "overloaded" : null });
+    useStore.setState({ transcripts: { s: { ...t, turns: [turn("t1", "completed"), turn("t2", "completed"), turn("t3", "completed"), turn("t4", "failed")] } } });
+  });
+  const { container } = render(
+    <>
+      <Transcript sessionId="s" />
+      <Overlays />
+    </>,
+  );
+  const shown = [...container.querySelectorAll(".transcript > [data-item-id], .transcript > [data-steps-id], .transcript > .turn-divider")].map(
+    (el) => el.getAttribute("data-item-id") ?? (el.getAttribute("data-steps-id") ? `steps:${el.getAttribute("data-steps-id")}` : `turn:${el.textContent}`),
+  );
+  // Only the turn the user started and the one that failed keep their divider.
+  expect(shown).toEqual([expect.stringMatching(/^turn:completed/), "u1", "a1", "steps:w1", expect.stringMatching(/^turn:failed/), "a4"]);
+  expect(container.textContent).not.toContain("[Aura]");
+  const row = container.querySelector<HTMLElement>(".steps-row.aura")!;
+  expect(row.textContent).toContain("3 worker reports");
+  expect(row.textContent).toContain("thinking, 2 tool calls");
+
+  fireEvent.click(row);
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.querySelectorAll(".aura_message")).toHaveLength(3);
+  expect(dialog.textContent).toContain("Builder w2");
+  expect(dialog.textContent).not.toContain("This message comes from Aura");
+});
+
+it("keeps a reply to the user apart from the next report's group", () => {
+  const items = [report("w1"), item("a1", "agent_message"), report("w2", { turn_id: "t2" }), item("c2", "tool_call", { turn_id: "t2" })];
+  expect(ids(groupSteps(items))).toEqual(["w1>w1", "w2>w2", "c2>w2"]);
+  expect(groupSteps(items).get("w1")?.aura).toBe(true);
+});

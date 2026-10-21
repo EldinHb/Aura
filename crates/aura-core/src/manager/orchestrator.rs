@@ -5,7 +5,10 @@
 //!
 //! Whenever a worker stops (its turn ends, it fails, or it waits on the user),
 //! the orchestrator is sent a report once it is idle. Workers that `wait`
-//! already returned are not reported again.
+//! already returned are not reported again. Reports are messages from Aura
+//! (see [`crate::prompts::aura_header`]), which the user's chat leaves out;
+//! a turn one starts marks the orchestrator for the user only once its
+//! workers are done.
 //!
 //! An orchestrator need not belong to a folder. One created without one runs
 //! in a directory of its own under [`Manager::enable_orchestrator_dirs`] and
@@ -35,6 +38,10 @@ pub(super) struct State {
     queued: HashMap<SessionId, BTreeSet<SessionId>>,
     /// Orchestrators sent a report whose turn has not started yet.
     delivering: HashSet<SessionId>,
+    /// Those of `delivering` sent a worker report, not another message from Aura.
+    reporting: HashSet<SessionId>,
+    /// Orchestrators whose current turn a worker report started.
+    report_turns: HashSet<SessionId>,
     /// Workers sent a message whose turn has not started yet, so a `wait`
     /// right after dispatching does not mistake them for finished.
     dispatched: HashSet<SessionId>,
@@ -233,6 +240,8 @@ impl Manager {
         let mut st = self.inner.orchestration.lock();
         st.queued.remove(id);
         st.delivering.remove(id);
+        st.reporting.remove(id);
+        st.report_turns.remove(id);
         st.dispatched.remove(id);
         for q in st.queued.values_mut() {
             q.remove(id);
@@ -555,6 +564,9 @@ impl Manager {
         );
         for item in &items[from..] {
             let line = match item.kind {
+                ItemKind::UserMessage if crate::prompts::is_aura_message(&item.text) => {
+                    format!("\n## Message from Aura\n{}\n", item.text.trim())
+                }
                 ItemKind::UserMessage => {
                     format!("\n## Message to the worker\n{}\n", item.text.trim())
                 }
@@ -728,6 +740,61 @@ impl Manager {
             .collect())
     }
 
+    /// Whether `ev` starts or ends a turn that a worker report started.
+    /// Called for every event before the session row is updated.
+    pub(super) fn report_turn(&self, ev: &Event) -> bool {
+        // Called for every event, streamed text included: leave early.
+        if !matches!(
+            ev,
+            Event::TurnStarted { .. } | Event::TurnCompleted { .. } | Event::ProcessExited { .. }
+        ) {
+            return false;
+        }
+        let sid = ev.session_id();
+        let mut st = self.inner.orchestration.lock();
+        match ev {
+            Event::TurnStarted { .. } => {
+                if st.reporting.remove(sid) {
+                    st.report_turns.insert(sid.to_string())
+                } else {
+                    st.report_turns.remove(sid);
+                    false
+                }
+            }
+            Event::TurnCompleted { .. } => st.report_turns.remove(sid),
+            Event::ProcessExited { .. } => {
+                st.report_turns.remove(sid);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a turn a report started ends with nothing for the user yet:
+    /// it finished well and the orchestrator still has workers working or
+    /// reports to take. When the last of them stops, the turn it reports
+    /// starts the one that marks the orchestrator done.
+    pub(super) fn quiet_report_turn(&self, ev: &Event, pending: u32) -> bool {
+        let Event::TurnCompleted { session_id, turn } = ev else {
+            return false;
+        };
+        if turn.status != TurnStatus::Completed || pending > 0 {
+            return false;
+        }
+        let queued = self
+            .inner
+            .orchestration
+            .lock()
+            .queued
+            .get(session_id)
+            .is_some_and(|q| !q.is_empty());
+        queued
+            || self
+                .workers_of(session_id)
+                .iter()
+                .any(|w| !w.archived && !self.settled(&w.id))
+    }
+
     /// Follow events that matter to orchestration. Called for every event
     /// after the session row is updated.
     pub(super) fn on_orchestration_event(&self, ev: &Event) {
@@ -752,6 +819,7 @@ impl Manager {
         if ended || matches!(ev, Event::TurnStarted { .. }) {
             let mut st = self.inner.orchestration.lock();
             st.delivering.remove(sid);
+            st.reporting.remove(sid);
             if !matches!(ev, Event::TurnCompleted { .. }) {
                 st.dispatched.remove(sid);
             }
@@ -878,6 +946,7 @@ impl Manager {
             match st.queued.remove(orchestrator) {
                 Some(q) if !q.is_empty() => {
                     st.delivering.insert(orchestrator.to_string());
+                    st.reporting.insert(orchestrator.to_string());
                     q
                 }
                 _ => return,
@@ -889,11 +958,9 @@ impl Manager {
             .map(|s| self.report(&s))
             .collect();
         if reports.is_empty() {
-            self.inner
-                .orchestration
-                .lock()
-                .delivering
-                .remove(orchestrator);
+            let mut st = self.inner.orchestration.lock();
+            st.delivering.remove(orchestrator);
+            st.reporting.remove(orchestrator);
             return;
         }
         let text = report_message(&reports);
@@ -910,7 +977,11 @@ impl Manager {
                 )
                 .await
             {
-                me.inner.orchestration.lock().delivering.remove(&id);
+                {
+                    let mut st = me.inner.orchestration.lock();
+                    st.delivering.remove(&id);
+                    st.reporting.remove(&id);
+                }
                 me.publish(Event::Notice {
                     session_id: id,
                     level: NoticeLevel::Warn,
@@ -924,7 +995,8 @@ impl Manager {
 /// The message an orchestrator receives about workers that stopped.
 pub fn report_message(reports: &[WorkerReport]) -> String {
     format!(
-        "[Aura] Worker report. This message comes from Aura, not the user.\n\n{}",
+        "{}\n{}",
+        crate::prompts::aura_header("Worker report"),
         describe_workers(reports)
     )
 }

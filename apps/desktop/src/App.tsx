@@ -6,7 +6,7 @@ import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
 import { useDetectedLinksSync } from "./state/sessionLinkPreferences";
-import { inboxCount, useInboxCount, useMarkViewedSeen } from "./state/attention";
+import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
 import { connectDaemon, isTauri } from "./lib/connection";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
@@ -233,6 +233,7 @@ async function notifyIfNeeded(ev: Event) {
   if (focused && ev.type === "turn_completed") return;
   // A turn on review activity Aura handed over gets its own notification.
   if (ev.type === "turn_completed" && isHandlingReview(ev.session_id)) return;
+  if (ev.type === "turn_completed" && quietReportTurn(st, ev.session_id)) return;
   const now = Date.now();
   if (now - lastNotified < 1500) return;
   lastNotified = now;

@@ -4,8 +4,9 @@
  * opens the session. The inbox counts what waits on the user.
  */
 import { useEffect, useSyncExternalStore } from "react";
-import type { Attention, Session } from "../gen";
+import type { Attention, Item, Session } from "../gen";
 import { unreadChanges, usePullChanges } from "../features/reviews/changes";
+import { auraMessage } from "../lib/auraMessage";
 import { selectPendingCount, useStore, type AppState } from "./store";
 
 /** The sidebar marker of each kind. */
@@ -59,6 +60,23 @@ export function useMarkViewedSeen() {
 export function hiddenAttention(hidden: Session[]): Attention | null {
   for (const kind of ["waiting", "failed", "done"] as const) if (hidden.some((w) => w.attention === kind)) return kind;
   return null;
+}
+
+/**
+ * Whether the session's last turn answered a worker report while other workers
+ * still work. Such a turn is no news for the user yet; the daemon leaves its
+ * attention alone the same way.
+ */
+export function quietReportTurn(st: AppState, sessionId: string): boolean {
+  const t = st.transcripts[sessionId];
+  if (!t) return false;
+  let opener: Item | undefined;
+  for (let i = t.order.length - 1; i >= 0 && !opener; i--) {
+    const it = t.items[t.order[i]];
+    if (it?.kind === "user_message" && !it.parent_id) opener = it;
+  }
+  if (!opener || !auraMessage(opener)?.report) return false;
+  return Object.values(st.sessions).some((w) => w.orchestrator_id === sessionId && !w.archived && w.status === "running");
 }
 
 /** How many rows the inbox lists: approvals and questions waiting in any session, and unread changes on followed pull requests. */

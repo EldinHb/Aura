@@ -685,9 +685,7 @@ fn clip(body: &str) -> String {
 
 /// The message a session gets about new review activity on its PRs.
 pub fn hand_over_message(prs: &[PrActivity], orchestrator: bool) -> String {
-    let mut out = String::from(
-        "[Aura] New review activity on your pull request. This message comes from Aura, not the user.\n",
-    );
+    let mut out = prompts::aura_header("New review activity on your pull request");
     for pr in prs {
         out.push_str(&format!(
             "\n## {}#{} {}\n{}\n",

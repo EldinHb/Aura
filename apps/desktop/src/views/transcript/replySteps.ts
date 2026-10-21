@@ -1,4 +1,5 @@
 import type { Item } from "../../gen";
+import { auraMessage } from "../../lib/auraMessage";
 import { commandOutput, contextBoundary, durationMs, fmtDuration, itemLabel } from "./format";
 
 export type TranscriptTree = {
@@ -30,11 +31,13 @@ export type StepGroup = {
   /** The first step's item id; stable while the group grows. */
   id: string;
   items: Item[];
+  /** Replies to messages from Aura (worker reports, say), which are steps of their own. */
+  aura: boolean;
 };
 
 /** Items that stay in the chat: messages from the user, replies, errors and context markers. */
 function alwaysShown(it: Item): boolean {
-  return it.kind === "user_message" || it.kind === "agent_message" || it.kind === "error" || !!contextBoundary(it) || !!commandOutput(it);
+  return (it.kind === "user_message" && !auraMessage(it)) || it.kind === "agent_message" || it.kind === "error" || !!contextBoundary(it) || !!commandOutput(it);
 }
 
 /**
@@ -43,29 +46,41 @@ function alwaysShown(it: Item): boolean {
  * messages written before the last step. The agent messages after the last step
  * are the reply itself and stay in the chat.
  *
+ * A message from Aura is a step of the reply to it, so the chat keeps only what
+ * the user and the agent said to each other. Replies to Aura that leave nothing
+ * in the chat share one group with the next reply to Aura.
+ *
  * Returns each grouped item's id mapped to its group.
  */
 export function groupSteps(top: Item[]): Map<string, StepGroup> {
   const out = new Map<string, StepGroup>();
   let start = 0;
+  let quiet: StepGroup | null = null;
   const flush = (end: number) => {
     const seg = top.slice(start, end);
     let last = -1;
     seg.forEach((it, i) => {
       if (!alwaysShown(it)) last = i;
     });
-    let group: StepGroup | null = null;
+    const aura = seg.length > 0 && !!auraMessage(seg[0]);
+    let group: StepGroup | null = aura ? quiet : null;
+    let shown = false;
     seg.forEach((it, i) => {
       const step = !alwaysShown(it) || (it.kind === "agent_message" && i < last);
-      if (!step) return;
-      group ??= { id: it.id, items: [] };
+      if (!step) {
+        shown = true;
+        return;
+      }
+      group ??= { id: it.id, items: [], aura };
       group.items.push(it);
       out.set(it.id, group);
     });
+    quiet = aura && !shown ? group : null;
     start = end;
   };
+  // A turn that opens with the message it answers stays one reply.
   top.forEach((it, i) => {
-    if (i > start && (it.kind === "user_message" || it.turn_id !== top[i - 1].turn_id)) flush(i);
+    if (i > start && (it.kind === "user_message" || (it.turn_id !== top[i - 1].turn_id && top[i - 1].kind !== "user_message"))) flush(i);
   });
   flush(top.length);
   return out;
@@ -85,6 +100,8 @@ const NOUNS: Partial<Record<Item["kind"], [string, string]>> = {
 
 export type StepSummary = {
   count: number;
+  /** "3 worker reports" when the group holds messages from Aura. */
+  aura: string | null;
   /** "thinking, 3 commands, 2 edits" */
   parts: string;
   running: boolean;
@@ -96,6 +113,8 @@ export type StepSummary = {
 
 export function summarizeSteps(items: Item[]): StepSummary {
   const counts = new Map<string, number>();
+  let reports = 0;
+  let others = 0;
   let thinking = false;
   let failed = 0;
   let current: Item | null = null;
@@ -104,6 +123,12 @@ export function summarizeSteps(items: Item[]): StepSummary {
     if (it.status === "failed") failed++;
     if (it.kind === "reasoning") {
       thinking = true;
+      continue;
+    }
+    const aura = auraMessage(it);
+    if (aura) {
+      if (aura.report) reports++;
+      else others++;
       continue;
     }
     const noun = NOUNS[it.kind];
@@ -116,8 +141,13 @@ export function summarizeSteps(items: Item[]): StepSummary {
   const first = items[0];
   const ends = items.map((it) => it.ended_at).filter((x): x is string => !!x).sort();
   const running = current !== null;
+  const fromAura = [
+    ...(reports ? [`${reports} worker ${reports === 1 ? "report" : "reports"}`] : []),
+    ...(others ? [`${others} ${others === 1 ? "message" : "messages"} from Aura`] : []),
+  ].join(", ");
   return {
     count: items.length,
+    aura: fromAura || null,
     parts,
     running,
     current: current ? (current.kind === "reasoning" ? "thinking" : itemLabel(current)) : null,
