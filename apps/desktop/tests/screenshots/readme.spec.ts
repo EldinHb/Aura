@@ -220,6 +220,8 @@ async function mockDaemon(page: Page, detail: { pull: PullRequest; timeline: Pul
 
 const open = async (page: Page, sid: string, detail?: Parameters<typeof mockDaemon>[1]) => {
   await mockDaemon(page, detail);
+  // The fixtures are dated; a fixed clock keeps "5m ago" from drifting into "6d" as the shots age.
+  await page.clock.setFixedTime(now);
   await page.goto(`/?port=19998&token=shots&session=${sid}`);
 };
 
