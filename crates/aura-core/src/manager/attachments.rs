@@ -6,14 +6,16 @@
 //!
 //! Providers emit the user message themselves (Codex only once the server
 //! echoes it), so what a send attached is staged per session and added to the
-//! first top-level user message with the same text.
+//! first top-level user message with the same text. Other data a message
+//! carries is staged the same way: a message from an orchestrator to its
+//! worker records `data.from_orchestrator`, the orchestrator's id.
 
 use super::Manager;
 use crate::event::Event;
 use crate::types::{Input, ItemKind};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -22,9 +24,10 @@ const MAX_STAGED: usize = 16;
 
 #[derive(Default)]
 pub(super) struct Staged {
-    sends: VecDeque<(String, Vec<Value>)>,
-    /// Attachments of user messages that started but have not completed.
-    by_item: std::collections::HashMap<String, Vec<Value>>,
+    /// Text of each send and the data its user message gets.
+    sends: VecDeque<(String, Map<String, Value>)>,
+    /// Data of user messages that started but have not completed.
+    by_item: std::collections::HashMap<String, Map<String, Value>>,
 }
 
 impl Manager {
@@ -76,18 +79,24 @@ impl Manager {
                 })
             })
             .collect();
+        self.stage_data(id, &input.text, "attachments", Value::Array(refs));
+    }
+
+    /// Give the user message the next send of `text` makes `data.<key> = value`.
+    pub(super) fn stage_data(&self, id: &str, text: &str, key: &str, value: Value) {
         let mut rts = self.inner.runtimes.lock();
         let staged = &mut rts.entry(id.to_string()).or_default().staged;
-        staged
-            .sends
-            .push_back((input.text.trim().to_string(), refs));
+        staged.sends.push_back((
+            text.trim().to_string(),
+            Map::from_iter([(key.to_string(), value)]),
+        ));
         while staged.sends.len() > MAX_STAGED {
             staged.sends.pop_front();
         }
     }
 
-    /// The send failed, so no user message will carry its attachments.
-    pub(super) fn unstage_attachments(&self, id: &str, text: &str) {
+    /// The send failed, so no user message will carry what it staged.
+    pub(super) fn unstage(&self, id: &str, text: &str) {
         if let Some(rt) = self.inner.runtimes.lock().get_mut(id) {
             let text = text.trim();
             if let Some(pos) = rt.staged.sends.iter().rposition(|(t, _)| t == text) {
@@ -96,7 +105,7 @@ impl Manager {
         }
     }
 
-    /// Adds staged attachments to the user message they were sent with.
+    /// Adds staged data to the user message it was sent with.
     pub(super) fn attach_staged(&self, ev: &mut Event) {
         let completed = matches!(ev, Event::ItemCompleted { .. });
         let (Event::ItemStarted { session_id, item } | Event::ItemCompleted { session_id, item }) =
@@ -111,26 +120,24 @@ impl Manager {
         let Some(staged) = rts.get_mut(session_id.as_str()).map(|rt| &mut rt.staged) else {
             return;
         };
-        let refs = match staged.by_item.get(&item.id) {
-            Some(refs) => refs.clone(),
+        let extra = match staged.by_item.get(&item.id) {
+            Some(extra) => extra.clone(),
             None => {
                 let text = item.text.trim();
                 let Some(pos) = staged.sends.iter().position(|(t, _)| t == text) else {
                     return;
                 };
-                let (_, refs) = staged.sends.remove(pos).unwrap_or_default();
-                staged.by_item.insert(item.id.clone(), refs.clone());
-                refs
+                let (_, extra) = staged.sends.remove(pos).unwrap_or_default();
+                staged.by_item.insert(item.id.clone(), extra.clone());
+                extra
             }
         };
         if completed {
             staged.by_item.remove(&item.id);
         }
         match &mut item.data {
-            Value::Object(map) => {
-                map.insert("attachments".into(), Value::Array(refs));
-            }
-            data @ Value::Null => *data = json!({ "attachments": refs }),
+            Value::Object(map) => map.extend(extra),
+            data @ Value::Null => *data = Value::Object(extra),
             _ => {}
         }
     }

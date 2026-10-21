@@ -623,7 +623,7 @@ impl Manager {
                 let staged = (!input.images.is_empty()).then(|| input.text.clone());
                 let sent = driver.send(input).await;
                 if let (Err(_), Some(text)) = (&sent, staged) {
-                    self.unstage_attachments(id, &text);
+                    self.unstage(id, &text);
                 }
                 sent
             }

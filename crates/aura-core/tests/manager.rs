@@ -3009,3 +3009,81 @@ async fn the_load_balancer_reaches_orchestrators_only_when_on_and_refuses_forbid
     assert!(!off.contains("## Load balancer"), "{off}");
     m.start_worker(&lead.id, worker("opus")).await.unwrap();
 }
+
+#[tokio::test]
+async fn messages_from_an_orchestrator_are_told_apart_from_the_users() {
+    let (m, _calls, _provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let orch = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().to_string(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let worker = m
+        .start_worker(
+            &orch.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "build it".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    wait_status(&m, &worker.id, SessionStatus::Idle).await;
+    m.send(
+        &worker.id,
+        Input {
+            text: "from me".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &worker.id, SessionStatus::Idle).await;
+    m.message_worker(&orch.id, &worker.id, "and test it".into())
+        .await
+        .unwrap();
+    wait_status(&m, &worker.id, SessionStatus::Idle).await;
+
+    let user_messages = || -> Vec<(String, Option<String>)> {
+        m.history(&worker.id, 0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.event {
+                Event::ItemCompleted { item, .. } if item.kind == ItemKind::UserMessage => Some((
+                    item.text.clone(),
+                    item.data["from_orchestrator"].as_str().map(String::from),
+                )),
+                _ => None,
+            })
+            .collect()
+    };
+    for _ in 0..100 {
+        if user_messages().len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let from = user_messages();
+    assert_eq!(
+        from,
+        vec![
+            ("build it".into(), Some(orch.id.clone())),
+            ("from me".into(), None),
+            ("and test it".into(), Some(orch.id.clone())),
+        ]
+    );
+    // read_session tells the orchestrator which messages were its own.
+    let text = m.worker_transcript(&orch.id, &worker.id, 10).unwrap();
+    assert!(
+        text.contains("## Your message to the worker\nbuild it")
+            && text.contains("## Message from the user\nfrom me")
+            && text.contains("## Your message to the worker\nand test it"),
+        "{text}"
+    );
+}

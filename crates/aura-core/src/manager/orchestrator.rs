@@ -407,7 +407,8 @@ impl Manager {
             }
             Ok(_) => {}
         }
-        self.dispatch(&session.id, spec.prompt).await?;
+        self.dispatch(orchestrator, &session.id, spec.prompt)
+            .await?;
         self.get_session(&session.id)
     }
 
@@ -423,14 +424,26 @@ impl Manager {
         if text.trim().is_empty() {
             bail!("empty message");
         }
-        self.dispatch(&w.id, text).await?;
+        self.dispatch(orchestrator, &w.id, text).await?;
         self.get_session(&w.id)
     }
 
-    async fn dispatch(&self, worker: &str, text: String) -> Result<()> {
+    /// Send a worker a message from its orchestrator. The user message it
+    /// makes records the orchestrator in `data.from_orchestrator`, which tells
+    /// it apart from what the user typed to the worker.
+    async fn dispatch(&self, orchestrator: &str, worker: &str, text: String) -> Result<()> {
+        let w = self.get_session(worker)?;
+        if w.mode == SessionMode::Structured {
+            self.stage_data(
+                worker,
+                &text,
+                "from_orchestrator",
+                serde_json::Value::String(orchestrator.to_string()),
+            );
+        }
         // A busy worker stays `running`, which `wait` already treats as busy;
         // marking it would wait for a turn that may never start on its own.
-        let busy = self.get_session(worker)?.status == SessionStatus::Running;
+        let busy = w.status == SessionStatus::Running;
         if !busy {
             self.inner
                 .orchestration
@@ -442,13 +455,14 @@ impl Manager {
             .send(
                 worker,
                 Input {
-                    text,
+                    text: text.clone(),
                     ..Default::default()
                 },
             )
             .await;
         if result.is_err() {
             self.inner.orchestration.lock().dispatched.remove(worker);
+            self.unstage(worker, &text);
         }
         result
     }
@@ -582,10 +596,20 @@ impl Manager {
             label(&w),
             status_name(w.status)
         );
-        for item in &items[from..] {
+        let marked = items
+            .iter()
+            .position(|i| i.kind == ItemKind::UserMessage && from_orchestrator(i));
+        for (n, item) in items.iter().enumerate().skip(from) {
             let line = match item.kind {
                 ItemKind::UserMessage if crate::prompts::is_aura_message(&item.text) => {
                     format!("\n## Message from Aura\n{}\n", item.text.trim())
+                }
+                ItemKind::UserMessage if from_orchestrator(item) => {
+                    format!("\n## Your message to the worker\n{}\n", item.text.trim())
+                }
+                // Before Aura marked the orchestrator's messages, neither could be told apart.
+                ItemKind::UserMessage if marked.is_some_and(|m| n > m) => {
+                    format!("\n## Message from the user\n{}\n", item.text.trim())
                 }
                 ItemKind::UserMessage => {
                     format!("\n## Message to the worker\n{}\n", item.text.trim())
@@ -1012,6 +1036,11 @@ impl Manager {
             }
         });
     }
+}
+
+/// Whether a worker's user message came from its orchestrator, not the user.
+fn from_orchestrator(item: &Item) -> bool {
+    item.data.get("from_orchestrator").is_some()
 }
 
 /// The message an orchestrator receives about workers that stopped.
