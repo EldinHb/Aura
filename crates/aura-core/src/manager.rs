@@ -1410,9 +1410,8 @@ impl Manager {
                     } else {
                         SessionStatus::Idle
                     };
-                    if let Some(u) = &turn.usage {
-                        s.usage = u.clone();
-                    }
+                    // A turn's usage is what that turn spent; the session's
+                    // totals arrive as `Event::Usage`.
                     if turn.status == TurnStatus::Failed {
                         s.last_error = turn.error.clone();
                     }

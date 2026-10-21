@@ -144,14 +144,23 @@ impl Driver for FakeDriver {
                 session_id: self.session_id.clone(),
                 item: item.with_text("hello").completed(),
             });
+            // Session totals, then the turn's own share of them.
+            let _ = self.sink.send(Event::Usage {
+                session_id: self.session_id.clone(),
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                },
+            });
             let _ = self.sink.send(Event::TurnCompleted {
                 session_id: self.session_id.clone(),
                 turn: Turn {
                     status: TurnStatus::Completed,
                     ended_at: Some(now()),
                     usage: Some(Usage {
-                        input_tokens: 10,
-                        output_tokens: 5,
+                        input_tokens: 4,
+                        output_tokens: 2,
                         ..Default::default()
                     }),
                     ..turn
@@ -470,6 +479,7 @@ async fn structured_session_flow() {
     assert!(evs.iter().any(|e| matches!(e, Event::TurnCompleted { .. })));
     let s = m.get_session(&s.id).unwrap();
     assert_eq!(s.native_id.as_deref(), Some("native-1"));
+    // The session keeps its totals; the turn's usage does not replace them.
     assert_eq!(s.usage.input_tokens, 10);
     assert_eq!(starts.lock().len(), 1);
     assert_eq!(calls.lock()[0], "send:hi");

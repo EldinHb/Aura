@@ -409,8 +409,31 @@ mod tests {
             "type": "result", "subtype": "success", "is_error": false, "session_id": "n1", "total_cost_usd": 0.02,
             "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 0,
                       "iterations": [{"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 25000, "cache_creation_input_tokens": 0}]},
-            "modelUsage": {"claude-haiku-4-5": {"contextWindow": 200000}}
+            "modelUsage": {"claude-haiku-4-5": {"inputTokens": 10, "outputTokens": 5, "cacheReadInputTokens": 100, "cacheCreationInputTokens": 0, "contextWindow": 200000}}
         })
+    }
+
+    /// A stream event of one API call, in the main thread or a subagent's.
+    fn call_event(parent: Option<&str>, event: Value) -> Value {
+        serde_json::json!({"type": "stream_event", "parent_tool_use_id": parent, "event": event})
+    }
+
+    fn message_start(parent: Option<&str>, id: &str, model: &str, cache_read: u64) -> Value {
+        call_event(
+            parent,
+            serde_json::json!({"type": "message_start", "message": {"id": id, "model": model, "usage": {
+                "input_tokens": 2, "cache_read_input_tokens": cache_read, "cache_creation_input_tokens": 100, "output_tokens": 1}}}),
+        )
+    }
+
+    fn turn_of(events: &[Event]) -> Turn {
+        events
+            .iter()
+            .find_map(|e| match e {
+                Event::TurnCompleted { turn, .. } => Some(turn.clone()),
+                _ => None,
+            })
+            .expect("turn completed")
     }
 
     fn usage_of(events: &[Event]) -> Option<Usage> {
@@ -658,5 +681,233 @@ mod tests {
         assert_eq!(turn.status, TurnStatus::Completed);
         assert!(native.is_some());
         driver.stop().await.unwrap();
+    }
+
+    #[test]
+    fn context_follows_each_main_thread_call() {
+        let mut p = Parser::new("s");
+        p.start_turn("hi");
+        p.handle_line(&model_result());
+        p.start_turn("go on");
+        // Each API call reports its context as it starts, long before the result.
+        let usage = usage_of(&p.handle_line(&message_start(None, "m1", "claude-haiku-4-5", 30000)))
+            .unwrap();
+        assert_eq!(usage.context_used, Some(30103));
+        assert_eq!(usage.context_window, Some(200000), "the window is kept");
+        assert_eq!(usage.input_tokens, 10, "the totals are kept");
+        // Its end adds the final output count.
+        let delta = call_event(
+            None,
+            serde_json::json!({"type": "message_delta", "usage": {"output_tokens": 400}}),
+        );
+        assert_eq!(
+            usage_of(&p.handle_line(&delta)).unwrap().context_used,
+            Some(30502)
+        );
+        // A subagent's calls fill its own context, not this one.
+        assert!(usage_of(&p.handle_line(&message_start(
+            Some("toolu_1"),
+            "m2",
+            "claude-haiku-4-5",
+            90000
+        )))
+        .is_none());
+        let delta = call_event(
+            Some("toolu_1"),
+            serde_json::json!({"type": "message_delta", "usage": {"output_tokens": 9}}),
+        );
+        assert!(usage_of(&p.handle_line(&delta)).is_none());
+        // Recent CLIs repeat the input side at the end; it is the final count.
+        let delta = call_event(
+            None,
+            serde_json::json!({"type": "message_delta", "usage": {
+            "input_tokens": 2, "cache_read_input_tokens": 31000, "cache_creation_input_tokens": 0, "output_tokens": 10}}),
+        );
+        assert_eq!(
+            usage_of(&p.handle_line(&delta)).unwrap().context_used,
+            Some(31012)
+        );
+    }
+
+    #[test]
+    fn session_totals_span_turns_and_a_turn_gets_its_share() {
+        let mut p = Parser::new("s");
+        p.start_turn("hi");
+        let ev = p.handle_line(&model_result());
+        let turn = turn_of(&ev);
+        assert_eq!(turn.usage.as_ref().unwrap().input_tokens, 10);
+        assert_eq!(turn.usage.as_ref().unwrap().total_cost_usd, Some(0.02));
+
+        // `usage` covers this turn's main thread only; `modelUsage` and the cost
+        // are totals for the conversation, a subagent's model included.
+        p.start_turn("again");
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "result", "subtype": "success", "is_error": false, "session_id": "n1", "total_cost_usd": 0.05,
+            "usage": {"input_tokens": 4, "output_tokens": 7, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 50,
+                      "iterations": [{"input_tokens": 2, "output_tokens": 3, "cache_read_input_tokens": 26000, "cache_creation_input_tokens": 50}]},
+            "modelUsage": {
+                "claude-haiku-4-5": {"inputTokens": 14, "outputTokens": 12, "cacheReadInputTokens": 400, "cacheCreationInputTokens": 50, "contextWindow": 200000},
+                "claude-sonnet-4-5": {"inputTokens": 6, "outputTokens": 8, "cacheReadInputTokens": 1000, "cacheCreationInputTokens": 0, "contextWindow": 200000}
+            }
+        }));
+        let usage = usage_of(&ev).unwrap();
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cached_input_tokens
+            ),
+            (20, 20, 1450)
+        );
+        assert_eq!(usage.total_cost_usd, Some(0.05));
+        assert_eq!(usage.context_used, Some(26055));
+        let turn = turn_of(&ev).usage.unwrap();
+        assert_eq!(
+            (
+                turn.input_tokens,
+                turn.output_tokens,
+                turn.cached_input_tokens
+            ),
+            (10, 15, 1350)
+        );
+        assert!(
+            (turn.total_cost_usd.unwrap() - 0.03).abs() < 1e-9,
+            "{:?}",
+            turn.total_cost_usd
+        );
+    }
+
+    #[test]
+    fn a_resumed_session_measures_turns_from_its_stored_usage() {
+        // Claude restores the totals on resume; the host seeds what it stored.
+        let mut p = Parser::new("s");
+        p.usage = Some(Usage {
+            input_tokens: 8,
+            output_tokens: 4,
+            cached_input_tokens: 90,
+            total_cost_usd: Some(0.015),
+            context_window: Some(200000),
+            context_used: Some(20000),
+        });
+        p.start_turn("/context");
+        let mut result = zero_result("context", "n1");
+        result["total_cost_usd"] = serde_json::json!(0.015);
+        let usage = usage_of(&p.handle_line(&result)).expect("kept");
+        assert_eq!(usage.context_used, Some(20000));
+        p.start_turn("hi");
+        let turn = turn_of(&p.handle_line(&model_result())).usage.unwrap();
+        assert_eq!((turn.input_tokens, turn.output_tokens), (2, 1));
+        assert!((turn.total_cost_usd.unwrap() - 0.005).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_interrupted_turn_keeps_the_context() {
+        let mut p = Parser::new("s");
+        p.start_turn("hi");
+        p.handle_line(&model_result());
+        p.start_turn("write an essay");
+        p.handle_line(&message_start(None, "m1", "claude-haiku-4-5", 26000));
+        // An aborted call is not in the result: no iterations, totals unchanged.
+        let ev = p.handle_line(&serde_json::json!({
+            "type": "result", "subtype": "error_during_execution", "is_error": true, "terminal_reason": "aborted_streaming",
+            "session_id": "n1", "total_cost_usd": 0.02,
+            "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "iterations": []},
+            "modelUsage": {"claude-haiku-4-5": {"inputTokens": 10, "outputTokens": 5, "cacheReadInputTokens": 100, "cacheCreationInputTokens": 0, "contextWindow": 200000}}
+        }));
+        let usage = usage_of(&ev).unwrap();
+        assert_eq!(usage.context_used, Some(26103));
+        assert_eq!(usage.context_window, Some(200000));
+        assert_eq!(turn_of(&ev).status, TurnStatus::Interrupted);
+        assert_eq!(turn_of(&ev).usage.unwrap().total_cost_usd, Some(0.0));
+    }
+
+    #[test]
+    fn the_context_window_is_the_model_in_use() {
+        let mut p = Parser::new("s");
+        // The session was started with an alias; the API names the real model.
+        p.model = Some("opus".into());
+        p.start_turn("hi");
+        p.handle_line(&message_start(None, "m1", "claude-opus-4-6", 20000));
+        // A subagent on another model must not decide the window.
+        p.handle_line(&message_start(
+            Some("toolu_1"),
+            "m2",
+            "claude-haiku-4-5",
+            1000,
+        ));
+        let mut result = model_result();
+        result["modelUsage"] = serde_json::json!({
+            "claude-haiku-4-5": {"inputTokens": 1, "contextWindow": 200000},
+            "claude-opus-4-6[1m]": {"inputTokens": 1, "contextWindow": 1000000}
+        });
+        assert_eq!(
+            usage_of(&p.handle_line(&result)).unwrap().context_window,
+            Some(1000000)
+        );
+
+        // Switched to a smaller model: its window, though a larger one is listed.
+        p.start_turn("more");
+        p.handle_line(&message_start(None, "m3", "claude-sonnet-4-5", 20000));
+        result["modelUsage"]["claude-sonnet-4-5"] =
+            serde_json::json!({"inputTokens": 1, "contextWindow": 200000});
+        assert_eq!(
+            usage_of(&p.handle_line(&result)).unwrap().context_window,
+            Some(200000)
+        );
+    }
+
+    #[test]
+    fn compaction_drops_the_context_at_its_boundary_and_adds_its_cost() {
+        let mut p = Parser::new("s");
+        p.start_turn("hi");
+        p.handle_line(&model_result());
+        p.start_turn("big task");
+        p.handle_line(&message_start(None, "m1", "claude-haiku-4-5", 150000));
+        // Auto compaction mid-turn: the context is small again right away.
+        let ev = p.handle_line(
+            &serde_json::json!({"type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "auto", "pre_tokens": 150103, "post_tokens": 9000}}),
+        );
+        assert_eq!(usage_of(&ev).unwrap().context_used, Some(9000));
+
+        // A manual compaction calls the model too; its result counts that.
+        p.start_turn("/compact");
+        p.handle_line(
+            &serde_json::json!({"type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "pre_tokens": 30000, "post_tokens": 5000}}),
+        );
+        let mut result = zero_result("compact", "n1");
+        result["total_cost_usd"] = serde_json::json!(0.09);
+        result["modelUsage"] = serde_json::json!({"claude-haiku-4-5": {"inputTokens": 4800, "outputTokens": 1000, "cacheReadInputTokens": 100, "cacheCreationInputTokens": 0, "contextWindow": 200000}});
+        let usage = usage_of(&p.handle_line(&result)).unwrap();
+        assert_eq!(usage.context_used, Some(5000));
+        assert_eq!((usage.input_tokens, usage.output_tokens), (4800, 1000));
+        assert_eq!(usage.total_cost_usd, Some(0.09));
+    }
+
+    #[test]
+    fn clear_starts_the_totals_over_but_keeps_the_window() {
+        let mut p = Parser::new("s");
+        p.start_turn("hi");
+        p.handle_line(&model_result());
+        p.start_turn("/clear");
+        let mut result = zero_result("clear", "n2");
+        result["total_cost_usd"] = serde_json::json!(0);
+        let usage = usage_of(&p.handle_line(&result)).unwrap();
+        assert_eq!(
+            usage,
+            Usage {
+                total_cost_usd: Some(0.0),
+                context_window: Some(200000),
+                ..Default::default()
+            }
+        );
+        // The next call shows its context against that window before the result.
+        let usage = usage_of(&p.handle_line(&message_start(None, "m1", "claude-haiku-4-5", 12000)))
+            .unwrap();
+        assert_eq!(
+            (usage.context_used, usage.context_window),
+            (Some(12103), Some(200000))
+        );
     }
 }

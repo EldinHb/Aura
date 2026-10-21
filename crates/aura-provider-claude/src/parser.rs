@@ -62,14 +62,20 @@ pub struct Parser {
     /// Error of a failed compaction. Claude repeats it as command output,
     /// which the failed boundary item already shows.
     compact_error: Option<String>,
-    /// Context size right after the last compaction.
-    compacted_to: Option<u64>,
     /// Uuids of messages a compaction kept. Claude emits them again after the
     /// boundary; they are already in the transcript.
     preserved: HashSet<String>,
-    /// Usage from the last model turn. Local commands report zero usage, so
-    /// their results reuse this instead of wiping the session's numbers.
-    last_usage: Option<Usage>,
+    /// The session's usage as last reported: token and cost totals since the
+    /// conversation started or was cleared, and the context of the latest
+    /// model call. None until a result arrives, unless the host seeds it with
+    /// what it stored. Local commands report zero usage, so their results
+    /// keep this instead of wiping the session's numbers.
+    pub usage: Option<Usage>,
+    /// Model of the latest main-thread API call, as `modelUsage` names it.
+    api_model: Option<String>,
+    /// Input side (uncached, cache read and cache write) of the main-thread
+    /// API call streaming now.
+    call_input: u64,
 }
 
 impl Parser {
@@ -335,6 +341,26 @@ impl Parser {
             "message_start" => {
                 if let Some(id) = ev.pointer("/message/id").and_then(Value::as_str) {
                     self.current_message.insert(parent.clone(), id.to_string());
+                }
+                // A subagent has a context of its own; only the main thread's counts.
+                if parent.is_none() {
+                    if let Some(m) = ev.pointer("/message/model").and_then(Value::as_str) {
+                        self.api_model = Some(m.to_string());
+                    }
+                    if let Some(u) = ev.pointer("/message/usage") {
+                        self.call_input = input_side(u);
+                        self.set_context(self.call_input + count(u, "output_tokens"), out);
+                    }
+                }
+            }
+            "message_delta" if parent.is_none() => {
+                // The final output count. Recent CLIs repeat the input side here.
+                if let Some(u) = ev.get("usage") {
+                    let input = input_side(u);
+                    if input > 0 {
+                        self.call_input = input;
+                    }
+                    self.set_context(self.call_input + count(u, "output_tokens"), out);
                 }
             }
             "content_block_start" => {
@@ -687,10 +713,11 @@ impl Parser {
             TurnStatus::Completed
         };
         let local_command = v.get("local_command").and_then(Value::as_str);
+        let before = self.usage.clone().unwrap_or_default();
         let usage = match local_command {
             None => {
-                let usage = usage_from_result(v, self.model.as_deref());
-                self.last_usage = Some(usage.clone());
+                let usage = self.usage_from_result(v, &before);
+                self.usage = Some(usage.clone());
                 Some(usage)
             }
             Some(cmd) => self.usage_after_local_command(cmd, v),
@@ -751,10 +778,9 @@ impl Parser {
         turn.status = status;
         turn.ended_at = Some(aura_core::now());
         // A local command made no model call, so its zero usage is noise.
-        turn.usage = if local_command.is_none() {
-            usage.clone()
-        } else {
-            None
+        turn.usage = match (&usage, local_command) {
+            (Some(u), None) => Some(u.since(&before)),
+            _ => None,
         };
         turn.error = error;
         self.interrupt_requested = false;
@@ -1088,7 +1114,9 @@ impl Parser {
             "pre_tokens": pre,
             "post_tokens": post,
         });
-        self.compacted_to = post;
+        if let Some(post) = post {
+            self.set_context(post, out);
+        }
         self.preserved = meta
             .pointer("/preserved_messages/uuids")
             .and_then(Value::as_array)
@@ -1111,32 +1139,101 @@ impl Parser {
             .is_some_and(|u| self.preserved.remove(u))
     }
 
-    /// Session usage after a local command. Its own result reports zeros, so
-    /// keep the last model turn's numbers and adjust the context for commands
-    /// that change it. None leaves the session's usage as it is.
+    /// Session usage after a local command. Its own `usage` is zero, so keep
+    /// the context (a compaction already set it at its boundary) and take the
+    /// totals, which do change when a compaction calls the model. `/clear`
+    /// starts the totals over. None leaves the session's usage as it is.
     fn usage_after_local_command(&mut self, command: &str, v: &Value) -> Option<Usage> {
         let cost = v.get("total_cost_usd").and_then(Value::as_f64);
-        match command {
-            "clear" => {
-                self.last_usage = None;
-                self.compacted_to = None;
-                Some(Usage {
-                    total_cost_usd: cost,
-                    ..usage_from_result(v, self.model.as_deref())
-                })
+        let usage = if command == "clear" {
+            // The model, and so its window, stays.
+            let window = self.usage.as_ref().and_then(|u| u.context_window);
+            Usage {
+                total_cost_usd: cost,
+                context_window: window,
+                ..Default::default()
             }
-            _ => {
-                let mut usage = self.last_usage.clone()?;
-                usage.total_cost_usd = cost.or(usage.total_cost_usd);
-                if command == "compact" {
-                    if let Some(post) = self.compacted_to.take() {
-                        usage.context_used = Some(post);
-                    }
-                }
-                self.last_usage = Some(usage.clone());
-                Some(usage)
+        } else {
+            let mut usage = self.usage.clone()?;
+            if let Some((input, output, cached)) = model_totals(v) {
+                usage.input_tokens = input;
+                usage.output_tokens = output;
+                usage.cached_input_tokens = cached;
             }
+            usage.total_cost_usd = cost.or(usage.total_cost_usd);
+            usage
+        };
+        self.usage = Some(usage.clone());
+        Some(usage)
+    }
+
+    /// Session usage after a model turn's `result`. `usage` there covers only
+    /// this turn's main-thread calls, while `modelUsage` and `total_cost_usd`
+    /// are totals for the conversation, subagents and compactions included,
+    /// and survive a resume. The context is the last main-thread call's, or
+    /// the live one when the turn ended without a call (an interrupt).
+    fn usage_from_result(&self, v: &Value, before: &Usage) -> Usage {
+        let u = v.get("usage").cloned().unwrap_or(json!({}));
+        let (input, output, cached) = model_totals(v).unwrap_or_else(|| {
+            (
+                before.input_tokens + count(&u, "input_tokens"),
+                before.output_tokens + count(&u, "output_tokens"),
+                before.cached_input_tokens
+                    + count(&u, "cache_read_input_tokens")
+                    + count(&u, "cache_creation_input_tokens"),
+            )
+        });
+        let context_used = u
+            .get("iterations")
+            .and_then(Value::as_array)
+            .and_then(|it| it.last())
+            .map(|last| input_side(last) + count(last, "output_tokens"))
+            .filter(|n| *n > 0)
+            .or(before.context_used);
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            cached_input_tokens: cached,
+            total_cost_usd: v
+                .get("total_cost_usd")
+                .and_then(Value::as_f64)
+                .or(before.total_cost_usd),
+            context_window: self.context_window(v).or(before.context_window),
+            context_used,
         }
+    }
+
+    /// The window of the model in use, from `modelUsage`, which lists every
+    /// model the conversation called. Keys can carry a suffix (`[1m]`) the
+    /// API model name lacks. With no match, the largest window listed.
+    fn context_window(&self, v: &Value) -> Option<u64> {
+        let mu = v.get("modelUsage").and_then(Value::as_object)?;
+        let window = |m: &Value| m.get("contextWindow").and_then(Value::as_u64);
+        let model = self.api_model.as_deref().or(self.model.as_deref());
+        model
+            .and_then(|m| {
+                mu.get(m).and_then(window).or_else(|| {
+                    mu.iter()
+                        .filter(|(k, _)| k.starts_with(m))
+                        .filter_map(|(_, v)| window(v))
+                        .max()
+                })
+            })
+            .or_else(|| mu.values().filter_map(window).max())
+    }
+
+    /// Report a new context size, keeping the rest of the session's usage.
+    fn set_context(&mut self, used: u64, out: &mut Vec<Event>) {
+        let mut usage = self.usage.clone().unwrap_or_default();
+        if used == 0 || usage.context_used == Some(used) {
+            return;
+        }
+        usage.context_used = Some(used);
+        self.usage = Some(usage.clone());
+        out.push(Event::Usage {
+            session_id: self.sid(),
+            usage,
+        });
     }
 
     /// Build the `control_response` payload for an approval decision, removing
@@ -1473,43 +1570,29 @@ fn content_to_text(content: Option<&Value>) -> String {
     }
 }
 
-fn usage_from_result(v: &Value, model: Option<&str>) -> Usage {
-    let u = v.get("usage").cloned().unwrap_or(json!({}));
-    let g = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
-    let input = g("input_tokens");
-    let cache_read = g("cache_read_input_tokens");
-    let cache_create = g("cache_creation_input_tokens");
-    let output = g("output_tokens");
-    let mut context_window = None;
-    if let Some(mu) = v.get("modelUsage").and_then(Value::as_object) {
-        if let Some(m) = model.and_then(|m| mu.get(m)) {
-            context_window = m.get("contextWindow").and_then(Value::as_u64);
-        }
-        if context_window.is_none() {
-            context_window = mu
-                .values()
-                .filter_map(|m| m.get("contextWindow").and_then(Value::as_u64))
-                .max();
-        }
+fn count(u: &Value, key: &str) -> u64 {
+    u.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// Tokens an API call read: uncached input plus cache reads and writes.
+fn input_side(u: &Value) -> u64 {
+    count(u, "input_tokens")
+        + count(u, "cache_read_input_tokens")
+        + count(u, "cache_creation_input_tokens")
+}
+
+/// Conversation totals (input, output, cached input) summed over every model
+/// in `modelUsage`. None when it lists no model.
+fn model_totals(v: &Value) -> Option<(u64, u64, u64)> {
+    let mu = v.get("modelUsage").and_then(Value::as_object)?;
+    if mu.is_empty() {
+        return None;
     }
-    let context_used = u
-        .get("iterations")
-        .and_then(Value::as_array)
-        .and_then(|it| it.last())
-        .map(|last| {
-            let f = |k: &str| last.get(k).and_then(Value::as_u64).unwrap_or(0);
-            f("input_tokens")
-                + f("cache_read_input_tokens")
-                + f("cache_creation_input_tokens")
-                + f("output_tokens")
-        })
-        .filter(|n| *n > 0);
-    Usage {
-        input_tokens: input,
-        output_tokens: output,
-        cached_input_tokens: cache_read + cache_create,
-        total_cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
-        context_window,
-        context_used,
-    }
+    Some(mu.values().fold((0, 0, 0), |(i, o, c), m| {
+        (
+            i + count(m, "inputTokens"),
+            o + count(m, "outputTokens"),
+            c + count(m, "cacheReadInputTokens") + count(m, "cacheCreationInputTokens"),
+        )
+    }))
 }

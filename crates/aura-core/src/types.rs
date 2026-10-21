@@ -82,6 +82,25 @@ pub struct Usage {
     pub context_used: Option<u64>,
 }
 
+impl Usage {
+    /// What was spent between `before` and `self`, both session totals: the
+    /// usage of one turn. The context is a level, not a total, so it is kept.
+    pub fn since(&self, before: &Usage) -> Usage {
+        Usage {
+            input_tokens: self.input_tokens.saturating_sub(before.input_tokens),
+            output_tokens: self.output_tokens.saturating_sub(before.output_tokens),
+            cached_input_tokens: self
+                .cached_input_tokens
+                .saturating_sub(before.cached_input_tokens),
+            total_cost_usd: self
+                .total_cost_usd
+                .map(|c| (c - before.total_cost_usd.unwrap_or(0.0)).max(0.0)),
+            context_window: self.context_window,
+            context_used: self.context_used,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorktreeInfo {
@@ -665,5 +684,39 @@ mod tests {
         )
         .unwrap();
         assert!(!q.secret);
+    }
+
+    #[test]
+    fn usage_since_is_what_one_turn_spent() {
+        let before = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cached_input_tokens: 100,
+            total_cost_usd: Some(0.25),
+            context_window: Some(200_000),
+            context_used: Some(1_000),
+        };
+        let after = Usage {
+            input_tokens: 14,
+            output_tokens: 9,
+            cached_input_tokens: 300,
+            total_cost_usd: Some(0.5),
+            context_window: Some(200_000),
+            context_used: Some(1_500),
+        };
+        let turn = after.since(&before);
+        assert_eq!(
+            (
+                turn.input_tokens,
+                turn.output_tokens,
+                turn.cached_input_tokens
+            ),
+            (4, 4, 200)
+        );
+        assert_eq!(turn.total_cost_usd, Some(0.25));
+        assert_eq!(turn.context_used, Some(1_500));
+        // A total that went down (a cleared conversation) never spends a negative amount.
+        assert_eq!(before.since(&after).input_tokens, 0);
+        assert_eq!(before.since(&after).total_cost_usd, Some(0.0));
     }
 }

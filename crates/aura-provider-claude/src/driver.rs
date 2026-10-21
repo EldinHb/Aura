@@ -122,7 +122,11 @@ impl ClaudeDriver {
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
 
-        let parser = Arc::new(Mutex::new(Parser::new(&session.id)));
+        let mut parser = Parser::new(&session.id);
+        // What a turn spent is measured from here, and a local command before
+        // the first turn keeps these numbers.
+        parser.usage = Some(session.usage.clone());
+        let parser = Arc::new(Mutex::new(parser));
         let (kill_tx, mut kill_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<Option<i32>>();
         let driver = Self {
