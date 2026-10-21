@@ -80,6 +80,11 @@ pub struct Usage {
     pub total_cost_usd: Option<f64>,
     pub context_window: Option<u64>,
     pub context_used: Option<u64>,
+    /// The token counts are the conversation's running totals as the agent
+    /// reports them, so a later report can be measured against them. Usage
+    /// stored before Aura kept totals, and a turn's own usage, lack it.
+    #[serde(default)]
+    pub running_totals: bool,
 }
 
 impl Usage {
@@ -97,6 +102,7 @@ impl Usage {
                 .map(|c| (c - before.total_cost_usd.unwrap_or(0.0)).max(0.0)),
             context_window: self.context_window,
             context_used: self.context_used,
+            running_totals: false,
         }
     }
 }
@@ -695,6 +701,7 @@ mod tests {
             total_cost_usd: Some(0.25),
             context_window: Some(200_000),
             context_used: Some(1_000),
+            running_totals: true,
         };
         let after = Usage {
             input_tokens: 14,
@@ -703,6 +710,7 @@ mod tests {
             total_cost_usd: Some(0.5),
             context_window: Some(200_000),
             context_used: Some(1_500),
+            running_totals: true,
         };
         let turn = after.since(&before);
         assert_eq!(
@@ -718,5 +726,11 @@ mod tests {
         // A total that went down (a cleared conversation) never spends a negative amount.
         assert_eq!(before.since(&after).input_tokens, 0);
         assert_eq!(before.since(&after).total_cost_usd, Some(0.0));
+    }
+
+    #[test]
+    fn usage_stored_before_running_totals_is_not_a_baseline() {
+        let old: Usage = serde_json::from_str(r#"{"input_tokens":2,"output_tokens":5,"cached_input_tokens":90,"total_cost_usd":0.01,"context_window":200000,"context_used":20000}"#).unwrap();
+        assert!(!old.running_totals);
     }
 }

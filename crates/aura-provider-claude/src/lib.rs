@@ -788,6 +788,7 @@ mod tests {
             total_cost_usd: Some(0.015),
             context_window: Some(200000),
             context_used: Some(20000),
+            running_totals: true,
         });
         p.start_turn("/context");
         let mut result = zero_result("context", "n1");
@@ -899,6 +900,7 @@ mod tests {
             Usage {
                 total_cost_usd: Some(0.0),
                 context_window: Some(200000),
+                running_totals: true,
                 ..Default::default()
             }
         );
@@ -909,5 +911,46 @@ mod tests {
             (usage.context_used, usage.context_window),
             (Some(12103), Some(200000))
         );
+    }
+
+    #[test]
+    fn the_first_turn_after_an_upgrade_is_not_measured_against_old_usage() {
+        // An older Aura stored one turn's main-thread tokens, not totals.
+        let mut p = Parser::new("s");
+        p.usage = Some(Usage {
+            input_tokens: 2,
+            output_tokens: 5,
+            cached_input_tokens: 29293,
+            total_cost_usd: Some(0.015),
+            context_window: Some(200000),
+            context_used: Some(20000),
+            running_totals: false,
+        });
+        p.start_turn("hi");
+        let mut result = model_result();
+        result["modelUsage"]["claude-haiku-4-5"] = serde_json::json!({"inputTokens": 40, "outputTokens": 900, "cacheReadInputTokens": 150000, "cacheCreationInputTokens": 30000, "contextWindow": 200000});
+        let ev = p.handle_line(&result);
+        let usage = usage_of(&ev).unwrap();
+        assert!(usage.running_totals);
+        assert_eq!(usage.input_tokens, 40);
+        // The turn's own tokens, not the totals less an unrelated number.
+        let turn = turn_of(&ev).usage.unwrap();
+        assert_eq!(
+            (
+                turn.input_tokens,
+                turn.output_tokens,
+                turn.cached_input_tokens
+            ),
+            (10, 5, 100)
+        );
+        assert!((turn.total_cost_usd.unwrap() - 0.005).abs() < 1e-9);
+        assert!(!turn.running_totals);
+
+        // From then on the stored totals are a baseline.
+        p.start_turn("again");
+        result["total_cost_usd"] = serde_json::json!(0.03);
+        result["modelUsage"]["claude-haiku-4-5"]["inputTokens"] = serde_json::json!(55);
+        let turn = turn_of(&p.handle_line(&result)).usage.unwrap();
+        assert_eq!(turn.input_tokens, 15);
     }
 }

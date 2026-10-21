@@ -465,6 +465,7 @@ impl ThreadMapper {
                         total_cost_usd: None,
                         context_window: tu.get("modelContextWindow").and_then(|v| v.as_u64()),
                         context_used: tu.get("last").and_then(|l| l.get("totalTokens")).and_then(|v| v.as_u64()),
+                        running_totals: true,
                     };
                     self.last_usage = Some(usage.clone());
                     ev.push(Event::Usage { session_id: sid, usage });

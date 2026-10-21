@@ -16,7 +16,7 @@ function item(id: string, text: string): Item {
 it("a control inside keeps the keyboard after the region notices the focus", async () => {
   const s = { id: "s", title: "Plans", cwd: "/work/s", provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false,
     pending_count: 0, last_activity: "2026-09-30T00:00:00Z", created_at: "2026-09-30T00:00:00Z", group: null, worktree: null, model: null, orchestrator: false, orchestrator_id: null,
-    usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null } } as unknown as Session;
+    usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false } } as unknown as Session;
   const t = emptyTranscript();
   t.loaded = true;
   t.order = ["p1", "p2"];
@@ -34,7 +34,7 @@ it("a control inside keeps the keyboard after the region notices the focus", asy
 function lead(patch: Partial<Session>): Session {
   return { id: "o", title: "Lead", cwd: "/work/repo", provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false,
     pending_count: 0, last_activity: "2026-09-30T00:00:00Z", created_at: "2026-09-30T00:00:00Z", group: null, worktree: null, model: null, orchestrator: true, orchestrator_id: null, folderless: false,
-    usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null }, ...patch } as unknown as Session;
+    usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false }, ...patch } as unknown as Session;
 }
 const caps = { structured: true, terminal_mode: true, fork: false, models: false, effort: false, permission_modes: [], sandbox_modes: [] };
 

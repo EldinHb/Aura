@@ -967,6 +967,47 @@ mod tests {
     }
 
     #[test]
+    fn the_first_turn_after_a_resume_is_measured_from_the_restored_totals() {
+        // On `thread/resume` and `thread/fork` Codex reports the thread's
+        // restored totals before any turn (seen with codex-cli 0.163.0).
+        let mut mapper = ThreadMapper::new("sess", "t");
+        let mut call = |method: &str, params: Value| {
+            mapper
+                .handle(&Incoming {
+                    id: None,
+                    method: method.into(),
+                    params,
+                })
+                .events
+        };
+        let usage = |total: u64| {
+            json!({ "threadId": "t", "turnId": "u", "tokenUsage": {
+            "total": { "inputTokens": total, "outputTokens": 11, "cachedInputTokens": 0, "totalTokens": total },
+            "last": { "totalTokens": 15769 }, "modelContextWindow": 258400 } })
+        };
+        let restored = call("thread/tokenUsage/updated", usage(31510));
+        assert!(
+            matches!(&restored[0], Event::Usage { usage, .. } if usage.input_tokens == 31510 && usage.running_totals)
+        );
+        call(
+            "turn/started",
+            json!({ "threadId": "t", "turn": { "id": "u3" } }),
+        );
+        call("thread/tokenUsage/updated", usage(47753));
+        let turn = call(
+            "turn/completed",
+            json!({ "threadId": "t", "turn": { "id": "u3", "status": "completed" } }),
+        )
+        .into_iter()
+        .find_map(|e| match e {
+            Event::TurnCompleted { turn, .. } => turn.usage,
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(turn.input_tokens, 16243);
+    }
+
+    #[test]
     fn maps_file_change_and_approval() {
         let mut mapper = ThreadMapper::new("sess", "t");
         let item = json!({

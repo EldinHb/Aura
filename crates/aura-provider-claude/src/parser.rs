@@ -779,7 +779,7 @@ impl Parser {
         turn.ended_at = Some(aura_core::now());
         // A local command made no model call, so its zero usage is noise.
         turn.usage = match (&usage, local_command) {
-            (Some(u), None) => Some(u.since(&before)),
+            (Some(u), None) => Some(turn_usage(u, &before, v)),
             _ => None,
         };
         turn.error = error;
@@ -1151,6 +1151,7 @@ impl Parser {
             Usage {
                 total_cost_usd: cost,
                 context_window: window,
+                running_totals: true,
                 ..Default::default()
             }
         } else {
@@ -1159,6 +1160,7 @@ impl Parser {
                 usage.input_tokens = input;
                 usage.output_tokens = output;
                 usage.cached_input_tokens = cached;
+                usage.running_totals = true;
             }
             usage.total_cost_usd = cost.or(usage.total_cost_usd);
             usage
@@ -1200,6 +1202,7 @@ impl Parser {
                 .or(before.total_cost_usd),
             context_window: self.context_window(v).or(before.context_window),
             context_used,
+            running_totals: true,
         }
     }
 
@@ -1567,6 +1570,28 @@ fn content_to_text(content: Option<&Value>) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+/// What a model turn spent: the session's totals after it, less those before.
+/// Totals stored by an older Aura were one turn's tokens, not running totals,
+/// so a turn cannot be measured against them; then its tokens are its own
+/// main-thread calls from the result's `usage`. Zero counts are a baseline
+/// either way. The cost was always the running total.
+fn turn_usage(after: &Usage, before: &Usage, v: &Value) -> Usage {
+    let turn = after.since(before);
+    let zero =
+        before.input_tokens == 0 && before.output_tokens == 0 && before.cached_input_tokens == 0;
+    if before.running_totals || zero {
+        return turn;
+    }
+    let u = v.get("usage").cloned().unwrap_or(json!({}));
+    Usage {
+        input_tokens: count(&u, "input_tokens"),
+        output_tokens: count(&u, "output_tokens"),
+        cached_input_tokens: count(&u, "cache_read_input_tokens")
+            + count(&u, "cache_creation_input_tokens"),
+        ..turn
     }
 }
 
