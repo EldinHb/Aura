@@ -6,6 +6,8 @@ import { useStore } from "../../state/store";
 import { ItemRow } from "./ItemRow";
 import { isCardKind } from "./format";
 import { replySteps, summarizeSteps, type StepGroup } from "./replySteps";
+import { reportedWorkers, type ReportSection } from "../../lib/orchestration";
+import { openWorkerThread } from "../../state/workerThreads";
 
 export type StepsButtonProps = {
   group: StepGroup;
@@ -15,29 +17,57 @@ export type StepsButtonProps = {
   onCursor: (id: string) => void;
 };
 
-/** One full-width row standing in for every step of a reply; opens them in a modal. */
+/** The workers the reports in a group cover, each once, latest report last. */
+function reportedIn(group: StepGroup): ReportSection[] {
+  const by = new Map<string, ReportSection>();
+  for (const it of group.items) {
+    for (const w of reportedWorkers(it)) {
+      by.delete(w.workerId);
+      by.set(w.workerId, w);
+    }
+  }
+  return [...by.values()];
+}
+
+/**
+ * One full-width row standing in for every step of a reply; opens them in a
+ * modal. Under a row of worker reports, links to each reported worker's thread.
+ */
 export const StepsButton = memo(function StepsButton({ group, sessionId, cursor, stale, onCursor }: StepsButtonProps) {
   const s = summarizeSteps(group.items);
   const key = `steps:${group.id}`;
+  const workers = group.aura ? reportedIn(group) : [];
   return (
-    <button
-      type="button"
-      className={clsx("item steps-row", group.aura && "aura", s.running && "running", cursor && "cursor", stale && "stale")}
-      data-steps-id={group.id}
-      data-hint
-      onClick={() => {
-        onCursor(key);
-        openSteps(sessionId, group.id);
-      }}
-    >
-      <span className={clsx("status-ico", s.running ? "in_progress" : s.failed ? "failed" : "completed")} />
-      <span className="steps-title">{s.running ? "Working" : (s.aura ?? `${s.count} ${s.count === 1 ? "step" : "steps"}`)}</span>
-      <span className="steps-detail dim">{s.running && s.current ? s.current : s.parts}</span>
-      {s.failed > 0 && <span className="err-text">{s.failed} failed</span>}
-      <span className="spacer" />
-      {s.duration && <span className="dim">{s.duration}</span>}
-      <span className="dim">view ▸</span>
-    </button>
+    <>
+      <button
+        type="button"
+        className={clsx("item steps-row", group.aura && "aura", s.running && "running", cursor && "cursor", stale && "stale")}
+        data-steps-id={group.id}
+        data-hint
+        onClick={() => {
+          onCursor(key);
+          openSteps(sessionId, group.id);
+        }}
+      >
+        <span className={clsx("status-ico", s.running ? "in_progress" : s.failed ? "failed" : "completed")} />
+        <span className="steps-title">{s.running ? "Working" : (s.aura ?? `${s.count} ${s.count === 1 ? "step" : "steps"}`)}</span>
+        <span className="steps-detail dim">{s.running && s.current ? s.current : s.parts}</span>
+        {s.failed > 0 && <span className="err-text">{s.failed} failed</span>}
+        <span className="spacer" />
+        {s.duration && <span className="dim">{s.duration}</span>}
+        <span className="dim">view ▸</span>
+      </button>
+      {workers.length > 0 && (
+        <div className={clsx("steps-threads", stale && "stale")}>
+          <span className="dim">{workers.length === 1 ? "Thread" : "Threads"}</span>
+          {workers.map((w) => (
+            <button key={w.workerId} type="button" className="chip linkish" data-hint data-command="orchestrator.thread" title={`${w.title}: ${w.detail}`} onClick={() => openWorkerThread(sessionId, w.workerId)}>
+              {w.title} <span className="dim">· {w.status}</span> ▸
+            </button>
+          ))}
+        </div>
+      )}
+    </>
   );
 });
 

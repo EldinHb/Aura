@@ -8,8 +8,9 @@ import { ItemRow } from "./transcript/ItemRow";
 import { ApprovalCard } from "./transcript/ApprovalCard";
 import { UserInputCard } from "./transcript/UserInputCard";
 import { StepsButton, openSteps } from "./transcript/Steps";
-import { replySteps, type StepGroup } from "./transcript/replySteps";
+import { replySteps, transcriptTree, type StepGroup } from "./transcript/replySteps";
 import { auraMessage } from "../lib/auraMessage";
+import { orchestratorMessages, sentTexts } from "../lib/orchestration";
 import { durationMs, fmtDuration, fmtTokens, fmtUsd, isCardKind, lastBoundaryIndex } from "./transcript/format";
 
 let commandsRegistered: (() => void) | null = null;
@@ -58,6 +59,15 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       toast(e instanceof Error ? e.message : String(e), "error");
     }
   }, [client, sessionId, toast]);
+  // A worker tells its orchestrator's messages apart from the user's; old
+  // transcripts need the orchestrator's history for that (see `orchestratorMessages`).
+  const lead = session?.orchestrator_id ?? null;
+  const leadTranscript = useStore((s) => (lead ? s.transcripts[lead] : undefined));
+  const sent = useMemo(() => (leadTranscript?.loaded ? sentTexts(Object.values(leadTranscript.items)) : undefined), [leadTranscript]);
+  const origins = useMemo(() => (t && lead ? orchestratorMessages({ orchestrator_id: lead }, transcriptTree(t.order, t.items).top, sent) : null), [t, lead, sent]);
+  useEffect(() => {
+    if (lead && origins?.needsSent) useStore.getState().loadTranscript(lead);
+  }, [lead, origins?.needsSent]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [atBottom, setAtBottom] = useState(true);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -259,6 +269,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
                   onCursor={onCursor}
                   showReasoning={showReasoning}
                   stale={r.stale}
+                  fromOrchestrator={lead && origins?.senders.get(r.item.id) === "orchestrator" ? lead : undefined}
                 />
               );
             case "steps":

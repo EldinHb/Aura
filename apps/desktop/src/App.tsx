@@ -19,6 +19,8 @@ import { TerminalView } from "./views/TerminalView";
 import { Transcript } from "./views/Transcript";
 import { Composer } from "./views/Composer";
 import { Inspector } from "./views/Inspector";
+import { OrchestratorTabs, WorkerThreads } from "./views/WorkerThreads";
+import { useWorkerThreads } from "./state/workerThreads";
 import { Overlays } from "./components/Overlays";
 import { isMac } from "./lib/platform";
 import { desktopNotify } from "./lib/notify";
@@ -42,6 +44,8 @@ export default function App() {
   const connectionError = useStore((s) => s.connectionError);
   const selected = useStore(selectSelected);
   const session = useStore((s) => s.selectedId ? s.sessions[s.selectedId] : null);
+  // An orchestrator showing its threads with its workers rather than its chat.
+  const threads = useWorkerThreads((s) => (session?.orchestrator ? s.open[session.id] !== undefined : false));
   const prMode = useStore((s) => !!s.prSelection || s.reviewHistoryOpen);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
   const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !prMode;
@@ -131,19 +135,7 @@ export default function App() {
   // Load history when a session is selected.
   const selectedId = selected?.id ?? null;
   useEffect(() => {
-    const st = useStore.getState();
-    if (!selectedId || !st.client) return;
-    const t = st.transcripts[selectedId];
-    if (t?.loaded || t?.loading) return;
-    st.ensureTranscript(selectedId);
-    st.markLoading(selectedId, true);
-    st.client
-      .history(selectedId)
-      .then((events) => useStore.getState().loadHistory(selectedId, events))
-      .catch((e) => {
-        useStore.getState().markLoading(selectedId, false);
-        useStore.getState().toast(`history: ${e instanceof Error ? e.message : e}`, "error");
-      });
+    if (selectedId) useStore.getState().loadTranscript(selectedId);
   }, [selectedId, connection]);
 
   // The Dock badge (the title in a browser) counts what the inbox lists, like the top bar.
@@ -209,7 +201,8 @@ export default function App() {
             <TerminalView key={session.id} sessionId={session.id} />
           ) : (
             <>
-              <Transcript key={session.id} sessionId={session.id} />
+              {session.orchestrator && <OrchestratorTabs orchestratorId={session.id} />}
+              {threads ? <WorkerThreads key={`w-${session.id}`} orchestratorId={session.id} /> : <Transcript key={session.id} sessionId={session.id} />}
               <Composer key={`c-${session.id}`} sessionId={session.id} />
             </>
           )}

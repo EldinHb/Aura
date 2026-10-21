@@ -13,6 +13,8 @@ import { WatchSection } from "../features/watches/WatchSection";
 import { selectedSessionLinks, sessionLinks } from "./issueLinks";
 import { useMemo } from "react";
 import { folderOf } from "../lib/sessionFolder";
+import { statusClass } from "../lib/sessionStatus";
+import { openWorkerThread } from "../state/workerThreads";
 
 function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boolean; title?: string }) {
   return (
@@ -51,10 +53,6 @@ type RateLimits = {
   rateLimits?: { primary?: { usedPercent?: number; resetsAt?: number; windowDurationMins?: number }; secondary?: { usedPercent?: number; resetsAt?: number } | null };
 };
 
-function statusDot(s: Session): string {
-  return s.status === "running" ? "info pulse" : s.status.startsWith("waiting") ? "warn pulse" : s.status === "error" ? "err" : s.status === "exited" ? "" : "ok";
-}
-
 /** An orchestrator's workers, or the orchestrator a worker reports to. */
 function OrchestrationSection({ s }: { s: Session }) {
   const sessions = useStore((st) => st.sessions);
@@ -67,14 +65,21 @@ function OrchestrationSection({ s }: { s: Session }) {
   if (!s.orchestrator && !lead) return null;
   const row = (w: Session) => (
     <button key={w.id} className="list-item" data-command="session.select" onClick={() => select(w.id)} title={w.cwd}>
-      <span className={clsx("dot", statusDot(w))} />
+      <span className={clsx("dot", statusClass(w))} />
       <span className="grow">{w.title}</span>
       <span className={clsx("chip", w.provider)}>{w.agent ?? w.provider}</span>
     </button>
   );
   return (
     <div className="inspector-section">
-      <h4>{s.orchestrator ? "Orchestrator" : "Worker"}</h4>
+      <h4 className="section-head">
+        {s.orchestrator ? "Orchestrator" : "Worker"}
+        {(s.orchestrator ? workers.length > 0 : lead) && (
+          <button className="btn small" data-command="orchestrator.thread" onClick={() => openWorkerThread(s.orchestrator ? s.id : lead!.id, s.orchestrator ? undefined : s.id)}>
+            {s.orchestrator ? "Threads" : "Thread"}
+          </button>
+        )}
+      </h4>
       {s.orchestrator ? (
         <>
           <div className="dim" style={{ marginBottom: 6 }}>
@@ -212,7 +217,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
             <div className="kv">
               <KV k="title" v={s.title} title={s.title} />
               <KV k="provider" v={<span className={clsx("chip", s.provider)}>{s.agent ?? s.provider}</span>} />
-              <KV k="status" v={<><span className={clsx("dot", statusDot(s))} /> {s.status}{s.pending_count ? ` (${s.pending_count} pending)` : ""}</>} />
+              <KV k="status" v={<><span className={clsx("dot", statusClass(s))} /> {s.status}{s.pending_count ? ` (${s.pending_count} pending)` : ""}</>} />
               <KV k="mode" v={s.mode} />
               {!s.folderless && <KV k="cwd" v={s.cwd} mono title={s.cwd} />}
               {s.worktree && <KV k="worktree" v={`⎇ ${s.worktree.branch}`} title={s.worktree.path} />}

@@ -7,6 +7,8 @@ import { MessageImages } from "../ImageThumbs";
 import { useStore } from "../../state/store";
 import { setPlanView } from "../../state/planView";
 import { auraMessage } from "../../lib/auraMessage";
+import { reportedWorkers } from "../../lib/orchestration";
+import { openWorkerThread } from "../../state/workerThreads";
 import { commandOutput, contextBoundary, durationMs, firstLine, fmtDuration, isCardKind, isSlashCommand, itemChanges, itemLabel, kindIcon, prettyJson, truncate } from "./format";
 
 const JSON_LIMIT = 4000;
@@ -133,9 +135,46 @@ export type ItemRowProps = {
   showReasoning: boolean;
   /** Above the latest clear or compaction, so no longer in the agent's context. */
   stale?: boolean;
+  /** For a user message the session's orchestrator sent rather than the user: the orchestrator's id. */
+  fromOrchestrator?: string;
 };
 
-export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle, onCursor, nested, showReasoning, stale }: ItemRowProps) {
+/** "From orchestrator Lead", linking to the orchestrator and to its thread with this worker. */
+function FromOrchestrator({ orchestratorId, workerId }: { orchestratorId: string; workerId: string }) {
+  const title = useStore((st) => st.sessions[orchestratorId]?.title);
+  return (
+    <div className="message-from">
+      <span>From orchestrator</span>
+      <button type="button" className="linkish" data-hint data-command="session.select" onClick={(e) => {
+        e.stopPropagation();
+        useStore.getState().select(orchestratorId);
+      }}>{title ?? "(deleted)"}</button>
+      <span className="spacer" />
+      {title && <button type="button" className="linkish dim" data-hint data-command="orchestrator.thread" onClick={(e) => {
+        e.stopPropagation();
+        openWorkerThread(orchestratorId, workerId);
+      }}>thread ▸</button>}
+    </div>
+  );
+}
+
+/** Links from a worker report to the thread of each worker it covers. */
+function ReportThreads({ item }: { item: Item }) {
+  const workers = reportedWorkers(item);
+  if (workers.length === 0) return null;
+  return (
+    <span className="report-threads">
+      {workers.map((w) => (
+        <button key={w.workerId} type="button" className="chip linkish" data-hint data-command="orchestrator.thread" title={`${w.title}: ${w.detail}`} onClick={(e) => {
+          e.stopPropagation();
+          openWorkerThread(item.session_id, w.workerId);
+        }}>{w.title} ▸</button>
+      ))}
+    </span>
+  );
+}
+
+export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle, onCursor, nested, showReasoning, stale, fromOrchestrator }: ItemRowProps) {
   const dur = fmtDuration(durationMs(item.started_at, item.ended_at));
   const boundary = contextBoundary(item);
   if (boundary) {
@@ -177,8 +216,19 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
         <div className="aura-message-head">
           <span className="name">{aura.title}</span>
           <span className="dim">from Aura</span>
+          <span className="spacer" />
+          <ReportThreads item={item} />
         </div>
         {aura.body && <Markdown text={aura.body} />}
+      </div>
+    );
+  }
+  if (item.kind === "user_message" && fromOrchestrator) {
+    return (
+      <div className={clsx("item user_message from-orchestrator", cursor && "cursor", nested && "nested", stale && "stale")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+        <FromOrchestrator orchestratorId={fromOrchestrator} workerId={item.session_id} />
+        <MessageImages sessionId={item.session_id} data={item.data} />
+        <Markdown text={item.text} />
       </div>
     );
   }

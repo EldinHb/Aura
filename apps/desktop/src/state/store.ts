@@ -121,6 +121,8 @@ export type AppState = {
   applyEvent: (ev: Event) => void;
   loadHistory: (id: string, events: StoredEvent[]) => void;
   ensureTranscript: (id: string) => void;
+  /** Load a session's history unless it is loaded or loading. */
+  loadTranscript: (id: string) => void;
   markLoading: (id: string, loading: boolean) => void;
   setFocus: (f: FocusRegion) => void;
   setPalette: (open: boolean, query?: string) => void;
@@ -372,6 +374,20 @@ export const useStore = create<AppState>((set, get) => ({
   select: (id) => set({ prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id, collapsedOrchestras: revealIn(get(), id) }),
   ensureTranscript: (id) => {
     if (!get().transcripts[id]) set({ transcripts: { ...get().transcripts, [id]: emptyTranscript() } });
+  },
+  loadTranscript: (id) => {
+    const st = get();
+    const t = st.transcripts[id];
+    if (!st.client || t?.loaded || t?.loading) return;
+    st.ensureTranscript(id);
+    st.markLoading(id, true);
+    st.client
+      .history(id)
+      .then((events) => get().loadHistory(id, events))
+      .catch((e) => {
+        get().markLoading(id, false);
+        get().toast(`history: ${e instanceof Error ? e.message : e}`, "error");
+      });
   },
   markLoading: (id, loading) => {
     const t = get().transcripts[id] ?? emptyTranscript();

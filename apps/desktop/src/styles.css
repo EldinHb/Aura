@@ -350,6 +350,44 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .item.aura_message { background: var(--bg-elev); border-color: var(--border); border-left: 2px solid var(--accent); line-height: 1.5; user-select: text; }
 .aura-message-head { display: flex; gap: 6px; align-items: baseline; font-size: 11px; margin-bottom: 4px; }
 .aura-message-head .name { color: var(--fg); font-weight: 600; }
+/* Links from worker reports to the thread of each worker they cover. */
+.report-threads { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.chip.linkish { cursor: pointer; }
+.chip.linkish:hover { color: var(--accent-2); border-color: var(--accent-2); }
+.steps-threads { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: -4px; padding: 0 10px; font-size: 11px; }
+.steps-threads.stale { opacity: 0.5; }
+/* In a worker's chat: a message its orchestrator sent, not the user. */
+.item.user_message.from-orchestrator { align-self: flex-start; background: var(--bg-elev); border-color: var(--border); border-left: 2px solid var(--accent-2); white-space: normal; line-height: 1.5; }
+.message-from { display: flex; gap: 6px; align-items: baseline; font-size: 11px; color: var(--fg-muted); margin-bottom: 4px; }
+.message-from .spacer { flex: 1; }
+.message-from .linkish { color: var(--fg); font-weight: 600; }
+.message-from .linkish:hover { color: var(--accent-2); }
+
+/* An orchestrator's threads with its workers. */
+.orchestrator-tabs { flex: none; }
+.orchestrator-tabs .tab { cursor: pointer; }
+.worker-threads { flex: 1; min-height: 0; display: flex; }
+.worker-list { flex: none; width: 240px; overflow: auto; padding: 8px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.worker-row { width: 100%; text-align: left; cursor: pointer; }
+.worker-row:hover { background: var(--bg-hover); }
+.worker-row.archived { opacity: 0.6; }
+.worker-row .grow { display: flex; flex-direction: column; }
+.worker-row .worker-title, .worker-row .grow .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.worker-thread { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.worker-thread.empty { align-items: center; justify-content: center; }
+.thread-title { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 18px; border-bottom: 1px solid var(--border); }
+.thread-title .name { font-weight: 600; }
+.thread-title .spacer, .thread-head .spacer { flex: 1; }
+.thread-body { flex: 1; overflow: auto; padding: 12px 18px 24px; display: flex; flex-direction: column; gap: 10px; }
+.thread-msg { max-width: 85%; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); line-height: 1.5; user-select: text; }
+.thread-msg.from-orchestrator { align-self: flex-end; background: var(--accent-bg); border-color: transparent; }
+.thread-msg.from-user { align-self: flex-end; border-style: dashed; }
+.thread-msg.from-worker { align-self: flex-start; background: var(--bg-elev); }
+.thread-msg.from-aura { align-self: stretch; max-width: none; font-size: 12px; border-color: var(--border); border-left: 2px solid var(--accent); }
+.thread-head { display: flex; gap: 6px; align-items: baseline; width: 100%; font-size: 11px; margin-bottom: 4px; text-align: left; }
+.thread-head .name { color: var(--fg); font-weight: 600; }
+.from-aura .thread-head { margin-bottom: 0; }
+.from-aura .thread-head + * { margin-top: 6px; }
 .steps-modal { height: 84vh; max-height: 84vh; }
 .steps-modal .modal-head .spacer { flex: 1; }
 .steps-modal .modal-head .dim { font-weight: 400; }

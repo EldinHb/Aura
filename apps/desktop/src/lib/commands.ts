@@ -16,6 +16,8 @@ export type CommandContext = {
   hasFolder: boolean;
   /** The selected session is an orchestrator. */
   orchestrator: boolean;
+  /** The selected session is a worker of an orchestrator. */
+  worker: boolean;
   /** The selected session cannot leave the structured view: an orchestrator in it. */
   modeLocked: boolean;
   mode: string | null; // structured | terminal
@@ -102,7 +104,7 @@ export function setCommandErrorHandler(h: (msg: string) => void) {
  *   mode:terminal      ctx.mode === "terminal"
  *   provider:claude    ctx.provider === "claude"
  *   pending            ctx.pending > 0
- *   hasSelection, hasFolder, orchestrator, modeLocked, running, terminalFocused, inputFocused, dialogOpen, widgetFocused, paletteOpen
+ *   hasSelection, hasFolder, orchestrator, worker, modeLocked, running, terminalFocused, inputFocused, dialogOpen, widgetFocused, paletteOpen
  *   focus:sidebar|main  alternatives with |
  */
 export function evaluateWhen(expr: string | undefined, ctx: CommandContext): boolean {

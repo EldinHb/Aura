@@ -4,6 +4,7 @@ import { useStore, selectVisibleSessions, selectSelected } from "../state/store"
 import type { ApprovalOption, SessionMode } from "../gen";
 import { isTauri } from "../lib/connection";
 import { setPlanView, usePlanViews } from "../state/planView";
+import { closeWorkerThreads, openWorkerThread } from "../state/workerThreads";
 import { folderOf, workersUnder } from "../lib/sessionFolder";
 
 function st() {
@@ -187,6 +188,19 @@ export const coreCommands: Command[] = [
       if (s.folderless) return st().toast(`“${s.title}” belongs to no folder, so it stays an orchestrator`, "error");
       const updated = await client().setOrchestrator(s.id, !s.orchestrator);
       st().toast(updated.orchestrator ? `“${s.title}” is an orchestrator from its next message` : `“${s.title}” is a regular session again; its workers are on their own`);
+    },
+  },
+  { id: "orchestrator.workers", title: "Show the orchestrator's workers and their threads", group: "Session", keywords: ["orchestrator", "workers", "conversation"], when: "orchestrator", run: () => openWorkerThread(selected().id) },
+  { id: "orchestrator.chat", title: "Show the orchestrator's chat", group: "Session", keywords: ["orchestrator", "chat"], when: "orchestrator", run: () => closeWorkerThreads(selected().id) },
+  {
+    id: "orchestrator.thread",
+    title: "Show this worker's thread with its orchestrator",
+    group: "Session",
+    keywords: ["orchestrator", "worker", "conversation"],
+    when: "worker",
+    run: () => {
+      const s = selected();
+      if (s.orchestrator_id) openWorkerThread(s.orchestrator_id, s.id);
     },
   },
   { id: "session.links", title: "Edit issues & PRs…", keywords: ["GitHub", "pull request", "links"], group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "session-links", sessionId: selected().id }) },
