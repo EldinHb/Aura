@@ -46,7 +46,7 @@ test("PR settings, editing, preview and explicit submission preserve the chat dr
   const calls = await mockDaemon(page);
   await page.goto("/");
   await expect(page.getByTitle("Handle empty responses", { exact: true })).toBeVisible();
-  const composer = page.locator(".composer textarea");
+  const composer = page.locator(".composer [aria-label='Message']");
   await expect(composer).toBeVisible(); await composer.fill("Keep my unsent session message");
   await page.getByTitle("Handle empty responses", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "Handle empty responses" })).toBeVisible();
@@ -70,7 +70,7 @@ test("PR settings, editing, preview and explicit submission preserve the chat dr
   await expect(page.getByText("✓ Submitted to GitHub")).toBeVisible();
   expect(calls.filter((c) => c.method === "reviews.submit")).toHaveLength(1);
   await page.getByText("My coding session", { exact: true }).click();
-  await expect(composer).toHaveValue("Keep my unsent session message");
+  await expect(composer).toHaveText("Keep my unsent session message");
   expect(errors).toEqual([]);
 });
 

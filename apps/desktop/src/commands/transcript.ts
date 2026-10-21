@@ -5,6 +5,7 @@
 import { registerCommands, runCommand } from "../lib/commands";
 import { useStore } from "../state/store";
 import { requestEditApproval } from "../views/transcript/ApprovalCard";
+import { toggleRichComposer } from "../views/composer/toggle";
 
 export type TranscriptHandle = {
   visibleIds: () => string[];
@@ -82,6 +83,12 @@ export function registerTranscriptCommands() {
       title: "Show / hide reasoning in steps",
       group: "Transcript",
       run: () => st().setSettings({ showReasoning: !st().settings.showReasoning }),
+    },
+    {
+      id: "composer.toggle-rich",
+      title: "Composer: switch between rich text and plain markdown",
+      group: "Composer",
+      run: () => toggleRichComposer(st().focus === "composer"),
     },
     {
       id: "transcript.expand-all",

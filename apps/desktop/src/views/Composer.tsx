@@ -13,6 +13,8 @@ import { acpSessionInfo, acpSlashCommands, sessionProviderLabel } from "../lib/a
 import { fmtSize, imageCaption, imageLimits, imageSupport, planFor, planNote, prepareImage, toImageInput, type DraftImage } from "../lib/images";
 import { emptyDraft, updateDraft, useComposerDrafts } from "../state/composerDrafts";
 import { ImageThumb } from "./ImageThumbs";
+import type { ComposerInput, KeyLike } from "./composer/input";
+import { toggleRichComposer } from "./composer/toggle";
 
 /** Sent-message history per session (survives remounts, not reloads). */
 const history = new Map<string, string[]>();
@@ -21,7 +23,19 @@ const slashCache = new Map<string, { at: number; entries: SlashCommand[] }>();
 type Popover =
   | { kind: "none" }
   | { kind: "slash"; query: string; idx: number }
-  | { kind: "mention"; start: number; query: string; idx: number; results: string[] };
+  | { kind: "mention"; query: string; idx: number; results: string[] };
+
+/**
+ * The rich editor is a chunk of its own (ProseMirror is most of its size),
+ * loaded as the app starts; until it is there the composer is the markdown textbox.
+ */
+let richInput: typeof import("./composer/RichInput").RichInput | null = null;
+export const richInputReady = import("./composer/RichInput").then((m) => {
+  richInput = m.RichInput;
+});
+
+/** The line `value` has up to `caret`. */
+const lineUpTo = (value: string, caret: number) => value.slice(value.lastIndexOf("\n", caret - 1) + 1, caret);
 
 const isImageFile = (f: File) => f.type.startsWith("image/") || (!f.type && /\.(png|jpe?g|gif|webp|heic|bmp|tiff?)$/i.test(f.name));
 const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files");
@@ -37,6 +51,11 @@ export function Composer({ sessionId }: { sessionId: string }) {
   // A question card never takes the keyboard from here; while one waits, the hint row says how to get to it.
   const questionWaiting = useStore((s) => Object.keys(s.transcripts[sessionId]?.inputs ?? {}).length > 0 && s.focus === "composer");
   const questionKey = useQuestionKey();
+  const [RichInput, setRichInput] = useState(() => richInput);
+  const rich = useStore((s) => s.settings.composerRich) && RichInput !== null;
+  useEffect(() => {
+    if (!RichInput) void richInputReady.then(() => setRichInput(() => richInput));
+  }, [RichInput]);
   const { text, images, sending } = useComposerDrafts((s) => s.drafts[sessionId] ?? emptyDraft);
   const setText = (value: string) => updateDraft(sessionId, () => ({ text: value, start: value.length, end: value.length }));
   const setImages = (value: (images: DraftImage[]) => DraftImage[]) => updateDraft(sessionId, (draft) => ({ images: value(draft.images) }));
@@ -46,6 +65,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const historyDraft = useRef("");
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const richRef = useRef<ComposerInput>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const mentionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,8 +78,9 @@ export function Composer({ sessionId }: { sessionId: string }) {
 
   useLayoutEffect(() => {
     const draft = useComposerDrafts.getState().drafts[sessionId] ?? emptyDraft;
-    taRef.current?.setSelectionRange(draft.start, draft.end);
-  }, [sessionId]);
+    if (draft.richSelection) taRef.current?.setSelectionRange(draft.text.length, draft.text.length);
+    else taRef.current?.setSelectionRange(draft.start, draft.end);
+  }, [sessionId, rich]);
   useEffect(() => () => { if (mentionTimer.current) clearTimeout(mentionTimer.current); }, []);
 
   // auto-grow
@@ -69,7 +90,38 @@ export function Composer({ sessionId }: { sessionId: string }) {
     ta.style.height = "auto";
     const lineH = 19;
     ta.style.height = `${Math.min(ta.scrollHeight, lineH * 8 + 16)}px`;
-  }, [text]);
+  }, [text, rich]);
+
+  // The markdown textbox as a `ComposerInput`; the rich editor provides its own.
+  const textareaInput = useMemo<ComposerInput>(() => ({
+    element: () => taRef.current,
+    focus: () => taRef.current?.focus(),
+    caret: () => {
+      const ta = taRef.current;
+      const value = ta?.value ?? "";
+      const at = ta?.selectionStart ?? value.length;
+      return { before: lineUpTo(value, at), firstLine: !value.slice(0, at).includes("\n"), lastLine: !value.slice(ta?.selectionEnd ?? at).includes("\n") };
+    },
+    replaceBeforeCaret: (length, insert) => {
+      const ta = taRef.current;
+      if (!ta) return;
+      const at = ta.selectionStart;
+      const from = Math.max(0, at - length);
+      const value = ta.value.slice(0, from) + insert + ta.value.slice(at);
+      updateDraft(sessionId, () => ({ text: value, start: value.length, end: value.length }));
+      requestAnimationFrame(() => ta.setSelectionRange(from + insert.length, from + insert.length));
+    },
+  }), [sessionId]);
+  const input = () => (rich ? richRef.current : textareaInput);
+
+  // Disabled while sending, the box dropped the keyboard; give it back unless something else took it.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (sending || !refocus.current) return;
+    refocus.current = false;
+    if (!document.activeElement || document.activeElement === document.body) input()?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when a send ends
+  }, [sending]);
 
   // slash commands catalogue
   useEffect(() => {
@@ -97,17 +149,18 @@ export function Composer({ sessionId }: { sessionId: string }) {
 
   const slashResults = useMemo(() => (pop.kind === "slash" ? filterSlashCommands(slashEntries, pop.query, 12) : []), [pop, slashEntries]);
 
+  /** `before`: the caret's line up to the caret. */
   const updatePopover = useCallback(
-    (value: string, caret: number) => {
+    (value: string, before: string) => {
       const sq = slashQuery(value);
       if (sq !== null && caps?.slash_commands !== false) {
         setPop((p) => ({ kind: "slash", query: sq, idx: p.kind === "slash" ? Math.min(p.idx, 11) : 0 }));
         return;
       }
       // An orchestrator without a folder has no files to mention.
-      const mq = session && folderOf(session) !== null ? mentionQuery(value, caret) : null;
+      const mq = session && folderOf(session) !== null ? mentionQuery(before, before.length) : null;
       if (mq && client && session) {
-        setPop((p) => ({ kind: "mention", start: mq.start, query: mq.query, idx: p.kind === "mention" ? p.idx : 0, results: p.kind === "mention" ? p.results : [] }));
+        setPop((p) => ({ kind: "mention", query: mq.query, idx: p.kind === "mention" ? p.idx : 0, results: p.kind === "mention" ? p.results : [] }));
         if (mentionTimer.current) clearTimeout(mentionTimer.current);
         mentionTimer.current = setTimeout(() => {
           client
@@ -135,6 +188,8 @@ export function Composer({ sessionId }: { sessionId: string }) {
       toast(`${blocked.reason}; remove it to send`, "warn");
       return;
     }
+    const field = input()?.element();
+    refocus.current = !!field && field === document.activeElement;
     updateDraft(sessionId, () => ({ sending: true }));
     try {
       const inputs = images.length ? await Promise.all(images.map((img) => toImageInput(img, limits))) : [];
@@ -158,84 +213,84 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const insertSlash = (e: SlashEntry) => {
     setText(`/${e.name} `);
     setPop({ kind: "none" });
+    // The rich editor puts the caret at the end of a draft changed elsewhere.
     requestAnimationFrame(() => taRef.current?.setSelectionRange(e.name.length + 2, e.name.length + 2));
   };
 
   const insertMention = (path: string) => {
-    if (pop.kind !== "mention") return;
-    const ta = taRef.current;
-    const caret = ta?.selectionStart ?? text.length;
-    const next = text.slice(0, pop.start) + `@${path} ` + text.slice(caret);
-    setText(next);
+    const field = input();
+    if (pop.kind !== "mention" || !field) return;
+    const { before } = field.caret();
+    const mq = mentionQuery(before, before.length);
+    if (mq) field.replaceBeforeCaret(before.length - mq.start, `@${path} `);
     setPop({ kind: "none" });
-    const newCaret = pop.start + path.length + 2;
-    requestAnimationFrame(() => ta?.setSelectionRange(newCaret, newCaret));
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const ta = e.currentTarget;
+  /** True when the key was the composer's. */
+  const onKeyDown = (e: KeyLike): boolean => {
+    // Enter that confirms an input method's composition is not a send.
+    if (e.isComposing) return false;
+    const field = input();
     if (pop.kind !== "none") {
       const n = pop.kind === "slash" ? slashResults.length : pop.results.length;
       if (e.key === "ArrowDown" || (e.key === "Tab" && !e.shiftKey)) {
         e.preventDefault();
         setPop((p) => (p.kind === "none" ? p : { ...p, idx: n ? (p.idx + 1) % n : 0 }));
-        return;
+        return true;
       }
       if (e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey)) {
         e.preventDefault();
         setPop((p) => (p.kind === "none" ? p : { ...p, idx: n ? (p.idx - 1 + n) % n : 0 }));
-        return;
+        return true;
       }
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
         setPop({ kind: "none" });
-        return;
+        return true;
       }
       if (e.key === "Enter" && !e.shiftKey && n > 0) {
         e.preventDefault();
         if (pop.kind === "slash") insertSlash(slashResults[pop.idx]);
         else insertMention(pop.results[pop.idx]);
-        return;
+        return true;
       }
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void send(e.metaKey || e.ctrlKey);
-      return;
+      return true;
     }
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      ta.blur();
+      field?.element()?.blur();
       setFocus("main");
-      return;
+      return true;
     }
     if (e.key === "c" && e.ctrlKey && (running || !text)) {
       e.preventDefault();
       void client?.interrupt(sessionId).catch((err) => toast(String(err), "error"));
-      return;
+      return true;
     }
     if (e.key === "Backspace" && !text && images.length > 0) {
       e.preventDefault();
       setImages((imgs) => imgs.slice(0, -1));
-      return;
+      return true;
     }
     const h = history.get(sessionId) ?? [];
-    if (e.key === "ArrowUp" && h.length) {
-      const firstLine = !text.slice(0, ta.selectionStart).includes("\n");
-      if (firstLine) {
+    if (e.key === "ArrowUp" && h.length && field) {
+      if (field.caret().firstLine) {
         e.preventDefault();
         if (histIdx === null) historyDraft.current = text;
         const idx = histIdx === null ? h.length - 1 : Math.max(0, histIdx - 1);
         setHistIdx(idx);
         setText(h[idx]);
-        return;
+        return true;
       }
     }
-    if (e.key === "ArrowDown" && histIdx !== null) {
-      const lastLine = !text.slice(ta.selectionStart).includes("\n");
-      if (lastLine) {
+    if (e.key === "ArrowDown" && histIdx !== null && field) {
+      if (field.caret().lastLine) {
         e.preventDefault();
         const idx = histIdx + 1;
         if (idx >= h.length) {
@@ -245,8 +300,10 @@ export function Composer({ sessionId }: { sessionId: string }) {
           setHistIdx(idx);
           setText(h[idx]);
         }
+        return true;
       }
     }
+    return false;
   };
 
   const addImages = async (files: File[]) => {
@@ -261,11 +318,13 @@ export function Composer({ sessionId }: { sessionId: string }) {
     if (added.length) setImages((cur) => [...cur, ...added]);
   };
 
-  const onPaste = (e: React.ClipboardEvent) => {
-    const files = [...e.clipboardData.items].filter((i) => i.kind === "file" && i.type.startsWith("image/")).map((i) => i.getAsFile()).filter((f): f is File => !!f);
-    if (files.length === 0) return;
+  /** True when the clipboard held images, which are attached rather than pasted as text. */
+  const onPaste = (e: { clipboardData: DataTransfer | null; preventDefault: () => void }): boolean => {
+    const files = [...(e.clipboardData?.items ?? [])].filter((i) => i.kind === "file" && i.type.startsWith("image/")).map((i) => i.getAsFile()).filter((f): f is File => !!f);
+    if (files.length === 0) return false;
     e.preventDefault();
     void addImages(files);
+    return true;
   };
 
   const onDrop = (e: React.DragEvent) => {
@@ -276,7 +335,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
     const other = files.filter((f) => !isImageFile(f));
     if (other.length) toast(`Only images can be attached; not ${other.map((f) => f.name).join(", ")}`, "warn");
     void addImages(files.filter(isImageFile));
-    taRef.current?.focus();
+    input()?.focus();
   };
 
   const removeImage = (key: string, refocus: boolean) => {
@@ -287,7 +346,8 @@ export function Composer({ sessionId }: { sessionId: string }) {
     requestAnimationFrame(() => {
       const thumbs = stripRef.current?.querySelectorAll<HTMLElement>(".image-thumb-open");
       const next = thumbs?.[Math.min(idx, thumbs.length - 1)];
-      (next ?? taRef.current)?.focus();
+      if (next) next.focus();
+      else input()?.focus();
     });
   };
 
@@ -303,11 +363,12 @@ export function Composer({ sessionId }: { sessionId: string }) {
       e.preventDefault();
       const thumbs = [...(stripRef.current?.querySelectorAll<HTMLElement>(".image-thumb-open") ?? [])];
       const i = thumbs.indexOf(e.currentTarget) + (e.key === "ArrowLeft" ? -1 : 1);
-      (i >= thumbs.length ? taRef.current : thumbs[Math.max(0, i)])?.focus();
+      if (i >= thumbs.length) input()?.focus();
+      else thumbs[Math.max(0, i)]?.focus();
     } else if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      taRef.current?.focus();
+      input()?.focus();
     }
   };
 
@@ -315,6 +376,10 @@ export function Composer({ sessionId }: { sessionId: string }) {
   const usage = session.usage;
   const ctxPct = usage.context_window && usage.context_used ? Math.min(100, Math.round((usage.context_used / usage.context_window) * 100)) : null;
   const modKey = formatKeys("mod+enter", isMac);
+  const placeholder = running ? (canSteer ? "Steer the running turn…" : "Queue a message…") : `Message ${session.agent ?? session.provider}…  / commands${folderOf(session) === null ? "" : " · @ files"}`;
+  const draft = useComposerDrafts.getState().drafts[sessionId];
+  // Read once, when the rich editor starts.
+  const selection = draft?.richSelection ? { start: draft.start, end: draft.end } : null;
 
   return (
     <div
@@ -378,30 +443,54 @@ export function Composer({ sessionId }: { sessionId: string }) {
         <div className="row err-row">
           <span className="dot err" />
           <span className="err-text grow">{session.last_error ?? "Session error"}</span>
-          <button className="btn small" data-command="composer.retry" onClick={() => { taRef.current?.focus(); if (text.trim()) void send(false); }}>Retry</button>
+          <button className="btn small" data-command="composer.retry" onClick={() => { input()?.focus(); if (text.trim()) void send(false); }}>Retry</button>
         </div>
       ) : null}
-      <textarea
-        ref={taRef}
-        data-autofocus
-        value={text}
-        placeholder={running ? (canSteer ? "Steer the running turn…" : "Queue a message…") : `Message ${session.agent ?? session.provider}…  / commands${folderOf(session) === null ? "" : " · @ files"}`}
-        disabled={sending}
-        rows={1}
-        onChange={(e) => {
-          setText(e.target.value);
-          setHistIdx(null);
-          updatePopover(e.target.value, e.target.selectionStart);
-        }}
-        onSelect={(e) => {
-          const ta = e.currentTarget;
-          updateDraft(sessionId, () => ({ start: ta.selectionStart, end: ta.selectionEnd }));
-          if (pop.kind === "mention") updatePopover(ta.value, ta.selectionStart);
-        }}
-        onFocus={() => useStore.getState().setFocus("composer")}
-        onKeyDown={onKeyDown}
-        onPaste={onPaste}
-      />
+      {rich && RichInput ? (
+        <RichInput
+          value={text}
+          placeholder={placeholder}
+          disabled={sending}
+          selection={selection}
+          inputRef={richRef}
+          onChange={(markdown, start, end, before) => {
+            updateDraft(sessionId, () => ({ text: markdown, start, end, richSelection: true }));
+            setHistIdx(null);
+            updatePopover(markdown, before);
+          }}
+          onSelect={(start, end, before) => {
+            updateDraft(sessionId, () => ({ start, end, richSelection: true }));
+            if (pop.kind === "mention") updatePopover(text, before);
+          }}
+          onFocus={() => useStore.getState().setFocus("composer")}
+          onKeyDown={onKeyDown}
+          onPaste={onPaste}
+        />
+      ) : (
+        <textarea
+          ref={taRef}
+          data-autofocus
+          aria-label="Message"
+          value={text}
+          placeholder={placeholder}
+          disabled={sending}
+          rows={1}
+          spellCheck
+          onChange={(e) => {
+            setText(e.target.value);
+            setHistIdx(null);
+            updatePopover(e.target.value, lineUpTo(e.target.value, e.target.selectionStart));
+          }}
+          onSelect={(e) => {
+            const ta = e.currentTarget;
+            updateDraft(sessionId, () => ({ start: ta.selectionStart, end: ta.selectionEnd, richSelection: false }));
+            if (pop.kind === "mention") updatePopover(ta.value, lineUpTo(ta.value, ta.selectionStart));
+          }}
+          onFocus={() => useStore.getState().setFocus("composer")}
+          onKeyDown={(e) => void onKeyDown(e)}
+          onPaste={(e) => void onPaste(e)}
+        />
+      )}
       <input
         ref={fileRef}
         type="file"
@@ -412,7 +501,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
           const files = [...(e.currentTarget.files ?? [])];
           e.currentTarget.value = "";
           void addImages(files);
-          taRef.current?.focus();
+          input()?.focus();
         }}
       />
       <div className="row">
@@ -431,6 +520,10 @@ export function Composer({ sessionId }: { sessionId: string }) {
           </span>
         )}
         <span className="spacer" />
+        <button className="chip" data-command="composer.toggle-rich" aria-pressed={rich} onClick={() => toggleRichComposer(true)}
+          title={rich ? "Formatting as you type; switch to plain markdown" : "Plain markdown; switch to formatting as you type"}>
+          {rich ? "Rich text" : "Markdown"}
+        </button>
         {caps?.images && (
           <button className="chip" data-command="composer.attach-image" onClick={() => fileRef.current?.click()} title={imageSupported.ok ? "Attach images (or paste / drop them)" : imageSupported.reason}>
             + image

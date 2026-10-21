@@ -5,7 +5,16 @@ import type { DraftImage } from "../lib/images";
  * Per-session composer state. In memory only: drafts and their images survive
  * switching sessions, not a reload.
  */
-export type ComposerDraft = { text: string; images: DraftImage[]; start: number; end: number; sending: boolean };
+export type ComposerDraft = {
+  /** Markdown, in either mode of the composer. */
+  text: string;
+  images: DraftImage[];
+  /** The selection: offsets in `text`, or positions in the rich editor when `richSelection`. */
+  start: number;
+  end: number;
+  richSelection?: boolean;
+  sending: boolean;
+};
 export const emptyDraft: ComposerDraft = { text: "", images: [], start: 0, end: 0, sending: false };
 export const useComposerDrafts = create<{ drafts: Record<string, ComposerDraft> }>(() => ({ drafts: {} }));
 export function updateDraft(id: string, update: (draft: ComposerDraft) => Partial<ComposerDraft>) {

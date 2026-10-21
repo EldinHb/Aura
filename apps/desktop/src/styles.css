@@ -270,6 +270,24 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .composer { border-top: 1px solid var(--border); background: var(--bg-elev); padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
 .composer textarea { width: 100%; resize: none; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; min-height: 40px; max-height: 200px; line-height: 1.45; }
 .composer textarea:focus { border-color: var(--accent); }
+.composer .composer-rich { width: 100%; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; min-height: 40px; max-height: 200px; overflow-y: auto; line-height: 1.45; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.composer .composer-rich:focus { border-color: var(--accent); }
+.composer .composer-rich[contenteditable="false"] { opacity: 0.6; }
+.composer .composer-rich > *, .composer .composer-rich p { margin: 0; }
+.composer .composer-rich p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--fg-dim); float: left; height: 0; pointer-events: none; white-space: pre; }
+.composer .composer-rich h1, .composer .composer-rich h2, .composer .composer-rich h3, .composer .composer-rich h4, .composer .composer-rich h5, .composer .composer-rich h6 { font-weight: 600; margin: 2px 0; }
+.composer .composer-rich h1 { font-size: 16px; } .composer .composer-rich h2 { font-size: 15px; } .composer .composer-rich h3 { font-size: 14px; } .composer .composer-rich h4, .composer .composer-rich h5, .composer .composer-rich h6 { font-size: 13px; }
+.composer .composer-rich ul, .composer .composer-rich ol { padding-left: 22px; }
+.composer .composer-rich ul[data-type="taskList"] { list-style: none; padding-left: 2px; }
+.composer .composer-rich ul[data-type="taskList"] li { display: flex; gap: 6px; align-items: flex-start; }
+.composer .composer-rich ul[data-type="taskList"] li > label { margin-top: 1px; }
+.composer .composer-rich ul[data-type="taskList"] li > div { flex: 1; }
+.composer .composer-rich blockquote { padding-left: 10px; border-left: 3px solid var(--border-strong); color: var(--fg-muted); }
+.composer .composer-rich code { background: var(--bg-elev2); padding: 0 4px; border-radius: 4px; font: 12px var(--mono); }
+.composer .composer-rich pre { background: var(--bg-elev2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
+.composer .composer-rich pre code { background: none; padding: 0; }
+.composer .composer-rich a { color: var(--info); text-decoration: underline; }
+.composer .composer-rich hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
 .composer .row { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--fg-dim); flex-wrap: wrap; }
 .composer .row .spacer { flex: 1; }
 .popover { position: absolute; bottom: 100%; left: 12px; right: 12px; margin-bottom: 6px; background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: 8px; max-height: 260px; overflow: auto; box-shadow: 0 -8px 30px rgba(0,0,0,0.4); z-index: 20; }

@@ -154,6 +154,8 @@ export type UiSettings = {
   defaultProvider: string;
   defaultCwd: string;
   showReasoning: boolean;
+  /** The message box formats markdown as you type; off, it is a plain markdown textbox. */
+  composerRich: boolean;
   summonShortcut: string;
   /** Rules that hide matching pull requests from the sidebar; see `pullFilter`. */
   pullFilters: string[];
@@ -176,6 +178,7 @@ export const defaultSettings: UiSettings = {
   defaultProvider: "claude",
   defaultCwd: "",
   showReasoning: true,
+  composerRich: true,
   summonShortcut: "CmdOrCtrl+Shift+A",
   pullFilters: ["author:dependabot"],
   mergeMethod: "",

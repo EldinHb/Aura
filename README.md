@@ -74,6 +74,11 @@ keyboard, while the agents keep working in the background.
   with their check and review status, run an agent pre-review,
   edit its findings, and post the review to GitHub yourself.
   See [Pull requests and pre-reviews](#pull-requests-and-pre-reviews).
+- **Markdown both ways.** Replies render as GitHub-flavoured markdown, with code
+  highlighting, tables, task lists, images (web or local files) and file paths you can
+  click to show in Finder or Explorer. The message box formats markdown as you type
+  (`**`, `#`, `-`, `1.`, ```` ``` ````, `>`) and sends markdown; switch it to a plain
+  markdown textbox with the chip under it or `⌘K` → Composer.
 - **Keyboard only.** Command palette, a leader key with a which-key menu, vim-style
   navigation and hint mode for everything else. Every binding can be changed.
 

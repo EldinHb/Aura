@@ -47,7 +47,7 @@ async function pasteImages(page: Page, specs: { name: string; w: number; h: numb
       const blob = await (await fetch(urls[i])).blob();
       dt.items.add(new File([blob], names[i], { type: "image/png" }));
     }
-    const ta = document.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    const ta = document.querySelector<HTMLElement>(".composer [aria-label='Message']")!;
     ta.focus();
     ta.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
   }, { urls, names: specs.map((s) => s.name) });
@@ -120,7 +120,7 @@ for (const theme of ["dark", "light"] as const) {
 
     await pasteImages(page, specs.slice(0, 1));
     await expect(composer.locator(".image-thumb")).toHaveCount(1);
-    await page.locator(".composer textarea").fill("Here is the dialog after the change");
+    await page.locator(".composer [aria-label='Message']").fill("Here is the dialog after the change");
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${OUT}/composer-1-${theme}.png` });
     await composer.screenshot({ path: `${OUT}/composer-1-${theme}-crop.png` });
@@ -149,8 +149,10 @@ for (const theme of ["dark", "light"] as const) {
     await page.waitForTimeout(100);
 
     // Backspace in the empty textbox takes the last image off.
-    await page.locator(".composer textarea").fill("");
-    await page.locator(".composer textarea").press("Backspace");
+    // Emptied with the keyboard: `fill("")` leaves a rich editor as it is.
+    await page.locator(".composer [aria-label='Message']").press("ControlOrMeta+a");
+    await page.locator(".composer [aria-label='Message']").press("Delete");
+    await page.locator(".composer [aria-label='Message']").press("Backspace");
     await expect(composer.locator(".image-thumb")).toHaveCount(3);
   });
 }
@@ -159,13 +161,13 @@ test("a Retina capture is shrunk to the agent's limits when sent", async ({ page
   await page.goto("/");
   await mockDaemon(page, historyWith([]));
   await page.goto(`/?port=19997&token=shots&session=${sid}`);
-  await expect(page.locator(".composer textarea")).toBeVisible();
+  await expect(page.locator(".composer [aria-label='Message']")).toBeVisible();
   await pasteImages(page, [specs[1]]);
   const thumb = page.locator(".composer .image-thumb-open");
   await expect(thumb).toHaveAttribute("title", /5120 × 2880 .*will be sent resized to 2000 × 1125/);
   await expect(thumb.locator(".image-thumb-badge")).toHaveText("resized");
-  await page.locator(".composer textarea").fill("full screen");
-  await page.locator(".composer textarea").press("Enter");
+  await page.locator(".composer [aria-label='Message']").fill("full screen");
+  await page.locator(".composer [aria-label='Message']").press("Enter");
   await expect(page.locator(".composer .image-thumb")).toHaveCount(0);
   const image = sent.at(-1)!.images[0];
   expect(image).toMatchObject({ width: 2000, height: 1125, original_width: 5120 });
