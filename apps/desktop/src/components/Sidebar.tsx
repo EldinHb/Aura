@@ -33,7 +33,7 @@ function sidebarCurrent(st: AppState, sessions: Session[]): Session | undefined 
 /**
  * The quiet second line: agent, orchestrator mark, workers hidden under a
  * collapsed orchestrator, then folder or worktree, branch state, terminal mode
- * and model, which give way first. An orchestrator without a folder has none
+ * and model with its effort, which give way first. An orchestrator without a folder has none
  * of the folder's. Then the session's issues and PRs.
  */
 function SessionRowDetails({ session: s, selected, hidden }: { session: Session; selected: boolean; hidden: Session[] }) {
@@ -41,6 +41,7 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
   useRecordBranchPull(s, pull);
   const branch = (git && branchName(git)) ?? s.worktree?.branch;
   const agent = s.agent ?? s.provider;
+  const runs = s.model ? [s.model, s.effort].filter(Boolean).join(" · ") : s.effort ? `effort ${s.effort}` : "";
   return (
     <>
       <div className="sub">
@@ -52,7 +53,7 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
           {branch && `${s.worktree || folderOf(s) === null ? "" : " · "}⎇ ${branch}`}
           {git && <GitCounts git={git} />}
           {s.mode === "terminal" && s.provider !== "terminal" ? " · tui" : ""}
-          {s.model ? `${folderOf(s) === null && !branch ? "" : " · "}${s.model}` : ""}
+          {runs ? `${folderOf(s) === null && !branch ? "" : " · "}${runs}` : ""}
         </span>
       </div>
       <SessionRowLinks session={s} branchPull={pull} />

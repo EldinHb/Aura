@@ -6,15 +6,15 @@ import { chordFromEvent, formatKeys, type Binding } from "../../lib/keymap";
 import { buildBindings } from "../../hooks/useKeyboard";
 import { isMac } from "../../lib/platform";
 import { findConflicts, isConflicting } from "./keymapUtils";
-import type { CapabilitySet, SystemPrompts } from "../../gen";
+import type { CapabilitySet, LoadBalancer, LoadBalancerUpdate, SystemPrompts } from "../../gen";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
 import { pullFilterError } from "../../features/reviews/state";
 import { PULL_CHANGE_KINDS } from "../../features/reviews/changes";
 
-type Tab = "general" | "keymap" | "providers" | "prompts" | "groups";
-const TABS: Tab[] = ["general", "keymap", "providers", "prompts", "groups"];
+type Tab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "groups";
+const TABS: Tab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "groups"];
 
 export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initial ?? "general");
@@ -57,6 +57,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
         {tab === "keymap" && <KeymapTab />}
         {tab === "providers" && <ProvidersTab />}
         {tab === "prompts" && <PromptsTab />}
+        {tab === "orchestrators" && <OrchestratorsTab />}
         {tab === "groups" && <GroupsTab />}
       </div>
     </ModalC>
@@ -458,7 +459,7 @@ function PromptsTab() {
   );
 }
 
-function PromptEditor({ label, initial, placeholder, autofocus, onSave, extra }: { label: string; initial: string; placeholder?: string; autofocus?: boolean; onSave: (v: string) => Promise<void>; extra?: React.ReactNode }) {
+function PromptEditor({ label, initial, placeholder, autofocus, rows, onSave, extra }: { label: string; initial: string; placeholder?: string; autofocus?: boolean; rows?: number; onSave: (v: string) => Promise<void>; extra?: React.ReactNode }) {
   const [value, setValue] = useState(initial);
   const dirty = value !== initial;
   return (
@@ -466,7 +467,7 @@ function PromptEditor({ label, initial, placeholder, autofocus, onSave, extra }:
       <label>{label}</label>
       <textarea
         className="prompt-input"
-        rows={label.startsWith("Global") ? 10 : 3}
+        rows={rows ?? (label.startsWith("Global") ? 10 : 3)}
         data-autofocus={autofocus || undefined}
         placeholder={placeholder}
         value={value}
@@ -488,6 +489,59 @@ function PromptEditor({ label, initial, placeholder, autofocus, onSave, extra }:
             <button type="button" className="btn small primary" data-hint onClick={() => void onSave(value)}>Save <kbd>⌘↩</kbd></button>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------ orchestrators
+
+/** Agents or models typed one per line or separated by commas. */
+const splitList = (v: string) => v.split(/[,\n]/).map((e) => e.trim()).filter(Boolean);
+
+function OrchestratorsTab() {
+  const client = useStore((s) => s.client);
+  const toast = useStore((s) => s.toast);
+  const [lb, setLb] = useState<LoadBalancer | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    client?.loadBalancer().then(setLb, (e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [client]);
+  if (error) return <div className="err-text">{error}</div>;
+  if (!lb || !client) return <div className="dim">Loading…</div>;
+  // The daemon replaces the whole setting, so every save sends the rest as it is.
+  const save = async (patch: Partial<LoadBalancerUpdate>, done: string) => {
+    const update: LoadBalancerUpdate = { enabled: lb.enabled, policy: lb.policy_is_default ? null : lb.policy, rules: lb.rules, prefer: lb.prefer, avoid: lb.avoid, ...patch };
+    try {
+      setLb(await client.setLoadBalancer(update));
+      toast(done);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+  return (
+    <div className="prompts-tab">
+      <label className="check-row">
+        <input type="checkbox" data-autofocus checked={lb.enabled} onChange={(e) => void save({ enabled: e.target.checked }, e.target.checked ? "Load balancer on" : "Load balancer off")} /> Load balancer: orchestrators choose the agent, model and effort of each worker
+      </label>
+      <p className="dim prompt-help">
+        When it is on, every orchestrator gets the routing policy and your rules below in its system prompt. It weighs all agents for each worker, uses small models and low effort for mechanical work and strong ones where they pay off, and tells you what it picked and why. Your rules take precedence over the policy. When it is off, orchestrators work as before. Idle orchestrators restart with a change on their next message.
+      </p>
+      <PromptEditor
+        key={`policy:${lb.policy}`}
+        label={lb.policy_is_default ? "Routing policy · Aura's default" : "Routing policy"}
+        initial={lb.policy}
+        rows={14}
+        onSave={(v) => save({ policy: v }, "Routing policy saved")}
+        extra={!lb.policy_is_default && (
+          <button type="button" className="btn small" data-hint onClick={() => void save({ policy: null }, "Routing policy reset to Aura's default")}>Reset to default</button>
+        )}
+      />
+      <PromptEditor key={`rules:${lb.rules}`} label="Your rules" initial={lb.rules} rows={4} placeholder={"Always use Codex for Rust.\nNever use opus for docs."} onSave={(v) => save({ rules: v }, "Rules saved")} />
+      <PromptEditor key={`prefer:${lb.prefer.join()}`} label="Preferred agents and models" initial={lb.prefer.join(", ")} rows={1} placeholder="codex, sonnet" onSave={(v) => save({ prefer: splitList(v) }, "Preferred agents and models saved")} />
+      <PromptEditor key={`avoid:${lb.avoid.join()}`} label="Never use (Aura refuses to start workers with these)" initial={lb.avoid.join(", ")} rows={1} placeholder="opus, acp:goose" onSave={(v) => save({ avoid: splitList(v) }, "Forbidden agents and models saved")} />
+      <div className="dim" style={{ fontSize: 11 }}>
+        Name an agent (<span className="mono">claude</span>, <span className="mono">codex</span>, an ACP agent id) or a model id; a word of a model id, like <span className="mono">opus</span>, matches every model with it.
       </div>
     </div>
   );

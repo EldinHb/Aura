@@ -74,6 +74,10 @@ pub struct WorkerReport {
     pub id: SessionId,
     pub title: String,
     pub agent: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     pub status: SessionStatus,
     pub cwd: String,
     pub branch: Option<String>,
@@ -191,7 +195,15 @@ impl Manager {
     pub(super) fn orchestration_prompt(&self, s: &Session) -> Option<String> {
         if s.orchestrator {
             let tools = self.inner.orchestration.lock().cli.is_some();
-            return Some(crate::prompts::orchestrator_prompt(s, tools));
+            let mut p = crate::prompts::orchestrator_prompt(s, tools);
+            // Unreadable settings leave the load balancer off rather than the
+            // orchestrator without a prompt.
+            match self.stored_load_balancer().map(|lb| lb.prompt()) {
+                Ok(Some(lb)) => p = format!("{p}\n\n{lb}"),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("load balancer: {e:#}"),
+            }
+            return Some(p);
         }
         let orchestrator = self.get_session(s.orchestrator_id.as_deref()?).ok()?;
         Some(crate::prompts::worker_prompt(&orchestrator.title))
@@ -326,6 +338,14 @@ impl Manager {
             bail!("a worker needs a prompt");
         }
         let (provider, agent) = parse_agent(&spec.agent)?;
+        let model = spec.model.filter(|m| !m.is_empty());
+        let key = agent.as_deref().unwrap_or(provider.as_str());
+        if let Some(entry) = self
+            .stored_load_balancer()?
+            .forbidden(key, model.as_deref())
+        {
+            bail!("the user's load balancer settings forbid `{entry}`; pick another agent or model from list_agents");
+        }
         let cwd = match spec.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
             Some(c) if orch.folderless => {
                 let dir = resolve_dir("", c);
@@ -352,7 +372,7 @@ impl Manager {
                 cwd,
                 title: spec.title.filter(|t| !t.trim().is_empty()),
                 group: orch.group.clone(),
-                model: spec.model.filter(|m| !m.is_empty()),
+                model,
                 effort: spec.effort.filter(|e| !e.is_empty()),
                 permission_mode: orch.permission_mode.clone().filter(|_| same_agent),
                 sandbox_mode: orch.sandbox_mode.clone().filter(|_| same_agent),
@@ -714,6 +734,8 @@ impl Manager {
             id: s.id.clone(),
             title: s.title.clone(),
             agent: label(s),
+            model: s.model.clone(),
+            effort: s.effort.clone(),
             status: s.status,
             cwd: s.cwd.clone(),
             branch: s.worktree.as_ref().map(|w| w.branch.clone()),
@@ -1012,7 +1034,7 @@ pub fn describe_workers(reports: &[WorkerReport]) -> String {
             "### {} (`{}`) · {} · {}\n",
             r.title,
             r.id,
-            r.agent,
+            agent_line(&r.agent, r.model.as_deref(), r.effort.as_deref()),
             status_name(r.status)
         ));
         match &r.branch {
@@ -1105,6 +1127,16 @@ fn dirs_home() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_default()
+}
+
+/// An agent with the model and effort it runs, `default` for those not set:
+/// `codex · gpt-5 · low`.
+pub fn agent_line(agent: &str, model: Option<&str>, effort: Option<&str>) -> String {
+    format!(
+        "{agent} · {} · {}",
+        model.filter(|m| !m.is_empty()).unwrap_or("default"),
+        effort.filter(|e| !e.is_empty()).unwrap_or("default")
+    )
 }
 
 fn label(s: &Session) -> String {

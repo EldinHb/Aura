@@ -201,6 +201,14 @@ dialog, or turn an existing session into one with **Orchestrate** in the inspect
 - **Any agent, both ways.** The orchestrator can be Claude Code, Codex or an ACP
   agent, and each worker can be any of them too, so a Claude Code orchestrator can
   have Codex implement and Claude review, or the other way round.
+- **Load balancer (optional).** Off by default; turn it on in Settings →
+  Orchestrators. The orchestrator then picks the agent, model and effort of every
+  worker itself, across agents, to spend as few tokens as the work allows: small
+  models and low effort for mechanical tasks, strong ones where they pay off, another
+  vendor's agent for review. It tells you each choice and why. Aura's routing policy
+  can be read and rewritten there; your own rules, preferred agents and models, and
+  agents and models never to use come on top and take precedence. Aura refuses to
+  start a worker with one you forbade. With the load balancer off, nothing changes.
 - **Workers are normal sessions.** Orchestrators in no group have their own
   **Orchestrators** section at the top of the sidebar; workers show up indented under
   their orchestrator, in its section. Open one to read along, message it, approve its

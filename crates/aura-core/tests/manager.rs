@@ -2903,3 +2903,109 @@ async fn a_turn_on_a_report_marks_the_orchestrator_only_once_its_workers_are_don
     wait_reports(&calls, 4).await;
     wait_attention(&m, &orch.id, Some(Attention::Done)).await;
 }
+
+#[tokio::test]
+async fn the_load_balancer_reaches_orchestrators_only_when_on_and_refuses_forbidden_models() {
+    let (m, calls, provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let lead = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Off by default: the orchestrator's prompt is as before and any model goes.
+    let lb = m.load_balancer().unwrap();
+    assert!(!lb.enabled && lb.policy_is_default);
+    let first = provider.prompts.lock()[0].clone().unwrap();
+    assert!(!first.contains("## Load balancer"), "{first}");
+    let worker = |model: &str| WorkerSpec {
+        agent: "claude".into(),
+        prompt: "do it".into(),
+        model: Some(model.into()),
+        effort: Some("low".into()),
+        ..Default::default()
+    };
+    m.start_worker(&lead.id, worker("opus")).await.unwrap();
+
+    // Rules saved while it is off change nothing, so nothing restarts.
+    m.set_load_balancer(LoadBalancerUpdate {
+        rules: "Be frugal.".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert!(!calls.lock().iter().any(|c| c == "stop"));
+
+    // Turned on, it is kept, and the idle orchestrator restarts with it.
+    let saved = m
+        .set_load_balancer(LoadBalancerUpdate {
+            enabled: true,
+            policy: None,
+            rules: "Always use Codex for Rust.".into(),
+            prefer: vec!["codex".into()],
+            avoid: vec!["opus".into()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(m.load_balancer().unwrap(), saved);
+    assert!(m
+        .get_setting(aura_core::load_balancer::SETTING_KEY)
+        .unwrap()
+        .unwrap()
+        .contains("Always use Codex for Rust."));
+    assert!(calls.lock().iter().any(|c| c == "stop"));
+    m.send(
+        &lead.id,
+        Input {
+            text: "go".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let prompt = m
+        .instructions_for(&m.get_session(&lead.id).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        provider.prompts.lock().last().cloned().flatten().as_deref(),
+        Some(prompt.as_str())
+    );
+    let orchestrator = prompt.find("## You are an orchestrator").unwrap();
+    let balancer = prompt.find("## Load balancer").unwrap();
+    assert!(orchestrator < balancer, "{prompt}");
+    assert!(prompt.contains(aura_core::load_balancer::DEFAULT_POLICY));
+    assert!(prompt.ends_with("Always use Codex for Rust."), "{prompt}");
+
+    // A forbidden model is refused; another starts, and workers get no policy.
+    let err = m
+        .start_worker(&lead.id, worker("claude-opus-4"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("forbid `opus`"), "{err}");
+    let ok = m.start_worker(&lead.id, worker("sonnet")).await.unwrap();
+    let wprompt = m.instructions_for(&ok).unwrap().unwrap();
+    assert!(!wprompt.contains("Load balancer"), "{wprompt}");
+    let listed = describe_workers(&m.worker_reports(&lead.id).unwrap());
+    assert!(listed.contains("claude · sonnet · low"), "{listed}");
+
+    // Off again, the orchestrator is back to its old prompt.
+    m.set_load_balancer(LoadBalancerUpdate {
+        enabled: false,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let off = m
+        .instructions_for(&m.get_session(&lead.id).unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(!off.contains("## Load balancer"), "{off}");
+    m.start_worker(&lead.id, worker("opus")).await.unwrap();
+}

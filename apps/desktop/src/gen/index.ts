@@ -25,6 +25,8 @@ export * from './Item';
 export * from './ItemDelta';
 export * from './ItemKind';
 export * from './ItemStatus';
+export * from './LoadBalancer';
+export * from './LoadBalancerUpdate';
 export * from './LogEntry';
 export * from './ModelInfo';
 export * from './NativeSession';

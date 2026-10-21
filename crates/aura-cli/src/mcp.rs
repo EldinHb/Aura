@@ -182,7 +182,11 @@ impl Server {
                     "Started {} (`{}`) with {} in {}{}. It is working on the task; you get a worker report when it stops, or call wait_for_sessions.",
                     s.title,
                     s.id,
-                    s.agent.as_deref().unwrap_or(s.provider.as_str()),
+                    agent_line(
+                        s.agent.as_deref().unwrap_or(s.provider.as_str()),
+                        s.model.as_deref(),
+                        s.effort.as_deref()
+                    ),
                     s.cwd,
                     s.worktree.as_ref().map(|w| format!(" on branch `{}`", w.branch)).unwrap_or_default()
                 ))
@@ -309,11 +313,7 @@ impl Server {
                         .ok()
                         .and_then(|v| serde_json::from_value(v).ok())
                         .unwrap_or_default();
-                    if !models.is_empty() {
-                        let ids: Vec<String> =
-                            models.iter().map(|m| format!("`{}`", m.id)).collect();
-                        out.push_str(&format!("  models: {}\n", ids.join(", ")));
-                    }
+                    out.push_str(&describe_models(&models));
                 }
                 ProviderKind::Acp => {
                     for agent in p.agents.iter().filter(|a| a.available) {
@@ -325,6 +325,32 @@ impl Server {
         }
         Ok(out)
     }
+}
+
+/// An agent's models for `list_agents`, one per line with what start_session
+/// can pass for them.
+fn describe_models(models: &[ModelInfo]) -> String {
+    let mut out = String::new();
+    for m in models {
+        out.push_str(&format!("  - model `{}`", m.id));
+        if !m.display_name.is_empty() && m.display_name != m.id {
+            out.push_str(&format!(" ({})", m.display_name));
+        }
+        if m.is_default {
+            out.push_str(", the default");
+        }
+        if let Some(d) = m.description.as_deref().filter(|d| !d.trim().is_empty()) {
+            out.push_str(&format!(": {}", d.trim()));
+        }
+        if !m.efforts.is_empty() {
+            out.push_str(&format!("; efforts: {}", m.efforts.join(", ")));
+            if let Some(e) = &m.default_effort {
+                out.push_str(&format!(" (default {e})"));
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 fn req<'a>(a: &'a Value, key: &str) -> Result<&'a str> {
@@ -342,7 +368,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "list_agents",
-            "description": "List the coding agents you can start workers with: Claude Code, Codex and installed ACP agents, with their models.",
+            "description": "List the coding agents you can start workers with: Claude Code, Codex and installed ACP agents, with their models and the reasoning efforts each model takes.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
         },
@@ -364,8 +390,8 @@ fn tools() -> Value {
                     "cwd": { "type": "string", "description": "Absolute path of the folder or repository the worker works in; list_projects shows the ones Aura knows. Required when you have no folder of your own; otherwise it defaults to your folder, and relative paths resolve against it." },
                     "branch": { "type": "string", "description": "Run the worker in a new git worktree of the repository at `cwd`, on this branch. Use one per worker when several change the same repository at once." },
                     "base": { "type": "string", "description": "Base ref for `branch` in that repository. Defaults to its HEAD." },
-                    "model": { "type": "string", "description": "Model id. Defaults to the agent's default." },
-                    "effort": { "type": "string", "description": "Reasoning effort, for agents that have it." },
+                    "model": { "type": "string", "description": "Model id from list_agents. Defaults to the agent's default." },
+                    "effort": { "type": "string", "description": "Reasoning effort from list_agents, for models that have it." },
                 },
                 "required": ["agent", "prompt"],
             },
@@ -428,4 +454,35 @@ fn tools() -> Value {
             "annotations": { "destructiveHint": true },
         },
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn models_are_listed_with_their_efforts_and_defaults() {
+        let models = vec![
+            ModelInfo {
+                id: "big".into(),
+                display_name: "Big".into(),
+                description: Some("Strongest".into()),
+                efforts: vec!["low".into(), "high".into()],
+                default_effort: Some("high".into()),
+                is_default: true,
+            },
+            ModelInfo {
+                id: "small".into(),
+                display_name: "small".into(),
+                description: None,
+                efforts: vec![],
+                default_effort: None,
+                is_default: false,
+            },
+        ];
+        assert_eq!(
+            describe_models(&models),
+            "  - model `big` (Big), the default: Strongest; efforts: low, high (default high)\n  - model `small`\n"
+        );
+    }
 }

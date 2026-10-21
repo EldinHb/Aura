@@ -617,6 +617,8 @@ async fn dispatch(
             let P { agent, prompt } = params(p)?;
             ok(m.set_agent_prompt(&agent, prompt).await?)
         }
+        "load_balancer.get" => ok(m.load_balancer()?),
+        "load_balancer.set" => ok(m.set_load_balancer(params(p)?).await?),
         "prompts.preview" => {
             #[derive(Deserialize)]
             struct P {

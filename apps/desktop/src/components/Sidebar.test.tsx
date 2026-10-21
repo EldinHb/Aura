@@ -346,6 +346,7 @@ it("shows no folder for an orchestrator that belongs to none, and its workers' f
   const list = [
     session("o", "Chat", { orchestrator: true, folderless: true, cwd: "/data/orchestrators/o", model: "opus" }),
     session("w", "Worker", { orchestrator_id: "o", cwd: "/work/repo" }),
+    session("x", "Picked", { orchestrator_id: "o", cwd: "/work/repo", model: "gpt-5", effort: "low" }),
   ];
   useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
   render(<Sidebar />);
@@ -355,6 +356,8 @@ it("shows no folder for an orchestrator that belongs to none, and its workers' f
   const worker = document.querySelector<HTMLElement>('[data-session-id="w"]')!;
   expect(worker.querySelector(".sub .where")?.textContent).toBe("repo");
   expect(worker.title).toBe("/work/repo");
+  // The model and effort the orchestrator gave a worker.
+  expect(document.querySelector('[data-session-id="x"] .sub .where')?.textContent).toBe("repo · gpt-5 · low");
 });
 
 it("shows only whole link chips that fit, then +N with the rest in its tooltip, and adapts as the sidebar resizes", async () => {

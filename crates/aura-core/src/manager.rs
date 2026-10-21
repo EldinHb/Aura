@@ -13,8 +13,8 @@ use tokio::sync::{broadcast, mpsc};
 mod attachments;
 mod orchestrator;
 pub use orchestrator::{
-    describe_projects, describe_workers, report_message, Project, WaitResult, WorkerReport,
-    WorkerSpec,
+    agent_line, describe_projects, describe_workers, report_message, Project, WaitResult,
+    WorkerReport, WorkerSpec,
 };
 
 /// Git worktree creation is provided by `aura-git`; the manager only needs this.
@@ -284,6 +284,44 @@ impl Manager {
         })?;
         self.restart_idle_agents(|s| s.id == id).await;
         self.get_session(id)
+    }
+
+    // ----------------------------------------------------------- load balancer
+
+    pub(crate) fn stored_load_balancer(&self) -> Result<crate::load_balancer::Stored> {
+        Ok(
+            match self
+                .inner
+                .store
+                .get_setting(crate::load_balancer::SETTING_KEY)?
+            {
+                Some(raw) => serde_json::from_str(&raw)
+                    .context("stored load balancer settings are unreadable")?,
+                None => Default::default(),
+            },
+        )
+    }
+
+    pub fn load_balancer(&self) -> Result<crate::LoadBalancer> {
+        Ok(self.stored_load_balancer()?.view())
+    }
+
+    /// Save the load balancer. When that changes what orchestrators are told,
+    /// idle ones restart with it on their next message.
+    pub async fn set_load_balancer(
+        &self,
+        update: crate::LoadBalancerUpdate,
+    ) -> Result<crate::LoadBalancer> {
+        let before = self.stored_load_balancer().ok().and_then(|lb| lb.prompt());
+        let stored = crate::load_balancer::Stored::from(update);
+        self.inner.store.set_setting(
+            crate::load_balancer::SETTING_KEY,
+            &serde_json::to_string(&stored)?,
+        )?;
+        if stored.prompt() != before {
+            self.restart_idle_agents(|s| s.orchestrator).await;
+        }
+        Ok(stored.view())
     }
 
     /// A changed prompt reaches an agent only when it starts. Stop the idle

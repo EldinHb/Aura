@@ -15,6 +15,8 @@ import type {
   SearchHit,
   Session,
   SystemPrompts,
+  LoadBalancer,
+  LoadBalancerUpdate,
   SessionMode,
   Setting,
   SlashCommand,
@@ -271,6 +273,13 @@ export class RpcClient {
   /** `agent`: `claude`, `codex` or `acp:<agent id>`. `null` removes its prompt. */
   setAgentPrompt(agent: string, prompt: string | null) {
     return this.call<SystemPrompts>("prompts.set_agent", { agent, prompt });
+  }
+  loadBalancer() {
+    return this.call<LoadBalancer>("load_balancer.get");
+  }
+  /** Replaces every setting of the load balancer; `policy: null` goes back to Aura's default. */
+  setLoadBalancer(update: LoadBalancerUpdate) {
+    return this.call<LoadBalancer>("load_balancer.set", update);
   }
   /** The complete system prompt the session's agent starts with. */
   effectivePrompt(id: string) {

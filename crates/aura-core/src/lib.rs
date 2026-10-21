@@ -6,6 +6,7 @@
 //! persists events through a [`store::Store`] and fans them out to clients.
 
 pub mod event;
+pub mod load_balancer;
 pub mod manager;
 pub mod process;
 pub mod prompts;
@@ -16,6 +17,7 @@ pub mod types;
 pub mod which;
 
 pub use event::*;
+pub use load_balancer::{LoadBalancer, LoadBalancerUpdate};
 pub use manager::*;
 pub use prompts::SystemPrompts;
 pub use provider::*;
