@@ -174,3 +174,14 @@ it("while a question waits, the message box says which key goes to it; the quest
   act(() => useStore.setState({ focus: "sidebar" }));
   expect(hint()).toBeNull();
 });
+
+it("shows the context as a share of the window, or as tokens until the window is known", () => {
+  const withUsage = (context_used: number | null, context_window: number | null) =>
+    useStore.setState({ sessions: { a: { ...session("a"), usage: { ...session("a").usage, context_used, context_window } } } });
+  withUsage(30_000, null);
+  const { rerender } = render(<Composer sessionId="a" />);
+  expect(screen.getByText("ctx 30.0k")).toBeTruthy();
+  withUsage(30_000, 200_000);
+  rerender(<Composer sessionId="a" />);
+  expect(screen.getByText("ctx 15%")).toBeTruthy();
+});

@@ -456,12 +456,15 @@ export function Composer({ sessionId }: { sessionId: string }) {
             {session.sandbox_mode ?? "sandbox"}
           </button>
         )}
-        {ctxPct !== null && (
-          <span className="ctx" title={`${fmtTokens(usage.context_used)} / ${fmtTokens(usage.context_window)} tokens`}>
+        {ctxPct !== null ? (
+          <span className="ctx" title={`${fmtTokens(usage.context_used ?? 0)} / ${fmtTokens(usage.context_window ?? 0)} tokens`}>
             ctx {ctxPct}%
             <span className="meter inline"><div style={{ width: `${ctxPct}%` }} /></span>
           </span>
-        )}
+        ) : usage.context_used ? (
+          // Claude reports a new session's window only when its first turn ends.
+          <span className="ctx" title={`${usage.context_used} tokens`}>ctx {fmtTokens(usage.context_used)}</span>
+        ) : null}
         {usage.total_cost_usd ? <span>{fmtUsd(usage.total_cost_usd)}</span> : null}
       </div>
     </div>
