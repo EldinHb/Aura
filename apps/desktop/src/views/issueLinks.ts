@@ -1,4 +1,5 @@
 import type { Item } from "../gen";
+import { isUserMessage } from "../lib/auraMessage";
 
 export type SessionLink = { url: string; kind: "Issue" | "PR"; repo: string; number: string };
 
@@ -111,7 +112,7 @@ export function mentionedSessionLinks(items: Record<string, Item>, title = "", r
   requestedLinks(title, repo).forEach(add);
   for (const item of Object.values(items)) {
     scan(item.text);
-    if (item.kind === "user_message") requestedLinks(item.text, repo).forEach(add);
+    if (isUserMessage(item)) requestedLinks(item.text, repo).forEach(add);
     scan(item.data);
     if (typeof item.data.command === "string") commandLinks(item.data.command, "", true).forEach(add);
   }
@@ -202,7 +203,8 @@ export function sessionLinks(items: Record<string, Item>, title = "", repo?: str
   select(uniqueLinks([...linksIn(title), ...requestedLinks(title, repo)]));
   for (const item of Object.values(items)) {
     if (item.parent_id) continue;
-    if (item.kind === "user_message") {
+    // What Aura tells the agent (a worker's report, say) is no request of the user's.
+    if (isUserMessage(item)) {
       requestedLink = /\b(?:where|link|url)\b/i.test(item.text)
         ? /\b(?:PR|pull request)\b/i.test(item.text) ? "PR" : /\bissue\b/i.test(item.text) ? "Issue" : undefined
         : undefined;

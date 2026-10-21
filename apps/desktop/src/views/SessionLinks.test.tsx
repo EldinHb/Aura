@@ -224,3 +224,9 @@ describe("session issue and PR links", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 });
+
+it("does not take a worker's report for a request of the user's", () => {
+  const work = item("Work on https://github.com/owner/repo/issues/1", {}, "user_message");
+  const report = { ...item("[Aura] Worker report. This message comes from Aura, not the user.\n\n### Reviewer\nLast reply:\nReview https://github.com/owner/repo/pull/9", {}, "user_message"), id: "report" };
+  expect(sessionLinks({ a: work, b: report }).map((link) => link.url)).toEqual(["https://github.com/owner/repo/issues/1"]);
+});
