@@ -27,30 +27,35 @@ export function agentLine(s: Session, providers: ProviderInfo[]): string {
 
 /** Switches an orchestrator between its chat with the user and its threads with its workers. */
 export function OrchestratorTabs({ orchestratorId }: { orchestratorId: string }) {
-  const open = useWorkerThreads((s) => s.open[orchestratorId]);
-  const workers = useWorkers(orchestratorId);
+  const workers = useWorkers(orchestratorId).filter((w) => !w.archived);
+  const onWorkers = useWorkerThreads((s) => s.views[orchestratorId]?.tab === "workers");
   return (
     <div className="tabs orchestrator-tabs" role="tablist">
-      <button type="button" role="tab" aria-selected={open === undefined} data-hint data-command="orchestrator.chat" className={clsx("tab", open === undefined && "active")} onClick={() => closeWorkerThreads(orchestratorId)}>
+      <button type="button" role="tab" aria-selected={!onWorkers} data-hint data-command="orchestrator.chat" className={clsx("tab", !onWorkers && "active")} onClick={() => closeWorkerThreads(orchestratorId)}>
         Chat
       </button>
-      <button type="button" role="tab" aria-selected={open !== undefined} data-hint data-command="orchestrator.workers" className={clsx("tab", open !== undefined && "active")} onClick={() => openWorkerThread(orchestratorId)}>
+      <button type="button" role="tab" aria-selected={onWorkers} data-hint data-command="orchestrator.workers" className={clsx("tab", onWorkers && "active")} onClick={() => openWorkerThread(orchestratorId)}>
         Workers <span className="dim">{workers.length}</span>
       </button>
     </div>
   );
 }
 
-/** The orchestrator's workers on the left, the conversation with the picked one on the right. */
+/**
+ * The orchestrator's workers on the left, the conversation with the picked one
+ * on the right. Archived workers are left out of the list, unless a link (from
+ * a report, say) picked one: that one is listed, marked archived, with its thread.
+ */
 export function WorkerThreads({ orchestratorId }: { orchestratorId: string }) {
-  const workers = useWorkers(orchestratorId);
+  const all = useWorkers(orchestratorId);
   const providers = useStore((st) => st.providers);
-  const picked = useWorkerThreads((s) => s.open[orchestratorId]);
-  const worker = workers.find((w) => w.id === picked) ?? null;
+  const picked = useWorkerThreads((s) => s.views[orchestratorId]?.worker);
+  const worker = all.find((w) => w.id === picked) ?? null;
+  const workers = all.filter((w) => !w.archived || w.id === picked);
   return (
     <div className="worker-threads">
       <div className="worker-list" role="list">
-        {workers.length === 0 && <div className="list-empty">No workers yet. The orchestrator starts them as it plans the work.</div>}
+        {workers.length === 0 && <div className="list-empty">{all.length === 0 ? "No workers yet. The orchestrator starts them as it plans the work." : "Every worker is archived."}</div>}
         {workers.map((w) => (
           <button
             key={w.id}
@@ -66,11 +71,19 @@ export function WorkerThreads({ orchestratorId }: { orchestratorId: string }) {
               <span className="worker-title">{w.title}</span>
               <span className="dim">{agentLine(w, providers)}</span>
             </span>
-            <span className="dim">{w.status === "running" ? "working" : w.status.replace("_", " ")}</span>
+            <span className="dim">{w.archived ? "archived" : w.status === "running" ? "working" : w.status.replace("_", " ")}</span>
           </button>
         ))}
       </div>
-      {worker ? <WorkerThread key={worker.id} orchestratorId={orchestratorId} worker={worker} /> : workers.length > 0 && <div className="worker-thread empty"><span className="dim">Pick a worker to read its conversation with the orchestrator.</span></div>}
+      {worker ? (
+        <WorkerThread key={worker.id} orchestratorId={orchestratorId} worker={worker} />
+      ) : (
+        (workers.length > 0 || picked) && (
+          <div className="worker-thread empty">
+            <span className="dim">{picked ? "That worker was deleted, with its conversation. Pick another one." : "Pick a worker to read its conversation with the orchestrator."}</span>
+          </div>
+        )
+      )}
     </div>
   );
 }
@@ -186,6 +199,7 @@ function WorkerThread({ orchestratorId, worker }: { orchestratorId: string; work
         <span className={clsx("dot", statusClass(worker))} />
         <span className="name">{worker.title}</span>
         <span className="dim">{agentLine(worker, providers)}</span>
+        {worker.archived && <span className="chip">archived</span>}
         <span className="spacer" />
         <button type="button" className="btn small" data-hint data-command="orchestrator.open-worker" onClick={() => select(worker.id)}>
           Open session ↗

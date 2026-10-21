@@ -45,7 +45,7 @@ export default function App() {
   const selected = useStore(selectSelected);
   const session = useStore((s) => s.selectedId ? s.sessions[s.selectedId] : null);
   // An orchestrator showing its threads with its workers rather than its chat.
-  const threads = useWorkerThreads((s) => (session?.orchestrator ? s.open[session.id] !== undefined : false));
+  const threads = useWorkerThreads((s) => (session?.orchestrator ? s.views[session.id]?.tab === "workers" : false));
   const prMode = useStore((s) => !!s.prSelection || s.reviewHistoryOpen);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
   const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !prMode;

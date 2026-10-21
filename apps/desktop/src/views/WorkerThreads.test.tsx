@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Item, Session } from "../gen";
 import { emptyTranscript, useStore, type Transcript as TranscriptState } from "../state/store";
-import { useWorkerThreads } from "../state/workerThreads";
+import { closeWorkerThreads, openWorkerThread, reloadWorkerThreads, useWorkerThreads } from "../state/workerThreads";
 import { Transcript } from "./Transcript";
 import { OrchestratorTabs, WorkerThreads } from "./WorkerThreads";
 
@@ -41,9 +41,13 @@ No reply yet.
 `;
 
 const history = vi.fn(async () => []);
+const saved = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (k: string) => saved.get(k) ?? null, setItem: (k: string, v: string) => saved.set(k, v), removeItem: (k: string) => saved.delete(k), clear: () => saved.clear() } });
+const picked = () => useWorkerThreads.getState().views[ORCH]?.worker;
 
 beforeEach(() => {
-  useWorkerThreads.setState({ open: {} });
+  saved.clear();
+  useWorkerThreads.setState({ views: {} });
   useStore.setState({
     client: { history } as never,
     selectedId: ORCH,
@@ -119,7 +123,7 @@ it("links the folded report row in the orchestrator's chat to each worker's thre
   const links = [...document.querySelectorAll<HTMLElement>(".steps-threads .chip")];
   expect(links.map((l) => l.textContent)).toEqual(["Builder · idle ▸", "Tester · failed ▸"]);
   fireEvent.click(links[1]);
-  expect(useWorkerThreads.getState().open[ORCH]).toBe(B);
+  expect(picked()).toBe(B);
 });
 
 it("labels what the orchestrator sent a worker in the worker's chat, and leaves the user's messages the user's", () => {
@@ -134,7 +138,7 @@ it("labels what the orchestrator sent a worker in the worker's chat, and leaves 
 
   fireEvent.click(screen.getByText("thread ▸"));
   expect(useStore.getState().selectedId).toBe(ORCH);
-  expect(useWorkerThreads.getState().open[ORCH]).toBe(A);
+  expect(picked()).toBe(A);
 });
 
 it("reads old worker transcripts by the brief and the texts the orchestrator sent", () => {
@@ -155,4 +159,43 @@ it("reads old worker transcripts by the brief and the texts the orchestrator sen
   render(<Transcript sessionId={A} />);
   const from = (id: string) => document.querySelector(`[data-item-id="${id}"]`)!.classList.contains("from-orchestrator");
   expect([from("a1"), from("a2"), from("a3")]).toEqual([true, true, false]);
+});
+
+it("remembers each orchestrator's tab and thread across a reload", () => {
+  openWorkerThread(ORCH, B);
+  openWorkerThread("other", A);
+  closeWorkerThreads("other");
+  act(() => useWorkerThreads.setState({ views: {} }));
+  act(() => reloadWorkerThreads());
+  expect(useWorkerThreads.getState().views).toEqual({ [ORCH]: { tab: "workers", worker: B }, other: { tab: "chat", worker: A } });
+  // Back on the Workers tab, the thread open last opens again.
+  openWorkerThread("other");
+  expect(useWorkerThreads.getState().views.other).toEqual({ tab: "workers", worker: A });
+  render(<WorkerThreads orchestratorId={ORCH} />);
+  expect(document.querySelector(".thread-title")!.textContent).toContain("Tester");
+  // Saved junk is dropped rather than shown.
+  saved.set("aura.worker-threads.v1", JSON.stringify({ x: { tab: "nope" }, y: { tab: "chat", worker: 3 } }));
+  act(() => reloadWorkerThreads());
+  expect(useWorkerThreads.getState().views).toEqual({});
+});
+
+it("leaves archived workers out of the list, unless a link opens one's thread", () => {
+  act(() => useStore.setState({ sessions: { ...useStore.getState().sessions, [A]: { ...useStore.getState().sessions[A], archived: true } } }));
+  render(
+    <>
+      <OrchestratorTabs orchestratorId={ORCH} />
+      <WorkerThreads orchestratorId={ORCH} />
+    </>,
+  );
+  const rows = () => [...document.querySelectorAll(".worker-row")].map((r) => r.textContent);
+  expect(rows()).toEqual([expect.stringContaining("Tester")]);
+  expect(screen.getByRole("tab", { name: /Workers/ }).textContent).toContain("1");
+  // A report's link to the archived worker opens its thread, marked archived.
+  act(() => openWorkerThread(ORCH, A));
+  expect(rows()).toEqual([expect.stringContaining("archived"), expect.stringContaining("Tester")]);
+  expect(document.querySelector(".thread-title")!.textContent).toContain("archived");
+  expect(document.querySelector(".thread-body")!.textContent).toContain("Built it.");
+  // A link to a worker deleted since says so.
+  act(() => openWorkerThread(ORCH, "gone"));
+  expect(document.querySelector(".worker-thread.empty")!.textContent).toContain("deleted");
 });
