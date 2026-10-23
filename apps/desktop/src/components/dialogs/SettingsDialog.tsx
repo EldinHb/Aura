@@ -114,7 +114,7 @@ function GeneralTab() {
         <input type="checkbox" checked={settings.showReasoning} onChange={(e) => set("showReasoning", e.target.checked)} /> Include reasoning in each reply's steps
       </label>
       <label className="check-row">
-        <input type="checkbox" checked={settings.composerRich} onChange={(e) => set("composerRich", e.target.checked)} /> Format markdown as you type in the message box (off: a plain markdown textbox)
+        <input type="checkbox" checked={settings.composerRich} onChange={(e) => set("composerRich", e.target.checked)} /> Rich text in the message box: markdown formats as you type (off: a plain markdown textbox)
       </label>
       <div className="field">
         <label>Default provider</label>

@@ -167,8 +167,11 @@ test("a Retina capture is shrunk to the agent's limits when sent", async ({ page
   await expect(thumb).toHaveAttribute("title", /5120 × 2880 .*will be sent resized to 2000 × 1125/);
   await expect(thumb.locator(".image-thumb-badge")).toHaveText("resized");
   await page.locator(".composer [aria-label='Message']").fill("full screen");
+  const before = sent.length;
   await page.locator(".composer [aria-label='Message']").press("Enter");
+  // The strip empties at once; the message arrives once its images are prepared.
   await expect(page.locator(".composer .image-thumb")).toHaveCount(0);
+  await expect.poll(() => sent.length).toBe(before + 1);
   const image = sent.at(-1)!.images[0];
   expect(image).toMatchObject({ width: 2000, height: 1125, original_width: 5120 });
   expect(image.data.length).toBeLessThanOrEqual(5_000_000);

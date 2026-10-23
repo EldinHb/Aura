@@ -18,6 +18,12 @@ import { toggleRichComposer } from "./composer/toggle";
 
 /** Sent-message history per session (survives remounts, not reloads). */
 const history = new Map<string, string[]>();
+/**
+ * Per session, the messages on their way out. They go one after another, so they arrive in the order sent; once one
+ * fails, the ones behind it are held back, and when the last has settled they all come back into the box, in order.
+ */
+type Outbox = { last: Promise<void>; waiting: number; failed: { text: string; images: DraftImage[] }[] };
+const outboxes = new Map<string, Outbox>();
 const slashCache = new Map<string, { at: number; entries: SlashCommand[] }>();
 
 type Popover =
@@ -113,15 +119,46 @@ export function Composer({ sessionId }: { sessionId: string }) {
     },
   }), [sessionId]);
   const input = () => (rich ? richRef.current : textareaInput);
+  const inputNow = useRef(input);
+  useLayoutEffect(() => {
+    inputNow.current = input;
+  });
 
-  // Disabled while sending, the box dropped the keyboard; give it back unless something else took it.
-  const refocus = useRef(false);
+  /**
+   * The app's focus (`focus` in the store, which the region outline shows) says
+   * where the keyboard is; when it says the composer, the keyboard is in the box.
+   * Moved elsewhere in the app, the app's focus follows it. Lost to the page
+   * (the field went away or stopped taking it), the box takes it back.
+   */
+  const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (sending || !refocus.current) return;
-    refocus.current = false;
-    if (!document.activeElement || document.activeElement === document.body) input()?.focus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when a send ends
-  }, [sending]);
+    const root = rootRef.current;
+    if (!root) return;
+    const lost = () => !document.activeElement || document.activeElement === document.body;
+    const takeBack = () => {
+      const st = useStore.getState();
+      if (st.focus === "composer" && lost() && document.hasFocus() && st.dialog.kind === "none" && !st.paletteOpen && !st.hintMode) inputNow.current()?.focus();
+    };
+    const onFocusIn = (e: FocusEvent) => {
+      const el = e.target instanceof Element ? e.target : null;
+      const st = useStore.getState();
+      if (st.focus !== "composer" || !el || root.contains(el)) return;
+      const region = el.closest<HTMLElement>("[data-region]")?.dataset.region;
+      if (region === "sidebar" || region === "main" || region === "inspector") st.setFocus(region);
+    };
+    const onFocusOut = (e: FocusEvent) => {
+      if (!e.relatedTarget) requestAnimationFrame(takeBack);
+    };
+    // Mounted with the app's focus here (another session, the other mode of the box): the keyboard comes along.
+    const frame = requestAnimationFrame(takeBack);
+    document.addEventListener("focusin", onFocusIn);
+    root.addEventListener("focusout", onFocusOut);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("focusin", onFocusIn);
+      root.removeEventListener("focusout", onFocusOut);
+    };
+  }, [sessionId]);
 
   // slash commands catalogue
   useEffect(() => {
@@ -175,8 +212,17 @@ export function Composer({ sessionId }: { sessionId: string }) {
     [caps, client, session],
   );
 
+  /**
+   * The box empties at once and stays as it is, editable and with the keyboard,
+   * so the next message can be typed while this one goes out. It used to be
+   * disabled while sending: the rich editor, switched off and on again while
+   * focused (within milliseconds, as the daemon answers), kept the focus in
+   * WebKit but took no more typing until it was focused anew; and a slow send
+   * dropped the keyboard to the page, where letters are shortcuts. A message
+   * that fails comes back into the box, ahead of anything typed since.
+   */
   const send = async (steer: boolean) => {
-    if (!client || !session || useComposerDrafts.getState().drafts[sessionId]?.sending) return;
+    if (!client || !session) return;
     const body = text.trim();
     if (!body && images.length === 0) return;
     if (images.length > 0 && !imageSupported.ok) {
@@ -188,26 +234,38 @@ export function Composer({ sessionId }: { sessionId: string }) {
       toast(`${blocked.reason}; remove it to send`, "warn");
       return;
     }
-    const field = input()?.element();
-    refocus.current = !!field && field === document.activeElement;
-    updateDraft(sessionId, () => ({ sending: true }));
-    try {
-      const inputs = images.length ? await Promise.all(images.map((img) => toImageInput(img, limits))) : [];
-      await client.send(sessionId, { text: body, images: inputs, steer: steer && canSteer });
-      const h = history.get(sessionId) ?? [];
-      if (body && h[h.length - 1] !== body) h.push(body);
-      history.set(sessionId, h.slice(-100));
-      updateDraft(sessionId, (draft) => ({
-        ...(draft.text === text ? { text: "", start: 0, end: 0 } : {}),
-        images: draft.images.filter((image) => !images.includes(image)),
-      }));
-      setHistIdx(null);
-      setPop({ kind: "none" });
-    } catch (e) {
-      toast(`send: ${e instanceof Error ? e.message : String(e)}`, "error");
-    } finally {
-      updateDraft(sessionId, () => ({ sending: false }));
-    }
+    const message = { text, images };
+    updateDraft(sessionId, (draft) => ({ text: "", start: 0, end: 0, richSelection: false, images: [], sending: draft.sending + 1 }));
+    setHistIdx(null);
+    setPop({ kind: "none" });
+    const outbox = outboxes.get(sessionId) ?? { last: Promise.resolve(), waiting: 0, failed: [] };
+    outboxes.set(sessionId, outbox);
+    outbox.waiting++;
+    const job = (outbox.last = outbox.last.then(async () => {
+      if (outbox.failed.length) {
+        outbox.failed.push(message);
+        return;
+      }
+      try {
+        const inputs = message.images.length ? await Promise.all(message.images.map((img) => toImageInput(img, limits))) : [];
+        await client.send(sessionId, { text: body, images: inputs, steer: steer && canSteer });
+        const h = history.get(sessionId) ?? [];
+        if (body && h[h.length - 1] !== body) h.push(body);
+        history.set(sessionId, h.slice(-100));
+      } catch (e) {
+        toast(`send: ${e instanceof Error ? e.message : String(e)}`, "error");
+        outbox.failed.push(message);
+      }
+    }));
+    await job;
+    updateDraft(sessionId, (draft) => ({ sending: draft.sending - 1 }));
+    if (--outbox.waiting > 0) return;
+    outboxes.delete(sessionId);
+    if (outbox.failed.length === 0) return;
+    updateDraft(sessionId, (draft) => {
+      const restored = [...outbox.failed.map((m) => m.text), draft.text].filter((t) => t.trim()).join("\n\n");
+      return { text: restored, start: restored.length, end: restored.length, richSelection: false, images: [...outbox.failed.flatMap((m) => m.images), ...draft.images] };
+    });
   };
 
   const insertSlash = (e: SlashEntry) => {
@@ -385,6 +443,7 @@ export function Composer({ sessionId }: { sessionId: string }) {
     <div
       className={clsx("composer", dragging && "dragging")}
       data-region="composer"
+      ref={rootRef}
       style={{ position: "relative" }}
       onDragOver={(e) => {
         if (!hasFiles(e)) return;
@@ -443,14 +502,13 @@ export function Composer({ sessionId }: { sessionId: string }) {
         <div className="row err-row">
           <span className="dot err" />
           <span className="err-text grow">{session.last_error ?? "Session error"}</span>
-          <button className="btn small" data-command="composer.retry" onClick={() => { input()?.focus(); if (text.trim()) void send(false); }}>Retry</button>
+          <button className="btn small" data-command="composer.retry" onClick={() => { input()?.focus(); if (text.trim() || images.length > 0) void send(false); }}>Retry</button>
         </div>
       ) : null}
       {rich && RichInput ? (
         <RichInput
           value={text}
           placeholder={placeholder}
-          disabled={sending}
           selection={selection}
           inputRef={richRef}
           onChange={(markdown, start, end, before) => {
@@ -473,7 +531,6 @@ export function Composer({ sessionId }: { sessionId: string }) {
           aria-label="Message"
           value={text}
           placeholder={placeholder}
-          disabled={sending}
           rows={1}
           spellCheck
           onChange={(e) => {
@@ -505,6 +562,11 @@ export function Composer({ sessionId }: { sessionId: string }) {
         }}
       />
       <div className="row">
+        {sending > 0 && (
+          <span role="status">
+            <span className="dot info pulse" /> Sending…
+          </span>
+        )}
         {running && (
           <span>
             <span className="dot info pulse" /> Working… <kbd>⌃C</kbd> interrupt

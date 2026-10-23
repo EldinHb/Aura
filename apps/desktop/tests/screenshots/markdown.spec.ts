@@ -91,7 +91,8 @@ async function mockDaemon(page: Page, image: string) {
         case "session.get": result = session; break;
         case "session.history": result = history().filter((e) => e.seq > (params.after_seq ?? 0)); break;
         case "session.pending": result = { approvals: [], inputs: [] }; break;
-        case "session.send": sent.push(params.input.text); result = true; break;
+        // A send takes a moment, as it does when the daemon starts the agent first.
+        case "session.send": result = true; setTimeout(() => { sent.push(params.input.text); socket.send(JSON.stringify({ id, result })); }, 300); return;
         case "fs.read_image": readImage.push(params.path); result = { data: image, media_type: "image/png" }; break;
         case "git.branch_status": result = null; break;
         default:
@@ -147,7 +148,7 @@ for (const theme of ["dark", "light"] as const) {
 
     // Plain markdown and back, the draft unchanged.
     await page.getByRole("button", { name: "Rich text" }).click();
-    const expected = "## Next step\nAdd the **progress bar** and keep `batch.ts` as is:\n- emit an event per batch\n- show 2 * 3 * 4 rows_per_batch\n```sh\npnpm test -- importer\n```";
+    const expected = "## Next step\n\nAdd the **progress bar** and keep `batch.ts` as is:\n\n- emit an event per batch\n- show 2 * 3 * 4 rows_per_batch\n\n```sh\npnpm test -- importer\n```";
     await expect(page.locator(".composer textarea")).toHaveValue(expected);
     await page.locator(".composer").screenshot({ path: `${OUT}/composer-markdown-${theme}.png` });
     await page.getByRole("button", { name: "Markdown" }).click();
@@ -155,21 +156,31 @@ for (const theme of ["dark", "light"] as const) {
 
     await box.click();
     await page.keyboard.press("Enter");
-    await expect.poll(() => sent.at(-1)).toBe(expected);
 
-    // After sending, the box is empty, has the keyboard again and typing starts on its first line.
+    // The box empties at once and keeps the keyboard: what is typed while the message goes out is
+    // text, not shortcuts (`f` is hint mode outside a text field).
     await expect(box).toHaveText("");
     await expect(box).toBeFocused();
-    await page.keyboard.type("thanks");
+    await page.keyboard.type("fix it, thanks");
+    await expect(page.locator(".hint-status")).toHaveCount(0);
+    await expect.poll(() => sent.at(-1)).toBe(expected);
+    await expect(box).toHaveText("fix it, thanks");
     await page.keyboard.press("Enter");
-    await expect.poll(() => sent.at(-1)).toBe("thanks");
+    await expect.poll(() => sent.at(-1)).toBe("fix it, thanks");
+    await expect(box).toBeFocused();
 
     // The markdown textbox keeps the keyboard after sending too.
     await page.getByRole("button", { name: "Rich text" }).click();
     await page.locator(".composer textarea").click();
     await page.keyboard.type("one");
     await page.keyboard.press("Enter");
+    await expect(page.locator(".composer textarea")).toBeFocused();
+    await page.keyboard.type("fix two");
+    await expect(page.locator(".hint-status")).toHaveCount(0);
     await expect.poll(() => sent.at(-1)).toBe("one");
+    await expect(page.locator(".composer textarea")).toHaveValue("fix two");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => sent.at(-1)).toBe("fix two");
     await expect(page.locator(".composer textarea")).toBeFocused();
     await page.keyboard.type("two");
     await page.keyboard.press("Enter");

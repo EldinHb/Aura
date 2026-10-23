@@ -13,9 +13,10 @@ export type ComposerDraft = {
   start: number;
   end: number;
   richSelection?: boolean;
-  sending: boolean;
+  /** Messages from this box still on their way to the agent. */
+  sending: number;
 };
-export const emptyDraft: ComposerDraft = { text: "", images: [], start: 0, end: 0, sending: false };
+export const emptyDraft: ComposerDraft = { text: "", images: [], start: 0, end: 0, sending: 0 };
 export const useComposerDrafts = create<{ drafts: Record<string, ComposerDraft> }>(() => ({ drafts: {} }));
 export function updateDraft(id: string, update: (draft: ComposerDraft) => Partial<ComposerDraft>) {
   useComposerDrafts.setState((state) => {
