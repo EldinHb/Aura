@@ -54,8 +54,11 @@ struct Followed {
     repo: String,
     number: u32,
     author: String,
-    /// False once merged or closed; it is not looked at again.
+    /// False once merged or closed. A closed PR is looked at now and then, in case it is
+    /// reopened; a merged one is not looked at again.
     open: bool,
+    #[serde(default)]
+    merged: bool,
     /// Highest ids already looked at, per kind of activity.
     seen_review: u64,
     seen_comment: u64,
@@ -393,12 +396,17 @@ impl FollowService {
             let known = self.follows.lock().get(&id).cloned();
             if known
                 .as_ref()
-                .is_some_and(|f| !f.open || !f.author.eq_ignore_ascii_case(&me))
+                .is_some_and(|f| f.merged || !f.author.eq_ignore_ascii_case(&me))
             {
                 continue;
             }
             let read = self.reads.lock().get(&id).copied();
-            if activity::due(read, notified.as_ref(), &repo, number, now) {
+            let read_now = if known.as_ref().is_some_and(|f| !f.open) {
+                activity::due_closed(read.map(|r| r.0), notified.as_ref(), &repo, number, now)
+            } else {
+                activity::due(read, notified.as_ref(), &repo, number, now)
+            };
+            if read_now {
                 due.push((id, repo, number, known, linking));
             }
         }
@@ -548,16 +556,21 @@ impl FollowService {
             number,
             author: author.clone(),
             open,
+            merged: false,
             seen_review: 0,
             seen_comment: 0,
             seen_conversation: 0,
         });
         next.author = author;
         next.open = open;
+        next.merged = s(pull, "state") == "MERGED";
         let mut items = vec![];
         if open && next.author.eq_ignore_ascii_case(me) {
             // The first look only records where things stand.
             let looked = known.is_some();
+            // Threads list comments by thread, not by id: each is held against where the
+            // last look stood, and the new watermarks are taken after.
+            let seen = (next.seen_review, next.seen_comment, next.seen_conversation);
             let by_me = |n: &Value| s(&n["author"], "login").eq_ignore_ascii_case(me);
             for n in &nodes(&pull["reviews"]) {
                 let id = database_id(n).unwrap_or(0);
@@ -565,7 +578,7 @@ impl FollowService {
                 // A comment-only review without words holds inline comments,
                 // which come separately.
                 if looked
-                    && id > next.seen_review
+                    && id > seen.0
                     && !by_me(n)
                     && RESPONSES.contains(&state.as_str())
                     && !(state == "COMMENTED" && s(n, "body").trim().is_empty())
@@ -580,7 +593,7 @@ impl FollowService {
                 .collect::<Vec<_>>()
             {
                 let id = database_id(n).unwrap_or(0);
-                if looked && id > next.seen_comment && !by_me(n) {
+                if looked && id > seen.1 && !by_me(n) {
                     let mut item = activity("comment", n, String::new());
                     item.path = n["path"].as_str().map(str::to_string);
                     item.line = n["line"].as_u64().or_else(|| n["originalLine"].as_u64());
@@ -592,7 +605,7 @@ impl FollowService {
                 let id = database_id(n).unwrap_or(0);
                 let bot = n["author"]["__typename"] == "Bot"
                     || s(&n["author"], "login").ends_with("[bot]");
-                if looked && id > next.seen_conversation && !by_me(n) && !bot {
+                if looked && id > seen.2 && !by_me(n) && !bot {
                     items.push(activity("conversation", n, String::new()));
                 }
                 next.seen_conversation = next.seen_conversation.max(id);
@@ -810,6 +823,10 @@ mod tests {
         /// Batched activity reads so far.
         reads: Mutex<usize>,
         blocked: Mutex<Option<String>>,
+        /// Inline comments in further threads.
+        threads: Mutex<Vec<Vec<Value>>>,
+        /// OPEN when empty.
+        state: Mutex<String>,
     }
     fn row(id: u64, login: &str, body: &str) -> Value {
         json!({"fullDatabaseId": id.to_string(), "author": {"login": login, "__typename": if login.ends_with("[bot]") { "Bot" } else { "User" }}, "body": body, "url": format!("https://github.com/o/r/pull/1#x-{id}")})
@@ -836,11 +853,19 @@ mod tests {
                         .contains("pr0:pullRequest(number:1)")
                     {
                         *self.reads.lock() += 1;
-                        let pull = json!({"id": "PR_1", "number": 1, "title": "PR", "url": "https://github.com/o/r/pull/1", "state": "OPEN",
+                        let state = self.state.lock().clone();
+                        let mut threads = vec![
+                            json!({"id": "T1", "comments": conn(self.comments.lock().clone())}),
+                        ];
+                        for (i, comments) in self.threads.lock().iter().enumerate() {
+                            threads.push(json!({"id": format!("T{}", i + 2), "comments": conn(comments.clone())}));
+                        }
+                        let pull = json!({"id": "PR_1", "number": 1, "title": "PR", "url": "https://github.com/o/r/pull/1",
+                            "state": if state.is_empty() { "OPEN" } else { &state },
                             "author": {"login": if author.is_empty() { "me" } else { &author }},
                             "reviews": conn(self.reviews.lock().clone()),
                             "comments": conn(self.conversation.lock().clone()),
-                            "reviewThreads": conn(vec![json!({"id": "T1", "comments": conn(self.comments.lock().clone())})])});
+                            "reviewThreads": conn(threads)});
                         return Ok(json!({"data": {"r0": {"pr0": pull}}}));
                     }
                     let head = body["variables"]["head"]
@@ -1676,6 +1701,117 @@ mod tests {
         *gh.blocked.lock() = None;
         svc.poll().await;
         assert_eq!(*gh.reads.lock(), 1, "polling resumes by itself");
+    }
+
+    fn service_for(gh: Arc<Fake>) -> Arc<FollowService> {
+        let (events, _rx) = broadcast::channel(64);
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let manager = Manager::new(store.clone(), vec![], None);
+        FollowService::new(store, gh, manager, events).unwrap()
+    }
+
+    #[tokio::test]
+    async fn replies_in_different_threads_are_each_new() {
+        let gh = Arc::new(Fake::default());
+        let svc = service_for(gh.clone());
+        let comment = |id, body| {
+            let mut c = row(id, "alice", body);
+            c["path"] = json!("a.rs");
+            c
+        };
+        *gh.comments.lock() = vec![comment(10, "A")];
+        *gh.threads.lock() = vec![vec![comment(20, "B")]];
+        check(&svc, None).await;
+        let known = svc.follows.lock().get("o/r#1").cloned();
+        // A reply in the first thread is newer than one in the second, which comes later.
+        gh.comments.lock().push(comment(40, "A again"));
+        gh.threads.lock()[0].push(comment(30, "B again"));
+        let got = check(&svc, known).await.unwrap();
+        assert_eq!(
+            got.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![30, 40]
+        );
+        assert_eq!(svc.follows.lock()["o/r#1"].seen_comment, 40);
+    }
+
+    #[tokio::test]
+    async fn a_read_with_a_gap_records_nothing() {
+        let gh = Arc::new(Fake::default());
+        let svc = service_for(gh.clone());
+        *gh.conversation.lock() = vec![row(5, "carol", "Hi")];
+        check(&svc, None).await;
+        let known = svc.follows.lock().get("o/r#1").cloned();
+        // GitHub left a comment out of the list, and a later one in.
+        gh.conversation
+            .lock()
+            .extend([Value::Null, row(7, "carol", "Later")]);
+        let checked = svc
+            .check(&[("o/r".into(), 1, known.clone())], "me")
+            .await
+            .unwrap()
+            .remove(0);
+        assert!(checked.is_err());
+        assert_eq!(
+            svc.follows.lock()["o/r#1"].seen_conversation,
+            5,
+            "the next read still finds the missing one"
+        );
+        gh.conversation.lock().retain(|c| !c.is_null());
+        gh.conversation.lock().insert(1, row(6, "carol", "Missing"));
+        let got = check(&svc, known).await.unwrap();
+        assert_eq!(
+            got.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![6, 7]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closed_pr_is_looked_at_now_and_then_and_a_merged_one_no_more() {
+        let gh = Arc::new(Fake::default());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let manager = Manager::new(store.clone(), vec![], None);
+        let mut s = session("a", None, 0);
+        s.pulls = vec!["https://github.com/o/r/pull/1".into()];
+        store.upsert_session(&s).unwrap();
+        manager.restore().unwrap();
+        let (events, mut rx) = broadcast::channel(64);
+        let svc = FollowService::new(store, gh.clone(), manager, events).unwrap();
+        let reads = || *gh.reads.lock();
+        let age = || {
+            for read in svc.reads.lock().values_mut() {
+                read.0 -= chrono::Duration::minutes(31);
+            }
+        };
+        svc.poll().await;
+        *gh.state.lock() = "CLOSED".into();
+        age();
+        svc.poll().await;
+        assert_eq!(reads(), 2);
+        assert!(!svc.follows.lock()["o/r#1"].open);
+        svc.poll().await;
+        assert_eq!(reads(), 2, "a closed PR is not read every pass");
+
+        *gh.state.lock() = "OPEN".into();
+        gh.reviews.lock().push(review(
+            9,
+            "alice",
+            "CHANGES_REQUESTED",
+            "Reopened; fix this",
+        ));
+        age();
+        svc.poll().await;
+        assert_eq!(reads(), 3);
+        let found =
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|v| v["method"] == "follows.activity");
+        assert!(found, "activity after a reopen is found");
+
+        *gh.state.lock() = "MERGED".into();
+        age();
+        svc.poll().await;
+        assert!(svc.follows.lock()["o/r#1"].merged);
+        age();
+        svc.poll().await;
+        assert_eq!(reads(), 4, "a merged PR is not read again");
     }
 
     fn pr(items: Vec<Activity>) -> PrActivity {

@@ -298,12 +298,24 @@ impl ReviewService {
                     } else if leaving.contains(&(repo.clone(), *number)) {
                         true
                     } else {
-                        // Linked PRs that closed are not read again; open ones when notified.
-                        read.pull.state == "open"
-                            && (read.stale()
-                                || notified
-                                    .as_ref()
-                                    .is_none_or(|n| n.changed(repo, *number, read.time)))
+                        // Linked PRs: open ones when notified; closed ones, which can be
+                        // reopened, now and then; merged ones no more.
+                        match read.pull.state.as_str() {
+                            "open" => {
+                                read.stale()
+                                    || notified
+                                        .as_ref()
+                                        .is_none_or(|n| n.changed(repo, *number, read.time))
+                            }
+                            "closed" => aura_github::activity::due_closed(
+                                Some(read.time),
+                                notified.as_ref(),
+                                repo,
+                                *number,
+                                chrono::Utc::now(),
+                            ),
+                            _ => false,
+                        }
                     }
                 })
                 .collect();

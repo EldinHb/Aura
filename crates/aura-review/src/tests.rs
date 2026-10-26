@@ -84,6 +84,7 @@ struct MockGithub {
     /// Every request so far.
     requests: AtomicUsize,
     blocked: Mutex<Option<String>>,
+    notified: Mutex<Option<aura_github::Notified>>,
 }
 impl Default for MockGithub {
     fn default() -> Self {
@@ -102,6 +103,7 @@ impl Default for MockGithub {
             reads: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
             blocked: Mutex::new(None),
+            notified: Mutex::new(None),
         }
     }
 }
@@ -115,6 +117,9 @@ impl Github for MockGithub {
     }
     async fn blocked(&self) -> Option<String> {
         self.blocked.lock().clone()
+    }
+    async fn notified(&self) -> Option<aura_github::Notified> {
+        self.notified.lock().clone()
     }
     async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
         self.requests.fetch_add(1, Ordering::SeqCst);
@@ -246,11 +251,14 @@ impl ReviewWorkspace for MockWorkspace {
     }
 }
 fn service(gh: Arc<MockGithub>, r: PreReview) -> Arc<ReviewService> {
-    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    service_with(Arc::new(MemoryStore::default()), gh, r)
+}
+fn service_with(store: Arc<dyn Store>, gh: Arc<MockGithub>, r: PreReview) -> Arc<ReviewService> {
     store
         .save_feature_record("reviews", &r.id, &serde_json::to_string(&r).unwrap())
         .unwrap();
     let manager = Manager::new(store.clone(), vec![], None);
+    manager.restore().unwrap();
     let mut svc = ReviewService::new(
         store,
         gh,
@@ -476,6 +484,65 @@ async fn an_unchanged_pull_request_is_not_read_again_until_a_full_refresh() {
         reads + 2,
         "refreshing by hand reads all"
     );
+}
+#[tokio::test]
+async fn a_closed_linked_pull_request_is_read_now_and_then_to_notice_a_reopen() {
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let mut s = Session::new(&CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: "/tmp".into(),
+        ..Default::default()
+    });
+    s.id = "linked".into();
+    store.upsert_session(&s).unwrap();
+    store
+        .set_setting(
+            &format!("{}linked", follow::LINKS_KEY),
+            r#"{"prs":["https://github.com/o/r/pull/5"]}"#,
+        )
+        .unwrap();
+    let gh = Arc::new(MockGithub::default());
+    // Only the linked PR is read, so each read is one query.
+    *gh.searches.lock() = vec![];
+    *gh.state.lock() = ("CLOSED".into(), String::new());
+    let svc = service_with(store, gh.clone(), draft());
+    let reads = || gh.reads.load(Ordering::SeqCst);
+    svc.refresh().await.unwrap();
+    assert_eq!(reads(), 1);
+    svc.refresh().await.unwrap();
+    assert_eq!(reads(), 1, "a closed PR is not read every refresh");
+
+    let now = chrono::Utc::now().to_rfc3339();
+    *gh.notified.lock() = aura_github::Notified::parse(
+        &json!([{"updated_at": now, "subject": {"type": "PullRequest", "url": "https://api.github.com/repos/o/r/pulls/5"}}]),
+        50,
+    );
+    svc.refresh().await.unwrap();
+    assert_eq!(reads(), 2, "a notification says it changed");
+
+    *gh.notified.lock() = Some(aura_github::Notified::default());
+    let age = |svc: &ReviewService| {
+        for read in svc.reads.lock().values_mut() {
+            read.time -= chrono::Duration::minutes(31);
+        }
+    };
+    age(&svc);
+    *gh.state.lock() = ("OPEN".into(), String::new());
+    svc.refresh().await.unwrap();
+    assert_eq!(reads(), 3, "and now and then without one");
+    assert_eq!(
+        svc.reads.lock()["o/r#5"].pull.state,
+        "open",
+        "the reopen is seen"
+    );
+
+    *gh.state.lock() = ("MERGED".into(), "bob".into());
+    *gh.notified.lock() = None;
+    svc.refresh().await.unwrap();
+    assert_eq!(reads(), 4);
+    age(&svc);
+    svc.refresh().await.unwrap();
+    assert_eq!(reads(), 4, "a merged PR is not read again");
 }
 #[tokio::test]
 async fn refresh_lists_requested_reviewed_and_authored_pulls_in_one_read() {

@@ -16,6 +16,8 @@ use std::{
 pub const FULL_POLL: Duration = Duration::from_secs(5 * 60);
 /// Without notifications, a PR updated within this long is read every pass, others every [`FULL_POLL`].
 pub const ACTIVE: Duration = Duration::from_secs(60 * 60);
+/// A closed PR, which can be reopened, is read this often unless a notification says it changed.
+pub const CLOSED_POLL: Duration = Duration::from_secs(30 * 60);
 /// GitHub's API can show activity a little after its notification; a PR stays due this long after one.
 const SKEW: Duration = Duration::from_secs(2 * 60);
 /// How long one loop's read serves another loop.
@@ -57,12 +59,20 @@ pub struct Read {
 /// Read `prs` (`owner/repo`, number, what the reader saw), a batch per query. A PR GitHub
 /// cannot return fails on its own; a query that fails as a whole fails the read.
 pub async fn read(gh: &dyn Github, prs: &[(String, u32, Since)]) -> Result<Vec<Result<Read>>> {
-    let key = |repo: &str, number: u32| format!("activity:{}#{number}", repo.to_lowercase());
+    // Shared answers are the account's: another login may see other PRs.
+    let account = match gh.memo() {
+        Some(_) => gh.account().await.ok(),
+        None => None,
+    };
+    let memo = gh.memo().zip(account.as_deref());
+    let key = |account: &str, repo: &str, number: u32| {
+        format!("activity:{account}:{}#{number}", repo.to_lowercase())
+    };
     let mut out: Vec<Option<Result<Read>>> = prs
         .iter()
         .map(|(repo, number, _)| {
-            let memo = gh.memo()?;
-            let (node, at) = memo.recall(&key(repo, *number), SHARED_FOR)?;
+            let (memo, account) = memo?;
+            let (node, at) = memo.recall(&key(account, repo, *number), SHARED_FOR)?;
             Some(Ok(Read { node, at }))
         })
         .collect();
@@ -95,17 +105,22 @@ pub async fn read(gh: &dyn Github, prs: &[(String, u32, Since)]) -> Result<Vec<R
     for ((repo, number, since), read) in prs.iter().zip(out) {
         let read = match read.context("GitHub returned too few pull requests")? {
             Ok(mut read) => match complete(gh, &mut read.node, since).await {
-                Ok(()) => {
-                    if let Some(memo) = gh.memo() {
-                        memo.keep(&key(repo, *number), &read.node, read.at);
-                    }
-                    Ok(read)
-                }
+                Ok(()) => Ok(read),
                 Err(e) => Err(e.context(format!("Unable to read {repo}#{number}"))),
             },
             Err(e) => Err(e),
         };
         reads.push(read);
+    }
+    // Kept only when the login did not change meanwhile.
+    if let Some((memo, account)) = memo {
+        if gh.account().await.ok().as_deref() == Some(account) {
+            for ((repo, number, _), read) in prs.iter().zip(&reads) {
+                if let Ok(read) = read {
+                    memo.keep(&key(account, repo, *number), &read.node, read.at);
+                }
+            }
+        }
     }
     Ok(reads)
 }
@@ -113,6 +128,16 @@ pub async fn read(gh: &dyn Github, prs: &[(String, u32, Since)]) -> Result<Vec<R
 /// Fill in what the first page left out: older reviews and comments down to what the reader
 /// saw, and every review thread, since any of them can get a reply.
 async fn complete(gh: &dyn Github, node: &mut Value, since: &Since) -> Result<()> {
+    for field in ["reviews", "comments", "reviewThreads"] {
+        whole(&node[field])?;
+    }
+    for thread in node["reviewThreads"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        whole(&thread["comments"])?;
+    }
     let id = node["id"]
         .as_str()
         .context("Pull request without id")?
@@ -210,10 +235,26 @@ async fn page(gh: &dyn Github, query: &str, id: &str, cursor: Value, field: &str
         )
         .await?;
     let page = &r["data"]["node"][field];
-    if !page.is_object() {
+    // A page with errors may lack items whose ids the watermarks would then pass.
+    if !page.is_object() || r["errors"].as_array().is_some_and(|e| !e.is_empty()) {
         bail!("Unable to read more {field}: {}", r["errors"]);
     }
+    whole(page)?;
+    if field == "reviewThreads" {
+        for thread in page["nodes"].as_array().into_iter().flatten() {
+            whole(&thread["comments"])?;
+        }
+    }
     Ok(page.clone())
+}
+
+/// A connection GitHub answered in full: a list of nodes, none of them missing.
+fn whole(conn: &Value) -> Result<()> {
+    let nodes = conn["nodes"].as_array().context("GitHub left out a list")?;
+    if nodes.iter().any(|n| !n.is_object()) {
+        bail!("GitHub left out part of a list");
+    }
+    Ok(())
 }
 
 /// Add `page` to `conn`, before its nodes when `before`, and take its page info.
@@ -235,6 +276,21 @@ pub type LastRead = (DateTime<Utc>, DateTime<Utc>);
 /// Whether a PR last read at `read` (and updated at `updated`) is read again now: after
 /// [`FULL_POLL`] in any case, else when a notification says it changed, or without
 /// notifications while it is active.
+/// Whether a closed PR last read at `read` is read again now, to notice it was reopened.
+pub fn due_closed(
+    read: Option<DateTime<Utc>>,
+    notified: Option<&Notified>,
+    repo: &str,
+    number: u32,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(read) = read else {
+        return true;
+    };
+    now - read >= chrono::Duration::from_std(CLOSED_POLL).unwrap()
+        || notified.is_some_and(|n| n.changed(repo, number, read))
+}
+
 pub fn due(
     read: Option<LastRead>,
     notified: Option<&Notified>,
@@ -309,7 +365,7 @@ impl Notified {
     }
 }
 
-/// An answer: when it was kept, when it was read, and the answer.
+/// An answer: when GitHub gave it, when it was read, and the answer.
 type Kept = (Instant, DateTime<Utc>, Value);
 
 /// Answers one loop read moments ago, for another loop that wants the same.
@@ -319,14 +375,18 @@ pub struct Memo(Mutex<HashMap<String, Kept>>);
 impl Memo {
     pub fn recall(&self, key: &str, within: Duration) -> Option<(Value, DateTime<Utc>)> {
         let memo = self.0.lock();
-        let (kept, at, value) = memo.get(key)?;
-        (kept.elapsed() < within).then(|| (value.clone(), *at))
+        let (fetched, at, value) = memo.get(key)?;
+        (fetched.elapsed() < within).then(|| (value.clone(), *at))
     }
 
+    /// Keep `value`, read at `at`. Its age counts from `at`, so a read kept again (filled in
+    /// further, or passed on) is shared for a while after GitHub gave it, not longer.
     pub fn keep(&self, key: &str, value: &Value, at: DateTime<Utc>) {
+        let age = (Utc::now() - at).to_std().unwrap_or_default();
+        let fetched = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
         let mut memo = self.0.lock();
-        memo.retain(|_, (kept, _, _)| kept.elapsed() < SHARED_FOR);
-        memo.insert(key.into(), (Instant::now(), at, value.clone()));
+        memo.retain(|_, (fetched, _, _)| fetched.elapsed() < SHARED_FOR);
+        memo.insert(key.into(), (fetched, at, value.clone()));
     }
 }
 
@@ -426,8 +486,16 @@ mod tests {
     }
 
     /// Answers the batch query and the page queries for one PR (`o/r#1`).
+    #[derive(Default)]
     struct Paged {
         queries: Mutex<Vec<String>>,
+        /// The older page of reviews comes back with an error and a missing review.
+        broken_page: bool,
+        /// A conversation comment is missing from the batch.
+        broken_batch: bool,
+        /// Shared answers, kept per this account.
+        memo: Option<Memo>,
+        account: Mutex<String>,
     }
     #[async_trait::async_trait]
     impl Github for Paged {
@@ -436,6 +504,12 @@ mod tests {
         }
         async fn diff(&self, _: &str, _: &str, _: &str) -> Result<String> {
             unreachable!()
+        }
+        fn memo(&self) -> Option<&Memo> {
+            self.memo.as_ref()
+        }
+        async fn account(&self) -> Result<String> {
+            Ok(self.account.lock().clone())
         }
         async fn request(&self, _: &str, _: &str, body: Option<Value>) -> Result<Value> {
             let body = body.unwrap();
@@ -451,12 +525,18 @@ mod tests {
                 return Ok(json!({"data": {"r0": {"pr0": {
                     "id": "PR1", "state": "OPEN",
                     "reviews": conn(ids(151, 200), true),
-                    "comments": conn(ids(1, 3), false),
+                    "comments": conn(if self.broken_batch { vec![json!({"fullDatabaseId": "1"}), Value::Null] } else { ids(1, 3) }, false),
                     "reviewThreads": {"pageInfo": {"hasNextPage": true, "endCursor": "t"}, "nodes": [
                         {"id": "T1", "comments": conn(ids(10, 11), false)}]},
                 }}}}));
             }
             if query.contains("reviews(last:100,before:$cursor)") {
+                if self.broken_page {
+                    let mut nodes = ids(52, 150);
+                    nodes.insert(0, Value::Null);
+                    return Ok(json!({"data": {"node": {"reviews": conn(nodes, true)}},
+                        "errors": [{"message": "Something went wrong", "path": ["node", "reviews", "nodes", 0]}]}));
+                }
                 return Ok(json!({"data": {"node": {"reviews": conn(ids(51, 150), true)}}}));
             }
             if query.contains("reviewThreads(first:50,after:$cursor)") {
@@ -471,9 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn reads_older_pages_down_to_what_was_seen_and_every_thread() {
-        let gh = Paged {
-            queries: Mutex::new(vec![]),
-        };
+        let gh = Paged::default();
         let first = read(&gh, &[("o/r".into(), 1, Since::default())])
             .await
             .unwrap();
@@ -512,5 +590,91 @@ mod tests {
             3,
             "the batch, one older page of reviews and one more page of threads"
         );
+    }
+
+    #[tokio::test]
+    async fn a_page_with_errors_or_gaps_fails_the_read() {
+        let since = Since {
+            reviews: Some(120),
+            ..Default::default()
+        };
+        let gh = Paged {
+            broken_page: true,
+            ..Default::default()
+        };
+        let reads = read(&gh, &[("o/r".into(), 1, since)]).await.unwrap();
+        assert!(
+            reads[0].is_err(),
+            "the reviews after the gap would pass the missing one by"
+        );
+        let gh = Paged {
+            broken_batch: true,
+            ..Default::default()
+        };
+        let reads = read(&gh, &[("o/r".into(), 1, Since::default())])
+            .await
+            .unwrap();
+        assert!(
+            reads[0].is_err(),
+            "a list with a missing comment is not taken"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_answers_are_the_accounts_and_age_from_when_github_gave_them() {
+        let gh = Paged {
+            memo: Some(Memo::default()),
+            ..Default::default()
+        };
+        *gh.account.lock() = "github.com:alice".into();
+        let prs = [("o/r".to_string(), 1, Since::default())];
+        read(&gh, &prs).await.unwrap();
+        let batches = || {
+            gh.queries
+                .lock()
+                .iter()
+                .filter(|q| q.contains("pr0:pullRequest"))
+                .count()
+        };
+        assert_eq!(batches(), 1);
+        read(&gh, &prs).await.unwrap();
+        assert_eq!(batches(), 1, "another loop moments later shares the answer");
+        *gh.account.lock() = "github.com:bob".into();
+        read(&gh, &prs).await.unwrap();
+        assert_eq!(batches(), 2, "another login reads for itself");
+
+        let memo = Memo::default();
+        let old = Utc::now() - chrono::Duration::seconds(25);
+        memo.keep("k", &json!(1), old);
+        assert!(memo.recall("k", SHARED_FOR).is_some());
+        memo.keep("k", &json!(2), old);
+        assert!(
+            memo.recall("k", Duration::from_secs(20)).is_none(),
+            "keeping a read again does not make it younger"
+        );
+    }
+
+    #[test]
+    fn a_closed_pr_is_read_now_and_then_or_when_notified() {
+        let now = time("2026-10-26T12:00:00Z");
+        let minutes = |m: i64| now - chrono::Duration::minutes(m);
+        let quiet = Notified::default();
+        assert!(due_closed(None, Some(&quiet), "o/r", 1, now));
+        assert!(!due_closed(Some(minutes(10)), Some(&quiet), "o/r", 1, now));
+        assert!(!due_closed(Some(minutes(10)), None, "o/r", 1, now));
+        assert!(due_closed(Some(minutes(30)), Some(&quiet), "o/r", 1, now));
+        let rows = json!([thread(
+            "PullRequest",
+            "https://api.github.com/repos/o/r/pulls/1",
+            "2026-10-26T11:59:00Z"
+        )]);
+        let reopened = Notified::parse(&rows, 50).unwrap();
+        assert!(due_closed(
+            Some(minutes(10)),
+            Some(&reopened),
+            "o/r",
+            1,
+            now
+        ));
     }
 }

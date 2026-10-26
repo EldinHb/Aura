@@ -116,7 +116,8 @@ pub(crate) struct Gate {
     paused_until: std::sync::Mutex<Option<Instant>>,
     pause: Duration,
     retry_delays: &'static [Duration],
-    budgets: std::sync::Mutex<Vec<Budget>>,
+    /// Per credential (token fingerprint): each login has its own limits.
+    budgets: std::sync::Mutex<Vec<(u64, Budget)>>,
 }
 static GATE: Gate = Gate::new(MAX_CONCURRENT, RATE_LIMIT_PAUSE, &RETRY_DELAYS);
 
@@ -193,7 +194,7 @@ impl Gate {
         }
     }
 
-    fn record(&self, headers: &reqwest::header::HeaderMap) {
+    fn record(&self, credential: u64, headers: &reqwest::header::HeaderMap) {
         let num = |name: &str| header(headers, name).and_then(|v| v.parse::<u64>().ok());
         let (Some(resource), Some(limit), Some(remaining), Some(reset)) = (
             header(headers, "x-ratelimit-resource"),
@@ -210,16 +211,24 @@ impl Gate {
             reset,
         };
         let mut budgets = self.budgets.lock().unwrap();
-        budgets.retain(|b| b.resource != budget.resource);
-        budgets.push(budget);
+        budgets.retain(|(c, b)| *c != credential || b.resource != budget.resource);
+        budgets.push((credential, budget));
     }
 
-    /// When the budget `resource` draws on is spent: its reset, as a message.
-    fn exhausted(&self, resource: &str) -> Option<String> {
-        let now = unix_now();
+    fn budgets(&self, credential: u64) -> Vec<Budget> {
         self.budgets
             .lock()
             .unwrap()
+            .iter()
+            .filter(|(c, _)| *c == credential)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+
+    /// When the budget of `credential` that `resource` draws on is spent: its reset, as a message.
+    fn exhausted(&self, credential: u64, resource: &str) -> Option<String> {
+        let now = unix_now();
+        self.budgets(credential)
             .iter()
             .find(|b| b.resource == resource && b.remaining == 0 && b.reset > now)
             .map(|b| {
@@ -234,8 +243,8 @@ impl Gate {
             })
     }
 
-    fn pace(&self, base: Duration) -> Duration {
-        pace(base, &self.budgets.lock().unwrap(), unix_now())
+    fn pace(&self, credential: u64, base: Duration) -> Duration {
+        pace(base, &self.budgets(credential), unix_now())
     }
 }
 
@@ -338,9 +347,11 @@ impl Cache {
 
 #[derive(Default)]
 struct Notes {
-    /// When they were read, how long until they may be read again, and what they said.
-    read: Option<(Instant, Duration, Option<Notified>)>,
-    off_until: Option<Instant>,
+    /// For which credential, when they were read, how long until they may be read again, and
+    /// what they said.
+    read: Option<(u64, Instant, Duration, Option<Notified>)>,
+    /// A credential that cannot read them, until when.
+    off: Option<(u64, Instant)>,
 }
 
 struct Reply {
@@ -352,6 +363,8 @@ struct Reply {
 struct Shared {
     client: OnceLock<reqwest::Client>,
     token: tokio::sync::Mutex<Option<(String, Instant)>>,
+    /// The fingerprint of gh's token as last read.
+    current: Mutex<Option<u64>>,
     /// Token fingerprint -> `host:login`.
     accounts: Mutex<HashMap<u64, String>>,
     /// Held while an account is looked up, so loops starting together ask once.
@@ -429,13 +442,15 @@ impl GhCli {
             TOKEN_TTL
         };
         let mut cached = self.shared.token.lock().await;
-        if let Some((token, at)) = &*cached {
-            if at.elapsed() < ttl {
-                return Ok(token.clone());
+        let token = match &*cached {
+            Some((token, at)) if at.elapsed() < ttl => token.clone(),
+            _ => {
+                let token = gh_token(&self.host, None).await?;
+                *cached = Some((token.clone(), Instant::now()));
+                token
             }
-        }
-        let token = gh_token(&self.host, None).await?;
-        *cached = Some((token.clone(), Instant::now()));
+        };
+        *self.shared.current.lock() = Some(fingerprint(&token));
         Ok(token)
     }
 
@@ -522,7 +537,7 @@ impl GhCli {
         token: &str,
         own: bool,
     ) -> Result<Reply> {
-        if let Some(message) = GATE.exhausted(resource(path)) {
+        if let Some(message) = GATE.exhausted(fingerprint(token), resource(path)) {
             return Err(RejectedRequest(message).into());
         }
         let retry = is_read(method, path, body);
@@ -593,7 +608,7 @@ impl GhCli {
         })?;
         let status = response.status().as_u16();
         let headers = response.headers().clone();
-        GATE.record(&headers);
+        GATE.record(fingerprint(token), &headers);
         tracing::debug!(status, "GitHub {method} {path}");
         let poll_interval = header(&headers, "x-poll-interval").and_then(|v| v.parse().ok());
         if status == 304 {
@@ -824,19 +839,26 @@ impl Github for GhCli {
         GATE.paused()
     }
     fn pace(&self, base: Duration) -> Duration {
-        GATE.pace(base)
+        match *self.shared.current.lock() {
+            Some(credential) => GATE.pace(credential, base),
+            None => base,
+        }
     }
     async fn notified(&self) -> Option<Notified> {
+        let token = self.ready_token().await.ok()?;
+        let credential = fingerprint(&token);
         let mut notes = self.shared.notes.lock().await;
-        if let Some((at, every, last)) = &notes.read {
-            if at.elapsed() < *every {
+        if let Some((c, at, every, last)) = &notes.read {
+            if *c == credential && at.elapsed() < *every {
                 return last.clone();
             }
         }
-        if notes.off_until.is_some_and(|t| t > Instant::now()) {
+        if notes
+            .off
+            .is_some_and(|(c, until)| c == credential && until > Instant::now())
+        {
             return None;
         }
-        let token = self.ready_token().await.ok()?;
         match self
             .fetch("GET", NOTIFICATIONS, None, false, &token, true)
             .await
@@ -846,7 +868,7 @@ impl Github for GhCli {
                 let read = serde_json::from_str(&reply.body)
                     .ok()
                     .and_then(|v: Value| Notified::parse(&v, NOTIFICATIONS_PAGE));
-                notes.read = Some((Instant::now(), every, read.clone()));
+                notes.read = Some((credential, Instant::now(), every, read.clone()));
                 read
             }
             Err(e) => {
@@ -854,7 +876,7 @@ impl Github for GhCli {
                 // A token without the notifications scope; PRs are then read on a schedule.
                 if message.contains("HTTP 403") || message.contains("HTTP 404") {
                     tracing::debug!("notifications unavailable: {message}");
-                    notes.off_until = Some(Instant::now() + NOTIFICATIONS_OFF);
+                    notes.off = Some((credential, Instant::now() + NOTIFICATIONS_OFF));
                 }
                 None
             }
@@ -974,6 +996,58 @@ mod tests {
             got.lock()[2].headers.get("if-none-match"),
             None,
             "another login's answers are not reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_logins_spent_budget_does_not_hold_back_another() {
+        let reset = (unix_now() + 600).to_string();
+        let (gh, got) = server(move |r| {
+            let spent = r.headers.get("authorization").map(String::as_str) == Some("Bearer spent");
+            let headers = vec![
+                ("x-ratelimit-resource", "core".to_string()),
+                ("x-ratelimit-limit", "5000".into()),
+                (
+                    "x-ratelimit-remaining",
+                    if spent { "0" } else { "4000" }.into(),
+                ),
+                ("x-ratelimit-reset", reset.clone()),
+            ];
+            (200, headers, "{}".into())
+        })
+        .await;
+        sign_in(&gh, "spent").await;
+        gh.request("GET", "repos/o/r/labels", None).await.unwrap();
+        assert!(gh.request("GET", "repos/o/r/labels", None).await.is_err());
+        assert_eq!(got.lock().len(), 1, "the spent login waits for its reset");
+        assert!(gh.pace(Duration::from_secs(60)) > Duration::from_secs(500));
+        sign_in(&gh, "fresh").await;
+        gh.request("GET", "repos/o/r/labels", None).await.unwrap();
+        assert_eq!(got.lock().len(), 2, "another login is not held back");
+        assert_eq!(gh.pace(Duration::from_secs(60)), Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn notifications_are_read_per_login() {
+        let (gh, got) =
+            server(|_| (200, vec![("X-Poll-Interval", "60".into())], "[]".into())).await;
+        sign_in(&gh, "n1").await;
+        assert!(gh.notified().await.is_some());
+        assert!(gh.notified().await.is_some());
+        assert_eq!(got.lock().len(), 1, "read once per poll interval");
+        sign_in(&gh, "n2").await;
+        gh.notified().await;
+        assert_eq!(
+            got.lock().len(),
+            2,
+            "another login's notifications are its own"
+        );
+        assert_eq!(
+            got.lock()[1]
+                .headers
+                .get("authorization")
+                .map(String::as_str),
+            Some("Bearer n2")
         );
     }
 
@@ -1157,8 +1231,8 @@ mod tests {
             ] {
                 headers.insert(k, v.parse().unwrap());
             }
-            gate.record(&headers);
-            gate.pace(base)
+            gate.record(1, &headers);
+            gate.pace(1, base)
         };
         assert_eq!(report(4900), base);
         assert_eq!(report(1500), base * 2);
@@ -1167,7 +1241,12 @@ mod tests {
             report(0) > Duration::from_secs(1700),
             "spent: wait for the reset"
         );
-        assert!(gate.exhausted("graphql").is_some() && gate.exhausted("core").is_none());
+        assert!(gate.exhausted(1, "graphql").is_some() && gate.exhausted(1, "core").is_none());
+        assert!(
+            gate.exhausted(2, "graphql").is_none(),
+            "another login's budget is its own"
+        );
+        assert_eq!(gate.pace(2, base), base);
     }
     #[test]
     fn rate_limits_401s_and_rejections_are_told_apart() {

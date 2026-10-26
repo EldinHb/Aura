@@ -225,13 +225,15 @@ pub(crate) async fn batch_nodes(
         .enumerate()
         .map(|(j, (repo, number))| {
             let (r, pr) = (format!("r{}", repo_of(repo)), format!("pr{j}"));
-            // An error on the repository itself, or anywhere inside this PR, fails this PR.
+            // An error on the repository itself, or anywhere inside this PR, fails this PR; one
+            // that names no place fails them all.
             let error = errors.iter().find(|e| {
                 let path = &e["path"];
-                path[0] == r.as_str()
-                    && path[1]
-                        .as_str()
-                        .is_none_or(|seg| seg == pr || !is_pull_alias(seg))
+                path.as_array().is_none_or(|p| p.is_empty())
+                    || path[0] == r.as_str()
+                        && path[1]
+                            .as_str()
+                            .is_none_or(|seg| seg == pr || !is_pull_alias(seg))
             });
             if let Some(e) = error {
                 bail!(
