@@ -11,4 +11,8 @@ mine: Array<PullRequest>,
 /**
  * Open PRs of others the user reviewed and is not asked to review again.
  */
-reviewed: Array<PullRequest>, reviews: Array<PreReview>, last_synced: string | null, error: string | null, defaults: ReviewConfig, };
+reviewed: Array<PullRequest>, reviews: Array<PreReview>, last_synced: string | null, error: string | null, 
+/**
+ * Why Aura is not asking GitHub anything for now: an expired login or a rate limit.
+ */
+blocked: string | null, defaults: ReviewConfig, };

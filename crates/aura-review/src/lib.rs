@@ -21,6 +21,26 @@ use std::{
 };
 use tokio::sync::{broadcast, Semaphore};
 
+/// A PR as the inbox last read it, and its search entry's `updated_at` then.
+struct InboxRead {
+    at: std::time::Instant,
+    time: chrono::DateTime<chrono::Utc>,
+    listed: String,
+    pull: PullRequest,
+}
+impl InboxRead {
+    /// Due again regardless of its search entry: read a while ago, or checks and merge state
+    /// that change without the PR being updated are still settling.
+    fn stale(&self) -> bool {
+        self.at.elapsed() >= aura_github::activity::FULL_POLL
+            || matches!(self.pull.checks.as_str(), "PENDING" | "EXPECTED")
+            || matches!(self.pull.merge_state.as_str(), "" | "UNKNOWN")
+    }
+}
+fn read_key(repo: &str, number: u32) -> String {
+    format!("{}#{number}", repo.to_lowercase())
+}
+
 #[async_trait::async_trait]
 pub trait ReviewWorkspace: Send + Sync {
     async fn prepare(&self, pull: &PullRequest, cwd: &std::path::Path) -> Result<(String, String)>;
@@ -45,6 +65,8 @@ pub struct ReviewService {
     slots: Arc<Semaphore>,
     /// Bumped on every change made through Aura, so only the latest one schedules a resync.
     changes: AtomicU64,
+    /// PR id (lowercase) -> its last read, so an unchanged PR is not read every refresh.
+    reads: Mutex<HashMap<String, InboxRead>>,
     root: PathBuf,
     pub events: broadcast::Sender<Value>,
 }
@@ -95,6 +117,7 @@ impl ReviewService {
             jobs: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(2)),
             changes: AtomicU64::new(0),
+            reads: Mutex::new(HashMap::new()),
             root,
             events,
         }))
@@ -120,7 +143,7 @@ impl ReviewService {
                 } else {
                     delay = 60;
                 }
-                tokio::time::sleep(Duration::from_secs(delay)).await;
+                tokio::time::sleep(svc.gh.pace(Duration::from_secs(delay))).await;
             }
         });
     }
@@ -185,7 +208,22 @@ impl ReviewService {
         Ok(())
     }
     async fn refresh(&self) -> Result<()> {
+        self.sync(false).await
+    }
+    /// Read the PR lists. A PR whose search entry is unchanged keeps its last read for a few
+    /// minutes, unless `force` or its checks or merge state are still settling.
+    async fn sync(&self, force: bool) -> Result<()> {
         let _guard = self.gate.lock().await;
+        let blocked = self.gh.blocked().await;
+        let was = std::mem::replace(&mut self.state.lock().blocked, blocked.clone());
+        if let Some(reason) = blocked {
+            tracing::debug!("pull request refresh paused: {reason}");
+            if was.as_ref() != Some(&reason) {
+                self.persist_inbox()?;
+                self.emit();
+            }
+            return Ok(());
+        }
         let result = async {
             let account = self.gh.account().await?;
             {
@@ -196,6 +234,7 @@ impl ReviewService {
                     s.reviewed.clear();
                     s.last_synced = None;
                     s.account = Some(account.clone());
+                    self.reads.lock().clear();
                 }
             }
             let (requested, reviewed, mine) = tokio::join!(
@@ -203,7 +242,18 @@ impl ReviewService {
                 aura_github::reviewed(&*self.gh),
                 aura_github::authored(&*self.gh)
             );
-            let (requested, mut reviewed, mine) = (requested?, reviewed?, mine?);
+            let (requested, reviewed, mine) = (requested?, reviewed?, mine?);
+            let listed: HashMap<String, String> = requested
+                .iter()
+                .chain(&reviewed)
+                .chain(&mine)
+                .map(|((repo, number), updated)| (read_key(repo, *number), updated.clone()))
+                .collect();
+            let ids_of = |list: Vec<aura_github::Listed>| -> Vec<(String, u32)> {
+                list.into_iter().map(|(id, _)| id).collect()
+            };
+            let (requested, mut reviewed, mine) =
+                (ids_of(requested), ids_of(reviewed), ids_of(mine));
             // Asked again after reviewing: listed as a request only.
             reviewed.retain(|id| !requested.contains(id) && !mine.contains(id));
             let mut ids: Vec<(String, u32)> = vec![];
@@ -233,7 +283,66 @@ impl ReviewService {
                 }
             }
             let all: Vec<(String, u32)> = ids.iter().chain(&extra).cloned().collect();
-            let mut fetched = aura_github::pulls(&*self.gh, &account, &all).await?;
+            let notified = self.gh.notified().await;
+            let due: Vec<bool> = all
+                .iter()
+                .enumerate()
+                .map(|(i, (repo, number))| {
+                    let key = read_key(repo, *number);
+                    let reads = self.reads.lock();
+                    let Some(read) = reads.get(&key).filter(|_| !force) else {
+                        return true;
+                    };
+                    if i < ids.len() {
+                        read.stale() || listed.get(&key) != Some(&read.listed)
+                    } else if leaving.contains(&(repo.clone(), *number)) {
+                        true
+                    } else {
+                        // Linked PRs that closed are not read again; open ones when notified.
+                        read.pull.state == "open"
+                            && (read.stale()
+                                || notified
+                                    .as_ref()
+                                    .is_none_or(|n| n.changed(repo, *number, read.time)))
+                    }
+                })
+                .collect();
+            let wanted: Vec<(String, u32)> = all
+                .iter()
+                .zip(&due)
+                .filter(|(_, due)| **due)
+                .map(|(id, _)| id.clone())
+                .collect();
+            let mut read_now = aura_github::pulls(&*self.gh, &account, &wanted)
+                .await?
+                .into_iter();
+            let mut fetched: Vec<Result<PullRequest>> = vec![];
+            for ((repo, number), due) in all.iter().zip(&due) {
+                let key = read_key(repo, *number);
+                if !due {
+                    let kept = self.reads.lock().get(&key).map(|r| r.pull.clone());
+                    fetched.push(kept.context("PR read lost"));
+                    continue;
+                }
+                let result = read_now.next().context("GitHub returned too few PRs")?;
+                if let Ok(p) = &result {
+                    self.reads.lock().insert(
+                        key.clone(),
+                        InboxRead {
+                            at: std::time::Instant::now(),
+                            time: chrono::Utc::now(),
+                            listed: listed.get(&key).cloned().unwrap_or_default(),
+                            pull: p.clone(),
+                        },
+                    );
+                }
+                fetched.push(result);
+            }
+            tracing::debug!(
+                read = wanted.len(),
+                kept = all.len() - wanted.len(),
+                "pull requests refreshed"
+            );
             let followed = fetched.split_off(ids.len());
             self.ensure_account(&account).await?;
             let hidden = self.store.feature_records(&format!("hidden:{account}"))?;
@@ -364,6 +473,12 @@ impl ReviewService {
     async fn update_pull(&self, account: &str, repo: &str, number: u32) -> Result<()> {
         self.ensure_account(account).await?;
         let mut live = pull(&*self.gh, account, repo, number).await?;
+        // The next refresh keeps this copy rather than the one from before the change.
+        if let Some(read) = self.reads.lock().get_mut(&read_key(repo, number)) {
+            read.at = std::time::Instant::now();
+            read.time = chrono::Utc::now();
+            read.pull = live.clone();
+        }
         {
             let mut state = self.state.lock();
             let state = &mut *state;
@@ -437,7 +552,7 @@ impl ReviewService {
                 json!({"instructions":runner::DEFAULT_PROMPT,"config":self.state.lock().defaults})
             }
             "pulls.refresh" => {
-                self.refresh().await?;
+                self.sync(true).await?;
                 json!(self.snapshot())
             }
             "pulls.hide" | "pulls.restore" => {
@@ -1075,7 +1190,7 @@ impl ReviewService {
                 r.error = None;
                 Ok(())
             }),
-            Err(e) if e.downcast_ref::<aura_github::RejectedRequest>().is_some() => {
+            Err(e) if aura_github::rejected(&e) => {
                 self.change(id, |r| {
                     r.status = "ready".into();
                     r.submission = None;

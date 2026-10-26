@@ -61,6 +61,8 @@ parking_lot = "0.12"
 regex = "1"
 tempfile = "3"
 bytes = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [profile.release]
 lto = "thin"

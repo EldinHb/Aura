@@ -112,9 +112,11 @@ async fn main() -> Result<()> {
     let restored = manager.restore()?;
     tracing::info!(restored, "sessions restored");
 
+    // One client for every loop: they share gh's token, the caches and the rate limit.
+    let github: Arc<dyn aura_github::Github> = Arc::new(aura_github::GhCli::default());
     let reviews = aura_review::ReviewService::new(
         store.clone(),
-        Arc::new(aura_github::GhCli::default()),
+        github.clone(),
         Arc::new(aura_review::runner::CliRunner),
         manager.clone(),
         data_dir.join("review-workspaces"),
@@ -122,20 +124,19 @@ async fn main() -> Result<()> {
     reviews.launch();
     let watches = aura_review::watch::WatchService::new(
         store.clone(),
-        Arc::new(aura_github::GhCli::default()),
+        github.clone(),
         reviews.events.clone(),
     )?;
     watches.launch();
     // Review activity on a session's own PRs goes to that session's agent.
     let follows = aura_review::follow::FollowService::new(
         store,
-        Arc::new(aura_github::GhCli::default()),
+        github.clone(),
         manager.clone(),
         reviews.events.clone(),
     )?;
     follows.launch();
     let service = reviews.clone();
-    let github: Arc<dyn aura_github::Github> = Arc::new(aura_github::GhCli::default());
     let ext: ExtHandler = Arc::new(move |method: String, params: Value| {
         let service = service.clone();
         let watches = watches.clone();

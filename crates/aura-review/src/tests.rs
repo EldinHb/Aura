@@ -81,6 +81,9 @@ struct MockGithub {
     state: Mutex<(String, String)>,
     /// Batched GraphQL reads so far.
     reads: AtomicUsize,
+    /// Every request so far.
+    requests: AtomicUsize,
+    blocked: Mutex<Option<String>>,
 }
 impl Default for MockGithub {
     fn default() -> Self {
@@ -97,6 +100,8 @@ impl Default for MockGithub {
             unreadable: Mutex::new(vec![]),
             state: Mutex::new(("OPEN".into(), String::new())),
             reads: AtomicUsize::new(0),
+            requests: AtomicUsize::new(0),
+            blocked: Mutex::new(None),
         }
     }
 }
@@ -108,7 +113,11 @@ impl Github for MockGithub {
     async fn diff(&self, _: &str, _: &str, _: &str) -> Result<String> {
         Ok(DIFF.into())
     }
+    async fn blocked(&self) -> Option<String> {
+        self.blocked.lock().clone()
+    }
     async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
         if path == "user" {
             return Ok(json!({"login":*self.account.lock()}));
         }
@@ -121,9 +130,17 @@ impl Github for MockGithub {
                 .find(|(f, _)| filter.starts_with(f))
                 .map(|(_, n)| n.clone())
                 .unwrap_or_default();
+            // GitHub bumps a PR's updated_at when it changes; this mock's PRs change together.
+            let updated = format!(
+                "{}{:?}{}{}",
+                self.head.lock(),
+                self.state.lock(),
+                self.posted.lock().len(),
+                self.merge_state.lock()
+            );
             let items: Vec<Value> = numbers
                 .iter()
-                .map(|n| json!({"repository_url":"https://api.github.com/repos/o/r","number":n}))
+                .map(|n| json!({"repository_url":"https://api.github.com/repos/o/r","number":n,"updated_at":updated}))
                 .collect();
             return Ok(json!({"total_count":items.len(),"incomplete_results":false,"items":items}));
         }
@@ -387,6 +404,78 @@ async fn refresh_lists_authored_pulls_separately_and_hides_them() {
     assert!(svc.snapshot().mine[0].hidden);
     svc.refresh().await.unwrap();
     assert!(svc.snapshot().mine[0].hidden);
+}
+#[tokio::test]
+async fn an_expired_login_is_shown_and_nothing_is_asked_until_it_works() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    let mut rx = svc.events.subscribe();
+    svc.refresh().await.unwrap();
+    assert_eq!(svc.snapshot().mine.len(), 1);
+    let before = gh.requests.load(Ordering::SeqCst);
+    *gh.blocked.lock() = Some(aura_github::LOGIN_EXPIRED.into());
+    svc.refresh().await.unwrap();
+    svc.refresh().await.unwrap();
+    assert_eq!(
+        gh.requests.load(Ordering::SeqCst),
+        before,
+        "nothing is asked of GitHub"
+    );
+    let inbox = svc.snapshot();
+    assert_eq!(inbox.blocked.as_deref(), Some(aura_github::LOGIN_EXPIRED));
+    assert_eq!(inbox.mine.len(), 1, "the last lists stay");
+    let mut changed = 0;
+    while let Ok(v) = rx.try_recv() {
+        changed += (v["method"] == "reviews.changed") as usize;
+    }
+    assert_eq!(
+        changed, 2,
+        "the app hears once of the read and once of the expiry"
+    );
+
+    *gh.blocked.lock() = None;
+    svc.refresh().await.unwrap();
+    assert!(
+        gh.requests.load(Ordering::SeqCst) > before,
+        "polling resumes by itself"
+    );
+    assert_eq!(svc.snapshot().blocked, None);
+}
+#[tokio::test]
+async fn an_unchanged_pull_request_is_not_read_again_until_a_full_refresh() {
+    let gh = Arc::new(MockGithub::default());
+    let svc = service(gh.clone(), draft());
+    svc.refresh().await.unwrap();
+    let reads = gh.reads.load(Ordering::SeqCst);
+    // Settled checks and merge state: nothing changes unseen.
+    svc.reads
+        .lock()
+        .values_mut()
+        .for_each(|r| r.pull.merge_state = "CLEAN".into());
+    svc.refresh().await.unwrap();
+    assert_eq!(
+        gh.reads.load(Ordering::SeqCst),
+        reads,
+        "its search entry did not change"
+    );
+    *gh.head.lock() = "c".repeat(40);
+    svc.refresh().await.unwrap();
+    assert_eq!(
+        gh.reads.load(Ordering::SeqCst),
+        reads + 1,
+        "an update is read"
+    );
+    assert_eq!(svc.snapshot().mine[0].head_sha, "c".repeat(40));
+    svc.reads
+        .lock()
+        .values_mut()
+        .for_each(|r| r.pull.merge_state = "CLEAN".into());
+    svc.handle("pulls.refresh", json!({})).await.unwrap();
+    assert_eq!(
+        gh.reads.load(Ordering::SeqCst),
+        reads + 2,
+        "refreshing by hand reads all"
+    );
 }
 #[tokio::test]
 async fn refresh_lists_requested_reviewed_and_authored_pulls_in_one_read() {

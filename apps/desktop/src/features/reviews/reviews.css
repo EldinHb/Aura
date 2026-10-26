@@ -12,6 +12,7 @@
 .pr-empty { margin:0; padding:12px; overflow-wrap:anywhere; }
 .pr-restore-section { margin:8px; align-self:flex-start; }
 .pr-sidebar>.pr-error { margin:0; padding:8px 12px; }
+.pr-sidebar>.pr-blocked { margin:6px 10px; }
 .pr-sidebar .pr-sync { padding:8px 12px; overflow-wrap:anywhere; }
 .pr-sidebar-heading,.pr-sidebar-actions,.pr-toolbar,.pr-finding-head,.pr-submit-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .pr-sidebar-heading { padding:8px; flex-wrap:nowrap; }.pr-sidebar-heading>:first-child { flex:1; text-align:left; }.pr-sidebar-actions { padding:0 8px 6px; }

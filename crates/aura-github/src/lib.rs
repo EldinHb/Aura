@@ -1,4 +1,4 @@
-//! GitHub transport. Only the daemon invokes gh; credentials never reach the webview.
+//! GitHub for the daemon, signed in through gh; credentials never reach the webview.
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use aura_core::{
@@ -6,20 +6,23 @@ use aura_core::{
 };
 use futures::{stream, StreamExt, TryStreamExt};
 use serde_json::{json, Value};
-use std::{process::Stdio, time::Duration};
-use tokio::{io::AsyncWriteExt, process::Command};
+use std::time::Duration;
 
 /// Each reviewer's latest review and their latest approval or change request, as a
 /// GraphQL selection on a pull request; read with [`reviews_by_others`].
 macro_rules! reviews_query {
     () => {
-        "latestReviews(first:100){nodes{databaseId state submittedAt author{__typename login} commit{oid}}} latestOpinionatedReviews(first:100){nodes{state author{login}}}"
+        "latestReviews(first:100){nodes{fullDatabaseId state submittedAt author{__typename login} commit{oid}}} latestOpinionatedReviews(first:100){nodes{state author{login}}}"
     };
 }
+pub mod activity;
 pub mod branch;
 pub mod issues;
 pub mod timeline;
+mod transport;
+pub use activity::{Memo, Notified};
 pub use timeline::timeline;
+pub use transport::{pace, rejected, Budget, GhCli, RateLimited, LOGIN_EXPIRED};
 
 #[async_trait]
 pub trait Github: Send + Sync {
@@ -45,6 +48,24 @@ pub trait Github: Send + Sync {
             .context("GitHub did not return an account")?;
         Ok(format!("{}:{login}", self.host()))
     }
+    /// Why GitHub is left alone for now: an expired login or a rate limit. Polling skips its
+    /// pass while this is set; asking is also what notices that a login works again.
+    async fn blocked(&self) -> Option<String> {
+        None
+    }
+    /// How long a loop that polls every `base` waits now: longer as the rate limit runs low.
+    fn pace(&self, base: Duration) -> Duration {
+        base
+    }
+    /// Which PRs had notification activity lately, so unchanged ones can be skipped. None when
+    /// that cannot be told, and every PR is read.
+    async fn notified(&self) -> Option<Notified> {
+        None
+    }
+    /// Answers shared between loops that read the same PRs.
+    fn memo(&self) -> Option<&Memo> {
+        None
+    }
 }
 #[derive(Debug)]
 pub struct RejectedRequest(pub String);
@@ -54,257 +75,6 @@ impl std::fmt::Display for RejectedRequest {
     }
 }
 impl std::error::Error for RejectedRequest {}
-pub struct GhCli {
-    host: String,
-}
-impl Default for GhCli {
-    fn default() -> Self {
-        Self {
-            host: "github.com".into(),
-        }
-    }
-}
-/// Concurrent gh calls across the daemon. GitHub's secondary rate limit punishes
-/// bursts, and a refresh fans out over every listed PR.
-const MAX_CONCURRENT: usize = 4;
-/// How long GitHub is left alone after it reports a rate limit; its docs ask for at least a minute.
-const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(60);
-/// Waits before retrying a read that failed with a GitHub server error.
-const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
-
-/// Paces every gh call. Shared by all [`GhCli`]s, since they spend one account's limits.
-struct Gate {
-    slots: tokio::sync::Semaphore,
-    paused_until: std::sync::Mutex<Option<std::time::Instant>>,
-    pause: Duration,
-    retry_delays: &'static [Duration],
-}
-static GATE: Gate = Gate::new(MAX_CONCURRENT, RATE_LIMIT_PAUSE, &RETRY_DELAYS);
-
-impl Gate {
-    const fn new(slots: usize, pause: Duration, retry_delays: &'static [Duration]) -> Self {
-        Self {
-            slots: tokio::sync::Semaphore::const_new(slots),
-            paused_until: std::sync::Mutex::new(None),
-            pause,
-            retry_delays,
-        }
-    }
-
-    /// Run `call`, retrying server errors when `retry` says the request is safe to
-    /// repeat. After a rate limit every request is refused unsent until the pause ends.
-    async fn run<F, Fut>(&self, retry: bool, mut call: F) -> Result<String>
-    where
-        F: FnMut() -> Fut,
-        Fut: std::future::Future<Output = Result<String>>,
-    {
-        let mut attempt = 0;
-        loop {
-            if let Some(until) = *self.paused_until.lock().unwrap() {
-                let left = until.saturating_duration_since(std::time::Instant::now());
-                if !left.is_zero() {
-                    let at = chrono::Local::now() + left;
-                    return Err(RejectedRequest(format!(
-                        "GitHub rate limit reached; Aura resumes GitHub requests at {}",
-                        at.format("%H:%M:%S")
-                    ))
-                    .into());
-                }
-            }
-            let result = {
-                let _slot = self.slots.acquire().await?;
-                call().await
-            };
-            let Err(e) = &result else { return result };
-            let message = format!("{e:#}");
-            if is_rate_limited(&message) {
-                *self.paused_until.lock().unwrap() = Some(std::time::Instant::now() + self.pause);
-                return result;
-            }
-            match self.retry_delays.get(attempt) {
-                Some(delay) if retry && is_server_error(&message) => {
-                    tracing::debug!("GitHub server error, retrying in {delay:?}: {message}");
-                    tokio::time::sleep(*delay).await;
-                    attempt += 1;
-                }
-                _ => return result,
-            }
-        }
-    }
-}
-
-/// gh reports primary, secondary and GraphQL limits with these words.
-fn is_rate_limited(message: &str) -> bool {
-    message.to_ascii_lowercase().contains("rate limit")
-}
-
-fn is_server_error(message: &str) -> bool {
-    ["HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504"]
-        .iter()
-        .any(|status| message.contains(status))
-}
-
-/// gh fails a GraphQL query that reports any error, even when GitHub still answered the rest
-/// of it. Such a partial answer is kept; callers read its `errors`.
-fn has_data(stdout: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(stdout).is_ok_and(|v| v["data"].is_object())
-}
-
-/// Reads can be repeated. A write that failed with a server error may still have
-/// been applied, so it is never retried.
-fn is_read(method: &str, path: &str, body: Option<&Value>) -> bool {
-    if path == "graphql" {
-        return !body
-            .and_then(|b| b["query"].as_str())
-            .is_some_and(|q| q.trim_start().starts_with("mutation"));
-    }
-    method.eq_ignore_ascii_case("GET")
-}
-
-impl GhCli {
-    async fn invoke(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<Value>,
-        diff: bool,
-        token: Option<&str>,
-    ) -> Result<String> {
-        let retry = is_read(method, path, body.as_ref());
-        GATE.run(retry, || {
-            self.invoke_once(method, path, body.clone(), diff, token)
-        })
-        .await
-    }
-
-    async fn invoke_once(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<Value>,
-        diff: bool,
-        token: Option<&str>,
-    ) -> Result<String> {
-        let bin = aura_core::which::find_binary("gh", "AURA_GH_BIN", &[])
-            .context("Install GitHub CLI and run gh auth login to connect pull requests.")?;
-        let mut cmd = Command::new(bin);
-        if let Some(token) = token {
-            cmd.env("GH_TOKEN", token).env_remove("GITHUB_TOKEN");
-        }
-        cmd.args(["api", "--hostname", &self.host, "--method", method, path]);
-        if diff {
-            cmd.args(["-H", "Accept: application/vnd.github.diff"]);
-        }
-        if body.is_some() {
-            cmd.args(["--input", "-"]);
-        }
-        cmd.env("GH_PROMPT_DISABLED", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let (mut child, _process_group) =
-            aura_core::process::spawn_job(&mut cmd).context("Start GitHub CLI")?;
-        if let Some(body) = body {
-            let mut stdin = child.stdin.take().context("GitHub input")?;
-            stdin.write_all(&serde_json::to_vec(&body)?).await?;
-        } else {
-            drop(child.stdin.take());
-        }
-        let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
-            .await
-            .context("GitHub request timed out")??;
-        let partial = path == "graphql" && has_data(&output.stdout);
-        if !output.status.success() && !partial {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            if [
-                "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 405", "HTTP 422", "HTTP 429",
-            ]
-            .iter()
-            .any(|status| message.contains(status))
-            {
-                return Err(RejectedRequest(message).into());
-            }
-            bail!("{message}");
-        }
-        Ok(String::from_utf8(output.stdout)?)
-    }
-}
-#[async_trait]
-impl Github for GhCli {
-    fn host(&self) -> &str {
-        &self.host
-    }
-    async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
-        let raw = self.invoke(method, path, body, false, None).await?;
-        if raw.trim().is_empty() {
-            Ok(Value::Null)
-        } else {
-            Ok(serde_json::from_str(&raw)?)
-        }
-    }
-    async fn request_for(
-        &self,
-        account: &str,
-        method: &str,
-        path: &str,
-        body: Option<Value>,
-    ) -> Result<Value> {
-        // Resolve and validate a token for the reviewed identity, then pin it to
-        // the actual mutation. Switching gh accounts between requests cannot
-        // cause a review to be posted as a different person.
-        let token = async {
-            let (host, login) = account.split_once(':').context("Invalid GitHub account")?;
-            if host != self.host {
-                bail!("Wrong GitHub host");
-            }
-            let bin = aura_core::which::find_binary("gh", "AURA_GH_BIN", &[])
-                .context("GitHub CLI unavailable")?;
-            let mut cmd = Command::new(bin);
-            cmd.args(["auth", "token", "--hostname", host, "--user", login])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            let (child, _group) = aura_core::process::spawn_job(&mut cmd)?;
-            let output =
-                tokio::time::timeout(Duration::from_secs(15), child.wait_with_output()).await??;
-            if !output.status.success() {
-                bail!("Sign in to the review's GitHub account again");
-            }
-            let token = String::from_utf8(output.stdout)?.trim().to_string();
-            let user: Value = serde_json::from_str(
-                &self
-                    .invoke("GET", "user", None, false, Some(&token))
-                    .await?,
-            )?;
-            if user["login"].as_str() != Some(login) {
-                bail!("GitHub credentials do not match the reviewed account");
-            }
-            Ok::<_, anyhow::Error>(token)
-        }
-        .await
-        .map_err(|e| RejectedRequest(e.to_string()))?;
-        let raw = self.invoke(method, path, body, false, Some(&token)).await?;
-        Ok(if raw.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&raw)?
-        })
-    }
-    async fn diff(&self, repo: &str, base: &str, head: &str) -> Result<String> {
-        validate_repo(repo)?;
-        validate_sha(base)?;
-        validate_sha(head)?;
-        self.invoke(
-            "GET",
-            &format!("repos/{repo}/compare/{base}...{head}"),
-            None,
-            true,
-            None,
-        )
-        .await
-    }
-}
 pub fn validate_repo(repo: &str) -> Result<()> {
     let parts: Vec<_> = repo.split('/').collect();
     if parts.len() != 2
@@ -371,16 +141,46 @@ pub async fn pulls(
         .await?;
     Ok(batches.into_iter().flatten().collect())
 }
-/// One query for `ids`: an aliased `repository` per repo (`r0`, `r1`, …) holding an aliased
-/// `pullRequest` per PR (`pr0`, `pr1`, … by position in `ids`).
+/// One query for `ids`: each PR read with [`PULL`], with its repository's merge settings.
 async fn batch(
     gh: &dyn Github,
     account: &str,
     login: &str,
     ids: &[(String, u32)],
 ) -> Result<Vec<Result<PullRequest>>> {
+    let nodes = batch_nodes(
+        gh,
+        ids,
+        "($login:String!)",
+        json!({"login": login}),
+        REPO,
+        PULL,
+    )
+    .await?;
+    Ok(ids
+        .iter()
+        .zip(nodes)
+        .map(|((repo, number), node)| {
+            let (r, d) = node?;
+            Ok(from_graphql(account, login, repo, *number, &r, &d))
+        })
+        .collect())
+}
+/// One query for `ids`: an aliased `repository` per repo (`r0`, `r1`, …) with `repo_fields`,
+/// holding an aliased `pullRequest` per PR (`pr0`, `pr1`, … by position in `ids`) read with
+/// `fragment`, a fragment named `pull` (with any it uses). Each PR's repository and node in order;
+/// a PR GitHub cannot return fails on its own, a query that fails as a whole fails the read.
+pub(crate) async fn batch_nodes(
+    gh: &dyn Github,
+    ids: &[(String, u32)],
+    params: &str,
+    variables: Value,
+    repo_fields: &str,
+    fragment: &str,
+) -> Result<Vec<Result<(Value, Value)>>> {
     let mut repos: Vec<&str> = vec![];
     for (repo, _) in ids {
+        validate_repo(repo)?;
         if !repos.iter().any(|r| r.eq_ignore_ascii_case(repo)) {
             repos.push(repo);
         }
@@ -391,28 +191,34 @@ async fn batch(
             .position(|r| r.eq_ignore_ascii_case(repo))
             .unwrap()
     };
-    let mut query = String::from("query($login:String!){");
+    let mut query = format!("query{params}{{");
     for (i, repo) in repos.iter().enumerate() {
         // validate_repo allows no quotes or braces, so the names are safe to inline.
         let (owner, name) = repo.split_once('/').context("Invalid repository")?;
-        query += &format!("r{i}:repository(owner:\"{owner}\",name:\"{name}\"){{{REPO}");
+        query += &format!("r{i}:repository(owner:\"{owner}\",name:\"{name}\"){{{repo_fields}");
         for (j, (_, number)) in ids.iter().enumerate().filter(|(_, (r, _))| repo_of(r) == i) {
             query += &format!(" pr{j}:pullRequest(number:{number}){{...pull}}");
         }
         query += "}";
     }
-    query += "}";
-    query += PULL;
+    query += " rateLimit{cost remaining}}";
+    query += fragment;
     let q = gh
         .request(
             "POST",
             "graphql",
-            Some(json!({"query": query, "variables": {"login": login}})),
+            Some(json!({"query": query, "variables": variables})),
         )
         .await?;
     if !q["data"].is_object() {
         bail!("Unable to read pull requests: {}", q["errors"]);
     }
+    tracing::debug!(
+        prs = ids.len(),
+        cost = q["data"]["rateLimit"]["cost"].as_u64(),
+        remaining = q["data"]["rateLimit"]["remaining"].as_u64(),
+        "GraphQL batch"
+    );
     let errors = q["errors"].as_array().cloned().unwrap_or_default();
     Ok(ids
         .iter()
@@ -437,14 +243,7 @@ async fn batch(
             if !node.is_object() {
                 bail!("Unable to read {repo}#{number}: not found");
             }
-            Ok(from_graphql(
-                account,
-                login,
-                repo,
-                *number,
-                &q["data"][&r],
-                node,
-            ))
+            Ok((q["data"][&r].clone(), node.clone()))
         })
         .collect())
 }
@@ -541,7 +340,7 @@ fn activity(d: &Value) -> PullActivity {
     let note = |n: &Value| {
         let author = s(&n["author"], "login");
         Some(Note {
-            id: n["databaseId"].as_u64()?,
+            id: database_id(n)?,
             bot: n["author"]["__typename"] == "Bot" || author.ends_with("[bot]"),
             author,
         })
@@ -633,8 +432,8 @@ const PULL: &str = concat!(
     "viewerCanUpdate reviewDecision mergeStateStatus isCrossRepository mergedBy{login} commits(last:1){totalCount nodes{commit{statusCheckRollup{state} author{user{login}} committer{user{login}}}}} reviews(last:1,author:$login,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{state submittedAt commit{oid}}} ",
     "timelineItems(last:50,itemTypes:[REVIEW_REQUESTED_EVENT]){nodes{... on ReviewRequestedEvent{createdAt requestedReviewer{__typename ... on User{login}}}}} ",
     "reviewRequests(first:20){nodes{requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login} ... on Mannequin{login}}}} ",
-    "reviewThreads(first:100){nodes{isResolved comments(last:3){nodes{databaseId author{__typename login}}}}} ",
-    "comments(last:20){nodes{databaseId author{__typename login}}} ",
+    "reviewThreads(first:100){nodes{isResolved comments(last:3){nodes{fullDatabaseId author{__typename login}}}}} ",
+    "comments(last:20){nodes{fullDatabaseId author{__typename login}}} ",
     "stateEvents:timelineItems(last:1,itemTypes:[CLOSED_EVENT,REOPENED_EVENT]){nodes{... on ClosedEvent{actor{login}} ... on ReopenedEvent{actor{login}}}} ",
     reviews_query!(),
     "}"
@@ -735,17 +534,28 @@ fn requested_at(events: &Value, login: &str) -> Option<String> {
         .max()
         .map(String::from)
 }
+/// A node's REST id: `fullDatabaseId`, a string since the ids outgrew GraphQL's Int.
+pub fn database_id(n: &Value) -> Option<u64> {
+    match &n["fullDatabaseId"] {
+        Value::String(id) => id.parse().ok(),
+        Value::Number(id) => id.as_u64(),
+        _ => n["databaseId"].as_u64(),
+    }
+}
 pub fn s(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().to_string()
 }
 
-/// Open PRs that request the user's review, as (`owner/repo`, number) for [`pulls`].
-pub async fn requested(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
+/// A PR a search listed: (`owner/repo`, number) for [`pulls`], and when it was last updated.
+pub type Listed = ((String, u32), String);
+
+/// Open PRs that request the user's review.
+pub async fn requested(gh: &dyn Github) -> Result<Vec<Listed>> {
     search(gh, "review-requested%3A%40me", "inbox").await
 }
 
 /// Open PRs of others the user reviewed.
-pub async fn reviewed(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
+pub async fn reviewed(gh: &dyn Github) -> Result<Vec<Listed>> {
     search(
         gh,
         "reviewed-by%3A%40me%20-author%3A%40me",
@@ -755,11 +565,11 @@ pub async fn reviewed(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
 }
 
 /// Open PRs the user authored.
-pub async fn authored(gh: &dyn Github) -> Result<Vec<(String, u32)>> {
+pub async fn authored(gh: &dyn Github) -> Result<Vec<Listed>> {
     search(gh, "author%3A%40me", "list of your pull requests").await
 }
 
-async fn search(gh: &dyn Github, filter: &str, what: &str) -> Result<Vec<(String, u32)>> {
+async fn search(gh: &dyn Github, filter: &str, what: &str) -> Result<Vec<Listed>> {
     let mut ids = vec![];
     for page in 1..=10 {
         let response=gh.request("GET",&format!("search/issues?q=is%3Apr%20is%3Aopen%20archived%3Afalse%20{filter}&per_page=100&page={page}"),None).await?;
@@ -779,7 +589,7 @@ async fn search(gh: &dyn Github, filter: &str, what: &str) -> Result<Vec<(String
                 .context("Invalid repository URL")?
                 .to_string();
             let number = row["number"].as_u64().context("Missing PR number")? as u32;
-            ids.push((repo, number));
+            ids.push(((repo, number), s(row, "updated_at")));
         }
         if rows.len() < 100 {
             break;
@@ -916,90 +726,6 @@ mod tests {
         );
         assert_eq!(requested_at(&json!([events[1]]), "alice"), None);
         assert_eq!(requested_at(&Value::Null, "alice"), None);
-    }
-    fn counting<'a>(
-        calls: &'a AtomicUsize,
-        failures: usize,
-        message: &'static str,
-    ) -> impl FnMut() -> std::future::Ready<Result<String>> + 'a {
-        move || {
-            let n = calls.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(if n < failures {
-                Err(anyhow::anyhow!(message))
-            } else {
-                Ok("ok".into())
-            })
-        }
-    }
-    const NO_WAIT: [Duration; 2] = [Duration::ZERO, Duration::ZERO];
-    #[tokio::test]
-    async fn retries_reads_that_hit_a_server_error() {
-        let gate = Gate::new(4, Duration::from_secs(60), &NO_WAIT);
-        let calls = AtomicUsize::new(0);
-        let r = gate.run(true, counting(&calls, 2, "gh: HTTP 504")).await;
-        assert_eq!(r.unwrap(), "ok");
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
-
-        let calls = AtomicUsize::new(0);
-        assert!(gate
-            .run(true, counting(&calls, 9, "gh: HTTP 502"))
-            .await
-            .is_err());
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            3,
-            "gives up after the last delay"
-        );
-    }
-    #[tokio::test]
-    async fn never_retries_writes_or_client_errors() {
-        let gate = Gate::new(4, Duration::from_secs(60), &NO_WAIT);
-        let calls = AtomicUsize::new(0);
-        assert!(gate
-            .run(false, counting(&calls, 1, "gh: HTTP 504"))
-            .await
-            .is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let calls = AtomicUsize::new(0);
-        assert!(gate
-            .run(true, counting(&calls, 1, "gh: Not Found (HTTP 404)"))
-            .await
-            .is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-    #[tokio::test]
-    async fn pauses_every_request_after_a_rate_limit() {
-        let gate = Gate::new(4, Duration::from_millis(50), &NO_WAIT);
-        let calls = AtomicUsize::new(0);
-        let msg = "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)";
-        assert!(gate.run(true, counting(&calls, 1, msg)).await.is_err());
-        let refused = gate.run(true, counting(&calls, 0, "")).await.unwrap_err();
-        assert!(
-            refused.downcast_ref::<RejectedRequest>().is_some(),
-            "refused unsent: {refused}"
-        );
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "nothing reaches GitHub while paused"
-        );
-        tokio::time::sleep(Duration::from_millis(60)).await;
-        assert_eq!(gate.run(true, counting(&calls, 0, "")).await.unwrap(), "ok");
-    }
-    #[test]
-    fn only_reads_count_as_repeatable() {
-        assert!(is_read("GET", "repos/o/r/pulls/1", None));
-        assert!(!is_read(
-            "POST",
-            "repos/o/r/pulls/1/reviews",
-            Some(&json!({}))
-        ));
-        assert!(is_read("POST", "graphql", Some(&json!({"query": PULL}))));
-        assert!(!is_read(
-            "POST",
-            "graphql",
-            Some(&json!({"query": " mutation($id:ID!){x}"}))
-        ));
     }
     #[test]
     fn branch_paths_keep_slashes_and_encode_the_rest() {
@@ -1302,16 +1028,5 @@ mod tests {
         );
         let merged = json!({"state": "MERGED", "mergedBy": {"login": "me"}, "stateEvents": {"nodes": [{"actor": {"login": "alice"}}]}});
         assert_eq!(activity(&merged).state_actor, "me");
-    }
-
-    #[test]
-    fn keeps_partial_graphql_answers_from_gh() {
-        assert!(has_data(
-            br#"{"data":{"r0":null},"errors":[{"message":"x"}]}"#
-        ));
-        assert!(!has_data(
-            br#"{"data":null,"errors":[{"type":"RATE_LIMITED"}]}"#
-        ));
-        assert!(!has_data(b"gh: not json"));
     }
 }

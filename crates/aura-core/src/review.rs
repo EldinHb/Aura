@@ -378,6 +378,9 @@ pub struct ReviewInbox {
     pub reviews: Vec<PreReview>,
     pub last_synced: Option<String>,
     pub error: Option<String>,
+    /// Why Aura is not asking GitHub anything for now: an expired login or a rate limit.
+    #[serde(default)]
+    pub blocked: Option<String>,
     pub defaults: ReviewConfig,
 }
 /// What changed on a pull request the user follows, as one inbox entry. Changes found in one

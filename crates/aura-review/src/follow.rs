@@ -2,12 +2,14 @@
 //! that session's agent, and the user hears about it twice: when it arrives,
 //! and when the agent's turn on it ends.
 //!
-//! Once a minute the daemon reads the PRs each session follows: the ones it
+//! Once a minute the daemon looks at the PRs each session follows: the ones it
 //! is linked to (the links the user chose, else the ones the desktop app
 //! detected in the conversation) and the ones opened from its branch
 //! (`Session::pulls`; for a worktree the daemon looks its branch's PR up
 //! itself). For each open PR the user authored it collects reviews,
-//! inline review comments and conversation comments newer than the last look.
+//! inline review comments and conversation comments newer than the last look,
+//! all PRs in one GraphQL query. A PR is read when a notification says it
+//! changed, and otherwise every few minutes (see [`activity::due`]).
 //! The first look only records where things stand: older activity is history.
 //!
 //! Activity by the user's own account is skipped: agents post as the user, so
@@ -15,7 +17,11 @@
 //! bots are skipped too (CI and coverage reports); reviews by bots count.
 use anyhow::Result;
 use aura_core::*;
-use aura_github::{pages, s, validate_repo, Github};
+use aura_github::{
+    activity::{self, Since},
+    database_id, s, validate_repo, Github,
+};
+use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -123,6 +129,8 @@ pub struct FollowService {
     events: broadcast::Sender<Value>,
     /// Session id -> when its worktree branch was last looked up without a PR found.
     branch_lookups: Mutex<HashMap<SessionId, std::time::Instant>>,
+    /// PR id -> when it was last read, and last updated then.
+    reads: Mutex<HashMap<String, activity::LastRead>>,
 }
 
 fn pr_id(repo: &str, number: u32) -> String {
@@ -156,6 +164,7 @@ impl FollowService {
             poll_gate: tokio::sync::Mutex::new(()),
             events,
             branch_lookups: Mutex::new(HashMap::new()),
+            reads: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -164,7 +173,7 @@ impl FollowService {
         tokio::spawn(async move {
             loop {
                 svc.poll().await;
-                tokio::time::sleep(crate::watch::POLL_INTERVAL).await;
+                tokio::time::sleep(svc.gh.pace(crate::watch::POLL_INTERVAL)).await;
             }
         });
         self.listen();
@@ -324,6 +333,9 @@ impl FollowService {
     /// One pass: find new activity on every linked PR and hand it over.
     pub async fn poll(&self) {
         let _gate = self.poll_gate.lock().await;
+        if let Some(reason) = self.gh.blocked().await {
+            return tracing::debug!("review follow-ups paused: {reason}");
+        }
         let me = match self.gh.account().await {
             Ok(account) => account
                 .split_once(':')
@@ -374,6 +386,9 @@ impl FollowService {
                     .push(s.clone());
             }
         }
+        let notified = self.gh.notified().await;
+        let now = Utc::now();
+        let mut due = vec![];
         for (id, (repo, number, linking)) in linked {
             let known = self.follows.lock().get(&id).cloned();
             if known
@@ -382,28 +397,34 @@ impl FollowService {
             {
                 continue;
             }
-            let activity = match self.check(&repo, number, known, &me).await {
-                Ok(Some(activity)) => activity,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!("review follow-up for {id} failed: {e:#}");
-                    continue;
-                }
-            };
-            let target =
-                target(&linking).filter(|_| activity.items.iter().any(Activity::actionable));
-            let _ = self.events.send(json!({"method": "follows.activity", "params": {
-                "pr": {"repo": activity.repo, "number": activity.number, "title": activity.title, "url": activity.url},
-                "items": activity.items,
-                "session": target.map(|s| json!({"id": s.id, "title": s.title})),
-            }}));
-            if let Some(s) = target {
-                self.edit_pending(&s.id, |queue| {
-                    match queue.iter_mut().find(|p| p.id() == id) {
-                        Some(p) => p.items.extend(activity.items),
-                        None => queue.push(activity),
+            let read = self.reads.lock().get(&id).copied();
+            if activity::due(read, notified.as_ref(), &repo, number, now) {
+                due.push((id, repo, number, known, linking));
+            }
+        }
+        if !due.is_empty() {
+            let prs: Vec<_> = due
+                .iter()
+                .map(|(_, repo, number, known, _)| (repo.clone(), *number, known.clone()))
+                .collect();
+            match self.check(&prs, &me).await {
+                Ok(checked) => {
+                    for ((id, _, _, _, linking), result) in due.into_iter().zip(checked) {
+                        match result {
+                            Ok(Some(activity)) => self.found(&id, &linking, activity),
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::warn!("review follow-up for {id} failed: {e:#}");
+                                // A PR GitHub cannot return (one deleted, an issue's link) is
+                                // tried again with the quiet ones.
+                                self.reads
+                                    .lock()
+                                    .insert(id, (now, DateTime::<Utc>::MIN_UTC));
+                            }
+                        }
                     }
-                });
+                }
+                Err(e) => tracing::warn!("review follow-ups failed: {e:#}"),
             }
         }
         let waiting: Vec<SessionId> = self.pending.lock().keys().cloned().collect();
@@ -463,18 +484,64 @@ impl FollowService {
         }
     }
 
-    /// New activity on one PR since the last look, recording the look.
+    /// Tell the user about new activity, and queue it for the session that takes it.
+    fn found(&self, id: &str, linking: &[Session], activity: PrActivity) {
+        let target = target(linking).filter(|_| activity.items.iter().any(Activity::actionable));
+        let _ = self.events.send(json!({"method": "follows.activity", "params": {
+            "pr": {"repo": activity.repo, "number": activity.number, "title": activity.title, "url": activity.url},
+            "items": activity.items,
+            "session": target.map(|s| json!({"id": s.id, "title": s.title})),
+        }}));
+        if let Some(s) = target {
+            self.edit_pending(&s.id, |queue| {
+                match queue.iter_mut().find(|p| p.id() == id) {
+                    Some(p) => p.items.extend(activity.items),
+                    None => queue.push(activity),
+                }
+            });
+        }
+    }
+
+    /// New activity on `prs` (`owner/repo`, number, where the daemon stood) since the last
+    /// look, read in one go, recording the look.
     async fn check(
+        &self,
+        prs: &[(String, u32, Option<Followed>)],
+        me: &str,
+    ) -> Result<Vec<Result<Option<PrActivity>>>> {
+        let since: Vec<_> = prs
+            .iter()
+            .map(|(repo, number, known)| {
+                let since = known.as_ref().map_or_else(Since::default, |f| Since {
+                    reviews: Some(f.seen_review),
+                    comments: Some(f.seen_comment),
+                    conversation: Some(f.seen_conversation),
+                });
+                (repo.clone(), *number, since)
+            })
+            .collect();
+        let reads = activity::read(&*self.gh, &since).await?;
+        Ok(prs
+            .iter()
+            .zip(reads)
+            .map(|((repo, number, known), read)| {
+                self.record(repo, *number, known.clone(), me, &read?)
+            })
+            .collect())
+    }
+
+    /// The activity in `read` newer than the last look at the PR, recording this look.
+    fn record(
         &self,
         repo: &str,
         number: u32,
         known: Option<Followed>,
         me: &str,
+        read: &activity::Read,
     ) -> Result<Option<PrActivity>> {
-        let base = format!("repos/{repo}/pulls/{number}");
-        let pull = self.gh.request("GET", &base, None).await?;
-        let author = s(&pull["user"], "login");
-        let open = s(&pull, "state") == "open" && pull["merged_at"].is_null();
+        let pull = &read.node;
+        let author = s(&pull["author"], "login");
+        let open = s(pull, "state") == "OPEN";
         let mut next = known.clone().unwrap_or(Followed {
             id: pr_id(repo, number),
             repo: repo.into(),
@@ -489,57 +556,55 @@ impl FollowService {
         next.open = open;
         let mut items = vec![];
         if open && next.author.eq_ignore_ascii_case(me) {
-            let review_path = format!("{base}/reviews");
-            let comment_path = format!("{base}/comments");
-            let conversation_path = format!("repos/{repo}/issues/{number}/comments");
-            let (reviews, comments, conversation) = tokio::join!(
-                pages(&*self.gh, &review_path),
-                pages(&*self.gh, &comment_path),
-                pages(&*self.gh, &conversation_path)
-            );
-            let (reviews, comments, conversation) = (reviews?, comments?, conversation?);
             // The first look only records where things stand.
             let looked = known.is_some();
-            let by_me = |row: &Value| s(&row["user"], "login").eq_ignore_ascii_case(me);
-            for row in &reviews {
-                let id = row["id"].as_u64().unwrap_or(0);
-                let state = s(row, "state");
+            let by_me = |n: &Value| s(&n["author"], "login").eq_ignore_ascii_case(me);
+            for n in &nodes(&pull["reviews"]) {
+                let id = database_id(n).unwrap_or(0);
+                let state = s(n, "state");
                 // A comment-only review without words holds inline comments,
                 // which come separately.
                 if looked
                     && id > next.seen_review
-                    && !by_me(row)
+                    && !by_me(n)
                     && RESPONSES.contains(&state.as_str())
-                    && !(state == "COMMENTED" && s(row, "body").trim().is_empty())
+                    && !(state == "COMMENTED" && s(n, "body").trim().is_empty())
                 {
-                    items.push(activity("review", row, state));
+                    items.push(activity("review", n, state));
                 }
                 next.seen_review = next.seen_review.max(id);
             }
-            for row in &comments {
-                let id = row["id"].as_u64().unwrap_or(0);
-                if looked && id > next.seen_comment && !by_me(row) {
-                    let mut item = activity("comment", row, String::new());
-                    item.path = row["path"].as_str().map(str::to_string);
-                    item.line = row["line"]
-                        .as_u64()
-                        .or_else(|| row["original_line"].as_u64());
+            for n in &nodes(&pull["reviewThreads"])
+                .iter()
+                .flat_map(|t| nodes(&t["comments"]))
+                .collect::<Vec<_>>()
+            {
+                let id = database_id(n).unwrap_or(0);
+                if looked && id > next.seen_comment && !by_me(n) {
+                    let mut item = activity("comment", n, String::new());
+                    item.path = n["path"].as_str().map(str::to_string);
+                    item.line = n["line"].as_u64().or_else(|| n["originalLine"].as_u64());
                     items.push(item);
                 }
                 next.seen_comment = next.seen_comment.max(id);
             }
-            for row in &conversation {
-                let id = row["id"].as_u64().unwrap_or(0);
-                let bot =
-                    row["user"]["type"] == "Bot" || s(&row["user"], "login").ends_with("[bot]");
-                if looked && id > next.seen_conversation && !by_me(row) && !bot {
-                    items.push(activity("conversation", row, String::new()));
+            for n in &nodes(&pull["comments"]) {
+                let id = database_id(n).unwrap_or(0);
+                let bot = n["author"]["__typename"] == "Bot"
+                    || s(&n["author"], "login").ends_with("[bot]");
+                if looked && id > next.seen_conversation && !by_me(n) && !bot {
+                    items.push(activity("conversation", n, String::new()));
                 }
                 next.seen_conversation = next.seen_conversation.max(id);
             }
         }
         self.store
             .save_feature_record(NAMESPACE, &next.id, &serde_json::to_string(&next)?)?;
+        let updated = DateTime::parse_from_rfc3339(&s(pull, "updatedAt"))
+            .map_or(read.at, |t| t.with_timezone(&Utc));
+        self.reads
+            .lock()
+            .insert(next.id.clone(), (read.at, updated));
         self.follows.lock().insert(next.id.clone(), next);
         if items.is_empty() {
             return Ok(None);
@@ -548,21 +613,25 @@ impl FollowService {
         Ok(Some(PrActivity {
             repo: repo.into(),
             number,
-            title: s(&pull, "title"),
-            url: s(&pull, "html_url"),
+            title: s(pull, "title"),
+            url: s(pull, "url"),
             items,
         }))
     }
 }
 
-fn activity(kind: &str, row: &Value, state: String) -> Activity {
+fn nodes(conn: &Value) -> Vec<Value> {
+    conn["nodes"].as_array().cloned().unwrap_or_default()
+}
+
+fn activity(kind: &str, n: &Value, state: String) -> Activity {
     Activity {
         kind: kind.into(),
-        id: row["id"].as_u64().unwrap_or(0),
-        author: s(&row["user"], "login"),
+        id: database_id(n).unwrap_or(0),
+        author: s(&n["author"], "login"),
         state,
-        body: s(row, "body"),
-        url: s(row, "html_url"),
+        body: s(n, "body"),
+        url: s(n, "url"),
         path: None,
         line: None,
     }
@@ -728,6 +797,8 @@ mod tests {
     use anyhow::bail;
     use async_trait::async_trait;
 
+    /// Answers GitHub as of its lists, for `o/r#1`: reviews, inline comments (one thread) and
+    /// conversation comments, as GraphQL nodes.
     #[derive(Default)]
     struct Fake {
         reviews: Mutex<Vec<Value>>,
@@ -736,9 +807,15 @@ mod tests {
         author: Mutex<String>,
         /// The branches whose PR was asked for.
         heads: Mutex<Vec<String>>,
+        /// Batched activity reads so far.
+        reads: Mutex<usize>,
+        blocked: Mutex<Option<String>>,
     }
     fn row(id: u64, login: &str, body: &str) -> Value {
-        json!({"id": id, "user": {"login": login, "type": if login.ends_with("[bot]") { "Bot" } else { "User" }}, "body": body, "html_url": format!("https://github.com/o/r/pull/1#x-{id}")})
+        json!({"fullDatabaseId": id.to_string(), "author": {"login": login, "__typename": if login.ends_with("[bot]") { "Bot" } else { "User" }}, "body": body, "url": format!("https://github.com/o/r/pull/1#x-{id}")})
+    }
+    fn conn(nodes: Vec<Value>) -> Value {
+        json!({"pageInfo": {"hasPreviousPage": false, "hasNextPage": false}, "nodes": nodes})
     }
     #[async_trait]
     impl Github for Fake {
@@ -752,7 +829,21 @@ mod tests {
             let author = self.author.lock().clone();
             match (method, path) {
                 ("POST", "graphql") => {
-                    let head = body.unwrap_or_default()["variables"]["head"]
+                    let body = body.unwrap_or_default();
+                    if body["query"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("pr0:pullRequest(number:1)")
+                    {
+                        *self.reads.lock() += 1;
+                        let pull = json!({"id": "PR_1", "number": 1, "title": "PR", "url": "https://github.com/o/r/pull/1", "state": "OPEN",
+                            "author": {"login": if author.is_empty() { "me" } else { &author }},
+                            "reviews": conn(self.reviews.lock().clone()),
+                            "comments": conn(self.conversation.lock().clone()),
+                            "reviewThreads": conn(vec![json!({"id": "T1", "comments": conn(self.comments.lock().clone())})])});
+                        return Ok(json!({"data": {"r0": {"pr0": pull}}}));
+                    }
+                    let head = body["variables"]["head"]
                         .as_str()
                         .unwrap_or_default()
                         .to_string();
@@ -769,18 +860,6 @@ mod tests {
                     Ok(json!({"data": {"repository": {"pullRequests": {"nodes": nodes}}}}))
                 }
                 ("GET", "user") => Ok(json!({"login": "me"})),
-                ("GET", "repos/o/r/pulls/1") => Ok(
-                    json!({"title": "PR", "html_url": "https://github.com/o/r/pull/1", "state": "open", "merged_at": null, "user": {"login": if author.is_empty() { "me" } else { &author }}}),
-                ),
-                ("GET", p) if p.starts_with("repos/o/r/pulls/1/reviews?") => {
-                    Ok(json!(self.reviews.lock().clone()))
-                }
-                ("GET", p) if p.starts_with("repos/o/r/pulls/1/comments?") => {
-                    Ok(json!(self.comments.lock().clone()))
-                }
-                ("GET", p) if p.starts_with("repos/o/r/issues/1/comments?") => {
-                    Ok(json!(self.conversation.lock().clone()))
-                }
                 _ => bail!("Unexpected request {method} {path}"),
             }
         }
@@ -793,12 +872,24 @@ mod tests {
         ) -> Result<Value> {
             self.request(method, path, body).await
         }
+        async fn blocked(&self) -> Option<String> {
+            self.blocked.lock().clone()
+        }
     }
 
     fn review(id: u64, login: &str, state: &str, body: &str) -> Value {
         let mut r = row(id, login, body);
         r["state"] = json!(state);
         r
+    }
+
+    /// Check `o/r#1` once.
+    async fn check(svc: &FollowService, known: Option<Followed>) -> Option<PrActivity> {
+        svc.check(&[("o/r".into(), 1, known)], "me")
+            .await
+            .unwrap()
+            .remove(0)
+            .unwrap()
     }
 
     fn session(id: &str, orchestrator_id: Option<&str>, minutes: u64) -> Session {
@@ -907,7 +998,7 @@ mod tests {
         let manager = Manager::new(store.clone(), vec![], None);
         let svc = FollowService::new(store, gh.clone(), manager, events).unwrap();
         assert!(
-            svc.check("o/r", 1, None, "me").await.unwrap().is_none(),
+            check(&svc, None).await.is_none(),
             "the first look is history"
         );
         let known = svc.follows.lock().get("o/r#1").cloned();
@@ -927,7 +1018,7 @@ mod tests {
             row(21, "ci[bot]", "Coverage 80%"),
         ]);
 
-        let got = svc.check("o/r", 1, known, "me").await.unwrap().unwrap();
+        let got = check(&svc, known).await.unwrap();
         let summary: Vec<(&str, &str, &str)> = got
             .items
             .iter()
@@ -951,7 +1042,7 @@ mod tests {
 
         let known = svc.follows.lock().get("o/r#1").cloned();
         assert!(
-            svc.check("o/r", 1, known, "me").await.unwrap().is_none(),
+            check(&svc, known).await.is_none(),
             "nothing is reported twice"
         );
     }
@@ -964,15 +1055,11 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
         let manager = Manager::new(store.clone(), vec![], None);
         let svc = FollowService::new(store, gh.clone(), manager, events).unwrap();
-        svc.check("o/r", 1, None, "me").await.unwrap();
+        check(&svc, None).await;
         let known = svc.follows.lock().get("o/r#1").cloned().unwrap();
         assert_eq!(known.author, "alice");
         gh.conversation.lock().push(row(1, "bob", "Hi"));
-        assert!(svc
-            .check("o/r", 1, Some(known), "me")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(check(&svc, Some(known)).await.is_none());
     }
 
     /// An agent that answers every message with "Fixed it".
@@ -1216,6 +1303,379 @@ mod tests {
         assert_eq!(activity["params"]["session"]["id"], "coder");
         // The PR was found once; the branch without one waits before it is asked again.
         assert_eq!(gh.heads.lock().clone(), vec!["feature", "other"]);
+    }
+
+    /// What this service found with GitHub's REST lists, before it read GraphQL.
+    fn rest_items(
+        reviews: &[Value],
+        comments: &[Value],
+        conversation: &[Value],
+        seen: (u64, u64, u64),
+        me: &str,
+    ) -> Vec<Activity> {
+        let by_me = |row: &Value| s(&row["user"], "login").eq_ignore_ascii_case(me);
+        let item = |kind: &str, row: &Value, state: String| Activity {
+            kind: kind.into(),
+            id: row["id"].as_u64().unwrap_or(0),
+            author: s(&row["user"], "login"),
+            state,
+            body: s(row, "body"),
+            url: s(row, "html_url"),
+            path: None,
+            line: None,
+        };
+        let mut items = vec![];
+        for row in reviews {
+            let id = row["id"].as_u64().unwrap_or(0);
+            let state = s(row, "state");
+            if id > seen.0
+                && !by_me(row)
+                && RESPONSES.contains(&state.as_str())
+                && !(state == "COMMENTED" && s(row, "body").trim().is_empty())
+            {
+                items.push(item("review", row, state));
+            }
+        }
+        for row in comments {
+            if row["id"].as_u64().unwrap_or(0) > seen.1 && !by_me(row) {
+                let mut i = item("comment", row, String::new());
+                i.path = row["path"].as_str().map(str::to_string);
+                i.line = row["line"]
+                    .as_u64()
+                    .or_else(|| row["original_line"].as_u64());
+                items.push(i);
+            }
+        }
+        for row in conversation {
+            let bot = row["user"]["type"] == "Bot" || s(&row["user"], "login").ends_with("[bot]");
+            if row["id"].as_u64().unwrap_or(0) > seen.2 && !by_me(row) && !bot {
+                items.push(item("conversation", row, String::new()));
+            }
+        }
+        items.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.id.cmp(&b.id)));
+        items
+    }
+
+    #[tokio::test]
+    async fn graphql_finds_what_the_rest_lists_found() {
+        // kind, id, author (None: a deleted account), bot, state, body, path, line, original line
+        type Entry = (
+            &'static str,
+            u64,
+            Option<&'static str>,
+            bool,
+            &'static str,
+            &'static str,
+            Option<&'static str>,
+            Option<u64>,
+            Option<u64>,
+        );
+        let big = 6_310_081_535;
+        let fixture: Vec<Entry> = vec![
+            (
+                "review",
+                100,
+                Some("alice"),
+                false,
+                "CHANGES_REQUESTED",
+                "old",
+                None,
+                None,
+                None,
+            ),
+            (
+                "comment",
+                200,
+                Some("alice"),
+                false,
+                "",
+                "old",
+                Some("a.rs"),
+                Some(1),
+                Some(1),
+            ),
+            (
+                "conversation",
+                300,
+                Some("carol"),
+                false,
+                "",
+                "old",
+                None,
+                None,
+                None,
+            ),
+            // After the first look:
+            (
+                "review",
+                101,
+                Some("alice"),
+                false,
+                "CHANGES_REQUESTED",
+                "Rename",
+                None,
+                None,
+                None,
+            ),
+            (
+                "review",
+                102,
+                Some("alice"),
+                false,
+                "COMMENTED",
+                " ",
+                None,
+                None,
+                None,
+            ),
+            (
+                "review",
+                103,
+                Some("copilot"),
+                true,
+                "COMMENTED",
+                "Bot says",
+                None,
+                None,
+                None,
+            ),
+            (
+                "review",
+                104,
+                Some("me"),
+                false,
+                "COMMENTED",
+                "Mine",
+                None,
+                None,
+                None,
+            ),
+            (
+                "review",
+                105,
+                Some("bob"),
+                false,
+                "DISMISSED",
+                "x",
+                None,
+                None,
+                None,
+            ),
+            (
+                "review",
+                106,
+                Some("bob"),
+                false,
+                "APPROVED",
+                "",
+                None,
+                None,
+                None,
+            ),
+            (
+                "review",
+                big,
+                None,
+                false,
+                "COMMENTED",
+                "Ghost",
+                None,
+                None,
+                None,
+            ),
+            (
+                "comment",
+                201,
+                Some("alice"),
+                false,
+                "",
+                "Typo",
+                Some("a.rs"),
+                Some(7),
+                Some(5),
+            ),
+            (
+                "comment",
+                202,
+                Some("dave"),
+                false,
+                "",
+                "Outdated",
+                Some("b.rs"),
+                None,
+                Some(12),
+            ),
+            (
+                "comment",
+                203,
+                Some("me"),
+                false,
+                "",
+                "Fixed",
+                Some("a.rs"),
+                Some(7),
+                Some(5),
+            ),
+            (
+                "comment",
+                big + 1,
+                Some("ci[bot]"),
+                true,
+                "",
+                "Lint",
+                None,
+                None,
+                None,
+            ),
+            (
+                "conversation",
+                301,
+                Some("carol"),
+                false,
+                "",
+                "Any news?",
+                None,
+                None,
+                None,
+            ),
+            (
+                "conversation",
+                302,
+                Some("cov"),
+                true,
+                "",
+                "Coverage",
+                None,
+                None,
+                None,
+            ),
+            (
+                "conversation",
+                303,
+                Some("ci[bot]"),
+                false,
+                "",
+                "Build",
+                None,
+                None,
+                None,
+            ),
+            (
+                "conversation",
+                big + 2,
+                Some("Me"),
+                false,
+                "",
+                "Done",
+                None,
+                None,
+                None,
+            ),
+        ];
+        let rest = |e: &Entry| {
+            let user =
+                e.2.map(|login| json!({"login": login, "type": if e.3 { "Bot" } else { "User" }}));
+            json!({"id": e.1, "user": user, "state": e.4, "body": e.5, "html_url": format!("https://github.com/o/r/pull/1#x-{}", e.1),
+                "path": e.6, "line": e.7, "original_line": e.8})
+        };
+        let graphql = |e: &Entry| {
+            let author = e.2.map(
+                |login| json!({"login": login, "__typename": if e.3 { "Bot" } else { "User" }}),
+            );
+            json!({"fullDatabaseId": e.1.to_string(), "author": author, "state": e.4, "body": e.5, "url": format!("https://github.com/o/r/pull/1#x-{}", e.1),
+                "path": e.6, "line": e.7, "originalLine": e.8})
+        };
+        let of = |entries: &[Entry], kind: &str, to: &dyn Fn(&Entry) -> Value| -> Vec<Value> {
+            entries.iter().filter(|e| e.0 == kind).map(to).collect()
+        };
+
+        let gh = Arc::new(Fake::default());
+        let (events, _rx) = broadcast::channel(16);
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let svc = FollowService::new(
+            store.clone(),
+            gh.clone(),
+            Manager::new(store, vec![], None),
+            events,
+        )
+        .unwrap();
+        let fill = |entries: &[Entry]| {
+            *gh.reviews.lock() = of(entries, "review", &graphql);
+            *gh.comments.lock() = of(entries, "comment", &graphql);
+            *gh.conversation.lock() = of(entries, "conversation", &graphql);
+        };
+        fill(&fixture[..3]);
+        assert!(check(&svc, None).await.is_none());
+        let known = svc.follows.lock().get("o/r#1").cloned().unwrap();
+        assert_eq!(
+            (
+                known.seen_review,
+                known.seen_comment,
+                known.seen_conversation
+            ),
+            (100, 200, 300),
+            "the same ids REST gave, so stored follow-ups carry on"
+        );
+
+        fill(&fixture);
+        let got = check(&svc, Some(known.clone())).await.unwrap();
+        let expected = rest_items(
+            &of(&fixture, "review", &rest),
+            &of(&fixture, "comment", &rest),
+            &of(&fixture, "conversation", &rest),
+            (
+                known.seen_review,
+                known.seen_comment,
+                known.seen_conversation,
+            ),
+            "me",
+        );
+        assert_eq!(got.items, expected);
+        assert_eq!(
+            got.items
+                .iter()
+                .map(|i| (i.kind.as_str(), i.id))
+                .collect::<Vec<_>>(),
+            vec![
+                ("comment", 201),
+                ("comment", 202),
+                ("comment", big + 1),
+                ("conversation", 301),
+                ("review", 101),
+                ("review", 103),
+                ("review", 106),
+                ("review", big)
+            ],
+        );
+        let seen = svc.follows.lock().get("o/r#1").cloned().unwrap();
+        assert_eq!(
+            (seen.seen_review, seen.seen_comment, seen.seen_conversation),
+            (big, big + 1, big + 2)
+        );
+        assert_eq!(
+            (got.title.as_str(), got.url.as_str()),
+            ("PR", "https://github.com/o/r/pull/1")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_login_stops_the_reads_until_it_works_again() {
+        let gh = Arc::new(Fake::default());
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+        let manager = Manager::new(store.clone(), vec![], None);
+        let mut s = session("a", None, 0);
+        s.pulls = vec!["https://github.com/o/r/pull/1".into()];
+        store.upsert_session(&s).unwrap();
+        manager.restore().unwrap();
+        let (events, _rx) = broadcast::channel(16);
+        let svc = FollowService::new(store, gh.clone(), manager, events).unwrap();
+        *gh.blocked.lock() = Some(aura_github::LOGIN_EXPIRED.into());
+        svc.poll().await;
+        svc.poll().await;
+        assert_eq!(*gh.reads.lock(), 0, "nothing is asked of GitHub");
+        *gh.blocked.lock() = None;
+        svc.poll().await;
+        assert_eq!(*gh.reads.lock(), 1, "polling resumes by itself");
     }
 
     fn pr(items: Vec<Activity>) -> PrActivity {

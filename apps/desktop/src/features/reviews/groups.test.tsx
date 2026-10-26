@@ -133,3 +133,12 @@ it("lists pull requests from a daemon older than the review fields", async () =>
   expect(screen.getByTitle("PR 2")).toBeTruthy();
   expect(screen.getByRole("button", { name: /Waiting for review/ })).toBeTruthy();
 });
+
+it("says when the GitHub login expired instead of showing a stale error", () => {
+  useReviews.setState({ inbox: { ...inboxFixture, error: "Bad credentials (HTTP 401)", blocked: "GitHub login expired. Run `gh auth login`; Aura reconnects by itself." } });
+  render(<ReviewSidebar />);
+  const notice = screen.getByRole("status");
+  expect(notice.textContent).toBe("GitHub login expired. Run gh auth login; Aura reconnects by itself.");
+  expect(notice.querySelector("code")?.textContent).toBe("gh auth login");
+  expect(screen.queryByText(/Bad credentials/)).toBeNull();
+});

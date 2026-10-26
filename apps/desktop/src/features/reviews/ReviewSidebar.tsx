@@ -32,7 +32,8 @@ export function ReviewSidebar() {
       <button className="btn small" title="Hide section" data-command="reviews.toggle" onClick={() => state.setPreference("hidden", true)}>×</button>
     </div>
     <div className="pr-sidebar-actions"><button className="btn small" data-command="reviews.hidden" onClick={() => state.setPreference("showHidden", !state.showHidden)}>{state.showHidden ? "Hide hidden" : "Show hidden"}</button><button className="btn small" data-command="reviews.history" onClick={openHistory}>Review history</button></div>
-    {(state.error || state.inbox?.error) && <p className="pr-error" role="status">{state.error || state.inbox?.error}</p>}
+    {state.inbox?.blocked && <p className="pr-warning pr-blocked" role="status"><Ticked text={state.inbox.blocked} /></p>}
+    {!state.inbox?.blocked && (state.error || state.inbox?.error) && <p className="pr-error" role="status">{state.error || state.inbox?.error}</p>}
     <div className="pr-sidebar-list">
       <GroupToggle title="Needs your review" count={count(state.inbox?.pulls)} collapsed={state.collapsed} onToggle={() => state.setPreference("collapsed", !state.collapsed)} />
       {!state.collapsed && <PullRows pulls={shown.requested} kind="requested" empty={connected ? "Nothing waiting for your review." : "Connect with gh auth login, then refresh."} />}
@@ -49,6 +50,11 @@ export function ReviewSidebar() {
     </div>
     <div className="pr-sync">{state.inbox?.account}{state.inbox?.last_synced && ` · synced ${new Date(state.inbox.last_synced).toLocaleTimeString()}`}</div>
   </section>;
+}
+
+/** Text with `quoted` commands set as code. */
+function Ticked({ text }: { text: string }) {
+  return <>{text.split("`").map((part, i) => i % 2 ? <code key={i}>{part}</code> : part)}</>;
 }
 
 function GroupToggle({ title, count, collapsed, onToggle, sub = false }: { title: string; count: number; collapsed: boolean; onToggle: () => void; sub?: boolean }) {

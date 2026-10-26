@@ -1,12 +1,17 @@
-//! Review watches: the daemon polls a pull request's reviews once a minute and
-//! reports every approval, change request and comment-only review by the
-//! watched reviewers. Plain GitHub reads; no agent is involved.
+//! Review watches: the daemon looks at the watched pull requests once a minute
+//! and reports every approval, change request and comment-only review by the
+//! watched reviewers. Plain GitHub reads, all watches in one GraphQL query, of
+//! the PRs that are due (see [`activity::due`]); no agent is involved.
 use anyhow::{bail, Context, Result};
 use aura_core::*;
-use aura_github::{pages, s, validate_repo, Github};
+use aura_github::{
+    activity::{self, Since},
+    database_id, pages, s, validate_repo, Github,
+};
+use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::broadcast;
 
 const NAMESPACE: &str = "pr-watches";
@@ -26,6 +31,8 @@ pub struct WatchService {
     /// Serializes polls so two passes cannot report the same review twice.
     poll_gate: tokio::sync::Mutex<()>,
     events: broadcast::Sender<Value>,
+    /// Watch id -> when its PR was last read, and last updated then.
+    reads: Mutex<HashMap<String, activity::LastRead>>,
 }
 
 impl WatchService {
@@ -45,6 +52,7 @@ impl WatchService {
             watches: Mutex::new(watches),
             poll_gate: tokio::sync::Mutex::new(()),
             events,
+            reads: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -52,8 +60,8 @@ impl WatchService {
         let svc = self.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(POLL_INTERVAL).await;
-                svc.poll().await;
+                tokio::time::sleep(svc.gh.pace(POLL_INTERVAL)).await;
+                svc.poll(false).await;
             }
         });
     }
@@ -109,7 +117,7 @@ impl WatchService {
                 json!(true)
             }
             "watches.check" => {
-                self.poll().await;
+                self.poll(true).await;
                 json!(self.list())
             }
             _ => bail!("Unknown watch method"),
@@ -258,8 +266,8 @@ impl WatchService {
         Ok(watch)
     }
 
-    /// One pass over every active watch.
-    pub async fn poll(&self) {
+    /// One pass over the active watches that are due, or over all of them.
+    pub async fn poll(&self, all: bool) {
         let _gate = self.poll_gate.lock().await;
         let active: Vec<PrWatch> = self
             .watches
@@ -271,8 +279,49 @@ impl WatchService {
         if active.is_empty() {
             return;
         }
-        for watch in active {
-            let checked = check(&*self.gh, &watch).await;
+        if let Some(reason) = self.gh.blocked().await {
+            return tracing::debug!("review watches paused: {reason}");
+        }
+        let notified = if all { None } else { self.gh.notified().await };
+        let at = Utc::now();
+        let due: Vec<PrWatch> = active
+            .into_iter()
+            .filter(|w| {
+                let read = self.reads.lock().get(&w.id).copied();
+                all || activity::due(read, notified.as_ref(), &w.repo, w.number, at)
+            })
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        let prs: Vec<_> = due
+            .iter()
+            .map(|w| {
+                let since = Since {
+                    reviews: Some(w.seen),
+                    ..Default::default()
+                };
+                (w.repo.clone(), w.number, since)
+            })
+            .collect();
+        let reads: Vec<Result<activity::Read>> = match activity::read(&*self.gh, &prs).await {
+            Ok(reads) => reads,
+            Err(e) => {
+                let message = format!("{e:#}");
+                due.iter()
+                    .map(|_| Err(anyhow::anyhow!("{message}")))
+                    .collect()
+            }
+        };
+        for (watch, read) in due.into_iter().zip(reads) {
+            let checked = read.map(|read| {
+                let updated = DateTime::parse_from_rfc3339(&s(&read.node, "updatedAt"))
+                    .map_or(read.at, |t| t.with_timezone(&Utc));
+                self.reads
+                    .lock()
+                    .insert(watch.id.clone(), (read.at, updated));
+                check(&watch, &read.node)
+            });
             let mut next = watch.clone();
             next.last_checked = Some(now().to_rfc3339());
             let fresh = match checked {
@@ -331,10 +380,8 @@ struct Check {
     fresh: Vec<WatchedReview>,
 }
 
-async fn check(gh: &dyn Github, watch: &PrWatch) -> Result<Check> {
-    let base = format!("repos/{}/pulls/{}", watch.repo, watch.number);
-    let pull = gh.request("GET", &base, None).await?;
-    let rows = pages(gh, &format!("{base}/reviews")).await?;
+/// The reviews in `pull` (read by [`activity::read`]) newer than the watch has seen.
+fn check(watch: &PrWatch, pull: &Value) -> Check {
     let me = watch
         .account
         .split_once(':')
@@ -342,17 +389,17 @@ async fn check(gh: &dyn Github, watch: &PrWatch) -> Result<Check> {
         .unwrap_or_default();
     let mut seen = watch.seen;
     let mut fresh = vec![];
-    for row in &rows {
-        let Some(id) = row["id"].as_u64() else {
+    for n in pull["reviews"]["nodes"].as_array().into_iter().flatten() {
+        let Some(id) = database_id(n) else {
             continue;
         };
         seen = seen.max(id);
         if id <= watch.seen {
             continue;
         }
-        let reviewer = s(&row["user"], "login");
-        let state = s(row, "state");
-        let bot = row["user"]["type"] == "Bot" || reviewer.ends_with("[bot]");
+        let reviewer = s(&n["author"], "login");
+        let state = s(n, "state");
+        let bot = n["author"]["__typename"] == "Bot" || reviewer.ends_with("[bot]");
         if !RESPONSES.contains(&state.as_str()) || !watches_reviewer(watch, &reviewer, bot, me) {
             continue;
         }
@@ -360,18 +407,21 @@ async fn check(gh: &dyn Github, watch: &PrWatch) -> Result<Check> {
             id,
             reviewer,
             state,
-            body: s(row, "body"),
-            url: s(row, "html_url"),
-            submitted_at: s(row, "submitted_at"),
+            body: s(n, "body"),
+            url: s(n, "url"),
+            submitted_at: s(n, "submittedAt"),
         });
     }
     fresh.sort_by_key(|r| r.id);
-    Ok(Check {
-        title: s(&pull, "title"),
-        state: pull_state(&pull),
+    Check {
+        title: s(pull, "title"),
+        state: match s(pull, "state").as_str() {
+            "MERGED" => "merged".into(),
+            state => state.to_lowercase(),
+        },
         seen,
         fresh,
-    })
+    }
 }
 
 fn watches_reviewer(watch: &PrWatch, reviewer: &str, bot: bool, me: &str) -> bool {
@@ -448,6 +498,9 @@ mod tests {
         reviews: Mutex<Vec<Value>>,
         state: Mutex<String>,
         requested: Mutex<Vec<Value>>,
+        /// Batched review reads so far.
+        reads: Mutex<usize>,
+        blocked: Mutex<Option<String>>,
     }
     fn review(id: u64, login: &str, state: &str) -> Value {
         json!({"id": id, "user": {"login": login}, "state": state, "body": "", "html_url": format!("https://github.com/o/r/pull/1#pullrequestreview-{id}"), "submitted_at": "2026-09-29T10:00:00Z"})
@@ -462,6 +515,21 @@ mod tests {
         }
         async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
             match (method, path) {
+                ("POST", "graphql") => {
+                    let state = self.state.lock().to_uppercase();
+                    let reviews: Vec<Value> = self.reviews.lock().iter().map(|r| {
+                        let login = s(&r["user"], "login");
+                        json!({"fullDatabaseId": r["id"].to_string(), "state": r["state"], "body": r["body"], "url": r["html_url"], "submittedAt": r["submitted_at"],
+                            "author": {"__typename": if login.ends_with("[bot]") { "Bot" } else { "User" }, "login": login}})
+                    }).collect();
+                    let conn = |nodes: Vec<Value>| json!({"pageInfo": {"hasPreviousPage": false, "hasNextPage": false}, "nodes": nodes});
+                    *self.reads.lock() += 1;
+                    Ok(
+                        json!({"data": {"r0": {"pr0": {"id": "PR_1", "title": "PR", "url": "https://github.com/o/r/pull/1",
+                        "state": if state.is_empty() { "OPEN" } else { &state }, "author": {"login": "me"},
+                        "reviews": conn(reviews), "comments": conn(vec![]), "reviewThreads": conn(vec![])}}}}),
+                    )
+                }
                 ("GET", "user") => Ok(json!({"login": "me"})),
                 ("GET", "repos/o/r/pulls/1") => {
                     let state = self.state.lock().clone();
@@ -494,6 +562,9 @@ mod tests {
         ) -> Result<Value> {
             self.request(method, path, body).await
         }
+        async fn blocked(&self) -> Option<String> {
+            self.blocked.lock().clone()
+        }
     }
     fn service(gh: Arc<Fake>) -> (Arc<WatchService>, broadcast::Receiver<Value>) {
         let (events, rx) = broadcast::channel(64);
@@ -525,7 +596,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(watch.seen, 5);
-        svc.poll().await;
+        svc.poll(false).await;
         assert!(
             reported(&mut rx).is_empty(),
             "an approval from before the watch is not news"
@@ -534,14 +605,14 @@ mod tests {
         gh.reviews.lock().push(review(6, "bob", "COMMENTED"));
         gh.reviews.lock().push(review(7, "me", "COMMENTED"));
         gh.reviews.lock().push(review(8, "alice", "PENDING"));
-        svc.poll().await;
+        svc.poll(false).await;
         assert!(
             reported(&mut rx).is_empty(),
             "unwatched reviewers, the author's replies and drafts are skipped"
         );
 
         gh.reviews.lock().push(review(9, "Alice", "COMMENTED"));
-        svc.poll().await;
+        svc.poll(false).await;
         assert_eq!(
             reported(&mut rx),
             vec![("Alice".into(), "COMMENTED".into())]
@@ -550,7 +621,7 @@ mod tests {
         assert_eq!(watch.status, "done");
         assert_eq!(watch.seen, 9);
 
-        svc.poll().await;
+        svc.poll(false).await;
         assert!(
             reported(&mut rx).is_empty(),
             "finished watches are not polled again"
@@ -580,10 +651,10 @@ mod tests {
         gh.reviews
             .lock()
             .push(review(1, "alice", "CHANGES_REQUESTED"));
-        svc.poll().await;
+        svc.poll(false).await;
         assert_eq!(svc.list()[0].status, "watching");
         gh.reviews.lock().push(review(2, "bob", "APPROVED"));
-        svc.poll().await;
+        svc.poll(false).await;
         assert_eq!(svc.list()[0].status, "done");
         assert_eq!(
             reported(&mut rx),
@@ -602,14 +673,14 @@ mod tests {
         gh.reviews
             .lock()
             .push(review(1, "copilot-pull-request-reviewer[bot]", "COMMENTED"));
-        svc.poll().await;
+        svc.poll(false).await;
         assert_eq!(
             svc.list()[0].status,
             "watching",
             "an automatic bot review does not end an open-ended watch"
         );
         *gh.state.lock() = "merged".into();
-        svc.poll().await;
+        svc.poll(false).await;
         assert_eq!(svc.list()[0].status, "closed");
         assert!(reported(&mut rx).is_empty());
         assert!(
@@ -632,6 +703,42 @@ mod tests {
             json!([{"login": "bob", "state": "COMMENTED"}])
         );
         assert_eq!(v["candidates"], json!(["alice", "bob"]));
+    }
+
+    #[tokio::test]
+    async fn an_expired_login_stops_the_reads_until_it_works_again() {
+        let gh = Arc::new(Fake::default());
+        let (svc, mut rx) = service(gh.clone());
+        svc.start("o/r", 1, vec!["alice".into()], vec![])
+            .await
+            .unwrap();
+        gh.reviews.lock().push(review(1, "alice", "APPROVED"));
+        *gh.blocked.lock() = Some(aura_github::LOGIN_EXPIRED.into());
+        svc.poll(false).await;
+        svc.poll(true).await;
+        assert_eq!(*gh.reads.lock(), 0, "nothing is asked of GitHub");
+        assert!(reported(&mut rx).is_empty());
+        *gh.blocked.lock() = None;
+        svc.poll(false).await;
+        assert_eq!(reported(&mut rx), vec![("alice".into(), "APPROVED".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_quiet_pr_is_not_read_every_pass() {
+        let gh = Arc::new(Fake::default());
+        let (svc, _rx) = service(gh.clone());
+        svc.start("o/r", 1, vec!["alice".into()], vec![])
+            .await
+            .unwrap();
+        svc.poll(false).await;
+        assert_eq!(*gh.reads.lock(), 1);
+        // Last updated long ago, and no notifications to say otherwise.
+        let long_ago = Utc::now() - chrono::Duration::hours(3);
+        svc.reads.lock().get_mut("o/r#1").unwrap().1 = long_ago;
+        svc.poll(false).await;
+        assert_eq!(*gh.reads.lock(), 1, "read again after a few minutes");
+        svc.poll(true).await;
+        assert_eq!(*gh.reads.lock(), 2, "a check the user asked for reads it");
     }
 
     #[test]
