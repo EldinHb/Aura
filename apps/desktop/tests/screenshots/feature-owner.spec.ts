@@ -1,11 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { Feature, Item, Session, Specialist } from "../../src/gen";
+import type { Feature, Item, MeetingTurn, Session, Specialist, SpecialistSuggestion } from "../../src/gen";
 
 /**
  * A feature owner's chat with its cards (a decision for the user, a meeting,
- * a proposed specialist, the delivery report), its team in the sidebar and
- * inspector, its Team tab with meetings and one-on-ones, and the Specialists
- * and autonomy settings. Not a README shot; run it on its own
+ * a proposed specialist, the delivery report, a specialist found in repeated
+ * work), its team in the sidebar and inspector, its Team tab with a written
+ * and a live meeting and one-on-ones, and the Specialists (with their
+ * Suggestions), autonomy and meeting settings. Not a README shot; run it on its own
  * when changing these views:
  *   SHOTS=/tmp/owner pnpm exec playwright test -c playwright.screenshots.config.ts feature-owner
  */
@@ -42,7 +43,29 @@ const history: Record<string, Item[]> = {
     card("suggestion", "s1", 150),
     item(owner, "agent_message", "The tester signed off and the reviewer approved. Here is the report.", 20),
     card("report", "report", 19),
+    card("role_suggestion", "r1", 18),
   ],
+};
+
+const turn = (round: number, worker: string, name: string, role: string, text: string | null, min: number, over: Partial<MeetingTurn> = {}): MeetingTurn => ({
+  round, worker_id: worker, name, role, chair: false, status: text ? "answered" : "asked", text, missing: null, at: text ? at(min) : null, ...over,
+});
+
+const found: SpecialistSuggestion = {
+  id: "r1",
+  specialist: { id: "migration-writer", name: "Migration writer", role: "Writes reversible database migrations", description: "SQL migrations with a tested rollback", instructions: "Write every schema change as a reversible migration and test the rollback on a copy of the data.", agent: null, model: null, effort: null, scope: "project", project: "/Users/sam/code/acme-web" },
+  reason: "Feature owners started 3 ad-hoc workers for this role in 3 features.",
+  status: "pending",
+  accepted_id: null,
+  created_at: at(18),
+  resolved_at: null,
+  delivered: true,
+  evidence: [
+    { owner_id: owner, worker_id: id(11), feature: "Dark mode for the settings", title: "Migration writer", summary: "Migration writer: Add the theme column to user_settings with a rollback", project: "/Users/sam/code/acme-web" },
+    { owner_id: id(20), worker_id: id(21), feature: "Orders export", title: "Schema change", summary: "Schema change: Write the SQL migration for the exports table", project: "/Users/sam/code/acme-web" },
+    { owner_id: id(30), worker_id: id(31), feature: "Invoices", title: "Migration writer", summary: "Migration writer: Migrate invoices to integer cents, reversibly", project: "/Users/sam/code/acme-web" },
+  ],
+  owner_id: owner,
 };
 
 const feature: Feature = {
@@ -50,6 +73,7 @@ const feature: Feature = {
   goal: "Add a dark mode to the settings screen. Users have asked for it for months.",
   status: "waiting_on_user",
   autonomy: null,
+    meeting_mode: null,
   team: [
     { worker_id: ux, specialist_id: "ux-designer", name: "UX designer", role: "Designs flows", instructions: "", hired_at: at(200), meeting: null },
     { worker_id: fe, specialist_id: "frontend-engineer", name: "Frontend engineer", role: "Builds the UI", instructions: "", hired_at: at(199), meeting: null },
@@ -94,6 +118,14 @@ const feature: Feature = {
       deadline: at(160),
       ended_at: at(174),
       delivered: true,
+      mode: "written",
+      round: 0,
+      max_rounds: 0,
+      turn_words: 0,
+      turns: [],
+      outcome: null,
+      timeout_minutes: 0,
+      left: [],
     },
     {
       id: "m2",
@@ -101,15 +133,29 @@ const feature: Feature = {
       agenda: "Do the code blocks in the dark theme meet AA contrast?",
       context: "",
       attendees: [
-        { worker_id: fe, name: "Frontend engineer", role: "Builds the UI", guest: false, status: "answered", answer: "They use `--bg-elev`; I measured 7.2:1 for the text.", missing: null, answered_at: at(30) },
+        { worker_id: fe, name: "Frontend engineer", role: "Builds the UI", guest: false, status: "answered", answer: "Agreed: I add the axe check to the existing theme test.", missing: null, answered_at: at(26) },
         { worker_id: qa, name: "Tester (QA)", role: "Verifies", guest: false, status: "asked", answer: null, missing: null, answered_at: null },
       ],
       status: "collecting",
       decision_ids: [],
       started_at: at(31),
-      deadline: at(11),
+      deadline: at(6),
       ended_at: null,
       delivered: false,
+      mode: "live",
+      round: 2,
+      max_rounds: 3,
+      turn_words: 150,
+      turns: [
+        turn(1, fe, "Frontend engineer", "Builds the UI", "They use `--bg-elev`; I measured **7.2:1** for the text and 4.8:1 for comments.", 30),
+        turn(1, qa, "Tester (QA)", "Verifies", "4.8:1 passes AA but only just. Selection highlight is untested: it sits on `--accent-bg` and may drop below 4.5:1.", 29),
+        turn(2, owner, "Dark mode for the settings", "", "Settle how we keep selection contrast at AA, and who checks it.", 27, { chair: true }),
+        turn(2, fe, "Frontend engineer", "Builds the UI", "Agreed: I darken the selection colour to keep 4.5:1, and add the axe check to the existing theme test.", 26),
+        turn(2, qa, "Tester (QA)", "Verifies", null, 25),
+      ],
+      outcome: null,
+      timeout_minutes: 20,
+      left: [],
     },
   ],
   one_on_ones: [
@@ -126,6 +172,8 @@ const feature: Feature = {
       created_at: at(150),
       resolved_at: null,
       delivered: false,
+      evidence: [],
+      owner_id: null,
     },
   ],
   report: {
@@ -174,6 +222,9 @@ async function mockDaemon(page: Page) {
         case "load_balancer.get": result = { enabled: false, policy: "…", policy_is_default: true, default_policy: "…", rules: "", prefer: [], avoid: [] }; break;
         case "specialists.list": result = specialists; break;
         case "specialists.hidden": result = []; break;
+        case "meetings.get": result = { mode: "live", max_rounds: 3, turn_words: 150 }; break;
+        case "suggestions.settings": result = { enabled: true, model: "haiku" }; break;
+        case "suggestions.list": result = [found]; break;
         case "orchestrator.projects": result = [{ path: "/Users/sam/code/acme-web", repo: true, groups: [], sessions: 4, last_used: at(5) }]; break;
         default:
           if (/history|commands|native|list|candidates|status|diff_stat|log|worktrees|branches/.test(method)) result = [];
@@ -194,6 +245,12 @@ for (const theme of ["dark", "light"] as const) {
     await page.screenshot({ path: `${OUT}/${theme}-chat.png` });
     await page.locator(".feature-card.report").scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${OUT}/${theme}-report.png` });
+    // A specialist Aura found in repeated ad-hoc work, with its briefs.
+    const role = page.locator(".feature-card.suggestion", { hasText: "Migration writer" });
+    await role.getByText(/Seen in 3 ad-hoc briefs/).click();
+    await role.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/${theme}-role-suggestion.png` });
 
     // The Team tab opens only when the user picks it.
     await expect(page.locator(".team-view")).toHaveCount(0);
@@ -201,6 +258,11 @@ for (const theme of ["dark", "light"] as const) {
     await expect(page.locator(".team-view")).toBeVisible();
     await page.waitForTimeout(200);
     await page.screenshot({ path: `${OUT}/${theme}-team.png` });
+    // The live meeting, open as the latest: its thread round by round.
+    await expect(page.locator(".live-thread")).toBeVisible();
+    await page.locator(".live-thread").scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/${theme}-team-live.png` });
     await page.locator(".team-entry.meeting").nth(1).locator(".team-entry-head").click();
     await page.locator(".team-entry.one-on-one").last().scrollIntoViewIfNeeded();
     await page.waitForTimeout(200);
@@ -214,10 +276,24 @@ for (const theme of ["dark", "light"] as const) {
     await page.getByRole("option", { name: /Frontend engineer/ }).click();
     await page.waitForTimeout(200);
     await page.screenshot({ path: `${OUT}/${theme}-specialists.png` });
+    await expect(page.getByRole("region", { name: "Suggestions" })).toBeVisible();
+    await page.getByRole("region", { name: "Suggestions" }).getByText(/Seen in 3 ad-hoc briefs/).click();
+    await page.getByRole("region", { name: "Suggestions" }).evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/${theme}-suggestions.png` });
+    // Folded, it keeps to its heading with how many wait.
+    await page.getByRole("button", { name: /Suggestions/ }).click();
+    await expect(page.getByText("2 waiting")).toBeVisible();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/${theme}-suggestions-folded.png` });
+    await page.getByRole("button", { name: /Suggestions/ }).click();
     await page.getByRole("tab", { name: /Orchestrators/ }).click();
-    await page.locator(".feature-owner-settings").scrollIntoViewIfNeeded();
+    await page.locator(".feature-owner-settings").first().scrollIntoViewIfNeeded();
     await page.getByRole("radio", { name: /Checkpoints/ }).click();
     await page.waitForTimeout(200);
     await page.screenshot({ path: `${OUT}/${theme}-autonomy.png` });
+    await page.locator(".feature-owner-settings").last().scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/${theme}-meetings.png` });
   });
 }

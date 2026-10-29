@@ -22,7 +22,7 @@ import type { RpcClient, ConnectionState } from "../lib/rpc";
 import { normalizeSession } from "../lib/pulls";
 import { folderOf } from "../lib/sessionFolder";
 import { planContent, type SessionPlan } from "../views/sessionPlans";
-import { dropFeature, setFeature } from "./features";
+import { dropFeature, setFeature, setRoleSuggestions } from "./features";
 
 export type Notice = { id: string; level: "info" | "warn" | "error"; message: string; ts: number };
 
@@ -411,6 +411,10 @@ export const useStore = create<AppState>((set, get) => ({
     }
     if (ev.type === "feature_updated") {
       setFeature(ev.feature);
+      return;
+    }
+    if (ev.type === "specialist_suggestions_updated") {
+      setRoleSuggestions(ev.suggestions);
       return;
     }
     const sid = ev.session_id;

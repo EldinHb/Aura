@@ -38,10 +38,15 @@ import type {
   BranchPull,
   Autonomy,
   Feature,
+  MeetingMode,
+  MeetingSettings,
   Project,
   Specialist,
   SpecialistInput,
   SpecialistScope,
+  SpecialistSuggestion,
+  SuggestionRun,
+  SuggestionSettings,
 } from "../gen";
 import { normalizeBranchPull } from "./pulls";
 
@@ -312,6 +317,36 @@ export class RpcClient {
   /** A feature's own autonomy; `null` follows the setting again. */
   setFeatureAutonomy(id: string, autonomy: Autonomy | null) {
     return this.call<Feature>("feature.set_autonomy", { id, autonomy });
+  }
+  /** How every feature owner's team meets unless its feature has its own mode. */
+  meetingSettings() {
+    return this.call<MeetingSettings>("meetings.get");
+  }
+  setMeetingSettings(settings: MeetingSettings) {
+    return this.call<MeetingSettings>("meetings.set", settings);
+  }
+  /** A feature's own meeting mode; `null` follows the setting again. */
+  setFeatureMeetingMode(id: string, mode: MeetingMode | null) {
+    return this.call<Feature>("feature.set_meeting_mode", { id, mode });
+  }
+  /** Whether, and with which model, Aura suggests specialists from repeated ad-hoc work. */
+  suggestionSettings() {
+    return this.call<SuggestionSettings>("suggestions.settings");
+  }
+  setSuggestionSettings(settings: SuggestionSettings) {
+    return this.call<SuggestionSettings>("suggestions.set_settings", settings);
+  }
+  /** The specialists Aura suggested from repeated ad-hoc work, pending and resolved. */
+  roleSuggestions() {
+    return this.call<SpecialistSuggestion[]>("suggestions.list");
+  }
+  /** Look for recurring ad-hoc roles now; with `owner`, the suggestions also show in its chat. */
+  suggestSpecialists(owner: string | null = null) {
+    return this.call<SuggestionRun>("suggestions.run", { owner });
+  }
+  /** Accept (as found, or as edited in `specialist`) or dismiss a suggestion Aura found. */
+  resolveRoleSuggestion(id: string, accept: boolean, specialist: SpecialistInput | null = null) {
+    return this.call<SpecialistSuggestion>("suggestions.resolve", { id, accept, specialist });
   }
   /** The global specialists, or with `project` those that apply there: its own and the global ones it does not override. */
   specialists(project: string | null = null) {

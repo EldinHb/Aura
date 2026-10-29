@@ -4,6 +4,7 @@ import { useStore } from "../state/store";
 import { useFeature } from "../state/features";
 import { STATUS_LABEL, describeAutonomy, openQuestions } from "../lib/features";
 import { AutonomyPicker } from "../components/AutonomyPicker";
+import { MeetingModePicker } from "../components/MeetingModePicker";
 import { openTeam } from "../state/workerThreads";
 
 /** "none yet", "3 members, 2 specialists" */
@@ -51,6 +52,10 @@ export function FeatureSection({ s }: { s: Session }) {
           <button type="button" className="linkish" data-hint onClick={() => setEditing(!editing)}>
             {editing ? "done" : "change"}
           </button>
+        </span>
+        <span className="k">meetings</span>
+        <span className="v">
+          <MeetingModePicker ownerId={s.id} feature={feature} />
         </span>
         <span className="k">team</span>
         <span className="v">

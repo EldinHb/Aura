@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import type { Feature, Item, Meeting, UserQuestion } from "../gen";
-import { attendeesLine, describeAutonomy, featureCard, meetingState, oneOnOneLabel, openQuestions } from "./features";
+import type { Feature, Item, Meeting, UserQuestion, MeetingTurn } from "../gen";
+import { attendeesLine, describeAutonomy, featureCard, meetingState, oneOnOneLabel, openQuestions, isLive, currentSpeaker, liveRounds } from "./features";
 import { groupSteps } from "../views/transcript/replySteps";
 
 const item = (id: string, kind: Item["kind"], patch: Partial<Item> = {}): Item => ({ id, session_id: "o", turn_id: "t1", kind, status: "completed", title: null, text: "", data: {}, parent_id: null, started_at: "", ended_at: null, ...patch });
@@ -41,7 +41,7 @@ it("words autonomy as the daemon does and finds the open questions", () => {
 
 it("words how far a meeting got and who asked whom", () => {
   const a = (status: Meeting["attendees"][number]["status"]) => ({ worker_id: "w", name: "W", role: "", guest: false, status, answer: null, missing: null, answered_at: null });
-  const m = { id: "m1", topic: "T", agenda: "Q", context: "", attendees: [a("answered"), a("asked"), a("invited")], status: "collecting", decision_ids: [], started_at: "", deadline: "", ended_at: null, delivered: false } as Meeting;
+  const m = { id: "m1", topic: "T", agenda: "Q", context: "", attendees: [a("answered"), a("asked"), a("invited")], status: "collecting", decision_ids: [], started_at: "", deadline: "", ended_at: null, delivered: false, mode: "written", round: 0, max_rounds: 0, turn_words: 0, turns: [], outcome: null, timeout_minutes: 0, left: [] } as Meeting;
   expect(meetingState(m)).toBe("collecting · 1 of 3 answered");
   expect(meetingState({ ...m, status: "incomplete" })).toBe("held · 2 missing");
   expect(meetingState({ ...m, status: "complete", attendees: [a("answered")] })).toBe("held");
@@ -50,4 +50,27 @@ it("words how far a meeting got and who asked whom", () => {
   const ask = { id: "a1", from_id: "b", from_name: "Builder", to_id: "d", to_name: "Designer", to_owner: false, question: "?", answer: null, error: null, status: "open", asked_at: "", answered_at: null, sent: false, delivered: false } as const;
   expect(oneOnOneLabel(ask)).toBe("Builder → Designer");
   expect(oneOnOneLabel({ ...ask, to_owner: true, to_name: "Owner" })).toBe("Builder → Owner (owner)");
+});
+
+it("words how far a live meeting got and threads it by round", () => {
+  const t = (round: number, name: string, patch: Partial<MeetingTurn> = {}): MeetingTurn => ({ round, worker_id: name, name, role: "", chair: false, status: "answered", text: "x", missing: null, at: null, ...patch });
+  const m = {
+    id: "m1", topic: "T", agenda: "Q", context: "", attendees: [], status: "collecting", decision_ids: [], started_at: "", deadline: "", ended_at: null, delivered: false,
+    mode: "live", round: 2, max_rounds: 3, turn_words: 150, outcome: null, timeout_minutes: 20, left: [],
+    turns: [t(1, "A"), t(1, "B"), t(2, "Owner", { chair: true, text: "Steer" }), t(2, "A"), t(2, "B", { status: "invited", text: null })],
+  } as Meeting;
+  expect(isLive(m)).toBe(true);
+  expect(currentSpeaker(m)?.name).toBe("B");
+  expect(meetingState(m)).toBe("round 2 of 3 · B next, once free");
+  expect(meetingState({ ...m, turns: m.turns.map((x) => (x.status === "invited" ? { ...x, status: "asked" } : x)) })).toBe("round 2 of 3 · B speaking");
+  expect(meetingState({ ...m, status: "waiting_on_chair" })).toBe("round 2 of 3 over · waiting on the owner");
+  expect(meetingState({ ...m, status: "complete" })).toBe("held · 2 rounds");
+  expect(attendeesLine({ ...m, status: "incomplete", round: 1 })).toBe("live · 0 attendees · held · 1 round");
+  const rounds = liveRounds(m);
+  expect(rounds.map((r) => [r.round, r.steer?.text ?? null, r.turns.map((x) => x.name)])).toEqual([
+    [1, null, ["A", "B"]],
+    [2, "Steer", ["A", "B"]],
+  ]);
+  // From a daemon before live meetings: written.
+  expect(isLive({ ...m, mode: undefined } as unknown as Meeting)).toBe(false);
 });

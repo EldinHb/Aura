@@ -410,7 +410,7 @@ it("marks a feature owner, the role of each specialist under it and the decision
     session("lead", "Lead", { orchestrator: true }),
   ].map((s) => ({ ...s, group: "Work" }));
   useFeatures.setState({ features: {} });
-  setFeature({ owner_id: "owner", goal: "", status: "waiting_on_user", autonomy: null, team: [], decisions: [], checkpoints: [], suggestions: [], meetings: [], one_on_ones: [], report: null, created_at: "", updated_at: "", counters: {},
+  setFeature({ owner_id: "owner", goal: "", status: "waiting_on_user", autonomy: null, meeting_mode: null, team: [], decisions: [], checkpoints: [], suggestions: [], meetings: [], one_on_ones: [], report: null, created_at: "", updated_at: "", counters: {},
     questions: [{ id: "q1", question: "Which?", context: "", options: [], recommended: null, kind: "decision", checkpoint: null, asked_at: "", answer: null, withdrawn: false }] });
   useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
   render(<Sidebar />);

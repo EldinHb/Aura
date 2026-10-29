@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it } from "vitest";
-import type { Feature, Meeting, Session } from "../gen";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Feature, Meeting, MeetingTurn, Session } from "../gen";
+import type { RpcClient } from "../lib/rpc";
 import { useStore } from "../state/store";
 import { setFeature, useFeatures } from "../state/features";
 import { closeWorkerThreads, openTeam, reloadWorkerThreads, useWorkerThreads } from "../state/workerThreads";
@@ -25,6 +26,14 @@ const meeting = (patch: Partial<Meeting> = {}): Meeting => ({
   deadline: "",
   ended_at: "",
   delivered: true,
+  mode: "written",
+  round: 0,
+  max_rounds: 0,
+  turn_words: 0,
+  turns: [],
+  outcome: null,
+  timeout_minutes: 0,
+  left: [],
   ...patch,
 });
 
@@ -33,6 +42,7 @@ const feature = (patch: Partial<Feature> = {}): Feature => ({
   goal: "Dark mode for the settings",
   status: "in_progress",
   autonomy: { level: "autonomous", checkpoints: [] },
+  meeting_mode: null,
   team: [
     { worker_id: "ux", specialist_id: "ux-designer", name: "UX designer", role: "Designs flows", instructions: "", hired_at: "", meeting: null },
     { worker_id: "qa", specialist_id: "tester", name: "Tester", role: "", instructions: "", hired_at: "", meeting: "m1" },
@@ -141,4 +151,56 @@ it("waits for the feature and leaves out what a feature has not had", () => {
   expect(screen.getByText("None recorded yet.")).toBeTruthy();
   expect(screen.queryByText(/Meetings/)).toBeNull();
   expect(screen.queryByText(/One-on-ones/)).toBeNull();
+});
+
+const turn = (round: number, worker: string, name: string, patch: Partial<MeetingTurn> = {}): MeetingTurn => ({ round, worker_id: worker, name, role: "", chair: false, status: "answered", text: `${name} says ${round}`, missing: null, at: "", ...patch });
+
+it("threads a live meeting round by round, with the chair's steer", () => {
+  const live = meeting({
+    id: "m2",
+    topic: "Contrast",
+    decision_ids: [],
+    mode: "live",
+    round: 2,
+    max_rounds: 3,
+    turn_words: 120,
+    status: "collecting",
+    turns: [
+      turn(1, "ux", "UX designer"),
+      turn(1, "qa", "Tester"),
+      turn(2, "owner", "Owner", { chair: true, text: "Settle the code blocks" }),
+      turn(2, "ux", "UX designer"),
+      turn(2, "qa", "Tester", { status: "asked", text: null }),
+    ],
+  });
+  setFeature(feature({ meetings: [meeting(), live] }));
+  const { container } = render(<TeamView ownerId="owner" />);
+  expect(container.querySelector(".team-entry.meeting .chip.accent")?.textContent).toBe("live");
+  expect(screen.getByText("round 2 of 3 · Tester speaking · UX designer, Tester")).toBeTruthy();
+  const thread = screen.getByLabelText("Thread of Contrast");
+  expect([...thread.querySelectorAll(".team-label")].map((l) => l.textContent)).toEqual(["Round 1 of 3", "Round 2 of 3"]);
+  const entries = [...thread.querySelectorAll<HTMLElement>(".team-contribution")];
+  expect(entries.map((e) => e.className.replace("team-contribution ", ""))).toEqual(["answered", "answered", "chair", "answered", "asked"]);
+  expect(within(entries[2]).getByText("Settle the code blocks")).toBeTruthy();
+  expect(within(entries[2]).getByText("chair")).toBeTruthy();
+  expect(within(entries[4]).getByText("speaking")).toBeTruthy();
+  expect(screen.getByText("The round is under way.")).toBeTruthy();
+  // The written meeting still lists its answers as before.
+  expect(container.querySelectorAll(".team-entry.meeting")).toHaveLength(2);
+});
+
+it("shows a live meeting's outcome and how the feature's meetings are held", async () => {
+  const setFeatureMeetingMode = vi.fn(async () => ({}) as Feature);
+  const meetingSettings = vi.fn(async () => ({ mode: "written", max_rounds: 2, turn_words: 150 }));
+  useStore.setState({ client: { autonomy: async () => ({ level: "autonomous", checkpoints: [] }), meetingSettings, setFeatureMeetingMode } as unknown as RpcClient });
+  setFeature(feature({ decisions: [], meetings: [meeting({ mode: "live", round: 1, max_rounds: 2, status: "complete", outcome: "Moon icon, top right", turns: [turn(1, "ux", "UX designer")] })] }));
+  render(<TeamView ownerId="owner" />);
+  expect(screen.getByText("Moon icon, top right")).toBeTruthy();
+  expect(screen.getByText("held · 1 round · UX designer, Tester")).toBeTruthy();
+  const picker = screen.getByLabelText("Meetings") as HTMLSelectElement;
+  await waitFor(() => expect(within(picker).getByText("written (setting)")).toBeTruthy());
+  fireEvent.change(picker, { target: { value: "live" } });
+  await waitFor(() => expect(setFeatureMeetingMode).toHaveBeenCalledWith("owner", "live"));
+  fireEvent.change(picker, { target: { value: "setting" } });
+  await waitFor(() => expect(setFeatureMeetingMode).toHaveBeenCalledWith("owner", null));
 });

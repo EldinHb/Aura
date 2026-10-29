@@ -22,7 +22,7 @@ import { Inspector } from "./views/Inspector";
 import { OrchestratorTabs, WorkerThreads } from "./views/WorkerThreads";
 import { TeamView } from "./views/TeamView";
 import { useWorkerThreads } from "./state/workerThreads";
-import { setFeatures } from "./state/features";
+import { setFeatures, setRoleSuggestions } from "./state/features";
 import { Overlays } from "./components/Overlays";
 import { isMac } from "./lib/platform";
 import { desktopNotify } from "./lib/notify";
@@ -102,6 +102,7 @@ export default function App() {
           useStore.setState({ daemonVersion: info.version });
           // A daemon from before feature owners has none to list.
           client.features().then(setFeatures, () => {});
+          client.roleSuggestions().then(setRoleSuggestions, () => {});
           if (initialSession && sessions.some((s) => s.id === initialSession)) st().select(initialSession);
           else if (!st().selectedId && !st().prSelection && !st().reviewHistoryOpen && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
         };

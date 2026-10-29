@@ -1,14 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Feature, Item, Project, Session, UserQuestion } from "../../gen";
+import type { Feature, Item, Project, Session, SpecialistSuggestion, UserQuestion } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { useStore } from "../../state/store";
-import { setFeature, useFeatures } from "../../state/features";
+import { setFeature, setRoleSuggestions, useFeatures } from "../../state/features";
 import { useWorkerThreads } from "../../state/workerThreads";
 import { ItemRow } from "./ItemRow";
 
 const answerQuestion = vi.fn(async () => feature);
 const resolveSuggestion = vi.fn(async () => feature);
+const resolveRoleSuggestion = vi.fn(async () => ({}) as SpecialistSuggestion);
 const projects = vi.fn(async (): Promise<Project[]> => [{ path: "/repo", repo: true, groups: [], sessions: 1, last_used: "" }]);
 let feature: Feature;
 
@@ -37,6 +38,7 @@ beforeEach(() => {
     goal: "Dark mode",
     status: "waiting_on_user",
     autonomy: null,
+    meeting_mode: null,
     team: [],
     decisions: [],
     questions: [question()],
@@ -53,6 +55,8 @@ beforeEach(() => {
         created_at: "",
         resolved_at: null,
         delivered: false,
+        evidence: [],
+        owner_id: null,
       },
     ],
     report: { what: "- Added a toggle", why: "Users asked", how_to_test: "Open settings", where_to_test: "branch `dark`", notes: "", delivered_at: "2026-10-02T00:00:00Z" },
@@ -64,7 +68,7 @@ beforeEach(() => {
   setFeature(feature);
   useStore.setState({
     sessions: { owner: { id: "owner", cwd: "/repo/sub", folderless: false } as Session },
-    client: { answerQuestion, resolveSuggestion, projects } as unknown as RpcClient,
+    client: { answerQuestion, resolveSuggestion, resolveRoleSuggestion, projects } as unknown as RpcClient,
   });
 });
 afterEach(cleanup);
@@ -158,6 +162,7 @@ it("points to a meeting in one line, which opens the Team tab on it", () => {
       id: "m1", topic: "Default theme", agenda: "System or dark?", context: "",
       attendees: [{ worker_id: "ux", name: "UX designer", role: "", guest: false, status: "answered", answer: "System, which nobody should see in the chat.", missing: null, answered_at: "" }],
       status: "collecting", decision_ids: [], started_at: "", deadline: "", ended_at: null, delivered: false,
+      mode: "written", round: 0, max_rounds: 0, turn_words: 0, turns: [], outcome: null, timeout_minutes: 0, left: [],
     }],
   };
   setFeature(feature);
@@ -173,4 +178,69 @@ it("points to a meeting in one line, which opens the Team tab on it", () => {
   row(card("meeting", "m1"));
   expect(screen.getByText("Meeting held: Default theme")).toBeTruthy();
   expect(screen.getByText("1 attendee")).toBeTruthy();
+});
+
+const found = (patch: Partial<SpecialistSuggestion> = {}): SpecialistSuggestion => ({
+  id: "r1",
+  specialist: { id: "migration-writer", name: "Migration writer", role: "Writes database migrations", description: "", instructions: "Write reversible migrations.", agent: null, model: null, effort: null, scope: "project", project: "/repo" },
+  reason: "Feature owners started 2 ad-hoc workers for this role in 2 features.",
+  status: "pending",
+  accepted_id: null,
+  created_at: "",
+  resolved_at: null,
+  delivered: true,
+  evidence: [
+    { owner_id: "owner", worker_id: "w1", feature: "Orders export", title: "Migration writer", summary: "Migration writer: Write the SQL migrations for orders", project: "/repo" },
+    { owner_id: "other", worker_id: "w2", feature: "Invoices", title: "Migration writer", summary: "Migration writer: Write SQL migrations for invoices", project: "/repo" },
+  ],
+  owner_id: "owner",
+  ...patch,
+});
+
+it("shows a specialist found in repeated work with its briefs, for the project they come from", async () => {
+  setRoleSuggestions([found()]);
+  row(card("role_suggestion", "r1"));
+  expect(screen.getByText("Specialist suggested from repeated work: Migration writer")).toBeTruthy();
+  expect(screen.getByText("found by Aura")).toBeTruthy();
+  expect(screen.getByText("Seen in 2 ad-hoc briefs")).toBeTruthy();
+  expect(screen.getByText("Migration writer: Write SQL migrations for invoices")).toBeTruthy();
+  // Suggested for the project both briefs come from.
+  await waitFor(() => expect((screen.getByLabelText("Where the specialist applies") as HTMLSelectElement).value).toBe("/repo"));
+  fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+  await waitFor(() => expect(resolveRoleSuggestion).toHaveBeenCalledWith("r1", true, expect.objectContaining({ id: "migration-writer", scope: "project", project: "/repo" })));
+  expect(resolveSuggestion).not.toHaveBeenCalled();
+});
+
+it("shows a resolved found specialist without buttons, and dismisses a pending one", async () => {
+  setRoleSuggestions([found({ status: "dismissed" })]);
+  const { unmount } = row(card("role_suggestion", "r1"));
+  expect(screen.getByText("dismissed")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
+  unmount();
+  setRoleSuggestions([found()]);
+  row(card("role_suggestion", "r1"));
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(resolveRoleSuggestion).toHaveBeenCalledWith("r1", false, null));
+});
+
+it("points to a live meeting in one line with its round and speaker", () => {
+  feature = {
+    ...feature,
+    meetings: [{
+      id: "m2", topic: "Toggle", agenda: "Where?", context: "",
+      attendees: [{ worker_id: "ux", name: "UX designer", role: "", guest: false, status: "asked", answer: null, missing: null, answered_at: null }],
+      status: "collecting", decision_ids: [], started_at: "", deadline: "", ended_at: null, delivered: false,
+      mode: "live", round: 1, max_rounds: 2, turn_words: 150, outcome: null, timeout_minutes: 20, left: [],
+      turns: [{ round: 1, worker_id: "ux", name: "UX designer", role: "", chair: false, status: "asked", text: null, missing: null, at: null }],
+    }],
+  };
+  setFeature(feature);
+  const { unmount } = row(card("meeting", "m2"));
+  expect(screen.getByText("Live meeting: Toggle")).toBeTruthy();
+  expect(screen.getByText("round 1 of 2 · UX designer speaking")).toBeTruthy();
+  unmount();
+  setFeature({ ...feature, meetings: [{ ...feature.meetings[0], status: "waiting_on_chair" }] });
+  row(card("meeting", "m2"));
+  expect(screen.getByText("Live meeting: Toggle")).toBeTruthy();
+  expect(screen.getByText("round 1 of 2 over · waiting on the owner")).toBeTruthy();
 });

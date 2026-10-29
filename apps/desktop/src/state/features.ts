@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Feature } from "../gen";
+import type { Feature, SpecialistSuggestion } from "../gen";
 
 /**
  * Feature owner id → its feature, as the daemon last announced it: loaded on
@@ -26,4 +26,20 @@ export function dropFeature(ownerId: string) {
 /** The feature `ownerId` owns, once known. */
 export function useFeature(ownerId: string | null | undefined): Feature | undefined {
   return useFeatures((s) => (ownerId ? s.features[ownerId] : undefined));
+}
+
+/**
+ * The specialists Aura suggested from repeated ad-hoc work, pending and
+ * resolved: loaded on connect, then kept current by
+ * `specialist_suggestions_updated` events. They belong to no feature.
+ */
+export const useRoleSuggestions = create<{ suggestions: SpecialistSuggestion[] }>(() => ({ suggestions: [] }));
+
+export function setRoleSuggestions(suggestions: SpecialistSuggestion[]) {
+  useRoleSuggestions.setState({ suggestions });
+}
+
+/** One suggestion Aura found, by id. */
+export function useRoleSuggestion(id: string): SpecialistSuggestion | undefined {
+  return useRoleSuggestions((s) => s.suggestions.find((x) => x.id === id));
 }

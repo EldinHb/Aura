@@ -312,10 +312,24 @@ exactly as before; a feature owner is one with more to do.
 - **Proposed specialists.** When the team needs a role no specialist covers, the owner
   can propose one. Its card lets you accept it for every project or one project, edit
   it first, or dismiss it.
+- **Specialists from repeated work.** Aura keeps every ad-hoc worker an owner starts
+  (one hired as no specialist) with its brief, a one-line summary of its role and its
+  feature, also after the feature is gone. When a feature is delivered, when the owner
+  calls `suggest_specialists`, or when you run `⌘K` → Suggest specialists (or the
+  button in Settings → Specialists), Aura looks across those briefs for roles that
+  keep coming back. A cheap check runs first: only when at least two briefs look alike,
+  and no suggestion was made from them yet, does a small model (Claude Haiku through
+  Claude Code, headless, with no tools; at most 24 briefs and 24,000 characters) group
+  them into roles. Each role becomes a suggestion card, in the owner's chat and under
+  **Suggestions** in Settings → Specialists, with the briefs it was found in and a
+  scope: the project when they all come from one repository, otherwise every project.
+  Nothing is created until you accept it. Roles an existing specialist covers are left
+  out, and a dismissed suggestion is not made again from the same briefs. Switch it
+  off, or pick another model, in Settings → Specialists.
 - **Delivery report.** The owner ends with a report card: what was done, why, how to
   test it and where (branch, worktree, URL or screen).
-- **Meetings.** When a decision needs several roles' views, the owner holds a written
-  meeting (`hold_meeting`): a topic, one question, a few team members, and specialists
+- **Meetings.** When a decision needs several roles' views, the owner holds a
+  meeting (`hold_meeting`). A written one: a topic, one question, a few team members, and specialists
   hired just for their input if needed. Aura sends every attendee the question at
   once; each answers in writing in its next turn, briefly and without starting on the
   work. When all have answered, or the meeting's time ran out (20 minutes unless the
@@ -330,6 +344,26 @@ exactly as before; a feature owner is one with more to do.
   turn that finished. A checkpoint review holds meetings like other work: none while
   the review is open, and after you asked for changes only with the team the owner
   has, without guests.
+- **Live meetings.** Settings → Orchestrators → Feature owners: meetings is *Written
+  only* by default; a feature can have its own mode (inspector or Team tab). With
+  *Live allowed*, a meeting is a thread the owner chairs: in each round the attendees
+  speak one after the other, each sent the thread so far, in about the words per turn
+  you set (150 by default). After each round the owner gets the round in one message
+  and either steers another round (`continue_meeting`), up to the rounds you allow (2
+  by default, at most 5), or closes the meeting with its outcome (`close_meeting`).
+  A live meeting costs a turn per attendee per round, and every turn reads the thread,
+  so the owner is told to hold one only when attendees must react to each other, and a
+  written one (`mode: "written"`) otherwise. In written mode Aura refuses live
+  meetings. Each round has the meeting's time (20 minutes by default). Only the last
+  reply of a turn that finished on the thread counts as a speaker's turn: one its
+  agent could not take in goes again, like any message from Aura. A speaker whose turn
+  fails after that, or who is still busy when the round's time runs out, misses its
+  turn and the next one speaks; one that is deleted, archived or stopped by you skips
+  every turn left in the meeting. Checkpoint reviews hold the next round like a new
+  meeting. After a daemon restart the meeting goes on at the turn it was at, asking
+  again a speaker whose turn did not finish, and nothing is said or reported twice. The Team tab
+  shows it as a thread, round by round with the owner's steers, and the chat a
+  one-line card with the round and who is speaking.
 - **One-on-ones.** Workers on the team can ask each other (`ask_teammate`) and the
   owner (`ask_owner`) directly. The teammate answers in its next turn, the owner with
   `reply_to_teammate`, and the answer comes back to the one who asked. A worker
@@ -350,7 +384,8 @@ exactly as before; a feature owner is one with more to do.
   remembers the tab per owner.
 
 Everything a feature owner records is kept in its feature record in Aura's database,
-across restarts, and goes when the owner is deleted. Your answers reach the owner even
+across restarts, and goes when the owner is deleted; the ad-hoc briefs and the
+specialists suggested from them stay. Your answers reach the owner even
 when it is busy, failed or the daemon restarts in between. An answer counts as
 delivered only once the owner's agent shows it took it in (its own reply to it, or
 the turn ending well), not when it merely shows up in the chat; one it took in is
@@ -358,8 +393,8 @@ not sent twice. When the agent cannot take an answer, Aura tries again a few tim
 with growing pauses, then waits until the agent works again. Stopping an owner
 stops those tries: it is not started again until you message it. On top of the orchestrator's
 tools it has `list_specialists`, `hire`, `ask_user`, `record_decision`, `checkpoint`,
-`propose_specialist`, `deliver_report`, `feature_status`, `hold_meeting` and
-`reply_to_teammate`. Each worker on its team gets an MCP server of its own
+`propose_specialist`, `deliver_report`, `feature_status`, `hold_meeting`,
+`continue_meeting`, `close_meeting`, `suggest_specialists` and `reply_to_teammate`. Each worker on its team gets an MCP server of its own
 (`aura mcp --worker`) with `list_team`, `ask_teammate` and `ask_owner` only.
 
 ## ACP agents

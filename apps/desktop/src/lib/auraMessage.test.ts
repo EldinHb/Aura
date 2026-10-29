@@ -39,6 +39,8 @@ it("reads a team's meetings and one-on-ones", () => {
   expect(kind("Meeting")).toBe("meeting");
   expect(kind("Meeting notes")).toBe("meeting");
   expect(kind("Meeting notes, incomplete")).toBe("meeting");
+  expect(kind("Live meeting")).toBe("meeting");
+  expect(kind("Live meeting notes")).toBe("meeting");
   expect(kind("Question from a teammate")).toBe("team");
   expect(kind("Answer from a teammate")).toBe("team");
   expect(kind("Answer from the feature owner")).toBe("team");

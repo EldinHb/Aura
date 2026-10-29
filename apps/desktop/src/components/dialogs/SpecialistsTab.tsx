@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
-import type { Project, Specialist, SpecialistInput } from "../../gen";
+import type { Project, Specialist, SpecialistInput, SpecialistSuggestion, SuggestionSettings } from "../../gen";
 import { useStore } from "../../state/store";
+import { useFeatures, useRoleSuggestions } from "../../state/features";
 import { SpecialistFields, blankSpecialist, slugOf, specialistInput } from "../SpecialistFields";
+import { SuggestionBody } from "../../views/transcript/FeatureCards";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -104,6 +106,7 @@ export function SpecialistsTab() {
       <p className="dim prompt-help">
         Feature owners staff their teams with these specialists: each worker hired as one gets its instructions in its system prompt and works on its preferred agent, model and effort unless the owner names others. A project's own specialists replace global ones with the same id for work in that project.
       </p>
+      <Suggestions onResolved={() => void reload()} />
       <div className="specialists-scope">
         <div className="radio-row" role="radiogroup" aria-label="Scope">
           {(["global", "project"] as const).map((s, i) => (
@@ -215,5 +218,155 @@ export function SpecialistsTab() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Where whether the Suggestions area is open is kept, across restarts. */
+const SUGGESTIONS_OPEN_KEY = "aura.specialist-suggestions-open.v1";
+
+function suggestionsOpen(): boolean {
+  try {
+    return localStorage.getItem(SUGGESTIONS_OPEN_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Specialists waiting for the user's word: those Aura found in repeated
+ * ad-hoc work, and those feature owners proposed. Nothing becomes a
+ * specialist until the user accepts it. Also where the look for repeated
+ * roles is switched off, given its model, or run now. It folds to its
+ * heading, with how many wait, and stays as the user left it.
+ */
+function Suggestions({ onResolved }: { onResolved: () => void }) {
+  const [open, setOpen] = useState(suggestionsOpen);
+  const toggle = () => {
+    setOpen(!open);
+    try {
+      localStorage.setItem(SUGGESTIONS_OPEN_KEY, String(!open));
+    } catch {
+      /* Keep the area usable when storage is unavailable. */
+    }
+  };
+  const client = useStore((s) => s.client);
+  const toast = useStore((s) => s.toast);
+  const found = useRoleSuggestions((s) => s.suggestions);
+  const features = useFeatures((s) => s.features);
+  const [settings, setSettings] = useState<SuggestionSettings | null>(null);
+  const [model, setModel] = useState("");
+  const [running, setRunning] = useState(false);
+  useEffect(() => {
+    client?.suggestionSettings().then(
+      (s) => {
+        setSettings(s);
+        setModel(s.model);
+      },
+      () => {},
+    );
+  }, [client]);
+  const proposed = useMemo(
+    () => Object.values(features).flatMap((f) => f.suggestions.filter((s) => s.status === "pending").map((s) => ({ owner: f.owner_id, s }))),
+    [features],
+  );
+  const pending = found.filter((s) => s.status === "pending");
+  const resolved = found.filter((s) => s.status !== "pending");
+  const save = async (next: SuggestionSettings) => {
+    if (!client) return;
+    try {
+      const saved = await client.setSuggestionSettings(next);
+      setSettings(saved);
+      setModel(saved.model);
+      toast(saved.enabled ? `Suggestions on, with ${saved.model}` : "Suggestions off");
+    } catch (e) {
+      toast(errorText(e), "error");
+    }
+  };
+  const run = async () => {
+    if (!client || running) return;
+    setRunning(true);
+    try {
+      const r = await client.suggestSpecialists(null);
+      toast(r.note);
+    } catch (e) {
+      toast(errorText(e), "error");
+    } finally {
+      setRunning(false);
+    }
+  };
+  const resolver = (f: (accept: boolean, sp: SpecialistInput | null) => Promise<unknown> | undefined) => async (accept: boolean, sp: SpecialistInput | null) => {
+    await f(accept, sp);
+    onResolved();
+  };
+  const card = (s: SpecialistSuggestion, onResolve: (accept: boolean, sp: SpecialistInput | null) => Promise<unknown>, owner?: string) => (
+    <div key={`${owner ?? "aura"}:${s.id}`} className="card feature-card suggestion">
+      <SuggestionBody s={s} ownerId={owner} onResolve={onResolve} />
+    </div>
+  );
+  return (
+    <section className={clsx("specialist-suggestions", !open && "folded")} aria-label="Suggestions">
+      <h4 className="section-head">
+        <button type="button" className="suggestions-toggle" data-hint aria-expanded={open} onClick={toggle}>
+          <span className="dim">{open ? "▾" : "▸"}</span> Suggestions{" "}
+          <span className={clsx(pending.length + proposed.length > 0 && !open ? "chip accent" : "dim")}>
+            {open ? pending.length + proposed.length : `${pending.length + proposed.length} waiting`}
+          </span>
+        </button>
+      </h4>
+      {open && (
+        <>
+          <div className="suggestion-settings">
+            <label className="check-row">
+              <input type="checkbox" checked={!!settings?.enabled} disabled={!settings} onChange={(e) => settings && void save({ ...settings, enabled: e.target.checked })} /> Suggest specialists from repeated ad-hoc work
+            </label>
+            <label className="dim">
+              model{" "}
+              <input
+                type="text"
+                className="suggestion-model"
+                aria-label="Suggestion model"
+                value={model}
+                disabled={!settings?.enabled}
+                onChange={(e) => setModel(e.target.value)}
+                onBlur={() => settings && model.trim() !== settings.model && void save({ ...settings, model })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && settings) {
+                    e.preventDefault();
+                    void save({ ...settings, model });
+                  }
+                }}
+              />
+            </label>
+            <span style={{ flex: 1 }} />
+            <button type="button" className="btn small" data-hint data-command="specialists.suggest" disabled={running || !settings?.enabled} onClick={() => void run()}>
+              {running ? "Looking…" : "Suggest specialists"}
+            </button>
+          </div>
+          <p className="dim prompt-help">
+            When a feature is delivered, or when you ask, Aura looks at the briefs feature owners gave ad-hoc workers across all features. Only when two look alike does a small model ({settings?.model ?? "haiku"}) group them into roles no specialist covers. You decide on each; a dismissed one is not suggested again for the same briefs.
+          </p>
+          {pending.length + proposed.length === 0 ? (
+            <div className="dim list-empty">No suggestions waiting.</div>
+          ) : (
+            <div className="suggestion-list">
+              {pending.map((s) => card(s, resolver((accept, sp) => client?.resolveRoleSuggestion(s.id, accept, sp))))}
+              {proposed.map(({ owner, s }) => card(s, resolver((accept, sp) => client?.resolveSuggestion(owner, s.id, accept, sp)), owner))}
+            </div>
+          )}
+          {resolved.length > 0 && (
+            <details className="suggestions-resolved">
+              <summary className="dim">Resolved ({resolved.length})</summary>
+              <ul>
+                {resolved.map((s) => (
+                  <li key={s.id}>
+                    {s.specialist.name} <span className="dim">· {s.status === "accepted" ? `accepted as ${s.accepted_id ?? s.specialist.id}` : "dismissed"}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
+    </section>
   );
 }

@@ -87,6 +87,19 @@ export const coreCommands: Command[] = [
   { id: "settings.prompts", title: "System prompts…", group: "Aura", keywords: ["global prompt", "agent prompt", "instructions"], run: () => st().openDialog({ kind: "settings", tab: "prompts" }) },
   { id: "settings.orchestrators", title: "Orchestrator load balancer…", group: "Aura", keywords: ["routing", "model", "effort", "tokens"], run: () => st().openDialog({ kind: "settings", tab: "orchestrators" }) },
   { id: "settings.feature-owners", title: "Feature owner autonomy…", group: "Aura", keywords: ["autonomy", "checkpoints", "decisions", "feature owner"], run: () => st().openDialog({ kind: "settings", tab: "orchestrators" }) },
+  {
+    id: "specialists.suggest",
+    title: "Suggest specialists from repeated ad-hoc work",
+    group: "Aura",
+    keywords: ["specialist", "suggestion", "ad-hoc", "feature owner", "team", "role"],
+    run: async () => {
+      const s = selectSelected(st());
+      const owner = s?.feature_owner ? s.id : null;
+      st().toast("Looking for roles feature owners keep starting ad-hoc workers for…");
+      const r = await client().suggestSpecialists(owner);
+      st().toast(r.suggestions.length > 0 && !owner ? `${r.note} See Settings → Specialists.` : r.note);
+    },
+  },
   { id: "settings.specialists", title: "Specialists…", group: "Aura", keywords: ["team", "persona", "designer", "engineer", "tester", "reviewer", "feature owner"], run: () => st().openDialog({ kind: "settings", tab: "specialists" }) },
   { id: "search.open", title: "Search across sessions", group: "Aura", run: () => st().openDialog({ kind: "search" }) },
   { id: "inbox.open", title: "Inbox", group: "Aura", keywords: ["approvals", "questions", "pull request changes"], run: () => st().openDialog({ kind: "inbox" }) },

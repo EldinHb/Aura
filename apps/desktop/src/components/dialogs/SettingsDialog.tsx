@@ -6,7 +6,7 @@ import { chordFromEvent, formatKeys, type Binding } from "../../lib/keymap";
 import { buildBindings } from "../../hooks/useKeyboard";
 import { isMac } from "../../lib/platform";
 import { findConflicts, isConflicting } from "./keymapUtils";
-import type { Autonomy, CapabilitySet, LoadBalancer, LoadBalancerUpdate, SystemPrompts } from "../../gen";
+import type { Autonomy, CapabilitySet, LoadBalancer, LoadBalancerUpdate, MeetingSettings, SystemPrompts } from "../../gen";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
@@ -550,6 +550,74 @@ function OrchestratorsTab() {
         Name an agent (<span className="mono">claude</span>, <span className="mono">codex</span>, an ACP agent id) or a model id; a word of a model id, like <span className="mono">opus</span>, matches every model with it.
       </div>
       <FeatureOwnerAutonomy />
+      <FeatureOwnerMeetings />
+    </div>
+  );
+}
+
+/** How feature owners' teams meet: written, or live meetings allowed, with their round cap and word budget. */
+function FeatureOwnerMeetings() {
+  const client = useStore((s) => s.client);
+  const toast = useStore((s) => s.toast);
+  const [settings, setSettings] = useState<MeetingSettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    client?.meetingSettings().then(setSettings, (e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [client]);
+  const save = async (patch: Partial<MeetingSettings>) => {
+    if (!client || !settings) return;
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    try {
+      setSettings(await client.setMeetingSettings(next));
+      toast("Meeting settings saved");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+  return (
+    <div className="field feature-owner-settings">
+      <h4 className="section-head">Feature owners: meetings</h4>
+      <p className="dim prompt-help">
+        Written meetings ask every attendee once, all at the same time: one turn each. Live meetings are a thread the feature owner chairs, in which the attendees speak in turn and react to each other, round after round; they cost a turn per attendee per round and each turn reads the thread so far. With live allowed, owners hold live meetings when attendees must react to each other, and written ones otherwise. A feature can have its own mode (in the inspector or its Team tab).
+      </p>
+      {error ? (
+        <div className="err-text">{error}</div>
+      ) : settings ? (
+        <>
+          <div className="radio-row" role="radiogroup" aria-label="Meeting mode">
+            {(["written", "live"] as const).map((mode) => (
+              <button key={mode} type="button" role="radio" aria-checked={settings.mode === mode} className={clsx("btn small", settings.mode === mode && "primary")} data-hint onClick={() => void save({ mode })}>
+                {mode === "written" ? "Written only" : "Live allowed"}
+              </button>
+            ))}
+          </div>
+          <div className="meeting-numbers">
+            <label>
+              Rounds at most{" "}
+              <select aria-label="Rounds at most" value={settings.max_rounds} disabled={settings.mode === "written"} onChange={(e) => void save({ max_rounds: Number(e.target.value) })}>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Words per turn{" "}
+              <select aria-label="Words per turn" value={settings.turn_words} disabled={settings.mode === "written"} onChange={(e) => void save({ turn_words: Number(e.target.value) })}>
+                {[...new Set([60, 100, 150, 250, 400, settings.turn_words])].sort((a, b) => a - b).map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </>
+      ) : (
+        <div className="dim">Loading…</div>
+      )}
     </div>
   );
 }

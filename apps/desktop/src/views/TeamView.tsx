@@ -6,7 +6,8 @@ import { useFeature } from "../state/features";
 import { useWorkerThreads } from "../state/workerThreads";
 import { statusClass } from "../lib/sessionStatus";
 import { exactTime, timeAgo } from "../lib/time";
-import { ATTENDEE_LABEL, STATUS_LABEL, describeAutonomy, meetingState, oneOnOneLabel, teamWork } from "../lib/features";
+import { ATTENDEE_LABEL, STATUS_LABEL, describeAutonomy, isLive, liveRounds, meetingState, oneOnOneLabel, teamWork } from "../lib/features";
+import { MeetingModePicker } from "../components/MeetingModePicker";
 import { Markdown } from "./transcript/MarkdownView";
 import { ReportBody } from "./transcript/FeatureCards";
 import { agentLine } from "./WorkerThreads";
@@ -79,6 +80,10 @@ export function TeamView({ ownerId }: { ownerId: string }) {
             <span className="name">{owner?.title ?? "Feature"}</span>
             <span className="chip">{STATUS_LABEL[feature.status]}</span>
             <span className="dim">autonomy: {autonomy ? describeAutonomy(autonomy) : "…"}{!feature.autonomy && " (setting)"}</span>
+            <span className="spacer" />
+            <label className="dim team-meeting-mode">
+              meetings <MeetingModePicker ownerId={ownerId} feature={feature} />
+            </label>
           </div>
           <div className="team-goal">{feature.goal || <span className="dim">No goal given yet; the owner asks for one.</span>}</div>
         </section>
@@ -149,8 +154,9 @@ function Meetings({ ownerId, meetings, feature, focus, cwd }: { ownerId: string;
         return (
           <div key={`${ownerId}:${m.id}`} className={clsx("team-entry meeting", m.status)} data-meeting={m.id}>
             <button type="button" className="team-entry-head" data-hint aria-expanded={shown} onClick={() => setOpen((o) => ({ ...o, [m.id]: !shown }))}>
-              <span className={clsx("dot", m.status === "collecting" ? "info pulse" : m.status === "complete" ? "ok" : "warn")} />
+              <span className={clsx("dot", m.status === "collecting" ? "info pulse" : m.status === "waiting_on_chair" ? "info" : m.status === "complete" ? "ok" : "warn")} />
               <span className="name">{m.topic}</span>
+              {isLive(m) && <span className="chip accent">live</span>}
               <span className="dim">{meetingState(m)} · {m.attendees.map((a) => a.name).join(", ")}</span>
               <span className="spacer" />
               <When at={m.started_at} />
@@ -166,7 +172,7 @@ function Meetings({ ownerId, meetings, feature, focus, cwd }: { ownerId: string;
                     <Markdown text={m.context} cwd={cwd} />
                   </details>
                 )}
-                {m.attendees.map((a, i) => (
+                {isLive(m) ? <LiveThread m={m} cwd={cwd} /> : m.attendees.map((a, i) => (
                   <div key={`${a.worker_id}:${i}`} className={clsx("team-contribution", a.status)}>
                     <div className="thread-head">
                       <span className="name">{a.name}</span>
@@ -180,6 +186,7 @@ function Meetings({ ownerId, meetings, feature, focus, cwd }: { ownerId: string;
                   </div>
                 ))}
                 <div className="team-label">Outcome</div>
+                {m.outcome && <Markdown text={m.outcome} cwd={cwd} />}
                 {outcome.length > 0 ? (
                   <ul className="team-outcome">
                     {outcome.map((d) => (
@@ -189,8 +196,8 @@ function Meetings({ ownerId, meetings, feature, focus, cwd }: { ownerId: string;
                       </li>
                     ))}
                   </ul>
-                ) : (
-                  <div className="dim">{m.status === "collecting" ? "Waiting for the answers." : "No decision recorded from it yet."}</div>
+                ) : m.outcome ? null : (
+                  <div className="dim">{m.status === "collecting" ? (isLive(m) ? "The round is under way." : "Waiting for the answers.") : m.status === "waiting_on_chair" ? "The owner reads the round, then continues or closes the meeting." : "No decision recorded from it yet."}</div>
                 )}
               </div>
             )}
@@ -198,6 +205,55 @@ function Meetings({ ownerId, meetings, feature, focus, cwd }: { ownerId: string;
         );
       })}
     </section>
+  );
+}
+
+/** What a turn in a live meeting is now, in a word or two. */
+const TURN_LABEL: Record<Meeting["attendees"][number]["status"], string> = {
+  invited: "next, once free",
+  asked: "speaking",
+  answered: "",
+  missing: "no turn",
+  late: "spoke late",
+};
+
+/** A live meeting as the thread it is: round by round, the owner's steer, then each attendee in turn. */
+function LiveThread({ m, cwd }: { m: Meeting; cwd?: string }) {
+  const rounds = liveRounds(m);
+  return (
+    <div className="live-thread" aria-label={`Thread of ${m.topic}`}>
+      {rounds.map((r) => (
+        <div key={r.round} className="live-round">
+          <div className="team-label">
+            Round {r.round} of {m.max_rounds}
+          </div>
+          {r.steer && (
+            <div className="team-contribution chair">
+              <div className="thread-head">
+                <span className="name">{r.steer.name}</span>
+                <span className="chip">chair</span>
+                <span className="spacer" />
+                <When at={r.steer.at} />
+              </div>
+              {r.steer.text && <Markdown text={r.steer.text} cwd={cwd} />}
+            </div>
+          )}
+          {r.turns.map((t) => (
+            <div key={`${t.round}:${t.worker_id}`} className={clsx("team-contribution", t.status)}>
+              <div className="thread-head">
+                <span className="name">{t.name}</span>
+                {t.role && <span className="dim">{t.role}</span>}
+                <span className="spacer" />
+                {TURN_LABEL[t.status] && <span className="dim">{TURN_LABEL[t.status]}</span>}
+                <When at={t.at} />
+              </div>
+              {t.text ? <Markdown text={t.text} cwd={cwd} /> : t.missing ? <div className="dim">{t.missing}</div> : null}
+            </div>
+          ))}
+        </div>
+      ))}
+      {rounds.length === 0 && <div className="dim">Nobody has spoken yet.</div>}
+    </div>
   );
 }
 

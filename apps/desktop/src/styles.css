@@ -770,3 +770,27 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 .card.feature-card.meeting { border-color: var(--border-strong); padding: 6px 12px; }
 .card.feature-card.meeting .meeting-line { margin-bottom: 0; font-weight: 500; }
 .card.feature-card.meeting .meeting-line .dim { font-weight: 400; }
+/* A live meeting: the thread in rounds, the chair's steer set apart. */
+.team-entry.waiting_on_chair { border-left-color: var(--info); }
+.live-thread { display: flex; flex-direction: column; gap: 6px; }
+.live-round { display: flex; flex-direction: column; gap: 6px; }
+.live-round + .live-round { margin-top: 4px; }
+.team-contribution.chair { background: var(--accent-bg); border-color: var(--accent); }
+.team-contribution.late { opacity: 0.8; border-style: dashed; }
+.team-meeting-mode { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.meeting-mode-picker { font-size: 12px; }
+.meeting-numbers { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; }
+/* Specialists waiting for the user's word, in Settings → Specialists. */
+.specialist-suggestions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.specialist-suggestions > h4 { margin: 0; display: flex; gap: 6px; align-items: baseline; }
+.specialist-suggestions.folded { gap: 0; padding-bottom: 8px; }
+.specialist-suggestions .suggestions-toggle { display: flex; gap: 6px; align-items: baseline; background: none; border: none; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.specialist-suggestions .suggestions-toggle:hover { color: var(--fg); }
+.specialist-suggestions .suggestion-settings { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.specialist-suggestions .suggestion-settings .check-row { margin: 0; }
+.specialist-suggestions .suggestion-model { width: 140px; margin-left: 4px; }
+.specialist-suggestions .suggestion-list { display: flex; flex-direction: column; gap: 8px; max-height: 30vh; overflow: auto; }
+.specialist-suggestions .suggestion-list .card { margin: 0; }
+.specialist-suggestions .suggestions-resolved ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+.card.feature-card .suggestion-evidence summary { cursor: pointer; color: var(--fg-muted); }
+.card.feature-card .suggestion-evidence ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }

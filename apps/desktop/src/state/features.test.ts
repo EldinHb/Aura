@@ -1,9 +1,9 @@
 import { beforeEach, expect, it } from "vitest";
-import type { Feature, Session } from "../gen";
+import type { Feature, Session, SpecialistSuggestion } from "../gen";
 import { useStore } from "./store";
-import { useFeatures } from "./features";
+import { useFeatures, useRoleSuggestions } from "./features";
 
-const feature = (status: Feature["status"]): Feature => ({ owner_id: "owner", goal: "Goal", status, autonomy: null, team: [], decisions: [], questions: [], checkpoints: [], suggestions: [], meetings: [], one_on_ones: [], report: null, created_at: "", updated_at: "", counters: {} });
+const feature = (status: Feature["status"]): Feature => ({ owner_id: "owner", goal: "Goal", status, autonomy: null, meeting_mode: null, team: [], decisions: [], questions: [], checkpoints: [], suggestions: [], meetings: [], one_on_ones: [], report: null, created_at: "", updated_at: "", counters: {} });
 
 beforeEach(() => {
   useFeatures.setState({ features: {} });
@@ -18,4 +18,10 @@ it("keeps features current from the daemon's events, outside the transcripts", (
   expect(useStore.getState().transcripts.owner).toBeUndefined();
   useStore.getState().applyEvent({ type: "session_removed", session_id: "owner" });
   expect(useFeatures.getState().features.owner).toBeUndefined();
+});
+
+it("keeps the specialists Aura suggested current from the daemon's events", () => {
+  useStore.getState().applyEvent({ type: "specialist_suggestions_updated", suggestions: [{ id: "r1" } as SpecialistSuggestion] });
+  expect(useRoleSuggestions.getState().suggestions.map((s) => s.id)).toEqual(["r1"]);
+  expect(useStore.getState().transcripts[""]).toBeUndefined();
 });

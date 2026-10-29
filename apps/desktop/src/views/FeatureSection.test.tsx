@@ -8,6 +8,7 @@ import { FeatureSection } from "./FeatureSection";
 
 const setting: Autonomy = { level: "blocking_decisions", checkpoints: ["after_design", "before_implementation", "before_delivery"] };
 const setFeatureAutonomy = vi.fn(async () => ({}) as Feature);
+const setFeatureMeetingMode = vi.fn(async () => ({}) as Feature);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -17,6 +18,7 @@ beforeEach(() => {
     goal: "Dark mode for the settings",
     status: "in_progress",
     autonomy: null,
+    meeting_mode: null,
     team: [{ worker_id: "w", specialist_id: "tester", name: "Tester (QA)", role: "", instructions: "", hired_at: "", meeting: null }],
     decisions: [{ id: "d1", decision: "Use CSS variables", rationale: "Themes already do", decided_by: "owner", question_id: null, meeting_id: null, at: "" }],
     questions: [],
@@ -29,7 +31,7 @@ beforeEach(() => {
     updated_at: "",
     counters: {},
   });
-  useStore.setState({ client: { autonomy: () => Promise.resolve(setting), setFeatureAutonomy } as unknown as RpcClient });
+  useStore.setState({ client: { autonomy: () => Promise.resolve(setting), setFeatureAutonomy, meetingSettings: () => Promise.resolve({ mode: "live", max_rounds: 2, turn_words: 150 }), setFeatureMeetingMode } as unknown as RpcClient });
 });
 afterEach(cleanup);
 
@@ -43,4 +45,13 @@ it("shows the feature's goal, status, team and decisions, and gives it its own a
   fireEvent.click(screen.getByRole("button", { name: "change" }));
   fireEvent.click(screen.getByRole("checkbox", { name: /Own autonomy/ }));
   await waitFor(() => expect(setFeatureAutonomy).toHaveBeenCalledWith("owner", setting));
+});
+
+it("says how the feature's meetings are held and gives it its own mode", async () => {
+  render(<FeatureSection s={{ id: "owner", feature_owner: true } as Session} />);
+  const picker = screen.getByLabelText("Meetings") as HTMLSelectElement;
+  expect(await screen.findByText("live (setting)")).toBeTruthy();
+  expect(picker.value).toBe("setting");
+  fireEvent.change(picker, { target: { value: "written" } });
+  await waitFor(() => expect(setFeatureMeetingMode).toHaveBeenCalledWith("owner", "written"));
 });

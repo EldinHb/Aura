@@ -1,4 +1,4 @@
-import type { Autonomy, Checkpoint, Feature, FeatureCardKind, FeatureStatus, Item, Meeting, OneOnOne, UserQuestion } from "../gen";
+import type { Autonomy, Checkpoint, Feature, FeatureCardKind, FeatureStatus, Item, Meeting, MeetingMode, MeetingTurn, OneOnOne, UserQuestion } from "../gen";
 
 /**
  * Feature owners, as the app shows them. The daemon puts a card in a feature
@@ -8,7 +8,7 @@ import type { Autonomy, Checkpoint, Feature, FeatureCardKind, FeatureStatus, Ite
  */
 export type FeatureCardRef = { kind: FeatureCardKind; id: string };
 
-const KINDS: FeatureCardKind[] = ["decision", "report", "suggestion", "meeting"];
+const KINDS: FeatureCardKind[] = ["decision", "report", "suggestion", "meeting", "role_suggestion"];
 
 /** The card a transcript item stands for, if it is one. */
 export function featureCard(item: Item): FeatureCardRef | null {
@@ -48,8 +48,46 @@ export function openQuestions(f: Feature | undefined): UserQuestion[] {
   return f ? f.questions.filter(isOpen) : [];
 }
 
-/** "collecting · 1 of 3 answered", "held", "held · 1 missing". */
+/** Whether a meeting is a live one, also as sent by a daemon from before live meetings. */
+export const isLive = (m: Meeting) => m.mode === "live";
+
+export const MEETING_MODE_LABEL: Record<MeetingMode, string> = { written: "written", live: "live" };
+
+/** A live meeting's thread by round: the chair's steer that opened it, then the turns in order. */
+export function liveRounds(m: Meeting): { round: number; steer: MeetingTurn | null; turns: MeetingTurn[] }[] {
+  const rounds: { round: number; steer: MeetingTurn | null; turns: MeetingTurn[] }[] = [];
+  for (const t of m.turns ?? []) {
+    let r = rounds.find((x) => x.round === t.round);
+    if (!r) {
+      r = { round: t.round, steer: null, turns: [] };
+      rounds.push(r);
+    }
+    if (t.chair) r.steer = t;
+    else r.turns.push(t);
+  }
+  return rounds;
+}
+
+/** Who speaks now in a live meeting, if anyone. */
+export function currentSpeaker(m: Meeting): MeetingTurn | null {
+  if (m.status !== "collecting") return null;
+  return (m.turns ?? []).find((t) => t.round === m.round && !t.chair && (t.status === "invited" || t.status === "asked")) ?? null;
+}
+
+/** "round 1 of 2 · Designer speaking", "round 1 of 2 over · waiting on the owner", "held · 2 rounds". */
+function liveState(m: Meeting): string {
+  const of = `round ${m.round} of ${m.max_rounds}`;
+  if (m.status === "collecting") {
+    const now = currentSpeaker(m);
+    return now ? `${of} · ${now.name} ${now.status === "asked" ? "speaking" : "next, once free"}` : of;
+  }
+  if (m.status === "waiting_on_chair") return `${of} over · waiting on the owner`;
+  return `held · ${m.round === 1 ? "1 round" : `${m.round} rounds`}`;
+}
+
+/** "collecting · 1 of 3 answered", "held", "held · 1 missing"; for a live meeting, its round. */
 export function meetingState(m: Meeting): string {
+  if (isLive(m)) return liveState(m);
   const answered = m.attendees.filter((a) => a.status === "answered").length;
   if (m.status === "collecting") return `collecting · ${answered} of ${m.attendees.length} answered`;
   const missing = m.attendees.length - answered;
@@ -77,6 +115,7 @@ export function teamWork(f: Feature): { meetings: Meeting[]; oneOnOnes: OneOnOne
 
 /** "3 attendees", "2 attendees · 1 missing": who took part in a meeting that is over. */
 export function attendeesLine(m: Meeting): string {
+  if (isLive(m)) return `live · ${m.attendees.length === 1 ? "1 attendee" : `${m.attendees.length} attendees`} · ${liveState(m)}`;
   const n = m.attendees.length;
   const missing = m.attendees.filter((a) => a.status !== "answered").length;
   return `${n === 1 ? "1 attendee" : `${n} attendees`}${missing ? ` · ${missing} missing` : ""}`;

@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import clsx from "clsx";
 import type { DeliveryReport, Item, Meeting, Project, SpecialistInput, SpecialistSuggestion, UserQuestion } from "../../gen";
 import { useStore } from "../../state/store";
-import { useFeature } from "../../state/features";
-import { CHECKPOINT_LABEL, attendeesLine, featureCard, meetingState, teamWork } from "../../lib/features";
+import { useFeature, useRoleSuggestion } from "../../state/features";
+import { CHECKPOINT_LABEL, attendeesLine, featureCard, isLive, meetingState, teamWork } from "../../lib/features";
 import { openTeam } from "../../state/workerThreads";
 import { SpecialistFields } from "../../components/SpecialistFields";
 import { Markdown } from "./MarkdownView";
@@ -12,8 +12,9 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * A card a feature owner put in its chat: a decision for the user, its
- * delivery report or a specialist it proposes. It shows the feature record as
- * it is now, so an answered question shows its answer.
+ * delivery report, a specialist it proposes or Aura found in repeated work,
+ * or a meeting. It shows the record as it is now, so an answered question
+ * shows its answer.
  */
 export function FeatureCard({ item, cursor, onCursor }: { item: Item; cursor: boolean; onCursor: (id: string) => void }) {
   const ref = featureCard(item);
@@ -25,6 +26,7 @@ export function FeatureCard({ item, cursor, onCursor }: { item: Item; cursor: bo
       {body}
     </div>
   );
+  if (ref.kind === "role_suggestion") return <RoleSuggestionCard item={item} id={ref.id} cursor={cursor} onCursor={onCursor} />;
   if (!feature) return frame(<div className="dim">{item.text || "Loading the feature…"}</div>, ref.kind);
   switch (ref.kind) {
     case "decision": {
@@ -35,7 +37,8 @@ export function FeatureCard({ item, cursor, onCursor }: { item: Item; cursor: bo
       return feature.report ? frame(<ReportBody report={feature.report} cwd={cwd} />, "report") : frame(<div className="dim">The report is gone.</div>, "report");
     case "suggestion": {
       const s = feature.suggestions.find((x) => x.id === ref.id);
-      return s ? frame(<SuggestionBody ownerId={item.session_id} s={s} ownerCwd={cwd} />, "suggestion") : frame(<div className="dim">{item.text}</div>, "suggestion");
+      const resolve = (accept: boolean, specialist: SpecialistInput | null) => useStore.getState().client?.resolveSuggestion(item.session_id, s!.id, accept, specialist);
+      return s ? frame(<SuggestionBody s={s} ownerId={item.session_id} ownerCwd={cwd} onResolve={resolve} />, "suggestion") : frame(<div className="dim">{item.text}</div>, "suggestion");
     }
     case "meeting": {
       const m = teamWork(feature).meetings.find((x) => x.id === ref.id);
@@ -44,13 +47,27 @@ export function FeatureCard({ item, cursor, onCursor }: { item: Item; cursor: bo
   }
 }
 
+/** A specialist Aura found in the team's repeated ad-hoc work, kept with the user's other suggestions. */
+function RoleSuggestionCard({ item, id, cursor, onCursor }: { item: Item; id: string; cursor: boolean; onCursor: (id: string) => void }) {
+  const s = useRoleSuggestion(id);
+  const cwd = useStore((st) => st.sessions[item.session_id]?.cwd);
+  const resolve = (accept: boolean, specialist: SpecialistInput | null) => useStore.getState().client?.resolveRoleSuggestion(id, accept, specialist);
+  return (
+    <div className={clsx("card feature-card suggestion", cursor && "cursor")} data-item-id={item.id} data-hint onClick={() => onCursor(item.id)}>
+      {s ? <SuggestionBody s={s} ownerId={item.session_id} ownerCwd={cwd} onResolve={resolve} /> : <div className="dim">{item.text}</div>}
+    </div>
+  );
+}
+
 /** One line for a meeting the owner held: what it is about and how far it got. The answers are in the Team tab. */
 function MeetingLine({ ownerId, m }: { ownerId: string; m: Meeting }) {
+  const open = m.status === "collecting" || m.status === "waiting_on_chair";
+  const what = isLive(m) ? "Live meeting" : "Meeting";
   return (
     <div className="card-head meeting-line">
-      <span className={clsx("dot", m.status === "collecting" ? "info pulse" : m.status === "complete" ? "ok" : "warn")} />
-      <span>{m.status === "collecting" ? "Meeting" : "Meeting held"}: {m.topic}</span>
-      <span className="dim">{m.status === "collecting" ? meetingState(m) : attendeesLine(m)}</span>
+      <span className={clsx("dot", m.status === "collecting" ? "info pulse" : m.status === "waiting_on_chair" ? "info" : m.status === "complete" ? "ok" : "warn")} />
+      <span>{open ? what : `${what} held`}: {m.topic}</span>
+      <span className="dim">{m.status === "collecting" || isLive(m) ? meetingState(m) : attendeesLine(m)}</span>
       <span className="spacer" />
       <button type="button" className="btn small" data-command="orchestrator.team" onClick={(e) => { e.stopPropagation(); openTeam(ownerId, m.id); }}>
         Open in Team
@@ -180,11 +197,17 @@ function projectOf(cwd: string | undefined, projects: Project[]): string | null 
   return match?.path ?? null;
 }
 
-/** A specialist the owner proposes: accept it for everyone or one project, edit it first, or dismiss it. */
-export function SuggestionBody({ ownerId, s, ownerCwd }: { ownerId: string; s: SpecialistSuggestion; ownerCwd?: string }) {
+/**
+ * A specialist the owner proposes, or Aura found in repeated ad-hoc work:
+ * accept it for everyone or one project, edit it first, or dismiss it. One
+ * Aura found says which briefs it found the role in, and starts on the
+ * scope they suggest.
+ */
+export function SuggestionBody({ s, ownerId, ownerCwd, onResolve }: { s: SpecialistSuggestion; ownerId?: string; ownerCwd?: string; onResolve: (accept: boolean, specialist: SpecialistInput | null) => Promise<unknown> | undefined }) {
   const client = useStore((st) => st.client);
   const toast = useStore((st) => st.toast);
-  const folderless = useStore((st) => !!st.sessions[ownerId]?.folderless);
+  const folderless = useStore((st) => (ownerId ? !!st.sessions[ownerId]?.folderless : true));
+  const found = (s.evidence ?? []).length > 0;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<SpecialistInput>(s.specialist);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -198,8 +221,9 @@ export function SuggestionBody({ ownerId, s, ownerCwd }: { ownerId: string; s: S
       (ps) => {
         if (cancelled) return;
         setProjects(ps);
-        // The owner's own project is the likely home of what it needs.
-        const own = folderless ? null : projectOf(ownerCwd, ps);
+        // Found in one project's work, it is suggested for that project;
+        // otherwise the owner's own project is the likely home of what it needs.
+        const own = found ? (s.specialist.scope === "project" ? s.specialist.project : null) : folderless ? null : projectOf(ownerCwd, ps);
         if (own) setScope(own);
       },
       () => {},
@@ -207,13 +231,13 @@ export function SuggestionBody({ ownerId, s, ownerCwd }: { ownerId: string; s: S
     return () => {
       cancelled = true;
     };
-  }, [client, pending, ownerCwd, folderless]);
+  }, [client, pending, ownerCwd, folderless, found, s.specialist.scope, s.specialist.project]);
   const resolve = async (accept: boolean) => {
     if (!client || busy) return;
     setBusy(true);
     try {
       const specialist: SpecialistInput | null = accept ? { ...(editing ? draft : s.specialist), scope: scope === "global" ? "global" : "project", project: scope === "global" ? null : scope } : null;
-      await client.resolveSuggestion(ownerId, s.id, accept, specialist);
+      await onResolve(accept, specialist);
       toast(accept ? `Specialist “${(specialist ?? s.specialist).name}” added` : "Suggestion dismissed");
     } catch (e) {
       toast(errorText(e), "error");
@@ -226,9 +250,9 @@ export function SuggestionBody({ ownerId, s, ownerCwd }: { ownerId: string; s: S
     <>
       <div className="card-head">
         <span className={clsx("dot", pending ? "info" : s.status === "accepted" ? "ok" : "")} />
-        <span>New specialist proposed: {sp.name}</span>
+        <span>{found ? "Specialist suggested from repeated work" : "New specialist proposed"}: {sp.name}</span>
         <span className="spacer" />
-        <span className="dim">{pending ? "from the feature owner" : s.status === "accepted" ? `accepted as ${s.accepted_id ?? sp.id}` : "dismissed"}</span>
+        <span className="dim">{pending ? (found ? "found by Aura" : "from the feature owner") : s.status === "accepted" ? `accepted as ${s.accepted_id ?? sp.id}` : "dismissed"}</span>
       </div>
       {sp.role && <div className="feature-question">{sp.role}</div>}
       {sp.description && <div className="card-desc">{sp.description}</div>}
@@ -236,6 +260,23 @@ export function SuggestionBody({ ownerId, s, ownerCwd }: { ownerId: string; s: S
         <div className="card-desc">
           <span className="dim">Why:</span> {s.reason}
         </div>
+      )}
+      {found && (
+        <details className="suggestion-evidence" onClick={(e) => e.stopPropagation()} data-hint>
+          <summary>Seen in {s.evidence.length} ad-hoc briefs</summary>
+          <ul>
+            {s.evidence.map((e) => (
+              <li key={`${e.owner_id}:${e.worker_id}`}>
+                {e.summary}
+                <span className="dim">
+                  {" "}
+                  · {e.feature || "a feature"}
+                  {e.project && ` · ${e.project}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {editing ? (
         <div className="card-edit" onClick={(e) => e.stopPropagation()} data-hint>
