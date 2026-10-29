@@ -17,6 +17,8 @@ import { BranchPullChip, GitCounts, branchName, describeBranchPull } from "./Bra
 import { statusClass } from "../lib/sessionStatus";
 import { useRecordBranchPull } from "../state/pullSessions";
 import { ATTENTION, hiddenAttention, useViewedSessionId } from "../state/attention";
+import { useFeature } from "../state/features";
+import { openQuestions } from "../lib/features";
 
 /** Every session row in sidebar order, the workers of collapsed orchestrators included. */
 const selectAllRows = (st: AppState) => selectSessionSections(st, true).flatMap(([, list]) => list);
@@ -46,7 +48,13 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
     <>
       <div className="sub">
         <span className={clsx("agent", s.provider)} title={`Agent: ${agent}`}>{agent}</span>
-        {s.orchestrator && <span className="orchestrator-mark" role="img" aria-label="Orchestrator" title="Orchestrator: starts and directs the sessions under it" />}
+        {s.feature_owner ? (
+          <span className="feature-owner-mark" role="img" aria-label="Feature owner" title="Feature owner: owns a feature and directs the specialists under it" />
+        ) : (
+          s.orchestrator && <span className="orchestrator-mark" role="img" aria-label="Orchestrator" title="Orchestrator: starts and directs the sessions under it" />
+        )}
+        {s.feature_owner && <FeatureChip ownerId={s.id} />}
+        {s.specialist_name && <span className="chip specialist" title={`Hired as ${s.specialist_name}`}>{s.specialist_name}</span>}
         {hidden.length > 0 && <HiddenWorkers hidden={hidden} />}
         <span className="where">
           {!s.worktree && folderOf(s) !== null && basename(s.cwd)}
@@ -59,6 +67,15 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
       <SessionRowLinks session={s} branchPull={pull} />
     </>
   );
+}
+
+/** A feature owner's state when it is news: decisions waiting on the user, or the feature delivered. */
+function FeatureChip({ ownerId }: { ownerId: string }) {
+  const feature = useFeature(ownerId);
+  const open = openQuestions(feature).length;
+  if (open > 0) return <span className="chip warn feature-state" title="The feature owner waits on your decision">{open === 1 ? "decision for you" : `${open} decisions for you`}</span>;
+  if (feature?.status === "delivered") return <span className="chip ok feature-state" title="The feature owner delivered its report">delivered</span>;
+  return null;
 }
 
 /** The "+N" chip of a collapsed orchestrator, marked when a worker under it waits on the user or has news. */

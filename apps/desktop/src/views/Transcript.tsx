@@ -244,7 +244,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         {!t?.loading && rows.length === 0 && session && (
           <div className="empty">
             <h2>{sessionProviderLabel(session, providers)}</h2>
-            {session.folderless ? <span>Orchestrator: tell it what you want done; it starts workers in the folders the work is in.</span> : <span className="mono">{session.cwd}</span>}
+            {session.feature_owner ? (
+              <span>Feature owner: tell it what you want and why; it staffs a team of specialists, asks you what is yours to decide and delivers a report.</span>
+            ) : session.folderless ? (
+              <span>Orchestrator: tell it what you want done; it starts workers in the folders the work is in.</span>
+            ) : (
+              <span className="mono">{session.cwd}</span>
+            )}
             {session.status === "error" && session.last_error && <code className="err-text">{session.last_error}</code>}
             <div className="hint">
               <span><kbd>i</kbd> type a message</span>

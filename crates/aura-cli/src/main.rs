@@ -60,6 +60,13 @@ enum Cmd {
         /// Make the session an orchestrator that starts and directs other sessions
         #[arg(long)]
         orchestrator: bool,
+        /// Make the session a feature owner: an orchestrator that owns one feature
+        /// end to end with a team of specialists
+        #[arg(long)]
+        feature_owner: bool,
+        /// The feature owner's goal; also its first message unless --prompt is given
+        #[arg(long, requires = "feature_owner")]
+        goal: Option<String>,
         /// Resume this native session id
         #[arg(long)]
         resume: Option<String>,
@@ -112,6 +119,9 @@ enum Cmd {
         /// The orchestrator session the tools act for
         #[arg(long)]
         orchestrator: String,
+        /// The orchestrator is a feature owner: serve the owner's tools too
+        #[arg(long)]
+        feature_owner: bool,
     },
 }
 
@@ -132,8 +142,12 @@ async fn main() -> Result<()> {
     if let Cmd::Daemon { cmd } = &cli.cmd {
         return daemon_cmd(&data_dir, cmd).await;
     }
-    if let Cmd::Mcp { orchestrator } = cli.cmd {
-        return mcp::run(data_dir, orchestrator).await;
+    if let Cmd::Mcp {
+        orchestrator,
+        feature_owner,
+    } = cli.cmd
+    {
+        return mcp::run(data_dir, orchestrator, feature_owner).await;
     }
     let client = connect_or_start(&data_dir).await?;
     match cli.cmd {
@@ -184,6 +198,8 @@ async fn main() -> Result<()> {
             system_prompt,
             branch,
             orchestrator,
+            feature_owner,
+            goal,
             resume,
             attach,
             command,
@@ -202,7 +218,7 @@ async fn main() -> Result<()> {
             // An orchestrator without --cwd belongs to no folder.
             let cwd = match cwd {
                 Some(c) => c,
-                None if orchestrator && branch.is_none() => String::new(),
+                None if (orchestrator || feature_owner) && branch.is_none() => String::new(),
                 None => std::env::current_dir()?.to_string_lossy().to_string(),
             };
             let opts = CreateSessionOpts {
@@ -216,7 +232,7 @@ async fn main() -> Result<()> {
                 } else {
                     Some(command)
                 },
-                initial_prompt: prompt,
+                initial_prompt: prompt.or_else(|| goal.clone()),
                 system_prompt,
                 resume_native_id: resume,
                 worktree: branch.map(|b| WorktreeOpts {
@@ -225,6 +241,8 @@ async fn main() -> Result<()> {
                     path: None,
                 }),
                 orchestrator,
+                feature_owner,
+                feature_goal: goal,
                 ..Default::default()
             };
             let s: Session = client

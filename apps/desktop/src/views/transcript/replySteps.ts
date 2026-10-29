@@ -1,5 +1,6 @@
 import type { Item } from "../../gen";
 import { auraMessage } from "../../lib/auraMessage";
+import { featureCard } from "../../lib/features";
 import { commandOutput, contextBoundary, durationMs, fmtDuration, itemLabel } from "./format";
 
 export type TranscriptTree = {
@@ -35,9 +36,9 @@ export type StepGroup = {
   aura: boolean;
 };
 
-/** Items that stay in the chat: messages from the user, replies, errors and context markers. */
+/** Items that stay in the chat: messages from the user, replies, errors, context markers and a feature owner's cards. */
 function alwaysShown(it: Item): boolean {
-  return (it.kind === "user_message" && !auraMessage(it)) || it.kind === "agent_message" || it.kind === "error" || !!contextBoundary(it) || !!commandOutput(it);
+  return (it.kind === "user_message" && !auraMessage(it)) || it.kind === "agent_message" || it.kind === "error" || !!contextBoundary(it) || !!commandOutput(it) || !!featureCard(it);
 }
 
 /**
@@ -100,7 +101,7 @@ const NOUNS: Partial<Record<Item["kind"], [string, string]>> = {
 
 export type StepSummary = {
   count: number;
-  /** "3 worker reports" when the group holds messages from Aura. */
+  /** "3 worker reports, 1 answer from you" when the group holds messages from Aura. */
   aura: string | null;
   /** "thinking, 3 commands, 2 edits" */
   parts: string;
@@ -114,6 +115,7 @@ export type StepSummary = {
 export function summarizeSteps(items: Item[]): StepSummary {
   const counts = new Map<string, number>();
   let reports = 0;
+  let answers = 0;
   let others = 0;
   let thinking = false;
   let failed = 0;
@@ -128,6 +130,7 @@ export function summarizeSteps(items: Item[]): StepSummary {
     const aura = auraMessage(it);
     if (aura) {
       if (aura.report) reports++;
+      else if (aura.kind === "decision") answers++;
       else others++;
       continue;
     }
@@ -143,6 +146,7 @@ export function summarizeSteps(items: Item[]): StepSummary {
   const running = current !== null;
   const fromAura = [
     ...(reports ? [`${reports} worker ${reports === 1 ? "report" : "reports"}`] : []),
+    ...(answers ? [`${answers} ${answers === 1 ? "answer" : "answers"} from you`] : []),
     ...(others ? [`${others} ${others === 1 ? "message" : "messages"} from Aura`] : []),
   ].join(", ");
   return {

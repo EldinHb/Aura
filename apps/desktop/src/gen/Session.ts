@@ -47,6 +47,21 @@ orchestrator: boolean,
  */
 orchestrator_id: string | null, 
 /**
+ * An orchestrator that owns one feature end to end (see
+ * [`crate::features`]): it gets the feature owner's prompt and tools on
+ * top of an orchestrator's. Always an orchestrator too.
+ */
+feature_owner: boolean, 
+/**
+ * For a worker a feature owner hired as a specialist: the specialist's
+ * id, whose instructions the worker's system prompt gets.
+ */
+specialist_id: string | null, 
+/**
+ * The specialist's name as it was when hired, for labels.
+ */
+specialist_name: string | null, 
+/**
  * An orchestrator that belongs to no folder of the user's. It runs in a
  * directory Aura made for it (`cwd`) and names a folder for each worker.
  */

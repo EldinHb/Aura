@@ -5,23 +5,29 @@
 //! native protocols into these types; the [`manager::Manager`] owns sessions,
 //! persists events through a [`store::Store`] and fans them out to clients.
 
+pub mod autonomy;
 pub mod event;
+pub mod features;
 pub mod load_balancer;
 pub mod manager;
 pub mod process;
 pub mod prompts;
 pub mod provider;
 pub mod review;
+pub mod specialists;
 pub mod store;
 pub mod types;
 pub mod which;
 
+pub use autonomy::{Autonomy, AutonomyLevel, Checkpoint};
 pub use event::*;
+pub use features::*;
 pub use load_balancer::{LoadBalancer, LoadBalancerUpdate};
 pub use manager::*;
 pub use prompts::SystemPrompts;
 pub use provider::*;
 pub use review::*;
+pub use specialists::{Specialist, SpecialistInput, SpecialistScope};
 pub use store::*;
 pub use types::*;
 

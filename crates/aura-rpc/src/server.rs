@@ -580,6 +580,243 @@ async fn dispatch(
                 .await
                 .map_err(|e| anyhow!(e))??)
         }
+        "owner.specialists" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                #[serde(default)]
+                cwd: Option<String>,
+            }
+            let P { owner, cwd } = params(p)?;
+            let o = m.feature_owner_session(&owner)?;
+            let dir = cwd
+                .filter(|c| !c.trim().is_empty())
+                .map(|c| m.worker_cwd(&o, Some(&c)))
+                .transpose()?
+                .or_else(|| (!o.folderless).then(|| o.cwd.clone()));
+            let m = m.clone();
+            ok(tokio::task::spawn_blocking(move || match dir {
+                Some(d) => m.specialists_for_dir(&d),
+                None => m.specialists(None),
+            })
+            .await
+            .map_err(|e| anyhow!(e))??)
+        }
+        "owner.hire" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                #[serde(flatten)]
+                spec: HireSpec,
+            }
+            let P { owner, spec } = params(p)?;
+            ok(m.hire(&owner, spec).await?)
+        }
+        "owner.ask_user" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                #[serde(flatten)]
+                ask: AskSpec,
+            }
+            let P { owner, ask } = params(p)?;
+            ok(m.ask_user(&owner, ask)?)
+        }
+        "owner.record_decision" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                decision: String,
+                #[serde(default)]
+                rationale: String,
+            }
+            let P {
+                owner,
+                decision,
+                rationale,
+            } = params(p)?;
+            ok(m.record_decision(&owner, &decision, &rationale)?)
+        }
+        "owner.checkpoint" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                checkpoint: String,
+                #[serde(default)]
+                summary: String,
+            }
+            let P {
+                owner,
+                checkpoint,
+                summary,
+            } = params(p)?;
+            let c = Checkpoint::parse(&checkpoint).ok_or_else(|| {
+                anyhow!("unknown checkpoint `{checkpoint}`: use `after_design`, `before_implementation` or `before_delivery`")
+            })?;
+            ok(m.checkpoint(&owner, c, &summary)?)
+        }
+        "owner.deliver_report" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                #[serde(flatten)]
+                report: ReportSpec,
+            }
+            let P { owner, report } = params(p)?;
+            ok(m.deliver_report(&owner, report)?)
+        }
+        "owner.propose_specialist" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                specialist: SpecialistInput,
+                #[serde(default)]
+                reason: String,
+            }
+            let P {
+                owner,
+                specialist,
+                reason,
+            } = params(p)?;
+            ok(m.propose_specialist(&owner, specialist, &reason)?)
+        }
+        "owner.status" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+            }
+            let P { owner } = params(p)?;
+            m.feature_owner_session(&owner)?;
+            let f = m.feature(&owner)?;
+            let autonomy = m.effective_autonomy(&f);
+            ok(json!({ "feature": f, "autonomy": autonomy }))
+        }
+        "feature.get" => {
+            let IdParams { id } = params(p)?;
+            ok(m.feature(&id)?)
+        }
+        "feature.list" => ok(m.features()?),
+        "feature.answer" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                question: String,
+                #[serde(default)]
+                option: Option<String>,
+                #[serde(default)]
+                text: String,
+            }
+            let P {
+                id,
+                question,
+                option,
+                text,
+            } = params(p)?;
+            ok(m.answer_question(&id, &question, option, text)?)
+        }
+        "feature.resolve_suggestion" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                suggestion: String,
+                accept: bool,
+                #[serde(default)]
+                specialist: Option<SpecialistInput>,
+            }
+            let P {
+                id,
+                suggestion,
+                accept,
+                specialist,
+            } = params(p)?;
+            let m = m.clone();
+            ok(tokio::task::spawn_blocking(move || {
+                m.resolve_suggestion(&id, &suggestion, accept, specialist)
+            })
+            .await
+            .map_err(|e| anyhow!(e))??)
+        }
+        "feature.set_autonomy" => {
+            /// `autonomy: null` follows the setting for every feature owner again.
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                autonomy: Option<Autonomy>,
+            }
+            let P { id, autonomy } = params(p)?;
+            ok(m.set_feature_autonomy(&id, autonomy).await?)
+        }
+        "autonomy.get" => ok(m.autonomy()?),
+        "autonomy.set" => ok(m.set_autonomy(params(p)?).await?),
+        "specialists.list" => {
+            /// Without `project`, the global specialists; with one, those
+            /// that apply there: its own and the global ones it does not override.
+            #[derive(Deserialize)]
+            struct P {
+                #[serde(default)]
+                project: Option<String>,
+            }
+            let P { project } = params(p)?;
+            let m = m.clone();
+            ok(tokio::task::spawn_blocking(move || {
+                let root = project
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| m.project_root(&p));
+                m.specialists(root.as_deref())
+            })
+            .await
+            .map_err(|e| anyhow!(e))??)
+        }
+        "specialists.hidden" => ok(m.hidden_specialists()?),
+        "specialists.get" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                #[serde(default)]
+                project: Option<String>,
+            }
+            let P { id, project } = params(p)?;
+            let m = m.clone();
+            ok(tokio::task::spawn_blocking(move || {
+                let root = project
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| m.project_root(&p));
+                m.specialist(&id, root.as_deref())
+            })
+            .await
+            .map_err(|e| anyhow!(e))??)
+        }
+        "specialists.save" => {
+            let input: SpecialistInput = params(p)?;
+            let m = m.clone();
+            ok(
+                tokio::task::spawn_blocking(move || m.save_specialist(input))
+                    .await
+                    .map_err(|e| anyhow!(e))??,
+            )
+        }
+        "specialists.delete" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                #[serde(default)]
+                scope: SpecialistScope,
+                #[serde(default)]
+                project: Option<String>,
+            }
+            let P { id, scope, project } = params(p)?;
+            let m = m.clone();
+            tokio::task::spawn_blocking(move || {
+                m.delete_specialist(&id, scope, project.as_deref())
+            })
+            .await
+            .map_err(|e| anyhow!(e))??;
+            ok(true)
+        }
+        "specialists.reset" => {
+            let IdParams { id } = params(p)?;
+            ok(m.reset_specialist(&id)?)
+        }
         "session.rename" => {
             #[derive(Deserialize)]
             struct P {

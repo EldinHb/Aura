@@ -36,6 +36,12 @@ import type {
   RepoIssue,
   BranchStatus,
   BranchPull,
+  Autonomy,
+  Feature,
+  Project,
+  Specialist,
+  SpecialistInput,
+  SpecialistScope,
 } from "../gen";
 import { normalizeBranchPull } from "./pulls";
 
@@ -280,6 +286,54 @@ export class RpcClient {
   /** Replaces every setting of the load balancer; `policy: null` goes back to Aura's default. */
   setLoadBalancer(update: LoadBalancerUpdate) {
     return this.call<LoadBalancer>("load_balancer.set", update);
+  }
+  /** The autonomy every feature owner follows unless its feature has its own. */
+  autonomy() {
+    return this.call<Autonomy>("autonomy.get");
+  }
+  setAutonomy(autonomy: Autonomy) {
+    return this.call<Autonomy>("autonomy.set", autonomy);
+  }
+  /** The features of every feature owner. */
+  features() {
+    return this.call<Feature[]>("feature.list");
+  }
+  feature(id: string) {
+    return this.call<Feature>("feature.get", { id });
+  }
+  /** Answer a feature owner's question: an option's label, words of one's own, or both. */
+  answerQuestion(id: string, question: string, option: string | null, text: string) {
+    return this.call<Feature>("feature.answer", { id, question, option, text });
+  }
+  /** Accept (as proposed, or as edited in `specialist`) or dismiss a feature owner's specialist suggestion. */
+  resolveSuggestion(id: string, suggestion: string, accept: boolean, specialist: SpecialistInput | null = null) {
+    return this.call<Feature>("feature.resolve_suggestion", { id, suggestion, accept, specialist });
+  }
+  /** A feature's own autonomy; `null` follows the setting again. */
+  setFeatureAutonomy(id: string, autonomy: Autonomy | null) {
+    return this.call<Feature>("feature.set_autonomy", { id, autonomy });
+  }
+  /** The global specialists, or with `project` those that apply there: its own and the global ones it does not override. */
+  specialists(project: string | null = null) {
+    return this.call<Specialist[]>("specialists.list", { project });
+  }
+  /** Built-in specialists the user deleted, which resetting brings back. */
+  hiddenSpecialists() {
+    return this.call<Specialist[]>("specialists.hidden");
+  }
+  saveSpecialist(input: SpecialistInput) {
+    return this.call<Specialist>("specialists.save", input);
+  }
+  deleteSpecialist(id: string, scope: SpecialistScope, project: string | null = null) {
+    return this.call<boolean>("specialists.delete", { id, scope, project });
+  }
+  /** Bring a built-in specialist back as Aura ships it. */
+  resetSpecialist(id: string) {
+    return this.call<Specialist>("specialists.reset", { id });
+  }
+  /** The folders and repositories the user's sessions work in, most recently used first. */
+  projects() {
+    return this.call<Project[]>("orchestrator.projects");
   }
   /** The complete system prompt the session's agent starts with. */
   effectivePrompt(id: string) {

@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 mod attachments;
+mod features;
 mod orchestrator;
+mod specialists;
+pub use features::{AskSpec, CheckpointOutcome, HireSpec, ReportSpec};
 pub use orchestrator::{
     agent_line, describe_projects, describe_workers, report_message, Project, WaitResult,
     WorkerReport, WorkerSpec,
@@ -62,6 +65,10 @@ struct Inner {
     sink: mpsc::UnboundedSender<Event>,
     /// Serialises read-modify-write updates of the group registry.
     groups: Mutex<()>,
+    /// Serialises read-modify-write updates of feature records.
+    features: Mutex<()>,
+    /// Serialises changes to the stored specialists.
+    specialists: Mutex<()>,
     orchestration: Mutex<orchestrator::State>,
     /// Where sent images are kept; see `attachments`.
     attachments_dir: Mutex<Option<std::path::PathBuf>>,
@@ -91,6 +98,8 @@ impl Manager {
             pty_out,
             sink,
             groups: Mutex::new(()),
+            features: Mutex::new(()),
+            specialists: Mutex::new(()),
             orchestration: Mutex::new(Default::default()),
             attachments_dir: Mutex::new(None),
         });
@@ -429,6 +438,8 @@ impl Manager {
                 self.remember_group(&s);
             }
         }
+        // The user's answers that went with the old daemon before their owner took them.
+        self.requeue_undelivered();
         Ok(n)
     }
 
@@ -453,6 +464,8 @@ impl Manager {
         mut opts: CreateSessionOpts,
         own_dir: Option<String>,
     ) -> Result<Session> {
+        // A feature owner is an orchestrator with more to do.
+        opts.orchestrator |= opts.feature_owner;
         let folderless = own_dir.is_some() || (opts.orchestrator && opts.cwd.trim().is_empty());
         if folderless && opts.worktree.is_some() {
             bail!("an orchestrator without a folder cannot have a worktree");
@@ -496,7 +509,12 @@ impl Manager {
                 None => self.make_orchestrator_dir(&session.id)?,
             };
             if opts.title.is_none() {
-                session.title = format!("{} · orchestrator", opts.label());
+                let role = if opts.feature_owner {
+                    "feature owner"
+                } else {
+                    "orchestrator"
+                };
+                session.title = format!("{} · {role}", opts.label());
             }
         }
         if let Some(wt) = &opts.worktree {
@@ -529,6 +547,17 @@ impl Manager {
             .sessions
             .lock()
             .insert(session.id.clone(), session.clone());
+        // Its prompt carries the goal, so the record is there before it starts.
+        if session.feature_owner {
+            let feature = crate::features::Feature::new(
+                &session.id,
+                opts.feature_goal.as_deref().unwrap_or_default(),
+                opts.autonomy.clone(),
+            );
+            if let Err(e) = self.save_feature(&feature) {
+                tracing::warn!("save the feature of {}: {e:#}", session.id);
+            }
+        }
         self.inner
             .runtimes
             .lock()
@@ -575,32 +604,61 @@ impl Manager {
         // The native session is found from the directory it ran in, so a fork
         // of an orchestrator without a folder resumes in that one.
         let own_dir = s.folderless.then(|| s.cwd.clone());
-        self.create(
-            CreateSessionOpts {
-                provider: s.provider,
-                agent: s.agent.clone(),
-                cwd: s.cwd.clone(),
-                title: Some(format!("{} (fork)", s.title)),
-                group: s.group.clone(),
-                mode: Some(SessionMode::Structured),
-                command: None,
-                model: s.model.clone(),
-                effort: s.effort.clone(),
-                permission_mode: s.permission_mode.clone(),
-                sandbox_mode: s.sandbox_mode.clone(),
-                worktree: None,
-                initial_prompt: None,
-                resume_native_id: Some(native),
-                fork: true,
-                system_prompt: s.system_prompt.clone(),
-                // A fork of an orchestrator still expects its tools; a fork of a
-                // worker was not started by the orchestrator, so it reports to no one.
-                orchestrator: s.orchestrator,
-                orchestrator_id: None,
-            },
-            own_dir,
-        )
-        .await
+        // A fork of a feature owner owns a copy of the feature, without the
+        // team, whose workers stay with the original.
+        let feature = if s.feature_owner {
+            self.feature(id).ok()
+        } else {
+            None
+        };
+        let forked = self
+            .create(
+                CreateSessionOpts {
+                    provider: s.provider,
+                    agent: s.agent.clone(),
+                    cwd: s.cwd.clone(),
+                    title: Some(format!("{} (fork)", s.title)),
+                    group: s.group.clone(),
+                    mode: Some(SessionMode::Structured),
+                    command: None,
+                    model: s.model.clone(),
+                    effort: s.effort.clone(),
+                    permission_mode: s.permission_mode.clone(),
+                    sandbox_mode: s.sandbox_mode.clone(),
+                    worktree: None,
+                    initial_prompt: None,
+                    resume_native_id: Some(native),
+                    fork: true,
+                    system_prompt: s.system_prompt.clone(),
+                    // A fork of an orchestrator still expects its tools; a fork of a
+                    // worker was not started by the orchestrator, so it reports to no one.
+                    orchestrator: s.orchestrator,
+                    orchestrator_id: None,
+                    feature_owner: s.feature_owner,
+                    feature_goal: feature.as_ref().map(|f| f.goal.clone()),
+                    autonomy: feature.as_ref().and_then(|f| f.autonomy.clone()),
+                    specialist: None,
+                },
+                own_dir,
+            )
+            .await?;
+        if let Some(f) = feature {
+            let copy = crate::features::Feature {
+                owner_id: forked.id.clone(),
+                team: vec![],
+                questions: f.questions.into_iter().filter(|q| !q.open()).collect(),
+                status: match f.status {
+                    crate::features::FeatureStatus::WaitingOnUser => {
+                        crate::features::FeatureStatus::InProgress
+                    }
+                    other => other,
+                },
+                updated_at: crate::now(),
+                ..f
+            };
+            self.save_feature(&copy)?;
+        }
+        Ok(forked)
     }
 
     pub async fn send(&self, id: &str, input: Input) -> Result<()> {
@@ -1037,6 +1095,8 @@ impl Manager {
         self.inner.runtimes.lock().remove(&s.id);
         self.delete_attachments(&s.id);
         self.drop_reports(&s.id);
+        // Kept while it lived, also by an owner that stopped owning it.
+        self.delete_feature(&s.id);
         if remove_worktree {
             if let (Some(wt), Some(backend)) = (&s.worktree, &self.inner.worktrees) {
                 if let Err(e) = backend.remove(wt) {

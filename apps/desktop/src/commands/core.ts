@@ -86,6 +86,8 @@ export const coreCommands: Command[] = [
   { id: "settings.groups", title: "Manage groups…", group: "Aura", keywords: ["delete group"], run: () => st().openDialog({ kind: "settings", tab: "groups" }) },
   { id: "settings.prompts", title: "System prompts…", group: "Aura", keywords: ["global prompt", "agent prompt", "instructions"], run: () => st().openDialog({ kind: "settings", tab: "prompts" }) },
   { id: "settings.orchestrators", title: "Orchestrator load balancer…", group: "Aura", keywords: ["routing", "model", "effort", "tokens"], run: () => st().openDialog({ kind: "settings", tab: "orchestrators" }) },
+  { id: "settings.feature-owners", title: "Feature owner autonomy…", group: "Aura", keywords: ["autonomy", "checkpoints", "decisions", "feature owner"], run: () => st().openDialog({ kind: "settings", tab: "orchestrators" }) },
+  { id: "settings.specialists", title: "Specialists…", group: "Aura", keywords: ["team", "persona", "designer", "engineer", "tester", "reviewer", "feature owner"], run: () => st().openDialog({ kind: "settings", tab: "specialists" }) },
   { id: "search.open", title: "Search across sessions", group: "Aura", run: () => st().openDialog({ kind: "search" }) },
   { id: "inbox.open", title: "Inbox", group: "Aura", keywords: ["approvals", "questions", "pull request changes"], run: () => st().openDialog({ kind: "inbox" }) },
   { id: "import.open", title: "Import existing CLI sessions", group: "Session", run: () => st().openDialog({ kind: "import" }) },
@@ -144,6 +146,7 @@ export const coreCommands: Command[] = [
   // sessions
   { id: "session.new", title: "New session…", group: "Session", run: () => st().openDialog({ kind: "new-session" }) },
   { id: "session.new-worktree", title: "New session in git worktree…", group: "Session", run: () => st().openDialog({ kind: "new-session", provider: "worktree" }) },
+  { id: "session.new-feature-owner", title: "New feature owner…", group: "Session", keywords: ["feature", "team", "specialists", "product owner", "orchestrator"], run: () => st().openDialog({ kind: "new-session", featureOwner: true }) },
   {
     id: "session.new-terminal",
     title: "New terminal here",

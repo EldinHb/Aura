@@ -7,11 +7,12 @@ const message = (text: string, kind: Item["kind"] = "user_message"): Item =>
 
 it("tells messages from Aura apart by their first line, as the daemon writes it", () => {
   const report = message("[Aura] Worker report. This message comes from Aura, not the user.\n\n### Builder\nDone.");
-  expect(auraMessage(report)).toEqual({ title: "Worker report", body: "### Builder\nDone.", report: true });
+  expect(auraMessage(report)).toEqual({ title: "Worker report", body: "### Builder\nDone.", report: true, kind: "report" });
   expect(auraMessage(message("[Aura] New review activity on your pull request. This message comes from Aura, not the user.\n"))).toEqual({
     title: "New review activity on your pull request",
     body: "",
     report: false,
+    kind: "other",
   });
   expect(isUserMessage(report)).toBe(false);
 });
@@ -22,4 +23,13 @@ it("leaves the user's own messages alone, also when they mention Aura", () => {
     expect(isUserMessage(message(text))).toBe(true);
   }
   expect(auraMessage(message("[Aura] Worker report. This message comes from Aura, not the user.", "agent_message"))).toBeNull();
+});
+
+it("reads the user's answers to a feature owner and what became of its suggestions", () => {
+  const answer = message("[Aura] Decision from the user. This message comes from Aura, not the user.\nQuestion (`q1`): Which layout?\nAnswer: Tabs\n");
+  expect(auraMessage(answer)).toEqual({ title: "Decision from the user", body: "Question (`q1`): Which layout?\nAnswer: Tabs", report: false, kind: "decision" });
+  expect(auraMessage(message("[Aura] Checkpoint review from the user. This message comes from Aura, not the user.\nAnswer: Approve"))?.kind).toBe("decision");
+  expect(auraMessage(message("[Aura] Specialist suggestion accepted. This message comes from Aura, not the user.\nok"))?.kind).toBe("suggestion");
+  expect(auraMessage(message("[Aura] Specialist suggestion dismissed. This message comes from Aura, not the user.\nok"))?.kind).toBe("suggestion");
+  expect(isUserMessage(answer)).toBe(false);
 });

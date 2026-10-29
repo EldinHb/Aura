@@ -59,7 +59,8 @@ export function reportedWorkers(item: Item): ReportSection[] {
 export type Sender = "orchestrator" | "user" | "aura";
 
 /**
- * Texts the orchestrator gave workers with `start_session` and `send_message`,
+ * Texts the orchestrator gave workers with `start_session`, `send_message` and
+ * (a feature owner) `hire`,
  * read from the tool calls in its transcript. Claude Code, Codex and ACP
  * agents all record the call's arguments in `data.input`.
  */
@@ -68,7 +69,7 @@ export function sentTexts(items: Iterable<Item>): Set<string> {
   for (const it of items) {
     if (it.kind !== "tool_call" && it.kind !== "mcp_call") continue;
     const d = it.data as { tool?: unknown; tool_name?: unknown; input?: unknown };
-    const name = [d.tool, d.tool_name, it.title].find((n): n is string => typeof n === "string" && /(start_session|send_message)$/.test(n));
+    const name = [d.tool, d.tool_name, it.title].find((n): n is string => typeof n === "string" && /(start_session|send_message|hire)$/.test(n));
     const input = d.input as { text?: unknown; prompt?: unknown } | null | undefined;
     if (!name || !input || typeof input !== "object") continue;
     const text = name.endsWith("send_message") ? input.text : input.prompt;

@@ -160,6 +160,18 @@ pub struct Session {
     /// The orchestrator that started this session, if any.
     #[serde(default)]
     pub orchestrator_id: Option<SessionId>,
+    /// An orchestrator that owns one feature end to end (see
+    /// [`crate::features`]): it gets the feature owner's prompt and tools on
+    /// top of an orchestrator's. Always an orchestrator too.
+    #[serde(default)]
+    pub feature_owner: bool,
+    /// For a worker a feature owner hired as a specialist: the specialist's
+    /// id, whose instructions the worker's system prompt gets.
+    #[serde(default)]
+    pub specialist_id: Option<String>,
+    /// The specialist's name as it was when hired, for labels.
+    #[serde(default)]
+    pub specialist_name: Option<String>,
     /// An orchestrator that belongs to no folder of the user's. It runs in a
     /// directory Aura made for it (`cwd`) and names a folder for each worker.
     #[serde(default)]
@@ -613,6 +625,18 @@ pub struct CreateSessionOpts {
     pub orchestrator: bool,
     /// See [`Session::orchestrator_id`].
     pub orchestrator_id: Option<SessionId>,
+    /// See [`Session::feature_owner`]. Makes the session an orchestrator too.
+    pub feature_owner: bool,
+    /// For a feature owner: what the feature is for.
+    pub feature_goal: Option<String>,
+    /// For a feature owner: the feature's own autonomy. None follows the
+    /// setting for every feature owner.
+    pub autonomy: Option<crate::autonomy::Autonomy>,
+    /// The specialist (id, name) a feature owner hires the session as. Only
+    /// Aura sets it, through `Manager::hire`.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub specialist: Option<(String, String)>,
 }
 
 impl Session {
@@ -655,8 +679,11 @@ impl Session {
             pending_count: 0,
             exit_code: None,
             system_prompt: opts.system_prompt.clone().filter(|p| !p.trim().is_empty()),
-            orchestrator: opts.orchestrator,
+            orchestrator: opts.orchestrator || opts.feature_owner,
             orchestrator_id: opts.orchestrator_id.clone(),
+            feature_owner: opts.feature_owner,
+            specialist_id: opts.specialist.as_ref().map(|(id, _)| id.clone()),
+            specialist_name: opts.specialist.as_ref().map(|(_, name)| name.clone()),
             folderless: false,
             pulls: vec![],
             attention: None,

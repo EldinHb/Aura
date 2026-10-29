@@ -3089,3 +3089,829 @@ async fn messages_from_an_orchestrator_are_told_apart_from_the_users() {
         "{text}"
     );
 }
+
+// ------------------------------------------------------- feature owners
+
+/// A manager whose every directory is its own repository, with orchestration on.
+fn owner_setup(store: Arc<MemoryStore>) -> (Manager, Calls, Arc<FakeProvider>) {
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: Default::default(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: Default::default(),
+    });
+    let m = Manager::new(store, vec![provider.clone()], Some(Arc::new(DirRepos)));
+    m.enable_orchestration("/opt/aura/aura".into(), "/data".into());
+    (m, provider.calls.clone(), provider)
+}
+
+fn owner_opts(cwd: &str, goal: &str) -> CreateSessionOpts {
+    CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: cwd.into(),
+        title: Some("Owner".into()),
+        feature_owner: true,
+        feature_goal: Some(goal.into()),
+        ..Default::default()
+    }
+}
+
+fn specialist(id: &str, instructions: &str) -> SpecialistInput {
+    SpecialistInput {
+        id: id.into(),
+        name: format!("{id} name"),
+        role: "Does things".into(),
+        instructions: instructions.into(),
+        ..Default::default()
+    }
+}
+
+/// The `system` items that put feature cards in a session's chat: (kind, id).
+fn cards(m: &Manager, id: &str) -> Vec<(String, String)> {
+    m.history(id, 0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.event {
+            Event::ItemCompleted { item, .. } if item.kind == ItemKind::System => {
+                let card = item.data.get("feature_card")?;
+                Some((
+                    card["kind"].as_str()?.to_string(),
+                    card["id"].as_str()?.to_string(),
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+async fn wait_cards(m: &Manager, id: &str, n: usize) -> Vec<(String, String)> {
+    for _ in 0..100 {
+        let c = cards(m, id);
+        if c.len() >= n {
+            return c;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{} cards, want {n}", cards(m, id).len());
+}
+
+async fn wait_sent(calls: &Calls, prefix: &str, n: usize) -> Vec<String> {
+    for _ in 0..100 {
+        let sent: Vec<String> = calls
+            .lock()
+            .iter()
+            .filter(|c| c.starts_with(&format!("send:{prefix}")))
+            .cloned()
+            .collect();
+        if sent.len() >= n {
+            return sent;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "never sent {n} messages starting {prefix:?}: {:?}",
+        calls.lock()
+    );
+}
+
+#[tokio::test]
+async fn specialists_are_built_in_editable_resettable_and_projects_override_them() {
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    let global = m.specialists(None).unwrap();
+    assert_eq!(global.len(), 7);
+    assert!(global.iter().all(|s| s.built_in && !s.customized));
+    let tester = m.specialist("tester", None).unwrap();
+
+    // Editing a built-in keeps it one, which resets to Aura's version.
+    let edited = m
+        .save_specialist(SpecialistInput {
+            model: Some("sonnet".into()),
+            ..SpecialistInput::from_specialist(&tester)
+        })
+        .unwrap();
+    assert!(edited.built_in && edited.customized);
+    assert_eq!(
+        m.specialist("tester", None).unwrap().model.as_deref(),
+        Some("sonnet")
+    );
+    let reset = m.reset_specialist("tester").unwrap();
+    assert_eq!(reset.model, None);
+    assert_eq!(m.specialist("tester", None).unwrap(), tester);
+
+    // Deleting a built-in hides it until it is reset; the user's own go for good.
+    m.delete_specialist("ux-designer", SpecialistScope::Global, None)
+        .unwrap();
+    assert!(m.specialist("ux-designer", None).is_err());
+    assert_eq!(m.hidden_specialists().unwrap()[0].id, "ux-designer");
+    m.reset_specialist("ux-designer").unwrap();
+    assert!(m.specialist("ux-designer", None).is_ok());
+    m.save_specialist(specialist("data-engineer", "Pipelines."))
+        .unwrap();
+    assert_eq!(m.specialists(None).unwrap().len(), 8);
+    m.delete_specialist("data-engineer", SpecialistScope::Global, None)
+        .unwrap();
+    assert!(m.reset_specialist("data-engineer").is_err());
+    assert_eq!(m.specialists(None).unwrap().len(), 7);
+
+    // A project's specialist replaces the global one with its id, only there.
+    let repo = tempfile::tempdir().unwrap();
+    let repo = repo.path().to_string_lossy().to_string();
+    let own = m
+        .save_specialist(SpecialistInput {
+            scope: SpecialistScope::Project,
+            project: Some(format!("{repo}/")),
+            ..specialist("tester", "Test this project's way.")
+        })
+        .unwrap();
+    assert_eq!(own.project.as_deref(), Some(repo.as_str()));
+    assert!(!own.built_in);
+    let there = m.specialists_for_dir(&repo).unwrap();
+    assert_eq!(there.len(), 7);
+    let t = there.iter().find(|s| s.id == "tester").unwrap();
+    assert_eq!(t.scope, SpecialistScope::Project);
+    assert_eq!(t.instructions, "Test this project's way.");
+    assert_eq!(m.specialist("tester", None).unwrap(), tester);
+    assert!(m
+        .delete_specialist("tester", SpecialistScope::Project, None)
+        .is_err());
+    m.delete_specialist("tester", SpecialistScope::Project, Some(&repo))
+        .unwrap();
+    assert_eq!(
+        m.specialist("tester", Some(&repo)).unwrap().scope,
+        SpecialistScope::Global
+    );
+    let err = m.specialist("nobody", None).unwrap_err().to_string();
+    assert!(
+        err.contains("no specialist `nobody`") && err.contains("`tester`"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn feature_owners_get_their_tools_and_prompt_and_plain_orchestrators_keep_theirs() {
+    let (m, _calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let plain = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let owner = m
+        .create_session(owner_opts(&cwd, "Add dark mode"))
+        .await
+        .unwrap();
+    assert!(owner.feature_owner && owner.orchestrator);
+    assert!(!plain.feature_owner);
+
+    // The plain orchestrator's server and prompt are as they were.
+    let mcp = provider.mcp.lock().clone();
+    assert_eq!(
+        mcp[0][0].args,
+        [
+            "mcp",
+            "--data-dir",
+            "/data",
+            "--orchestrator",
+            plain.id.as_str()
+        ]
+    );
+    assert_eq!(
+        mcp[1][0].args,
+        [
+            "mcp",
+            "--data-dir",
+            "/data",
+            "--orchestrator",
+            owner.id.as_str(),
+            "--feature-owner"
+        ]
+    );
+    let plain_prompt = provider.prompts.lock()[0].clone().unwrap();
+    assert_eq!(
+        plain_prompt,
+        format!(
+            "{}\n\n{}",
+            aura_core::prompts::compose(
+                aura_core::prompts::DEFAULT_GLOBAL_PROMPT,
+                None,
+                &plain,
+                "Fake"
+            ),
+            aura_core::prompts::orchestrator_prompt(&plain, true)
+        )
+    );
+
+    // The owner's adds the feature, its goal and the autonomy level, in that order.
+    let prompt = provider.prompts.lock()[1].clone().unwrap();
+    let orchestrator = prompt.find("## You are an orchestrator").unwrap();
+    let feature_owner = prompt.find("## You are the feature owner").unwrap();
+    let autonomy = prompt.find("## Autonomy: blocking decisions").unwrap();
+    assert!(
+        orchestrator < feature_owner && feature_owner < autonomy,
+        "{prompt}"
+    );
+    assert!(prompt.contains("> Add dark mode"), "{prompt}");
+
+    // The owner's tools refuse plain orchestrators.
+    for err in [
+        m.ask_user(
+            &plain.id,
+            AskSpec {
+                question: "Which?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err(),
+        m.record_decision(&plain.id, "x", "y").unwrap_err(),
+        m.hire(
+            &plain.id,
+            HireSpec {
+                specialist: "tester".into(),
+                worker: WorkerSpec {
+                    prompt: "go".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap_err(),
+    ] {
+        assert!(err.to_string().contains("is not a feature owner"), "{err}");
+    }
+
+    // An owner without a folder is named for its role.
+    let data = tempfile::tempdir().unwrap();
+    m.enable_orchestrator_dirs(data.path().join("orchestrators"));
+    let folderless = m.create_session(owner_opts("", "")).await.unwrap();
+    assert!(folderless.folderless);
+    assert_eq!(folderless.title, "Owner");
+    let untitled = m
+        .create_session(CreateSessionOpts {
+            title: None,
+            ..owner_opts("", "")
+        })
+        .await
+        .unwrap();
+    assert_eq!(untitled.title, "claude · feature owner");
+
+    // Made a regular session again, it stops owning the feature too.
+    let demoted = m.set_orchestrator(&owner.id, false).await.unwrap();
+    assert!(!demoted.orchestrator && !demoted.feature_owner);
+    assert!(m.feature(&owner.id).is_ok(), "its record stays");
+}
+
+#[tokio::test]
+async fn hiring_a_specialist_gives_the_worker_its_instructions_and_preferences() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "Ship it")).await.unwrap();
+    m.save_specialist(SpecialistInput {
+        agent: Some("claude".into()),
+        model: Some("sonnet".into()),
+        effort: Some("low".into()),
+        ..specialist("designer", "Design every state.")
+    })
+    .unwrap();
+    let hire = |model: Option<&str>| HireSpec {
+        specialist: "designer".into(),
+        worker: WorkerSpec {
+            prompt: "design the toggle".into(),
+            model: model.map(Into::into),
+            ..Default::default()
+        },
+    };
+
+    let w = m.hire(&owner.id, hire(None)).await.unwrap();
+    assert_eq!(w.orchestrator_id.as_deref(), Some(owner.id.as_str()));
+    assert_eq!(w.specialist_id.as_deref(), Some("designer"));
+    assert_eq!(w.specialist_name.as_deref(), Some("designer name"));
+    assert_eq!(w.title, "designer name");
+    assert_eq!(
+        (w.model.as_deref(), w.effort.as_deref()),
+        (Some("sonnet"), Some("low"))
+    );
+    assert!(calls.lock().iter().any(|c| c == "send:design the toggle"));
+    let wprompt = provider.prompts.lock().last().cloned().flatten().unwrap();
+    let worker = wprompt.find("## You are a worker").unwrap();
+    let role = wprompt.find("## Your role: designer name").unwrap();
+    assert!(worker < role, "{wprompt}");
+    assert!(wprompt.ends_with("Design every state."), "{wprompt}");
+    assert!(!wprompt.contains("feature owner\n"), "{wprompt}");
+
+    // The brief overrides the specialist's model; the team records both.
+    let second = m.hire(&owner.id, hire(Some("opus"))).await.unwrap();
+    assert_eq!(second.model.as_deref(), Some("opus"));
+    let f = m.feature(&owner.id).unwrap();
+    assert_eq!(f.status, FeatureStatus::InProgress);
+    assert_eq!(f.team.len(), 2);
+    assert_eq!(f.team[0].worker_id, w.id);
+    assert_eq!(f.team[0].specialist_id.as_deref(), Some("designer"));
+    assert_eq!(f.team[0].instructions, "Design every state.");
+
+    // Ad-hoc workers join the team too.
+    let adhoc = m
+        .start_worker(
+            &owner.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "look around".into(),
+                title: Some("Scout".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(adhoc.specialist_id, None);
+    let member = m.feature(&owner.id).unwrap().team[2].clone();
+    assert_eq!(
+        (member.name.as_str(), member.specialist_id),
+        ("Scout", None)
+    );
+
+    // The load balancer still has the last word on models.
+    m.set_load_balancer(LoadBalancerUpdate {
+        enabled: true,
+        avoid: vec!["sonnet".into()],
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let err = m.hire(&owner.id, hire(None)).await.unwrap_err().to_string();
+    assert!(err.contains("forbid `sonnet`"), "{err}");
+    assert!(m.hire(&owner.id, hire(Some("opus"))).await.is_ok());
+
+    // Unknown specialists are refused with the ones there are.
+    let err = m
+        .hire(
+            &owner.id,
+            HireSpec {
+                specialist: "nobody".into(),
+                ..hire(None)
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("`designer`"), "{err}");
+
+    // A deleted specialist's worker keeps the instructions it was hired with.
+    m.delete_specialist("designer", SpecialistScope::Global, None)
+        .unwrap();
+    let again = m.instructions_for(&m.get_session(&w.id).unwrap()).unwrap();
+    assert!(again.ends_with("Design every state."), "{again}");
+}
+
+#[tokio::test]
+async fn a_feature_survives_a_restart_of_the_daemon() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, _calls, _provider) = owner_setup(store.clone());
+        let owner = m
+            .create_session(CreateSessionOpts {
+                autonomy: Some(Autonomy {
+                    level: AutonomyLevel::Checkpoints,
+                    checkpoints: vec![Checkpoint::BeforeDelivery],
+                }),
+                ..owner_opts(&cwd, "Export to CSV")
+            })
+            .await
+            .unwrap();
+        m.record_decision(&owner.id, "Use the existing exporter", "Less code")
+            .unwrap();
+        m.shutdown().await;
+        owner.id
+    };
+    let (m, _calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    let f = m.feature(&owner_id).unwrap();
+    assert_eq!(f.goal, "Export to CSV");
+    assert_eq!(f.decisions[0].decided_by, DecidedBy::Owner);
+    assert_eq!(f.decisions[0].rationale, "Less code");
+    assert_eq!(
+        m.effective_autonomy(&f).checkpoints,
+        vec![Checkpoint::BeforeDelivery]
+    );
+    assert_eq!(m.features().unwrap().len(), 1);
+    let prompt = m
+        .instructions_for(&m.get_session(&owner_id).unwrap())
+        .unwrap();
+    assert!(
+        prompt.contains("> Export to CSV")
+            && prompt.contains("## Autonomy: checkpoints (before delivery)"),
+        "{prompt}"
+    );
+    // Deleting the owner deletes its feature.
+    m.delete(&owner_id, false).await.unwrap();
+    assert!(m.features().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_users_answer_to_a_decision_comes_back_to_the_owner() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let mut rx = m.subscribe();
+    let q = m
+        .ask_user(
+            &owner.id,
+            AskSpec {
+                question: "Which layout?".into(),
+                context: "Both work.".into(),
+                options: vec![
+                    DecisionOption {
+                        label: "Tabs".into(),
+                        description: None,
+                    },
+                    DecisionOption {
+                        label: "List".into(),
+                        description: Some("Simpler".into()),
+                    },
+                ],
+                recommended: Some("list".into()),
+                kind: QuestionKind::Decision,
+            },
+        )
+        .unwrap();
+    assert_eq!(q.id, "q1");
+    assert_eq!(q.recommended.as_deref(), Some("List"));
+    assert_eq!(
+        wait_cards(&m, &owner.id, 1).await,
+        [("decision".into(), "q1".into())]
+    );
+    let f = m.feature(&owner.id).unwrap();
+    assert_eq!(f.status, FeatureStatus::WaitingOnUser);
+    let events = drain(&mut rx).await;
+    assert!(events.iter().any(|e| matches!(e, Event::FeatureUpdated { feature, .. } if feature.status == FeatureStatus::WaitingOnUser)));
+
+    // Bad answers are refused; a good one is the user's decision and reaches the owner.
+    assert!(m
+        .answer_question(&owner.id, "q1", Some("Grid".into()), String::new())
+        .is_err());
+    assert!(m
+        .answer_question(&owner.id, "q1", None, " ".into())
+        .is_err());
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    let f = m
+        .answer_question(&owner.id, "q1", Some("tabs".into()), "keep it small".into())
+        .unwrap();
+    assert_eq!(f.status, FeatureStatus::InProgress);
+    let d = f.decisions.last().unwrap();
+    assert_eq!(d.decided_by, DecidedBy::User);
+    assert_eq!(d.decision, "Which layout? → Tabs");
+    assert_eq!(d.rationale, "keep it small");
+    assert_eq!(d.question_id.as_deref(), Some("q1"));
+    let sent = wait_sent(&calls, "[Aura] Decision from the user", 1).await;
+    assert!(
+        sent[0].contains("Question (`q1`): Which layout?\nAnswer: Tabs\nNote: keep it small"),
+        "{}",
+        sent[0]
+    );
+    assert!(m
+        .answer_question(&owner.id, "q1", Some("List".into()), String::new())
+        .unwrap_err()
+        .to_string()
+        .contains("answered already"));
+    for _ in 0..100 {
+        if m.feature(&owner.id).unwrap().questions[0]
+            .answer
+            .as_ref()
+            .is_some_and(|a| a.delivered)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        m.feature(&owner.id).unwrap().questions[0]
+            .answer
+            .as_ref()
+            .unwrap()
+            .delivered,
+        "the answer is marked delivered once sent"
+    );
+
+    // In autonomous mode only irreversible actions may be asked about.
+    m.set_feature_autonomy(
+        &owner.id,
+        Some(Autonomy {
+            level: AutonomyLevel::Autonomous,
+            checkpoints: vec![],
+        }),
+    )
+    .await
+    .unwrap();
+    let ask = |kind| AskSpec {
+        question: "Merge it?".into(),
+        kind,
+        ..Default::default()
+    };
+    let err = m
+        .ask_user(&owner.id, ask(QuestionKind::Decision))
+        .unwrap_err();
+    assert!(err.to_string().contains("autonomous"), "{err}");
+    let q = m
+        .ask_user(&owner.id, ask(QuestionKind::Irreversible))
+        .unwrap();
+    assert_eq!(q.options.len(), 2, "a yes and a no");
+    assert!(m
+        .ask_user(&owner.id, ask(QuestionKind::Checkpoint))
+        .is_err());
+}
+
+#[tokio::test]
+async fn checkpoints_stop_the_owner_and_delivery_waits_for_the_users_approval() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    m.set_autonomy(Autonomy {
+        level: AutonomyLevel::Checkpoints,
+        checkpoints: vec![Checkpoint::BeforeDelivery],
+    })
+    .await
+    .unwrap();
+    let owner = m.create_session(owner_opts(&cwd, "Ship")).await.unwrap();
+    let report = ReportSpec {
+        what: "Added a toggle".into(),
+        why: "Users asked".into(),
+        how_to_test: "Open settings".into(),
+        where_to_test: "branch `dark`".into(),
+        notes: String::new(),
+    };
+
+    // A checkpoint the user did not choose is only recorded.
+    let r = m
+        .checkpoint(&owner.id, Checkpoint::AfterDesign, "Flows in docs/")
+        .unwrap();
+    assert!(r.review.is_none());
+    // Delivery waits for an approved review.
+    let err = m.deliver_report(&owner.id, report.clone()).unwrap_err();
+    assert!(err.to_string().contains("before_delivery"), "{err}");
+    let r = m
+        .checkpoint(&owner.id, Checkpoint::BeforeDelivery, "All green")
+        .unwrap();
+    let q = r.review.unwrap();
+    assert_eq!(q.kind, QuestionKind::Checkpoint);
+    assert_eq!(
+        m.feature(&owner.id).unwrap().status,
+        FeatureStatus::WaitingOnUser
+    );
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    m.answer_question(
+        &owner.id,
+        &q.id,
+        Some("Request changes".into()),
+        "Rename it".into(),
+    )
+    .unwrap();
+    assert!(m.deliver_report(&owner.id, report.clone()).is_err());
+    wait_sent(&calls, "[Aura] Checkpoint review from the user", 1).await;
+    let q = m
+        .checkpoint(&owner.id, Checkpoint::BeforeDelivery, "Renamed")
+        .unwrap()
+        .review
+        .unwrap();
+    m.answer_question(&owner.id, &q.id, Some("Approve".into()), String::new())
+        .unwrap();
+    let f = m.feature(&owner.id).unwrap();
+    assert_eq!(
+        f.checkpoints.iter().map(|c| c.approved).collect::<Vec<_>>(),
+        [None, Some(false), Some(true)]
+    );
+
+    // Delivered: the report is kept and shown, open questions withdrawn.
+    let open = m
+        .ask_user(
+            &owner.id,
+            AskSpec {
+                question: "Anything else?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(m
+        .deliver_report(
+            &owner.id,
+            ReportSpec {
+                why: " ".into(),
+                ..report.clone()
+            }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("`why` is required"));
+    let f = m.deliver_report(&owner.id, report).unwrap();
+    assert_eq!(f.status, FeatureStatus::Delivered);
+    assert_eq!(f.report.as_ref().unwrap().where_to_test, "branch `dark`");
+    assert!(f.question(&open.id).unwrap().withdrawn);
+    let kinds: Vec<String> = wait_cards(&m, &owner.id, 4)
+        .await
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(kinds, ["decision", "decision", "decision", "report"]);
+}
+
+#[tokio::test]
+async fn a_proposed_specialist_becomes_one_when_the_user_accepts_it() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let s = m
+        .propose_specialist(
+            &owner.id,
+            SpecialistInput {
+                name: "Data engineer".into(),
+                instructions: "Build pipelines.".into(),
+                ..Default::default()
+            },
+            "We keep needing ETL work",
+        )
+        .unwrap();
+    assert_eq!(
+        (s.id.as_str(), s.specialist.id.as_str()),
+        ("s1", "data-engineer")
+    );
+    assert!(m
+        .propose_specialist(&owner.id, specialist("data-engineer", "x"), "again")
+        .is_err());
+    assert_eq!(wait_cards(&m, &owner.id, 1).await[0].0, "suggestion");
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+
+    // Accepted as the user edited it, for this project only.
+    let f = m
+        .resolve_suggestion(
+            &owner.id,
+            "s1",
+            true,
+            Some(SpecialistInput {
+                scope: SpecialistScope::Project,
+                project: Some(cwd.clone()),
+                ..specialist("data-engineer", "Build pipelines, tested.")
+            }),
+        )
+        .unwrap();
+    assert_eq!(f.suggestions[0].status, SuggestionStatus::Accepted);
+    assert_eq!(
+        f.suggestions[0].accepted_id.as_deref(),
+        Some("data-engineer")
+    );
+    assert!(m.specialist("data-engineer", None).is_err());
+    assert_eq!(
+        m.specialist("data-engineer", Some(&cwd))
+            .unwrap()
+            .instructions,
+        "Build pipelines, tested."
+    );
+    assert!(m.resolve_suggestion(&owner.id, "s1", false, None).is_err());
+    wait_sent(&calls, "[Aura] Specialist suggestion accepted", 1).await;
+
+    // A dismissed one is only marked.
+    m.propose_specialist(&owner.id, specialist("writer", "Write docs."), "Docs")
+        .unwrap();
+    let f = m.resolve_suggestion(&owner.id, "s2", false, None).unwrap();
+    assert_eq!(f.suggestions[1].status, SuggestionStatus::Dismissed);
+    assert!(m.specialist("writer", None).is_err());
+}
+
+#[tokio::test]
+async fn changing_the_autonomy_restarts_only_owners_that_follow_it() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let follows = m.create_session(owner_opts(&cwd, "A")).await.unwrap();
+    let own = m
+        .create_session(CreateSessionOpts {
+            autonomy: Some(Autonomy::default()),
+            ..owner_opts(&cwd, "B")
+        })
+        .await
+        .unwrap();
+    assert_eq!(m.autonomy().unwrap(), Autonomy::default());
+    let saved = m
+        .set_autonomy(Autonomy {
+            level: AutonomyLevel::Autonomous,
+            checkpoints: vec![],
+        })
+        .await
+        .unwrap();
+    assert_eq!(m.autonomy().unwrap(), saved);
+    assert_eq!(calls.lock().iter().filter(|c| *c == "stop").count(), 1);
+    let prompt = m
+        .instructions_for(&m.get_session(&follows.id).unwrap())
+        .unwrap();
+    assert!(prompt.contains("## Autonomy: autonomous"), "{prompt}");
+    let prompt = m
+        .instructions_for(&m.get_session(&own.id).unwrap())
+        .unwrap();
+    assert!(
+        prompt.contains("## Autonomy: blocking decisions"),
+        "{prompt}"
+    );
+    let _ = provider;
+
+    // Back to following the setting.
+    let f = m.set_feature_autonomy(&own.id, None).await.unwrap();
+    assert_eq!(f.autonomy, None);
+    assert_eq!(m.effective_autonomy(&f).level, AutonomyLevel::Autonomous);
+}
+
+#[tokio::test]
+async fn a_fork_of_a_feature_owner_owns_a_copy_of_the_feature_without_the_team() {
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "Fork me")).await.unwrap();
+    m.hire(
+        &owner.id,
+        HireSpec {
+            specialist: "tester".into(),
+            worker: WorkerSpec {
+                prompt: "test".into(),
+                ..Default::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    m.record_decision(&owner.id, "Keep it", "Works").unwrap();
+    m.ask_user(
+        &owner.id,
+        AskSpec {
+            question: "Open?".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    wait_native_id(&m, &owner.id).await;
+    let fork = m.fork(&owner.id).await.unwrap();
+    assert!(fork.feature_owner);
+    let f = m.feature(&fork.id).unwrap();
+    assert_eq!(f.goal, "Fork me");
+    assert!(f.team.is_empty() && f.questions.is_empty());
+    assert_eq!(f.decisions.len(), 1);
+    assert_eq!(f.status, FeatureStatus::InProgress);
+    assert_eq!(m.features().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn an_answer_the_busy_owner_did_not_take_reaches_it_after_a_restart() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, calls, _provider) = owner_setup(store.clone());
+        // Waiting on an answer of its own, the owner takes no message from Aura.
+        let owner = m
+            .create_session(CreateSessionOpts {
+                initial_prompt: Some("ask a question".into()),
+                ..owner_opts(&cwd, "")
+            })
+            .await
+            .unwrap();
+        wait_status(&m, &owner.id, SessionStatus::WaitingInput).await;
+        m.ask_user(
+            &owner.id,
+            AskSpec {
+                question: "Ship on Friday?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        m.answer_question(&owner.id, "q1", None, "Yes".into())
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!calls
+            .lock()
+            .iter()
+            .any(|c| c.starts_with("send:[Aura] Decision")));
+        m.shutdown().await;
+        owner.id
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    let sent = wait_sent(&calls, "[Aura] Decision from the user", 1).await;
+    assert!(
+        sent[0].contains("Ship on Friday?") && sent[0].contains("Answer: Yes"),
+        "{}",
+        sent[0]
+    );
+    for _ in 0..100 {
+        let f = m.feature(&owner_id).unwrap();
+        if f.questions[0].answer.as_ref().unwrap().delivered {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the answer was never marked delivered");
+}

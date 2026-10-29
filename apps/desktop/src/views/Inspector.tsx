@@ -15,6 +15,7 @@ import { useMemo } from "react";
 import { folderOf } from "../lib/sessionFolder";
 import { statusClass } from "../lib/sessionStatus";
 import { openWorkerThread } from "../state/workerThreads";
+import { FeatureSection } from "./FeatureSection";
 
 function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boolean; title?: string }) {
   return (
@@ -67,13 +68,14 @@ function OrchestrationSection({ s }: { s: Session }) {
     <button key={w.id} className="list-item" data-command="session.select" onClick={() => select(w.id)} title={w.cwd}>
       <span className={clsx("dot", statusClass(w))} />
       <span className="grow">{w.title}</span>
+      {w.specialist_name && w.specialist_name !== w.title && <span className="chip specialist">{w.specialist_name}</span>}
       <span className={clsx("chip", w.provider)}>{w.agent ?? w.provider}</span>
     </button>
   );
   return (
     <div className="inspector-section">
       <h4 className="section-head">
-        {s.orchestrator ? "Orchestrator" : "Worker"}
+        {s.feature_owner ? "Feature owner" : s.orchestrator ? "Orchestrator" : "Worker"}
         {(s.orchestrator ? workers.length > 0 : lead) && (
           <button className="btn small" data-command="orchestrator.thread" onClick={() => openWorkerThread(s.orchestrator ? s.id : lead!.id, s.orchestrator ? undefined : s.id)}>
             {s.orchestrator ? "Threads" : "Thread"}
@@ -83,9 +85,11 @@ function OrchestrationSection({ s }: { s: Session }) {
       {s.orchestrator ? (
         <>
           <div className="dim" style={{ marginBottom: 6 }}>
-            {s.folderless
-              ? "Belongs to no folder. Starts the sessions below, each in the folder it names, directs them and hears back when each one stops."
-              : "Starts and directs the sessions below and hears back when each one stops."}
+            {s.feature_owner
+              ? "Owns one feature: staffs the specialists below, directs them, puts your decisions to you and delivers a report."
+              : s.folderless
+                ? "Belongs to no folder. Starts the sessions below, each in the folder it names, directs them and hears back when each one stops."
+                : "Starts and directs the sessions below and hears back when each one stops."}
           </div>
           <div className="list">
             {workers.length === 0 && <span className="dim">No workers yet</span>}
@@ -94,7 +98,9 @@ function OrchestrationSection({ s }: { s: Session }) {
         </>
       ) : (
         <>
-          <div className="dim" style={{ marginBottom: 6 }}>Started by this orchestrator, which hears back when this session stops.</div>
+          <div className="dim" style={{ marginBottom: 6 }}>
+            {s.specialist_name ? `Hired as ${s.specialist_name} by this feature owner, which hears back when this session stops.` : "Started by this orchestrator, which hears back when this session stops."}
+          </div>
           <div className="list">{lead && row(lead)}</div>
         </>
       )}
@@ -212,6 +218,7 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
           {prs.map((pr) => <WatchSection key={`${pr.repo}#${pr.number}`} target={pr} showTarget={prs.length > 1} />)}
           <PlanSection sessionId={s.id} />
           <OrchestrationSection s={s} />
+          {s.feature_owner && <FeatureSection s={s} />}
           <div className="inspector-section">
             <h4>Session</h4>
             <div className="kv">

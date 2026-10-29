@@ -22,6 +22,7 @@ import type { RpcClient, ConnectionState } from "../lib/rpc";
 import { normalizeSession } from "../lib/pulls";
 import { folderOf } from "../lib/sessionFolder";
 import { planContent, type SessionPlan } from "../views/sessionPlans";
+import { dropFeature, setFeature } from "./features";
 
 export type Notice = { id: string; level: "info" | "warn" | "error"; message: string; ts: number };
 
@@ -48,9 +49,10 @@ export type Dialog =
   | { kind: "review-settings"; pull: PullRequest; config?: ReviewConfig }
   | { kind: "review-submit"; preview: SubmissionPreview }
   | { kind: "none" }
-  | { kind: "new-session"; provider?: string; cwd?: string }
+  /** `featureOwner` starts on a feature owner. */
+  | { kind: "new-session"; provider?: string; cwd?: string; featureOwner?: boolean }
   | { kind: "import" }
-  | { kind: "settings"; tab?: "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "groups" }
+  | { kind: "settings"; tab?: "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" }
   | { kind: "search" }
   | { kind: "inbox" }
   | { kind: "diff"; sessionId: string; path?: string }
@@ -404,6 +406,11 @@ export const useStore = create<AppState>((set, get) => ({
     }
     if (ev.type === "session_removed") {
       st.removeSession(ev.session_id);
+      dropFeature(ev.session_id);
+      return;
+    }
+    if (ev.type === "feature_updated") {
+      setFeature(ev.feature);
       return;
     }
     const sid = ev.session_id;

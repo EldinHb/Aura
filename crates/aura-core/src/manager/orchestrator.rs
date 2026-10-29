@@ -19,7 +19,7 @@ use crate::types::*;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -45,6 +45,33 @@ pub(super) struct State {
     /// Workers sent a message whose turn has not started yet, so a `wait`
     /// right after dispatching does not mistake them for finished.
     dispatched: HashSet<SessionId>,
+    /// Orchestrator id -> other messages from Aura waiting for it to be free,
+    /// such as the user's answers to a feature owner. Sent one per turn,
+    /// before worker reports.
+    notes: HashMap<SessionId, VecDeque<Note>>,
+}
+
+/// A message from Aura that is not a worker report.
+#[derive(Debug, Clone)]
+pub(super) struct Note {
+    pub text: String,
+    /// What in its feature record the note brings a feature owner, marked
+    /// delivered once it is sent, so a daemon restart sends it again.
+    pub about: Option<NoteAbout>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum NoteAbout {
+    /// The user's answer to this question.
+    Answer(String),
+    /// What the user made of this specialist suggestion.
+    Suggestion(String),
+}
+
+/// What `deliver` sends.
+enum Delivery {
+    Report(String),
+    Note(Note),
 }
 
 /// What an orchestrator asks for when it starts a worker.
@@ -90,7 +117,8 @@ pub struct WorkerReport {
 
 /// A folder or repository the user's sessions work in, for an orchestrator
 /// choosing where a worker goes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Project {
     /// Root of the main working tree, or the folder when it is not in a repository.
     pub path: String,
@@ -98,6 +126,7 @@ pub struct Project {
     /// Groups linked to it.
     pub groups: Vec<String>,
     /// Sessions that work in it, its worktrees included. Archived ones are not counted.
+    #[ts(type = "number")]
     pub sessions: usize,
     pub last_used: DateTime<Utc>,
 }
@@ -178,16 +207,21 @@ impl Manager {
         let Some((aura, data_dir)) = self.inner.orchestration.lock().cli.clone() else {
             return vec![];
         };
+        let mut args = vec![
+            "mcp".into(),
+            "--data-dir".into(),
+            data_dir.to_string_lossy().into_owned(),
+            "--orchestrator".into(),
+            s.id.clone(),
+        ];
+        // A feature owner's server adds the owner's tools.
+        if s.feature_owner {
+            args.push("--feature-owner".into());
+        }
         vec![McpServer {
             name: "aura".into(),
             command: aura.to_string_lossy().into_owned(),
-            args: vec![
-                "mcp".into(),
-                "--data-dir".into(),
-                data_dir.to_string_lossy().into_owned(),
-                "--orchestrator".into(),
-                s.id.clone(),
-            ],
+            args,
         }]
     }
 
@@ -196,6 +230,18 @@ impl Manager {
         if s.orchestrator {
             let tools = self.inner.orchestration.lock().cli.is_some();
             let mut p = crate::prompts::orchestrator_prompt(s, tools);
+            if s.feature_owner {
+                // Unreadable, the feature is the goal-less one its owner starts with.
+                let feature = self.feature(&s.id).unwrap_or_else(|e| {
+                    tracing::warn!("feature of {}: {e:#}", s.id);
+                    crate::features::Feature::new(&s.id, "", None)
+                });
+                p = format!(
+                    "{p}\n\n{}\n\n{}",
+                    crate::prompts::feature_owner_prompt(&feature.goal),
+                    self.effective_autonomy(&feature).prompt()
+                );
+            }
             // Unreadable settings leave the load balancer off rather than the
             // orchestrator without a prompt.
             match self.stored_load_balancer().map(|lb| lb.prompt()) {
@@ -206,7 +252,11 @@ impl Manager {
             return Some(p);
         }
         let orchestrator = self.get_session(s.orchestrator_id.as_deref()?).ok()?;
-        Some(crate::prompts::worker_prompt(&orchestrator.title))
+        let worker = crate::prompts::worker_prompt(&orchestrator.title);
+        Some(match self.specialist_prompt(s) {
+            Some(role) => format!("{worker}\n\n{role}"),
+            None => worker,
+        })
     }
 
     /// Make a session an orchestrator or a regular session again. Takes effect
@@ -223,6 +273,9 @@ impl Manager {
             s.orchestrator = on;
             if on {
                 s.orchestrator_id = None;
+            } else {
+                // A feature owner is an orchestrator first; its record stays.
+                s.feature_owner = false;
             }
         })?;
         if !on {
@@ -255,6 +308,7 @@ impl Manager {
         st.reporting.remove(id);
         st.report_turns.remove(id);
         st.dispatched.remove(id);
+        st.notes.remove(id);
         for q in st.queued.values_mut() {
             q.remove(id);
         }
@@ -333,20 +387,12 @@ impl Manager {
 
     /// Start a worker and give it its first task.
     pub async fn start_worker(&self, orchestrator: &str, spec: WorkerSpec) -> Result<Session> {
-        let orch = self.orchestrator(orchestrator)?;
-        if spec.prompt.trim().is_empty() {
-            bail!("a worker needs a prompt");
-        }
-        let (provider, agent) = parse_agent(&spec.agent)?;
-        let model = spec.model.filter(|m| !m.is_empty());
-        let key = agent.as_deref().unwrap_or(provider.as_str());
-        if let Some(entry) = self
-            .stored_load_balancer()?
-            .forbidden(key, model.as_deref())
-        {
-            bail!("the user's load balancer settings forbid `{entry}`; pick another agent or model from list_agents");
-        }
-        let cwd = match spec.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        self.start_worker_as(orchestrator, spec, None).await
+    }
+
+    /// The folder a worker asked for in `cwd` works in.
+    pub fn worker_cwd(&self, orch: &Session, cwd: Option<&str>) -> Result<String> {
+        let cwd = match cwd.map(str::trim).filter(|c| !c.is_empty()) {
             Some(c) if orch.folderless => {
                 let dir = resolve_dir("", c);
                 if !Path::new(&dir).is_absolute() {
@@ -363,6 +409,31 @@ impl Manager {
         if self.in_orchestrator_dirs(&cwd) {
             bail!("`{cwd}` is where Aura keeps the directories of orchestrators; give the worker the folder or repository it works in");
         }
+        Ok(cwd)
+    }
+
+    /// Start a worker, hired as `specialist` if given. A feature owner's
+    /// workers join its team.
+    pub(super) async fn start_worker_as(
+        &self,
+        orchestrator: &str,
+        spec: WorkerSpec,
+        specialist: Option<&crate::specialists::Specialist>,
+    ) -> Result<Session> {
+        let orch = self.orchestrator(orchestrator)?;
+        if spec.prompt.trim().is_empty() {
+            bail!("a worker needs a prompt");
+        }
+        let (provider, agent) = parse_agent(&spec.agent)?;
+        let model = spec.model.filter(|m| !m.is_empty());
+        let key = agent.as_deref().unwrap_or(provider.as_str());
+        if let Some(entry) = self
+            .stored_load_balancer()?
+            .forbidden(key, model.as_deref())
+        {
+            bail!("the user's load balancer settings forbid `{entry}`; pick another agent or model from list_agents");
+        }
+        let cwd = self.worker_cwd(&orch, spec.cwd.as_deref())?;
         // Permission and sandbox modes only mean something to the same agent.
         let same_agent = provider == orch.provider && agent == orch.agent;
         let session = self
@@ -385,6 +456,7 @@ impl Manager {
                         path: None,
                     }),
                 orchestrator_id: Some(orch.id.clone()),
+                specialist: specialist.map(|s| (s.id.clone(), s.name.clone())),
                 ..Default::default()
             })
             .await?;
@@ -405,7 +477,11 @@ impl Manager {
                     session.id
                 );
             }
-            Ok(_) => {}
+            Ok(o) => {
+                if o.feature_owner {
+                    self.join_team(orchestrator, &session, specialist);
+                }
+            }
         }
         self.dispatch(orchestrator, &session.id, spec.prompt)
             .await?;
@@ -989,6 +1065,18 @@ impl Manager {
             if st.delivering.contains(orchestrator) {
                 return;
             }
+            // Other messages from Aura first, one per turn; the reports
+            // follow when that turn ends.
+            let note = st.notes.get_mut(orchestrator).and_then(VecDeque::pop_front);
+            if st.notes.get(orchestrator).is_some_and(VecDeque::is_empty) {
+                st.notes.remove(orchestrator);
+            }
+            if let Some(note) = note {
+                st.delivering.insert(orchestrator.to_string());
+                drop(st);
+                self.deliver(orchestrator, Delivery::Note(note));
+                return;
+            }
             match st.queued.remove(orchestrator) {
                 Some(q) if !q.is_empty() => {
                     st.delivering.insert(orchestrator.to_string());
@@ -1009,11 +1097,34 @@ impl Manager {
             st.reporting.remove(orchestrator);
             return;
         }
-        let text = report_message(&reports);
+        self.deliver(orchestrator, Delivery::Report(report_message(&reports)));
+    }
+
+    /// Queue a message from Aura (not a worker report) for an orchestrator,
+    /// sent as soon as it is free.
+    pub(super) fn queue_note(&self, orchestrator: &str, note: Note) {
+        self.inner
+            .orchestration
+            .lock()
+            .notes
+            .entry(orchestrator.to_string())
+            .or_default()
+            .push_back(note);
+        self.flush_reports(orchestrator);
+    }
+
+    /// Send a message the `delivering` gate was claimed for. A note that
+    /// cannot be sent goes back to the front of the queue, for the next time
+    /// the orchestrator is free; one that is sent is marked in its record.
+    fn deliver(&self, orchestrator: &str, delivery: Delivery) {
         let me = self.clone();
         let id = orchestrator.to_string();
         tokio::spawn(async move {
-            if let Err(e) = me
+            let (text, what) = match &delivery {
+                Delivery::Report(text) => (text.clone(), "a worker report"),
+                Delivery::Note(n) => (n.text.clone(), "a message from Aura"),
+            };
+            let sent = me
                 .send(
                     &id,
                     Input {
@@ -1021,18 +1132,30 @@ impl Manager {
                         ..Default::default()
                     },
                 )
-                .await
-            {
-                {
-                    let mut st = me.inner.orchestration.lock();
-                    st.delivering.remove(&id);
-                    st.reporting.remove(&id);
+                .await;
+            match (sent, delivery) {
+                (
+                    Ok(()),
+                    Delivery::Note(Note {
+                        about: Some(about), ..
+                    }),
+                ) => me.note_delivered(&id, &about),
+                (Ok(()), _) => {}
+                (Err(e), delivery) => {
+                    {
+                        let mut st = me.inner.orchestration.lock();
+                        st.delivering.remove(&id);
+                        st.reporting.remove(&id);
+                        if let Delivery::Note(note) = delivery {
+                            st.notes.entry(id.clone()).or_default().push_front(note);
+                        }
+                    }
+                    me.publish(Event::Notice {
+                        session_id: id,
+                        level: NoticeLevel::Warn,
+                        message: format!("Could not deliver {what}: {e:#}"),
+                    });
                 }
-                me.publish(Event::Notice {
-                    session_id: id,
-                    level: NoticeLevel::Warn,
-                    message: format!("Could not deliver a worker report: {e:#}"),
-                });
             }
         });
     }
@@ -1166,6 +1289,12 @@ pub fn agent_line(agent: &str, model: Option<&str>, effort: Option<&str>) -> Str
         model.filter(|m| !m.is_empty()).unwrap_or("default"),
         effort.filter(|e| !e.is_empty()).unwrap_or("default")
     )
+}
+
+/// The agent a session runs, as `start_session` takes it: `claude`, `codex`
+/// or an ACP agent id.
+pub(super) fn agent_label(s: &Session) -> String {
+    label(s)
 }
 
 fn label(s: &Session) -> String {

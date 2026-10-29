@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
-import type { DirEntry, ModelInfo, SessionMode } from "../../gen";
+import type { Autonomy, DirEntry, ModelInfo, SessionMode } from "../../gen";
 import { setFocus } from "../../commands/core";
 import { basename } from "../../lib/platform";
 import { physicalKey } from "../../lib/keymap";
@@ -11,6 +11,8 @@ import { useGroups } from "../../state/groups";
 import { saveLinkPreferences } from "../../state/sessionLinkPreferences";
 import { IssuePicker, type PickedIssue } from "./IssuePicker";
 import { folderOf } from "../../lib/sessionFolder";
+import { AutonomyPicker } from "../AutonomyPicker";
+import { describeAutonomy } from "../../lib/features";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
 /** Rows the directory browser renders; the arrow keys stay within them. */
@@ -58,7 +60,7 @@ function parentDir(p: string): string {
   return i <= 0 ? "/" : t.slice(0, i);
 }
 
-export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; cwd?: string }) {
+export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetOwner }: { preset?: string; cwd?: string; featureOwner?: boolean }) {
   const client = useStore((s) => s.client);
   const providers = useStore((s) => s.providers);
   const settings = useStore((s) => s.settings);
@@ -99,8 +101,15 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
   const [prompt, setPrompt] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [orchestrator, setOrchestrator] = useState(false);
+  // A feature owner orchestrates too: it owns one feature and staffs a team for it.
+  const [featureOwner, setFeatureOwner] = useState(!!presetOwner);
+  const owns = provider !== "terminal" && featureOwner;
+  const [goal, setGoal] = useState("");
+  // The feature's own autonomy; null follows the setting for every feature owner.
+  const [autonomy, setAutonomy] = useState<Autonomy | null>(null);
+  const [globalAutonomy, setGlobalAutonomy] = useState<Autonomy | null>(null);
   // A terminal cannot orchestrate, whatever the box said before the provider changed.
-  const orchestrates = provider !== "terminal" && orchestrator;
+  const orchestrates = provider !== "terminal" && (orchestrator || featureOwner);
   // An orchestrator belongs to no folder unless the user gives it one.
   const [orchestratorFolder, setOrchestratorFolder] = useState(false);
   const noFolder = orchestrates && !orchestratorFolder;
@@ -111,6 +120,10 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
 
   const caps = providers.find((p) => p.kind === provider)?.capabilities;
   const { names: groups } = useGroups();
+
+  useEffect(() => {
+    if (owns) client?.autonomy().then(setGlobalAutonomy, () => {});
+  }, [client, owns]);
 
   useEffect(() => {
     client?.home().then((h) => {
@@ -235,10 +248,14 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         permission_mode: permission || null,
         sandbox_mode: sandbox || null,
         worktree: !noFolder && worktree && repoRoot && branch.trim() ? { branch: branch.trim(), base: null, path: null } : null,
-        initial_prompt: (mode === "structured" || orchestrates) && prompt.trim() ? prompt.trim() : null,
+        // A feature owner starts on its goal.
+        initial_prompt: owns ? goal.trim() || null : (mode === "structured" || orchestrates) && prompt.trim() ? prompt.trim() : null,
         system_prompt: provider !== "terminal" && systemPrompt.trim() ? systemPrompt : null,
         orchestrator: orchestrates,
         orchestrator_id: null,
+        feature_owner: owns,
+        feature_goal: owns ? goal.trim() || null : null,
+        autonomy: owns ? autonomy : null,
       });
       if (cwd) pushRecentDir(cwd);
       if (issues.length && !noFolder) {
@@ -253,7 +270,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, issues, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, issues, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -326,18 +343,39 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       {provider !== "terminal" && (
         <div className="field">
           <label>
-            <input type="checkbox" checked={orchestrator} onChange={(e) => setOrchestrator(e.target.checked)} style={{ marginRight: 6 }} />
+            <input type="checkbox" checked={orchestrator || featureOwner} disabled={featureOwner} onChange={(e) => setOrchestrator(e.target.checked)} style={{ marginRight: 6 }} />
             Orchestrator: starts and directs other sessions
           </label>
-          {orchestrator && <span className="dim" style={{ fontSize: 11 }}>You talk to this agent like in a chat; it hands work to worker sessions of any agent, in any folder or repository, which show up under it.</span>}
+          {orchestrator && !featureOwner && <span className="dim" style={{ fontSize: 11 }}>You talk to this agent like in a chat; it hands work to worker sessions of any agent, in any folder or repository, which show up under it.</span>}
+          <label>
+            <input type="checkbox" checked={featureOwner} onChange={(e) => setFeatureOwner(e.target.checked)} style={{ marginRight: 6 }} />
+            Feature owner: owns one feature end to end with a team of specialists
+          </label>
+          {featureOwner && <span className="dim" style={{ fontSize: 11 }}>An orchestrator that decides, staffs specialists (designers, engineers, a tester, reviewers) and comes back to you only for decisions that are yours. It ends with a delivery report: what was done, why, and how and where to test it.</span>}
         </div>
+      )}
+
+      {owns && (
+        <>
+          <div className="field">
+            <label htmlFor="feature-goal">Goal</label>
+            <textarea id="feature-goal" rows={4} value={goal} onChange={(e) => setGoal(e.target.value)} placeholder="What should the feature do, for whom, and why? (⌘↩ to create)" />
+          </div>
+          <div className="field">
+            <label>
+              <input type="checkbox" checked={!!autonomy} onChange={(e) => setAutonomy(e.target.checked ? (globalAutonomy ?? { level: "blocking_decisions", checkpoints: ["after_design", "before_implementation", "before_delivery"] }) : null)} style={{ marginRight: 6 }} />
+              Own autonomy for this feature {!autonomy && globalAutonomy && <span className="dim">· otherwise {describeAutonomy(globalAutonomy)}, from Settings → Orchestrators</span>}
+            </label>
+            {autonomy && <AutonomyPicker name="new-feature-autonomy" value={autonomy} onChange={setAutonomy} />}
+          </div>
+        </>
       )}
 
       {noFolder ? (
         <div className="field">
           <label>Directory</label>
           <div className="no-folder">
-            <span className="dim">None: the orchestrator names a folder for each worker.</span>
+            <span className="dim">None: the {owns ? "feature owner" : "orchestrator"} names a folder for each worker.</span>
             <button type="button" className="btn small" data-command="new-session.folder" onClick={() => setOrchestratorFolder(true)}>Use a folder</button>
           </div>
         </div>
@@ -367,7 +405,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
       <div className="two-col">
         <div className="field">
           <label>Title (optional)</label>
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`${choice.agent ?? provider} · ${noFolder ? "orchestrator" : basename(expandedDir || "")}`} />
+          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={`${choice.agent ?? provider} · ${noFolder ? (owns ? "feature owner" : "orchestrator") : basename(expandedDir || "")}`} />
         </div>
         <div className="field">
           <label>Group (optional) {groupFromRepo && !groupTouched && <span className="dim">· from this repository</span>}</label>
@@ -458,7 +496,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd }: { preset?: string; 
         </div>
       )}
 
-      {(mode === "structured" || orchestrates) && provider !== "terminal" && (
+      {(mode === "structured" || orchestrates) && provider !== "terminal" && !owns && (
         <div className="field">
           <label>Initial prompt (optional)</label>
           <textarea rows={3} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="First message to the agent… (⌘↩ to create)" />

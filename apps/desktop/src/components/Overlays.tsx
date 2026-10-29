@@ -57,7 +57,7 @@ function CurrentDialog() {
     case "sandbox":
       return <PickerDialog kind={dialog.kind} sessionId={dialog.sessionId} />;
     case "new-session":
-      return <NewSessionDialog key={`${dialog.provider ?? ""}-${dialog.cwd ?? ""}`} preset={dialog.provider} cwd={dialog.cwd} />;
+      return <NewSessionDialog key={`${dialog.provider ?? ""}-${dialog.cwd ?? ""}-${dialog.featureOwner ? "owner" : ""}`} preset={dialog.provider} cwd={dialog.cwd} featureOwner={dialog.featureOwner} />;
     case "import":
       return <ImportDialog />;
     case "image":

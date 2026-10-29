@@ -69,7 +69,7 @@ export function WorkerThreads({ orchestratorId }: { orchestratorId: string }) {
             <span className={clsx("dot", statusClass(w))} />
             <span className="grow">
               <span className="worker-title">{w.title}</span>
-              <span className="dim">{agentLine(w, providers)}</span>
+              <span className="dim">{w.specialist_name && w.specialist_name !== w.title ? `${w.specialist_name} · ` : ""}{agentLine(w, providers)}</span>
             </span>
             <span className="dim">{w.archived ? "archived" : w.status === "running" ? "working" : w.status.replace("_", " ")}</span>
           </button>

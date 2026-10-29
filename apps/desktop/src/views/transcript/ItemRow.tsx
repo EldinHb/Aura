@@ -9,6 +9,8 @@ import { setPlanView } from "../../state/planView";
 import { auraMessage } from "../../lib/auraMessage";
 import { reportedWorkers } from "../../lib/orchestration";
 import { openWorkerThread } from "../../state/workerThreads";
+import { featureCard } from "../../lib/features";
+import { FeatureCard } from "./FeatureCards";
 import { commandOutput, contextBoundary, durationMs, firstLine, fmtDuration, isCardKind, isSlashCommand, itemChanges, itemLabel, kindIcon, prettyJson, truncate } from "./format";
 
 const JSON_LIMIT = 4000;
@@ -196,6 +198,7 @@ export const ItemRow = memo(function ItemRow({ item, cursor, expanded, onToggle,
       </div>
     );
   }
+  if (featureCard(item)) return <FeatureCard item={item} cursor={cursor} onCursor={onCursor} />;
   const command = commandOutput(item);
   if (command) {
     return (

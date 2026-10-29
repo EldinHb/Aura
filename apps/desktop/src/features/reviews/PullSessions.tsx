@@ -32,7 +32,7 @@ function SessionRow({ entry, depth = 0 }: { entry: PullSession; depth?: number }
       <span className={`dot ${statusClass(session)}`} />
       <span className="title">{session.title}</span>
       {session.archived && <span className="chip">archived</span>}
-      {session.orchestrator && <span className="chip orchestrator">orch</span>}
+      {session.orchestrator && <span className="chip orchestrator">{session.feature_owner ? "owner" : "orch"}</span>}
       {entry.reasons.map((r) => <span key={r} className="chip" title={REASONS[r].title}>{REASONS[r].label}</span>)}
       {!entry.reasons.length && <span className="chip" title="Its workers worked on this PR">workers</span>}
       <span className="spacer" />

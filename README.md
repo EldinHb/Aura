@@ -58,6 +58,10 @@ keyboard, while the agents keep working in the background.
   as it likes) in any of your repositories, hands them tasks and hears back when they
   finish. Every worker is a normal session you can open and message yourself. See
   [Orchestrators](#orchestrators).
+- **Feature owners with specialist teams.** Hand a feature to a feature owner: it
+  staffs designers, engineers, a tester and reviewers from reusable specialists,
+  decides what it can, asks you only what is yours to decide, and ends with a delivery
+  report. See [Feature owners & specialists](#feature-owners--specialists).
 - **Agents follow up on reviews.** Link a session to several issues and PRs; new
   reviews and comments on your PRs go to its agent, which fixes and pushes, and
   you are told when they arrive and when the agent is done.
@@ -243,10 +247,63 @@ Aura. Aura hands it to Claude Code (`--mcp-config`, with the tools allowed), Cod
 (config override, with the tools approved) and ACP agents (`mcpServers`). The tools
 are `list_agents`, `list_projects`, `start_session`, `send_message`, `list_sessions`,
 `read_session`, `wait_for_sessions`, `interrupt_session`, `stop_session` and
-`delete_session`, and they only reach the orchestrator's own workers. ACP agents
-decide themselves whether to ask before an MCP tool call; if yours does, the requests
-show up as approvals like any other. Turning an orchestrator that has a folder back
-into a regular session leaves its workers as regular sessions.
+`delete_session`, and they only reach the orchestrator's own workers. A feature owner
+gets more (see below); a plain orchestrator has exactly these. ACP agents decide
+themselves whether to ask before an MCP tool call; if yours does, the requests show up
+as approvals like any other. Turning an orchestrator that has a folder back into a
+regular session leaves its workers as regular sessions.
+
+## Feature owners & specialists
+
+A feature owner is an orchestrator that owns one feature end to end. You act as its
+product owner: you say what you want and why, and it decides, plans, staffs a team of
+specialists, directs and checks their work, and comes back to you only for decisions
+that are yours. When the feature is done you get a short delivery report. Tick
+**Feature owner** in the new-session dialog (`⌘K` → New feature owner), give it a goal,
+and optionally an autonomy level of its own. From the command line:
+`aura new -p claude --feature-owner --goal "…"`. Plain orchestrators keep working
+exactly as before; a feature owner is one with more to do.
+
+- **Specialists.** Reusable personas the owner hires as workers: UX designer, UI
+  designer, frontend engineer, backend engineer, tester (QA), code reviewer and
+  security reviewer come with Aura. A worker hired as one gets the specialist's
+  instructions in its system prompt (role, standards, what to deliver, how to report)
+  and runs on the specialist's preferred agent, model and effort unless the owner names
+  others; the load balancer's forbidden agents and models still apply. Manage them in
+  Settings → Specialists: edit, delete or reset Aura's own to their shipped version,
+  add your own, globally or for one project. A project's specialist replaces the
+  global one with the same id for work in that project. The sidebar shows each hired
+  worker's role next to it.
+- **Decisions.** The owner decides what is not yours to decide and logs every decision
+  that shapes the feature with its rationale (the inspector shows the log). A decision
+  that is yours arrives as a card in the owner's chat: the question, the context, the
+  options and the one it recommends. Click an option, add a note or answer in your own
+  words; the answer goes back to the owner and into the log as your decision. The
+  sidebar marks an owner that waits on you.
+- **Autonomy.** Settings → Orchestrators → Feature owners, or per feature:
+  - *Autonomous*: decides everything and asks only before irreversible or
+    outward-facing actions. Aura refuses any other question.
+  - *Blocking decisions* (default): asks only when a decision is truly yours and the
+    work cannot go on well without it.
+  - *Checkpoints*: as blocking decisions, and stops for your review at the checkpoints
+    you pick: after design, before implementation, before delivery. The checkpoint
+    becomes a card to approve or send back; Aura refuses the delivery report until you
+    approved the delivery checkpoint.
+
+  At every level the owner asks before irreversible or outward-facing actions: pushing
+  to a shared branch or merging, pull requests and issues, releases and deployments,
+  deleting data or branches that are not its team's, contacting people or services,
+  and spending money.
+- **Proposed specialists.** When the team needs a role no specialist covers, the owner
+  can propose one. Its card lets you accept it for every project or one project, edit
+  it first, or dismiss it.
+- **Delivery report.** The owner ends with a report card: what was done, why, how to
+  test it and where (branch, worktree, URL or screen).
+
+Everything a feature owner records is kept in its feature record in Aura's database,
+across restarts, and goes when the owner is deleted. On top of the orchestrator's
+tools it has `list_specialists`, `hire`, `ask_user`, `record_decision`, `checkpoint`,
+`propose_specialist`, `deliver_report` and `feature_status`.
 
 ## ACP agents
 
@@ -334,7 +391,7 @@ show up in the other.
 ```bash
 aura daemon start|stop|status
 aura ls [--all]
-aura new --provider claude|codex|terminal|acp [--agent ID] [--cwd DIR] [--title T] [--group G] [--prompt TEXT] [--system-prompt TEXT] [--branch B] [--resume NATIVE_ID] [-- cmd args...]
+aura new --provider claude|codex|terminal|acp [--agent ID] [--cwd DIR] [--title T] [--group G] [--prompt TEXT] [--system-prompt TEXT] [--branch B] [--orchestrator] [--feature-owner [--goal TEXT]] [--resume NATIVE_ID] [-- cmd args...]
 aura attach <id>         # raw terminal passthrough; Ctrl+\ detaches
 aura send <id> <text>
 aura interrupt <id>

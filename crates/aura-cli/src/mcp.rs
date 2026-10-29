@@ -1,6 +1,7 @@
 //! `aura mcp`: the orchestration tools as a stdio MCP server. Aura starts it
 //! for every orchestrator session, whatever its agent, and it forwards each
-//! tool call to the daemon's `orchestrator.*` methods.
+//! tool call to the daemon's `orchestrator.*` methods. A feature owner's
+//! server (`--feature-owner`) has the owner's tools too, which call `owner.*`.
 
 use anyhow::{anyhow, bail, Result};
 use aura_core::*;
@@ -17,13 +18,16 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 struct Server {
     data_dir: PathBuf,
     orchestrator: String,
+    /// The orchestrator owns a feature: it gets the owner's tools.
+    feature_owner: bool,
     client: Mutex<Option<RpcClient>>,
 }
 
-pub async fn run(data_dir: PathBuf, orchestrator: String) -> Result<()> {
+pub async fn run(data_dir: PathBuf, orchestrator: String, feature_owner: bool) -> Result<()> {
     let server = Arc::new(Server {
         data_dir,
         orchestrator,
+        feature_owner,
         client: Mutex::new(None),
     });
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
@@ -89,11 +93,15 @@ impl Server {
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "aura", "title": "Aura", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too.",
+                    "instructions": if self.feature_owner {
+                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too."
+                    } else {
+                        "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too."
+                    },
                 }))
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools() })),
+            "tools/list" => Ok(json!({ "tools": tools(self.feature_owner) })),
             "tools/call" => {
                 let name = params
                     .get("name")
@@ -286,6 +294,146 @@ impl Server {
                     ),
                 })
             }
+            _ if self.feature_owner => self.call_owner(tool, a).await,
+            _ => bail!("unknown tool {tool}"),
+        }
+    }
+
+    /// The feature owner's own tools.
+    async fn call_owner(&self, tool: &str, a: &Value) -> Result<String> {
+        let o = &self.orchestrator;
+        match tool {
+            "list_specialists" => {
+                let mut p = json!({ "owner": o });
+                if let Some(cwd) = opt(a, "cwd") {
+                    p["cwd"] = json!(cwd);
+                }
+                let list: Vec<Specialist> =
+                    serde_json::from_value(self.rpc("owner.specialists", p).await?)?;
+                Ok(if list.is_empty() {
+                    "There are no specialists: the user deleted them all. Use start_session for ad-hoc workers, and propose_specialist for roles you need again.".into()
+                } else {
+                    format!(
+                        "Specialists you can hire (pass the id as `specialist` to hire):\n{}",
+                        aura_core::specialists::describe(&list)
+                    )
+                })
+            }
+            "hire" => {
+                let mut p = json!({ "owner": o, "specialist": req(a, "specialist")?, "prompt": req(a, "prompt")? });
+                for key in ["agent", "title", "cwd", "branch", "base", "model", "effort"] {
+                    if let Some(v) = opt(a, key) {
+                        p[key] = json!(v);
+                    }
+                }
+                let s: Session = serde_json::from_value(self.rpc("owner.hire", p).await?)?;
+                Ok(format!(
+                    "Hired {} (`{}`) as {} with {} in {}{}. It is working on the task; you get a worker report when it stops, or call wait_for_sessions.",
+                    s.title,
+                    s.id,
+                    s.specialist_name.as_deref().unwrap_or("a specialist"),
+                    agent_line(
+                        s.agent.as_deref().unwrap_or(s.provider.as_str()),
+                        s.model.as_deref(),
+                        s.effort.as_deref()
+                    ),
+                    s.cwd,
+                    s.worktree.as_ref().map(|w| format!(" on branch `{}`", w.branch)).unwrap_or_default()
+                ))
+            }
+            "ask_user" => {
+                let mut p = json!({ "owner": o, "question": req(a, "question")? });
+                for key in ["context", "recommended", "kind"] {
+                    if let Some(v) = opt(a, key) {
+                        p[key] = json!(v);
+                    }
+                }
+                if let Some(options) = a.get("options").and_then(Value::as_array) {
+                    p["options"] = json!(options
+                        .iter()
+                        .map(|o| match o {
+                            Value::String(label) => json!({ "label": label }),
+                            other => other.clone(),
+                        })
+                        .collect::<Vec<_>>());
+                }
+                let q: UserQuestion = serde_json::from_value(self.rpc("owner.ask_user", p).await?)?;
+                Ok(format!(
+                    "Asked the user (question `{}`); they see it as a card in your chat. End your turn now rather than wait: Aura sends you their answer in a message that starts with `[Aura] Decision from the user`. Meanwhile, keep the team on work that does not depend on it.",
+                    q.id
+                ))
+            }
+            "record_decision" => {
+                let d: Decision = serde_json::from_value(
+                    self.rpc(
+                        "owner.record_decision",
+                        json!({ "owner": o, "decision": req(a, "decision")?, "rationale": req(a, "rationale")? }),
+                    )
+                    .await?,
+                )?;
+                Ok(format!("Recorded decision `{}`.", d.id))
+            }
+            "checkpoint" => {
+                let r: CheckpointOutcome = serde_json::from_value(
+                    self.rpc(
+                        "owner.checkpoint",
+                        json!({ "owner": o, "checkpoint": req(a, "checkpoint")?, "summary": req(a, "summary")? }),
+                    )
+                    .await?,
+                )?;
+                Ok(match r.review {
+                    Some(q) => format!(
+                        "The user wants to review this checkpoint ({}), so Aura asked them (question `{}`). End your turn and do not go past it until their answer comes in a message that starts with `[Aura] Checkpoint review from the user`.",
+                        r.checkpoint.label(),
+                        q.id
+                    ),
+                    None => format!(
+                        "Recorded the checkpoint {}. The user's autonomy setting does not stop here: carry on.",
+                        r.checkpoint.label()
+                    ),
+                })
+            }
+            "propose_specialist" => {
+                let mut specialist =
+                    json!({ "name": req(a, "name")?, "instructions": req(a, "instructions")? });
+                for key in ["id", "role", "description", "agent", "model", "effort"] {
+                    if let Some(v) = opt(a, key) {
+                        specialist[key] = json!(v);
+                    }
+                }
+                let s: SpecialistSuggestion = serde_json::from_value(
+                    self.rpc(
+                        "owner.propose_specialist",
+                        json!({ "owner": o, "specialist": specialist, "reason": req(a, "reason")? }),
+                    )
+                    .await?,
+                )?;
+                Ok(format!(
+                    "Proposed \"{}\" (suggestion `{}`). The user accepts, edits or dismisses it in your chat; Aura tells you which. Until then, use start_session for that role if you need it now.",
+                    s.specialist.name, s.id
+                ))
+            }
+            "deliver_report" => {
+                let mut p = json!({ "owner": o });
+                for key in ["what", "why", "how_to_test", "where_to_test"] {
+                    p[key] = json!(req(a, key)?);
+                }
+                if let Some(v) = opt(a, "notes") {
+                    p["notes"] = json!(v);
+                }
+                self.rpc("owner.deliver_report", p).await?;
+                Ok("Delivered. The user sees your report as a card in your chat; tell them in a line or two that the feature is ready and where to try it.".into())
+            }
+            "feature_status" => {
+                #[derive(serde::Deserialize)]
+                struct Status {
+                    feature: Feature,
+                    autonomy: Autonomy,
+                }
+                let s: Status =
+                    serde_json::from_value(self.rpc("owner.status", json!({ "owner": o })).await?)?;
+                Ok(aura_core::features::describe(&s.feature, &s.autonomy))
+            }
             _ => bail!("unknown tool {tool}"),
         }
     }
@@ -360,11 +508,156 @@ fn req<'a>(a: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| anyhow!("`{key}` is required"))
 }
 
+/// An optional string argument, when given and not blank.
+fn opt<'a>(a: &'a Value, key: &str) -> Option<&'a str> {
+    a.get(key)
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+}
+
 fn session_arg() -> Value {
     json!({ "type": "string", "description": "The worker's session id (a unique prefix is enough) or its exact title." })
 }
 
-fn tools() -> Value {
+/// The tools of an orchestrator's server; a feature owner's has its own too.
+fn tools(feature_owner: bool) -> Value {
+    let mut tools = orchestrator_tools();
+    if feature_owner {
+        if let (Some(all), Value::Array(own)) = (tools.as_array_mut(), owner_tools()) {
+            all.extend(own);
+        }
+    }
+    tools
+}
+
+/// Only feature owners get these.
+fn owner_tools() -> Value {
+    json!([
+        {
+            "name": "list_specialists",
+            "description": "List the specialists you can hire: reusable personas (UX designer, UI designer, frontend and backend engineer, tester, code reviewer, security reviewer and the user's own) with what each is good at and the agent, model and effort it prefers. A project's own specialists replace global ones with the same id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cwd": { "type": "string", "description": "The folder or repository the work is in, to include that project's own specialists. Defaults to your folder." },
+                },
+            },
+            "annotations": { "readOnlyHint": true },
+        },
+        {
+            "name": "hire",
+            "description": "Hire a specialist: start a worker session that gets the specialist's instructions in its system prompt and runs on the specialist's preferred agent, model and effort unless you name others. It starts on `prompt` right away and joins your team. The worker does not see your conversation, so the prompt must be a complete brief.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "specialist": { "type": "string", "description": "The specialist's id from list_specialists." },
+                    "prompt": { "type": "string", "description": "The task, complete and self-contained: goal, context, files, constraints, how to verify and what to report." },
+                    "title": { "type": "string", "description": "Short title shown in Aura's sidebar. Defaults to the specialist's name." },
+                    "cwd": { "type": "string", "description": "Absolute path of the folder or repository the worker works in. Required when you have no folder of your own." },
+                    "branch": { "type": "string", "description": "Run the worker in a new git worktree on this branch. Use one per worker when several change the same repository at once." },
+                    "base": { "type": "string", "description": "Base ref for `branch`. Defaults to HEAD." },
+                    "agent": { "type": "string", "description": "Override the specialist's agent: `claude`, `codex`, or an ACP agent id from list_agents." },
+                    "model": { "type": "string", "description": "Override the specialist's model." },
+                    "effort": { "type": "string", "description": "Override the specialist's reasoning effort." },
+                },
+                "required": ["specialist", "prompt"],
+            },
+        },
+        {
+            "name": "ask_user",
+            "description": "Put a decision that is the user's to them. They see it as a card in your chat with your options and recommendation and answer there; Aura sends you the answer as a message. Returns at once: end your turn after asking. Only for decisions that are truly the user's or for irreversible and outward-facing actions; decide everything else yourself.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "The decision, as one clear question." },
+                    "context": { "type": "string", "description": "What the user needs to know to decide: the trade-offs and what each option leads to. Markdown." },
+                    "options": {
+                        "type": "array",
+                        "description": "The choices, two to four. The user can also answer in their own words.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": { "type": "string" },
+                                "description": { "type": "string" },
+                            },
+                            "required": ["label"],
+                        },
+                    },
+                    "recommended": { "type": "string", "description": "The label of the option you recommend." },
+                    "kind": { "type": "string", "enum": ["decision", "irreversible"], "description": "`decision` (default) for a decision that is the user's; `irreversible` to ask permission for an irreversible or outward-facing action such as merging, pushing, publishing, deleting or contacting people." },
+                },
+                "required": ["question"],
+            },
+        },
+        {
+            "name": "record_decision",
+            "description": "Record a decision you or your team made that shapes the feature, with its rationale, in the feature's decision log the user reads.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "decision": { "type": "string", "description": "What was decided, in one sentence." },
+                    "rationale": { "type": "string", "description": "Why, in a line or two." },
+                },
+                "required": ["decision", "rationale"],
+            },
+        },
+        {
+            "name": "checkpoint",
+            "description": "Report that the feature reached a stage. When the user's autonomy setting stops there, Aura asks the user to review it and you must wait for their answer; otherwise it is recorded and you carry on. The answer says which.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "checkpoint": { "type": "string", "enum": ["after_design", "before_implementation", "before_delivery"] },
+                    "summary": { "type": "string", "description": "What there is to review and where: designs, plan, branch or worktree, how to look at it. Markdown." },
+                },
+                "required": ["checkpoint", "summary"],
+            },
+        },
+        {
+            "name": "propose_specialist",
+            "description": "Propose a new reusable specialist when your team needs a role no specialist covers and other features will need it too. The user accepts (choosing global or project), edits or dismisses it in your chat.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "e.g. `Data engineer`." },
+                    "role": { "type": "string", "description": "What it does, in a few words." },
+                    "description": { "type": "string", "description": "What it is good at, for choosing whom to hire." },
+                    "instructions": { "type": "string", "description": "Markdown for its system prompt: its role, the standards it works to, what it delivers and how it reports." },
+                    "agent": { "type": "string" },
+                    "model": { "type": "string" },
+                    "effort": { "type": "string" },
+                    "id": { "type": "string", "description": "A slug; made from the name when left out." },
+                    "reason": { "type": "string", "description": "Why the team needs it." },
+                },
+                "required": ["name", "instructions", "reason"],
+            },
+        },
+        {
+            "name": "deliver_report",
+            "description": "Deliver the finished feature to the user with a short report, shown as a card in your chat. Call it once, when the work is done and verified.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "what": { "type": "string", "description": "What was done, in a few bullets. Markdown." },
+                    "why": { "type": "string", "description": "Why it was done this way: the decisions that shaped it." },
+                    "how_to_test": { "type": "string", "description": "Steps for the user to try it." },
+                    "where_to_test": { "type": "string", "description": "Where: branch, worktree path, URL or screen, and the command that runs it." },
+                    "notes": { "type": "string", "description": "Known limits and follow-ups the user may want." },
+                },
+                "required": ["what", "why", "how_to_test", "where_to_test"],
+            },
+        },
+        {
+            "name": "feature_status",
+            "description": "The feature's status, autonomy level, team and the questions still open with the user, as Aura has them.",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": { "readOnlyHint": true },
+        },
+    ])
+}
+
+/// Every orchestrator's tools.
+fn orchestrator_tools() -> Value {
     json!([
         {
             "name": "list_agents",
@@ -459,6 +752,62 @@ fn tools() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn names(tools: &Value) -> Vec<&str> {
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn plain_orchestrators_keep_their_tools_and_only_feature_owners_get_the_owners() {
+        assert_eq!(
+            names(&tools(false)),
+            [
+                "list_agents",
+                "list_projects",
+                "start_session",
+                "send_message",
+                "list_sessions",
+                "read_session",
+                "wait_for_sessions",
+                "interrupt_session",
+                "stop_session",
+                "delete_session"
+            ]
+        );
+        let owner = tools(true);
+        let owner = names(&owner);
+        assert_eq!(&owner[..10], names(&tools(false)).as_slice());
+        assert_eq!(
+            &owner[10..],
+            [
+                "list_specialists",
+                "hire",
+                "ask_user",
+                "record_decision",
+                "checkpoint",
+                "propose_specialist",
+                "deliver_report",
+                "feature_status"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plain_orchestrator_cannot_call_the_owners_tools() {
+        let server = Server {
+            data_dir: PathBuf::from("/nonexistent"),
+            orchestrator: "o".into(),
+            feature_owner: false,
+            client: Mutex::new(None),
+        };
+        let err = server.call("hire", &json!({})).await.unwrap_err();
+        assert_eq!(err.to_string(), "unknown tool hire");
+    }
 
     #[test]
     fn models_are_listed_with_their_efforts_and_defaults() {

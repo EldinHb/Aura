@@ -117,6 +117,12 @@ pub enum Event {
     NoticesCleared {
         session_id: SessionId,
     },
+    /// The feature a feature owner owns changed. Not part of the history:
+    /// the feature record is its own state (see `feature.get`).
+    FeatureUpdated {
+        session_id: SessionId,
+        feature: crate::features::Feature,
+    },
 }
 
 impl Event {
@@ -139,7 +145,8 @@ impl Event {
             | Event::Usage { session_id, .. }
             | Event::ProcessExited { session_id, .. }
             | Event::SettingChanged { session_id, .. }
-            | Event::NoticesCleared { session_id } => session_id,
+            | Event::NoticesCleared { session_id }
+            | Event::FeatureUpdated { session_id, .. } => session_id,
         }
     }
 
@@ -152,6 +159,7 @@ impl Event {
                 | Event::SessionUpdated { .. }
                 | Event::SessionRemoved { .. }
                 | Event::ItemDelta { .. }
+                | Event::FeatureUpdated { .. }
         )
     }
 }

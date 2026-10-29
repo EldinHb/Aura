@@ -22,6 +22,8 @@
   --agent-codex: #8fd9b5;
   --agent-terminal: #a8b1ff;
   --agent-acp: #d8b7f5;
+  /* A flag: a feature owner owns one feature. */
+  --feature-owner-icon: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><g fill="none" stroke="black" stroke-width="1.3" stroke-linejoin="round"><path d="M2.6 11.2V1.2"/><path d="M2.6 1.6h7.2l-1.8 2.5 1.8 2.5H2.6"/></g></svg>');
   --orchestrator-icon: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><g fill="none" stroke="black" stroke-width="1.3"><circle cx="6" cy="2.6" r="1.7"/><circle cx="2.4" cy="9.4" r="1.7"/><circle cx="9.6" cy="9.4" r="1.7"/><path d="M6 4.3v1.9M2.4 7.7V6.2h7.2v1.5"/></g></svg>');
   --inbox-icon: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14"><g fill="none" stroke="black" stroke-width="1.3" stroke-linejoin="round"><path d="M1.5 8 3.2 2.5h7.6L12.5 8v3.5h-11z"/><path d="M1.5 8h3l1 1.5h3l1-1.5h3"/></g></svg>');
   --radius: 8px;
@@ -134,6 +136,7 @@ kbd { font-family: var(--mono); font-size: 10.5px; padding: 1px 5px; border-radi
 .session-row .agent.codex { color: var(--agent-codex); }
 .session-row .agent.terminal { color: var(--agent-terminal); }
 .session-row .agent.acp { color: var(--agent-acp); }
+.feature-owner-mark { width: 12px; height: 12px; background: var(--accent); -webkit-mask: var(--feature-owner-icon) no-repeat center / contain; mask: var(--feature-owner-icon) no-repeat center / contain; }
 .orchestrator-mark { width: 12px; height: 12px; background: var(--accent); -webkit-mask: var(--orchestrator-icon) no-repeat center / contain; mask: var(--orchestrator-icon) no-repeat center / contain; }
 .session-row .sub .chip { padding: 0 5px; font-size: 10px; line-height: 14px; }
 /* Whole chips only: the ones that do not fit leave the line but stay measurable, and "+N" lists them. */
@@ -679,3 +682,44 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 .watch-review:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 .watch-review .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pr-watch .dim { margin: 2px 0; font-size: 11.5px; }
+
+/* Feature owners and their specialists. */
+.chip.specialist { border-color: var(--accent); color: var(--accent-2); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.feature-state.warn { border-color: var(--warn); color: var(--warn); }
+.chip.feature-state.ok { border-color: var(--ok); color: var(--ok); }
+.chip.recommended { border-color: var(--ok); color: var(--ok); }
+.card.feature-card { border-color: var(--border-strong); }
+.card.feature-card.decision.open { border-color: var(--info); }
+.card.feature-card.report { border-color: var(--ok); }
+.card.feature-card.suggestion { border-color: var(--accent); }
+.card.feature-card .feature-question { font-weight: 600; margin-bottom: 6px; white-space: pre-wrap; }
+.card.feature-card .options { display: flex; flex-direction: column; gap: 2px; }
+.card.feature-card .option { display: flex; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 5px; text-align: left; color: inherit; background: none; border: 1px solid transparent; }
+.card.feature-card .option:hover { background: var(--bg-hover); }
+.card.feature-card .option.picked { background: var(--accent-bg); border-color: var(--accent); }
+.card.feature-card .option-box { width: 16px; }
+.card.feature-card input.other-input { width: 100%; margin-top: 6px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; }
+.card.feature-card input.other-input:focus { border-color: var(--accent); outline: none; }
+.card.feature-card .feature-answer { margin-top: 4px; }
+.card.feature-card .report-part { margin-top: 6px; }
+.card.feature-card .report-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-dim); margin-bottom: 2px; }
+.card.feature-card .suggestion-instructions summary { cursor: pointer; color: var(--fg-muted); }
+.card.feature-card .actions select { max-width: 320px; }
+.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.specialists-tab .specialists-scope { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.specialists-tab .specialists-scope select { max-width: 420px; }
+.specialists-tab .specialists-body { display: grid; grid-template-columns: 240px 1fr; gap: 12px; align-items: start; }
+.specialists-tab .specialists-list { max-height: 56vh; overflow: auto; }
+.specialists-tab .list-item.static:hover { background: none; }
+.specialists-tab .specialist-role { font-size: 11px; }
+.specialist-fields input, .specialist-fields textarea { width: 100%; }
+.autonomy-picker { display: flex; flex-direction: column; gap: 4px; }
+.autonomy-picker .autonomy-level { align-items: flex-start; }
+.autonomy-picker .autonomy-level input { margin-top: 3px; }
+.autonomy-picker .autonomy-checkpoints { display: flex; gap: 14px; padding-left: 22px; flex-wrap: wrap; }
+.feature-owner-settings { margin-top: 16px; }
+.feature-section .feature-goal { white-space: pre-wrap; margin-bottom: 6px; }
+.feature-section .feature-autonomy { margin-top: 6px; }
+.feature-section .feature-decisions { margin-top: 6px; font-size: 12px; }
+.feature-section .feature-decisions ol { margin: 4px 0 0; padding-left: 18px; }
+.feature-section .feature-decisions .chip { margin-left: 6px; }

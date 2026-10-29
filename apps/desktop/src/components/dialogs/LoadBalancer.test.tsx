@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { LoadBalancer, LoadBalancerUpdate } from "../../gen";
+import type { Autonomy, LoadBalancer, LoadBalancerUpdate } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { useStore } from "../../state/store";
 import { SettingsDialog } from "./SettingsDialog";
@@ -11,10 +11,14 @@ const setLoadBalancer = vi.fn(async (u: LoadBalancerUpdate) => {
   return lb;
 });
 
+let autonomy: Autonomy;
+const setAutonomy = vi.fn(async (a: Autonomy) => (autonomy = a));
+
 beforeEach(() => {
   lb = { enabled: false, policy: "Route well", policy_is_default: true, default_policy: "Route well", rules: "", prefer: [], avoid: [] };
+  autonomy = { level: "blocking_decisions", checkpoints: ["after_design", "before_implementation", "before_delivery"] };
   vi.clearAllMocks();
-  useStore.setState({ providers: [], dialog: { kind: "none" }, client: { loadBalancer: () => Promise.resolve(lb), setLoadBalancer } as unknown as RpcClient });
+  useStore.setState({ providers: [], dialog: { kind: "none" }, client: { loadBalancer: () => Promise.resolve(lb), setLoadBalancer, autonomy: () => Promise.resolve(autonomy), setAutonomy } as unknown as RpcClient });
 });
 afterEach(cleanup);
 
@@ -48,4 +52,17 @@ it("saves rules and agent lists, rewrites the policy and resets it", async () =>
   fireEvent.click(await screen.findByText("Reset to default"));
   await waitFor(() => expect(setLoadBalancer).toHaveBeenLastCalledWith(expect.objectContaining({ policy: null, avoid: ["opus", "acp:goose"] })));
   expect(await screen.findByText("Routing policy · Aura's default")).toBeTruthy();
+});
+
+it("sets how much feature owners decide on their own, with the checkpoints they stop at", async () => {
+  render(<SettingsDialog tab="orchestrators" />);
+  const blocking = (await screen.findByRole("radio", { name: /Blocking decisions/ })) as HTMLInputElement;
+  expect(blocking.checked).toBe(true);
+  expect(screen.queryByRole("checkbox", { name: "Before delivery" })).toBeNull();
+  fireEvent.click(screen.getByRole("radio", { name: /Checkpoints/ }));
+  await waitFor(() => expect(setAutonomy).toHaveBeenLastCalledWith({ level: "checkpoints", checkpoints: ["after_design", "before_implementation", "before_delivery"] }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: "After design" }));
+  await waitFor(() => expect(setAutonomy).toHaveBeenLastCalledWith({ level: "checkpoints", checkpoints: ["before_implementation", "before_delivery"] }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "After design" }));
+  await waitFor(() => expect(setAutonomy).toHaveBeenLastCalledWith({ level: "checkpoints", checkpoints: ["after_design", "before_implementation", "before_delivery"] }));
 });

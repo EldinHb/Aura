@@ -154,3 +154,33 @@ it("gives a terminal its folder back after the orchestrator box was ticked for a
   await act(async () => { fireEvent.click(screen.getByText(/^Create/)); });
   expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ provider: "terminal", cwd: "/work", orchestrator: false, mode: "terminal" }));
 });
+
+it("creates a feature owner with its goal as the first message and its own autonomy", async () => {
+  const createSession = vi.fn(async () => ({ id: "s" }));
+  const st = useStore.getState();
+  useStore.setState({
+    client: { ...(st.client as object), createSession, autonomy: () => Promise.resolve({ level: "blocking_decisions", checkpoints: ["after_design", "before_implementation", "before_delivery"] }) } as unknown as RpcClient,
+    providers: [{ kind: "claude", display_name: "Claude Code", available: true, version: null, binary: null, agents: [], capabilities: { permission_modes: [], sandbox_modes: [] } } as unknown as ProviderInfo],
+  });
+  render(<NewSessionDialog featureOwner />);
+  const owner = screen.getByRole("checkbox", { name: /Feature owner/ }) as HTMLInputElement;
+  expect(owner.checked).toBe(true);
+  expect((screen.getByRole("checkbox", { name: /Orchestrator/ }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.queryByText("Initial prompt (optional)")).toBeNull();
+  expect(await screen.findByText(/otherwise blocking decisions/)).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("Goal"), { target: { value: "Dark mode for the settings" } });
+  fireEvent.click(screen.getByRole("checkbox", { name: /Own autonomy for this feature/ }));
+  fireEvent.click(screen.getByRole("radio", { name: /Autonomous/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Create/ }));
+  await waitFor(() =>
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "claude",
+      cwd: "",
+      orchestrator: true,
+      feature_owner: true,
+      feature_goal: "Dark mode for the settings",
+      initial_prompt: "Dark mode for the settings",
+      autonomy: { level: "autonomous", checkpoints: ["after_design", "before_implementation", "before_delivery"] },
+    })),
+  );
+});

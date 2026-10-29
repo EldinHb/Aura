@@ -83,15 +83,16 @@ describe("orchestratorMessages", () => {
 });
 
 describe("sentTexts", () => {
-  it("reads start_session and send_message calls of every agent", () => {
+  it("reads start_session, send_message and hire calls of every agent", () => {
     const items = [
       item("mcp_call", "", "1", { title: "aura: start_session", data: { server: "aura", tool: "start_session", input: { agent: "claude", prompt: "build it " } } }),
       item("mcp_call", "", "2", { title: "aura.send_message", data: { server: "aura", tool: "send_message", input: { session: A, text: "and test it" } } }),
       item("tool_call", "", "3", { title: "send_message", data: { tool_name: "mcp__aura__send_message", input: { session: B, text: "acp text" } } }),
       item("mcp_call", "", "4", { title: "aura: list_sessions", data: { tool: "list_sessions", input: {} } }),
       item("agent_message", "send_message", "5"),
+      item("tool_call", "", "6", { title: "hire", data: { tool_name: "mcp__aura__hire", input: { specialist: "tester", prompt: "test it" } } }),
     ];
-    expect([...sentTexts(items)]).toEqual(["build it", "and test it", "acp text"]);
+    expect([...sentTexts(items)]).toEqual(["build it", "and test it", "acp text", "test it"]);
   });
 });
 

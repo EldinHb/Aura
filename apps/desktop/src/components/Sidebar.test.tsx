@@ -6,6 +6,7 @@ import { runCommand } from "../lib/commands";
 import { emptyTranscript, useStore } from "../state/store";
 import { useDetectedLinksStore, useDetectedLinksSync, useLinkPreferencesStore } from "../state/sessionLinkPreferences";
 import { useGithubRepos } from "../state/githubRepos";
+import { setFeature, useFeatures } from "../state/features";
 import { Sidebar } from "./Sidebar";
 
 vi.mock("../features/reviews/ReviewSidebar", () => ({ ReviewSidebar: () => null }));
@@ -398,4 +399,25 @@ it("shows only whole link chips that fit, then +N with the rest in its tooltip, 
     client.mockRestore();
     vi.unstubAllGlobals();
   }
+});
+
+it("marks a feature owner, the role of each specialist under it and the decisions waiting on the user", () => {
+  const list = [
+    session("owner", "Dark mode", { orchestrator: true, feature_owner: true }),
+    session("ux", "UX designer", { orchestrator_id: "owner", specialist_id: "ux-designer", specialist_name: "UX designer" }),
+    session("adhoc", "Scout", { orchestrator_id: "owner" }),
+    session("lead", "Lead", { orchestrator: true }),
+  ].map((s) => ({ ...s, group: "Work" }));
+  useFeatures.setState({ features: {} });
+  setFeature({ owner_id: "owner", goal: "", status: "waiting_on_user", autonomy: null, team: [], decisions: [], checkpoints: [], suggestions: [], report: null, created_at: "", updated_at: "",
+    questions: [{ id: "q1", question: "Which?", context: "", options: [], recommended: null, kind: "decision", checkpoint: null, asked_at: "", answer: null, withdrawn: false }] });
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
+  render(<Sidebar />);
+  const row = (id: string) => document.querySelector<HTMLElement>(`[data-session-id="${id}"]`)!;
+  expect(row("owner").querySelector("[aria-label='Feature owner']")).toBeTruthy();
+  expect(row("owner").querySelector("[aria-label='Orchestrator']")).toBeNull();
+  expect(row("owner").querySelector(".feature-state")?.textContent).toBe("decision for you");
+  expect(row("lead").querySelector("[aria-label='Orchestrator']")).toBeTruthy();
+  expect(row("ux").querySelector(".chip.specialist")?.textContent).toBe("UX designer");
+  expect(row("adhoc").querySelector(".chip.specialist")).toBeNull();
 });

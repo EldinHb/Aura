@@ -6,15 +6,17 @@ import { chordFromEvent, formatKeys, type Binding } from "../../lib/keymap";
 import { buildBindings } from "../../hooks/useKeyboard";
 import { isMac } from "../../lib/platform";
 import { findConflicts, isConflicting } from "./keymapUtils";
-import type { CapabilitySet, LoadBalancer, LoadBalancerUpdate, SystemPrompts } from "../../gen";
+import type { Autonomy, CapabilitySet, LoadBalancer, LoadBalancerUpdate, SystemPrompts } from "../../gen";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
 import { pullFilterError } from "../../features/reviews/state";
 import { PULL_CHANGE_KINDS } from "../../features/reviews/changes";
+import { SpecialistsTab } from "./SpecialistsTab";
+import { AutonomyPicker } from "../AutonomyPicker";
 
-type Tab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "groups";
-const TABS: Tab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "groups"];
+type Tab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups";
+const TABS: Tab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups"];
 
 export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initial ?? "general");
@@ -58,6 +60,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
         {tab === "providers" && <ProvidersTab />}
         {tab === "prompts" && <PromptsTab />}
         {tab === "orchestrators" && <OrchestratorsTab />}
+        {tab === "specialists" && <SpecialistsTab />}
         {tab === "groups" && <GroupsTab />}
       </div>
     </ModalC>
@@ -546,6 +549,37 @@ function OrchestratorsTab() {
       <div className="dim" style={{ fontSize: 11 }}>
         Name an agent (<span className="mono">claude</span>, <span className="mono">codex</span>, an ACP agent id) or a model id; a word of a model id, like <span className="mono">opus</span>, matches every model with it.
       </div>
+      <FeatureOwnerAutonomy />
+    </div>
+  );
+}
+
+/** How much every feature owner decides on its own, unless its feature has its own setting. */
+function FeatureOwnerAutonomy() {
+  const client = useStore((s) => s.client);
+  const toast = useStore((s) => s.toast);
+  const [autonomy, setAutonomy] = useState<Autonomy | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    client?.autonomy().then(setAutonomy, (e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [client]);
+  const save = async (a: Autonomy) => {
+    if (!client) return;
+    setAutonomy(a);
+    try {
+      setAutonomy(await client.setAutonomy(a));
+      toast("Feature owner autonomy saved");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
+  return (
+    <div className="field feature-owner-settings">
+      <h4 className="section-head">Feature owners: autonomy</h4>
+      <p className="dim prompt-help">
+        How much a feature owner decides on its own before it comes back to you. A feature can have its own setting (when you create it, or in the inspector). Every level asks you before irreversible or outward-facing actions. Idle feature owners restart with a change on their next message.
+      </p>
+      {error ? <div className="err-text">{error}</div> : autonomy ? <AutonomyPicker name="settings-autonomy" value={autonomy} onChange={(a) => void save(a)} /> : <div className="dim">Loading…</div>}
     </div>
   );
 }
