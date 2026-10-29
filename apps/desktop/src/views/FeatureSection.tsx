@@ -4,6 +4,7 @@ import { useStore } from "../state/store";
 import { useFeature } from "../state/features";
 import { STATUS_LABEL, describeAutonomy, openQuestions } from "../lib/features";
 import { AutonomyPicker } from "../components/AutonomyPicker";
+import { openTeam } from "../state/workerThreads";
 
 /** "none yet", "3 members, 2 specialists" */
 function teamLabel(members: number, specialists: number): string {
@@ -52,7 +53,12 @@ export function FeatureSection({ s }: { s: Session }) {
           </button>
         </span>
         <span className="k">team</span>
-        <span className="v">{teamLabel(feature.team.length, feature.team.filter((m) => m.specialist_id).length)}</span>
+        <span className="v">
+          {teamLabel(feature.team.length, feature.team.filter((m) => m.specialist_id).length)}{" "}
+          <button type="button" className="linkish" data-hint data-command="orchestrator.team" onClick={() => openTeam(s.id)}>
+            Team ↗
+          </button>
+        </span>
         <span className="k">decisions</span>
         <span className="v">{feature.decisions.length}</span>
         {open.length > 0 && (

@@ -33,3 +33,15 @@ it("reads the user's answers to a feature owner and what became of its suggestio
   expect(auraMessage(message("[Aura] Specialist suggestion dismissed. This message comes from Aura, not the user.\nok"))?.kind).toBe("suggestion");
   expect(isUserMessage(answer)).toBe(false);
 });
+
+it("reads a team's meetings and one-on-ones", () => {
+  const kind = (title: string) => auraMessage(message(`[Aura] ${title}. This message comes from Aura, not the user.\nbody`))?.kind;
+  expect(kind("Meeting")).toBe("meeting");
+  expect(kind("Meeting notes")).toBe("meeting");
+  expect(kind("Meeting notes, incomplete")).toBe("meeting");
+  expect(kind("Question from a teammate")).toBe("team");
+  expect(kind("Answer from a teammate")).toBe("team");
+  expect(kind("Answer from the feature owner")).toBe("team");
+  expect(kind("No answer to your question")).toBe("team");
+  expect(kind("Worker report")).toBe("report");
+});

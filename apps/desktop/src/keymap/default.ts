@@ -66,6 +66,9 @@ export const defaultBindings: Binding[] = [
   { keys: "leader c", command: "session.compact", label: "Compact context" },
   { keys: "leader r", command: "session.review", label: "Code review" },
   { keys: "leader a", command: "inbox.open", label: "Inbox" },
+  { keys: "leader o c", command: "orchestrator.chat", label: "Chat" },
+  { keys: "leader o w", command: "orchestrator.workers", label: "Workers" },
+  { keys: "leader o t", command: "orchestrator.team", label: "Team" },
   { keys: "leader g d", command: "git.diff", label: "Diff" },
   { keys: "leader g c", command: "git.commit", label: "Commit…" },
   { keys: "leader g p", command: "git.push", label: "Push" },
@@ -116,6 +119,7 @@ export const groupLabels: Record<string, string> = {
   leader: "Aura",
   "leader s": "Session",
   "leader g": "Git",
+  "leader o": "Orchestrator",
   "g": "Go",
   "d": "Delete",
 };

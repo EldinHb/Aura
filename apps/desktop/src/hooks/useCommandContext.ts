@@ -56,6 +56,7 @@ export function currentCommandContext(): CommandContext {
     hasSelection: !!s,
     hasFolder: !!s && folderOf(s) !== null,
     orchestrator: !!s?.orchestrator,
+    featureOwner: !!s?.feature_owner,
     worker: !!s?.orchestrator_id,
     modeLocked: !!s?.orchestrator && s.mode === "structured",
     mode: s?.mode ?? null,

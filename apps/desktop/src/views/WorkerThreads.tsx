@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import clsx from "clsx";
 import type { ProviderInfo, Session } from "../gen";
 import { useStore } from "../state/store";
-import { closeWorkerThreads, openWorkerThread, useWorkerThreads } from "../state/workerThreads";
+import { closeWorkerThreads, openTeam, openWorkerThread, useWorkerThreads } from "../state/workerThreads";
 import { sessionProviderLabel } from "../lib/acp";
 import { statusClass } from "../lib/sessionStatus";
 import { exactTime, timeAgo } from "../lib/time";
@@ -25,18 +25,28 @@ export function agentLine(s: Session, providers: ProviderInfo[]): string {
   return `${sessionProviderLabel(s, providers)} · ${s.model || "default"} · ${s.effort || "default"}`;
 }
 
-/** Switches an orchestrator between its chat with the user and its threads with its workers. */
+/**
+ * Switches an orchestrator between its chat with the user and its threads
+ * with its workers; a feature owner also has its Team tab.
+ */
 export function OrchestratorTabs({ orchestratorId }: { orchestratorId: string }) {
   const workers = useWorkers(orchestratorId).filter((w) => !w.archived);
-  const onWorkers = useWorkerThreads((s) => s.views[orchestratorId]?.tab === "workers");
+  const owner = useStore((st) => !!st.sessions[orchestratorId]?.feature_owner);
+  const picked = useWorkerThreads((s) => s.views[orchestratorId]?.tab ?? "chat");
+  const tab = picked === "team" && !owner ? "chat" : picked;
   return (
     <div className="tabs orchestrator-tabs" role="tablist">
-      <button type="button" role="tab" aria-selected={!onWorkers} data-hint data-command="orchestrator.chat" className={clsx("tab", !onWorkers && "active")} onClick={() => closeWorkerThreads(orchestratorId)}>
+      <button type="button" role="tab" aria-selected={tab === "chat"} data-hint data-command="orchestrator.chat" className={clsx("tab", tab === "chat" && "active")} onClick={() => closeWorkerThreads(orchestratorId)}>
         Chat
       </button>
-      <button type="button" role="tab" aria-selected={onWorkers} data-hint data-command="orchestrator.workers" className={clsx("tab", onWorkers && "active")} onClick={() => openWorkerThread(orchestratorId)}>
+      <button type="button" role="tab" aria-selected={tab === "workers"} data-hint data-command="orchestrator.workers" className={clsx("tab", tab === "workers" && "active")} onClick={() => openWorkerThread(orchestratorId)}>
         Workers <span className="dim">{workers.length}</span>
       </button>
+      {owner && (
+        <button type="button" role="tab" aria-selected={tab === "team"} data-hint data-command="orchestrator.team" className={clsx("tab", tab === "team" && "active")} onClick={() => openTeam(orchestratorId)}>
+          Team
+        </button>
+      )}
     </div>
   );
 }

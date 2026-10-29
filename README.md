@@ -248,14 +248,17 @@ Aura. Aura hands it to Claude Code (`--mcp-config`, with the tools allowed), Cod
 are `list_agents`, `list_projects`, `start_session`, `send_message`, `list_sessions`,
 `read_session`, `wait_for_sessions`, `interrupt_session`, `stop_session` and
 `delete_session`, and they only reach the orchestrator's own workers. A feature owner
-gets more (see below); a plain orchestrator has exactly these. Each orchestrator's
+gets more, and so do the workers on its team (see below); a plain orchestrator has
+exactly these, and its workers get no tools. Each orchestrator's
 `aura mcp` connects to the daemon with a token of its own, which only lets it use that
 orchestrator's tools: it cannot act for another session, answer questions meant for
-you, change settings, read other sessions or receive their events. These tools in turn
-refuse the daemon's own token in `daemon.json`. A session's token stops working, also
-on a connection already open, when the session is deleted or stops orchestrating. That token still opens everything the
-app can do, and any program running as you can read it, so Aura keeps agents apart
-from each other's tools, not from your account. ACP agents decide
+you, change settings, read other sessions or receive their events. A team member's
+server holds its own token too, which reaches only its team's tools for itself. These
+tools in turn refuse the daemon's own token in `daemon.json`. A session's token stops
+working, also on a connection already open, when the session is deleted, stops
+orchestrating or, for a team member, leaves its team. That token still opens
+everything the app can do, and any program running as you can read it, so Aura keeps
+agents apart from each other's tools, not from your account. ACP agents decide
 themselves whether to ask before an MCP tool call; if yours does, the requests show up
 as approvals like any other. Turning an orchestrator that has a folder back into a
 regular session leaves its workers as regular sessions.
@@ -311,6 +314,36 @@ exactly as before; a feature owner is one with more to do.
   it first, or dismiss it.
 - **Delivery report.** The owner ends with a report card: what was done, why, how to
   test it and where (branch, worktree, URL or screen).
+- **Meetings.** When a decision needs several roles' views, the owner holds a written
+  meeting (`hold_meeting`): a topic, one question, a few team members, and specialists
+  hired just for their input if needed. Aura sends every attendee the question at
+  once; each answers in writing in its next turn, briefly and without starting on the
+  work. When all have answered, one failed, was stopped or deleted, or the meeting's
+  time ran out (20 minutes unless the owner says otherwise), the owner gets one
+  message with every answer and records what it decided from it. An attendee busy
+  with other work gets the question once it is free. Answers reach the owner only in
+  that message, not again as worker reports, so a meeting costs one turn per attendee
+  and one for the owner. After a daemon restart, a meeting still collecting asks
+  again the attendees that had not answered and closes at its deadline, which may
+  have passed already. A checkpoint review holds meetings like other work: none while
+  the review is open, and after you asked for changes only with the team the owner
+  has, without guests.
+- **One-on-ones.** Workers on the team can ask each other (`ask_teammate`) and the
+  owner (`ask_owner`) directly. The teammate answers in its next turn, the owner with
+  `reply_to_teammate`, and the answer comes back to the one who asked. A worker
+  waiting on an answer is not reported to the owner until it goes on with it. Against
+  loops: nobody asks while answering a meeting or a question, a worker has at most two
+  questions open and one per teammate, asks the same teammate at most eight times per
+  feature, and cannot ask itself or anyone outside the team. One-on-ones go on during
+  a checkpoint review: they only pass on what the team knows.
+- **Team tab.** A feature owner's session has a **Team** tab next to Chat and Workers,
+  which shows only when you open it (click it, `⌘K` → Show the feature owner's team,
+  or `Ctrl+Space o t`): the goal, status and autonomy; every member with its role,
+  agent, model, effort and status, and a button to open it; the meetings with each
+  contribution and the decisions that came out of them; the one-on-ones, who asked
+  whom and the answer; the decision log; and the delivery report. The chat itself
+  only gets a one-line card per meeting that opens the Team tab on it. Aura
+  remembers the tab per owner.
 
 Everything a feature owner records is kept in its feature record in Aura's database,
 across restarts, and goes when the owner is deleted. Your answers reach the owner even
@@ -321,7 +354,9 @@ not sent twice. When the agent cannot take an answer, Aura tries again a few tim
 with growing pauses, then waits until the agent works again. Stopping an owner
 stops those tries: it is not started again until you message it. On top of the orchestrator's
 tools it has `list_specialists`, `hire`, `ask_user`, `record_decision`, `checkpoint`,
-`propose_specialist`, `deliver_report` and `feature_status`.
+`propose_specialist`, `deliver_report`, `feature_status`, `hold_meeting` and
+`reply_to_teammate`. Each worker on its team gets an MCP server of its own
+(`aura mcp --worker`) with `list_team`, `ask_teammate` and `ask_owner` only.
 
 ## ACP agents
 

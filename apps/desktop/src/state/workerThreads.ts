@@ -1,16 +1,22 @@
 import { create } from "zustand";
 import { useStore } from "./store";
 
-/** What an orchestrator shows: its chat or its Workers tab, and the worker whose thread that tab shows. */
-export type ThreadView = { tab: "chat" | "workers"; worker?: string };
+/**
+ * What an orchestrator shows: its chat, its Workers tab (and the worker whose
+ * thread that tab shows), or, for a feature owner, its Team tab (and the
+ * meeting it was opened on).
+ */
+export type ThreadView = { tab: "chat" | "workers" | "team"; worker?: string; meeting?: string };
+
+const TABS = ["chat", "workers", "team"];
 
 const KEY = "aura.worker-threads.v1";
 
 function loadViews(): Record<string, ThreadView> {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) ?? "{}");
-    return Object.fromEntries(Object.entries(saved).filter(([, value]) => value && typeof value === "object" && "tab" in value && (value.tab === "chat" || value.tab === "workers")
-      && (!("worker" in value) || typeof value.worker === "string"))) as Record<string, ThreadView>;
+    return Object.fromEntries(Object.entries(saved).filter(([, value]) => value && typeof value === "object" && "tab" in value && TABS.includes(value.tab as string)
+      && (!("worker" in value) || typeof value.worker === "string") && (!("meeting" in value) || typeof value.meeting === "string"))) as Record<string, ThreadView>;
   } catch { return {}; }
 }
 
@@ -32,6 +38,13 @@ export function openWorkerThread(orchestratorId: string, workerId?: string) {
   const st = useStore.getState();
   if (st.selectedId !== orchestratorId) st.select(orchestratorId);
   setView(orchestratorId, workerId ? { tab: "workers", worker: workerId } : { tab: "workers" });
+}
+
+/** Show a feature owner's Team tab, on `meetingId` when given, selecting the owner. Never opened by Aura itself, only by the user. */
+export function openTeam(ownerId: string, meetingId?: string) {
+  const st = useStore.getState();
+  if (st.selectedId !== ownerId) st.select(ownerId);
+  setView(ownerId, { tab: "team", meeting: meetingId });
 }
 
 /** Back to the orchestrator's chat. The thread open last opens again with the Workers tab. */

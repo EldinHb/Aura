@@ -3,7 +3,7 @@ import type { Feature, Session } from "../gen";
 import { useStore } from "./store";
 import { useFeatures } from "./features";
 
-const feature = (status: Feature["status"]): Feature => ({ owner_id: "owner", goal: "Goal", status, autonomy: null, team: [], decisions: [], questions: [], checkpoints: [], suggestions: [], report: null, created_at: "", updated_at: "", counters: {} });
+const feature = (status: Feature["status"]): Feature => ({ owner_id: "owner", goal: "Goal", status, autonomy: null, team: [], decisions: [], questions: [], checkpoints: [], suggestions: [], meetings: [], one_on_ones: [], report: null, created_at: "", updated_at: "", counters: {} });
 
 beforeEach(() => {
   useFeatures.setState({ features: {} });

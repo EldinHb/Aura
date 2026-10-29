@@ -1,4 +1,4 @@
-import type { Autonomy, Checkpoint, Feature, FeatureCardKind, FeatureStatus, Item, UserQuestion } from "../gen";
+import type { Autonomy, Checkpoint, Feature, FeatureCardKind, FeatureStatus, Item, Meeting, OneOnOne, UserQuestion } from "../gen";
 
 /**
  * Feature owners, as the app shows them. The daemon puts a card in a feature
@@ -8,7 +8,7 @@ import type { Autonomy, Checkpoint, Feature, FeatureCardKind, FeatureStatus, Ite
  */
 export type FeatureCardRef = { kind: FeatureCardKind; id: string };
 
-const KINDS: FeatureCardKind[] = ["decision", "report", "suggestion"];
+const KINDS: FeatureCardKind[] = ["decision", "report", "suggestion", "meeting"];
 
 /** The card a transcript item stands for, if it is one. */
 export function featureCard(item: Item): FeatureCardRef | null {
@@ -46,4 +46,38 @@ export const isOpen = (q: UserQuestion) => !q.answer && !q.withdrawn;
 /** Questions the owner put to the user that wait for an answer. */
 export function openQuestions(f: Feature | undefined): UserQuestion[] {
   return f ? f.questions.filter(isOpen) : [];
+}
+
+/** "collecting · 1 of 3 answered", "held", "held · 1 missing". */
+export function meetingState(m: Meeting): string {
+  const answered = m.attendees.filter((a) => a.status === "answered").length;
+  if (m.status === "collecting") return `collecting · ${answered} of ${m.attendees.length} answered`;
+  const missing = m.attendees.length - answered;
+  return missing === 0 ? "held" : `held · ${missing} missing`;
+}
+
+/** What one attendee's part in a meeting is now, in a word or two. */
+export const ATTENDEE_LABEL: Record<Meeting["attendees"][number]["status"], string> = {
+  invited: "waiting until free",
+  asked: "answering",
+  answered: "answered",
+  missing: "no answer",
+  late: "answered late",
+};
+
+/** "Builder → Designer", "Builder → you" for the owner, as the Team tab shows a one-on-one. */
+export function oneOnOneLabel(a: OneOnOne): string {
+  return `${a.from_name} → ${a.to_owner ? `${a.to_name} (owner)` : a.to_name}`;
+}
+
+/** Meetings and one-on-ones the feature has, as sent by a daemon that may predate them. */
+export function teamWork(f: Feature): { meetings: Meeting[]; oneOnOnes: OneOnOne[] } {
+  return { meetings: f.meetings ?? [], oneOnOnes: f.one_on_ones ?? [] };
+}
+
+/** "3 attendees", "2 attendees · 1 missing": who took part in a meeting that is over. */
+export function attendeesLine(m: Meeting): string {
+  const n = m.attendees.length;
+  const missing = m.attendees.filter((a) => a.status !== "answered").length;
+  return `${n === 1 ? "1 attendee" : `${n} attendees`}${missing ? ` · ${missing} missing` : ""}`;
 }

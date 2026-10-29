@@ -2,9 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 import type { Feature, Item, Session, Specialist } from "../../src/gen";
 
 /**
- * A feature owner's chat with its cards (a decision for the user, a proposed
- * specialist, the delivery report), its team in the sidebar and inspector, and
- * the Specialists and autonomy settings. Not a README shot; run it on its own
+ * A feature owner's chat with its cards (a decision for the user, a meeting,
+ * a proposed specialist, the delivery report), its team in the sidebar and
+ * inspector, its Team tab with meetings and one-on-ones, and the Specialists
+ * and autonomy settings. Not a README shot; run it on its own
  * when changing these views:
  *   SHOTS=/tmp/owner pnpm exec playwright test -c playwright.screenshots.config.ts feature-owner
  */
@@ -37,6 +38,7 @@ const history: Record<string, Item[]> = {
     item(owner, "mcp_call", "", 199, { title: "aura: hire", data: { server: "aura", tool: "hire", input: { specialist: "ux-designer", prompt: "Design the theme switch." } } }),
     item(owner, "agent_message", "I hired a UX designer for the flow, then a frontend engineer and a tester. One decision is yours: where the switch lives.", 198),
     card("decision", "q1", 197),
+    card("meeting", "m1", 180),
     card("suggestion", "s1", 150),
     item(owner, "agent_message", "The tester signed off and the reviewer approved. Here is the report.", 20),
     card("report", "report", 19),
@@ -49,12 +51,13 @@ const feature: Feature = {
   status: "waiting_on_user",
   autonomy: null,
   team: [
-    { worker_id: ux, specialist_id: "ux-designer", name: "UX designer", role: "Designs flows", instructions: "", hired_at: at(200) },
-    { worker_id: fe, specialist_id: "frontend-engineer", name: "Frontend engineer", role: "Builds the UI", instructions: "", hired_at: at(199) },
-    { worker_id: qa, specialist_id: "tester", name: "Tester (QA)", role: "Verifies", instructions: "", hired_at: at(198) },
+    { worker_id: ux, specialist_id: "ux-designer", name: "UX designer", role: "Designs flows", instructions: "", hired_at: at(200), meeting: null },
+    { worker_id: fe, specialist_id: "frontend-engineer", name: "Frontend engineer", role: "Builds the UI", instructions: "", hired_at: at(199), meeting: null },
+    { worker_id: qa, specialist_id: "tester", name: "Tester (QA)", role: "Verifies", instructions: "", hired_at: at(198), meeting: null },
   ],
   decisions: [
-    { id: "d1", decision: "Use the existing CSS variables for both themes", rationale: "The app already themes through them; no new tokens needed.", decided_by: "owner", question_id: null, at: at(190) },
+    { id: "d1", decision: "Use the existing CSS variables for both themes", rationale: "The app already themes through them; no new tokens needed.", decided_by: "owner", question_id: null, meeting_id: null, at: at(190) },
+    { id: "d2", decision: "Follow the system theme by default, with an override in Settings", rationale: "Design and QA agreed; it is what users expect and keeps the test matrix at three states.", decided_by: "owner", question_id: null, meeting_id: "m1", at: at(170) },
   ],
   questions: [
     {
@@ -74,6 +77,45 @@ const feature: Feature = {
     },
   ],
   checkpoints: [],
+  meetings: [
+    {
+      id: "m1",
+      topic: "Default theme",
+      agenda: "Should the app start in the system theme, or in dark until the user picks?",
+      context: "The settings screen gets a Theme setting either way.",
+      attendees: [
+        { worker_id: ux, name: "UX designer", role: "Designs flows", guest: false, status: "answered", answer: "**Follow the system.** Users who run light mode expect apps to match; a dark default reads as a bug to them. Keep an explicit Dark / Light / System choice in Settings → General.", missing: null, answered_at: at(176) },
+        { worker_id: fe, name: "Frontend engineer", role: "Builds the UI", guest: false, status: "answered", answer: "System is one `prefers-color-scheme` listener; the variables already switch. No extra cost either way.", missing: null, answered_at: at(175) },
+        { worker_id: qa, name: "Tester (QA)", role: "Verifies", guest: false, status: "answered", answer: "System default means three states to test (light, dark, follow). I can cover them with one matrix.", missing: null, answered_at: at(174) },
+      ],
+      status: "complete",
+      decision_ids: ["d2"],
+      started_at: at(180),
+      deadline: at(160),
+      ended_at: at(174),
+      delivered: true,
+    },
+    {
+      id: "m2",
+      topic: "Contrast of the code blocks",
+      agenda: "Do the code blocks in the dark theme meet AA contrast?",
+      context: "",
+      attendees: [
+        { worker_id: fe, name: "Frontend engineer", role: "Builds the UI", guest: false, status: "answered", answer: "They use `--bg-elev`; I measured 7.2:1 for the text.", missing: null, answered_at: at(30) },
+        { worker_id: qa, name: "Tester (QA)", role: "Verifies", guest: false, status: "asked", answer: null, missing: null, answered_at: null },
+      ],
+      status: "collecting",
+      decision_ids: [],
+      started_at: at(31),
+      deadline: at(11),
+      ended_at: null,
+      delivered: false,
+    },
+  ],
+  one_on_ones: [
+    { id: "a1", from_id: fe, from_name: "Frontend engineer", to_id: ux, to_name: "UX designer", to_owner: false, question: "Does the switch animate between themes, or swap at once?", answer: "Swap at once. An animated swap flashes every surface; keep transitions on hover states only.", error: null, status: "answered", asked_at: at(120), answered_at: at(118), sent: true, delivered: true },
+    { id: "a2", from_id: qa, from_name: "Tester (QA)", to_id: owner, to_name: "Dark mode for the settings", to_owner: true, question: "Is Windows high-contrast mode in scope?", answer: null, error: null, status: "open", asked_at: at(25), answered_at: null, sent: true, delivered: false },
+  ],
   suggestions: [
     {
       id: "s1",
@@ -96,7 +138,7 @@ const feature: Feature = {
   },
   created_at: at(200),
   updated_at: at(19),
-  counters: { q: 1, d: 1, s: 1 },
+  counters: { q: 1, d: 2, s: 1, m: 2, a: 2 },
 };
 
 const spec = (sid: string, name: string, role: string, over: Partial<Specialist> = {}): Specialist => ({
@@ -152,6 +194,18 @@ for (const theme of ["dark", "light"] as const) {
     await page.screenshot({ path: `${OUT}/${theme}-chat.png` });
     await page.locator(".feature-card.report").scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${OUT}/${theme}-report.png` });
+
+    // The Team tab opens only when the user picks it.
+    await expect(page.locator(".team-view")).toHaveCount(0);
+    await page.getByRole("tab", { name: "Team" }).click();
+    await expect(page.locator(".team-view")).toBeVisible();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/${theme}-team.png` });
+    await page.locator(".team-entry.meeting").nth(1).locator(".team-entry-head").click();
+    await page.locator(".team-entry.one-on-one").last().scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    await page.screenshot({ path: `${OUT}/${theme}-team-meetings.png` });
+    await page.getByRole("tab", { name: "Chat" }).click();
 
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press("ControlOrMeta+Comma");

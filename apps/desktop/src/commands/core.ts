@@ -4,7 +4,7 @@ import { useStore, selectVisibleSessions, selectSelected } from "../state/store"
 import type { ApprovalOption, SessionMode } from "../gen";
 import { isTauri } from "../lib/connection";
 import { setPlanView, usePlanViews } from "../state/planView";
-import { closeWorkerThreads, openWorkerThread } from "../state/workerThreads";
+import { closeWorkerThreads, openTeam, openWorkerThread } from "../state/workerThreads";
 import { folderOf, workersUnder } from "../lib/sessionFolder";
 
 function st() {
@@ -195,6 +195,7 @@ export const coreCommands: Command[] = [
   },
   { id: "orchestrator.workers", title: "Show the orchestrator's workers and their threads", group: "Session", keywords: ["orchestrator", "workers", "conversation"], when: "orchestrator", run: () => openWorkerThread(selected().id) },
   { id: "orchestrator.chat", title: "Show the orchestrator's chat", group: "Session", keywords: ["orchestrator", "chat"], when: "orchestrator", run: () => closeWorkerThreads(selected().id) },
+  { id: "orchestrator.team", title: "Show the feature owner's team: members, meetings, one-on-ones, decisions", group: "Session", keywords: ["feature", "team", "meeting", "one-on-one", "decisions", "specialists"], when: "featureOwner", run: () => openTeam(selected().id) },
   {
     id: "orchestrator.thread",
     title: "Show this worker's thread with its orchestrator",

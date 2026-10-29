@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
-import type { DeliveryReport, Item, Project, SpecialistInput, SpecialistSuggestion, UserQuestion } from "../../gen";
+import type { DeliveryReport, Item, Meeting, Project, SpecialistInput, SpecialistSuggestion, UserQuestion } from "../../gen";
 import { useStore } from "../../state/store";
 import { useFeature } from "../../state/features";
-import { CHECKPOINT_LABEL, featureCard } from "../../lib/features";
+import { CHECKPOINT_LABEL, attendeesLine, featureCard, meetingState, teamWork } from "../../lib/features";
+import { openTeam } from "../../state/workerThreads";
 import { SpecialistFields } from "../../components/SpecialistFields";
 import { Markdown } from "./MarkdownView";
 
@@ -36,7 +37,26 @@ export function FeatureCard({ item, cursor, onCursor }: { item: Item; cursor: bo
       const s = feature.suggestions.find((x) => x.id === ref.id);
       return s ? frame(<SuggestionBody ownerId={item.session_id} s={s} ownerCwd={cwd} />, "suggestion") : frame(<div className="dim">{item.text}</div>, "suggestion");
     }
+    case "meeting": {
+      const m = teamWork(feature).meetings.find((x) => x.id === ref.id);
+      return m ? frame(<MeetingLine ownerId={item.session_id} m={m} />, "meeting") : frame(<div className="dim">{item.text}</div>, "meeting");
+    }
   }
+}
+
+/** One line for a meeting the owner held: what it is about and how far it got. The answers are in the Team tab. */
+function MeetingLine({ ownerId, m }: { ownerId: string; m: Meeting }) {
+  return (
+    <div className="card-head meeting-line">
+      <span className={clsx("dot", m.status === "collecting" ? "info pulse" : m.status === "complete" ? "ok" : "warn")} />
+      <span>{m.status === "collecting" ? "Meeting" : "Meeting held"}: {m.topic}</span>
+      <span className="dim">{m.status === "collecting" ? meetingState(m) : attendeesLine(m)}</span>
+      <span className="spacer" />
+      <button type="button" className="btn small" data-command="orchestrator.team" onClick={(e) => { e.stopPropagation(); openTeam(ownerId, m.id); }}>
+        Open in Team
+      </button>
+    </div>
+  );
 }
 
 /** A question for the user: the options with the recommended one marked, and room for words of their own. */

@@ -4,6 +4,7 @@ import type { Feature, Item, Project, Session, UserQuestion } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { useStore } from "../../state/store";
 import { setFeature, useFeatures } from "../../state/features";
+import { useWorkerThreads } from "../../state/workerThreads";
 import { ItemRow } from "./ItemRow";
 
 const answerQuestion = vi.fn(async () => feature);
@@ -40,6 +41,8 @@ beforeEach(() => {
     decisions: [],
     questions: [question()],
     checkpoints: [],
+    meetings: [],
+    one_on_ones: [],
     suggestions: [
       {
         id: "s1",
@@ -146,4 +149,28 @@ it("says on a checkpoint review that words of the user's own ask for changes", a
   fireEvent.change(screen.getByLabelText("Your answer"), { target: { value: "nice" } });
   fireEvent.click(screen.getByRole("button", { name: /Answer/ }));
   await waitFor(() => expect(answerQuestion).toHaveBeenCalledWith("owner", "q1", "Approve", "nice"));
+});
+
+it("points to a meeting in one line, which opens the Team tab on it", () => {
+  feature = {
+    ...feature,
+    meetings: [{
+      id: "m1", topic: "Default theme", agenda: "System or dark?", context: "",
+      attendees: [{ worker_id: "ux", name: "UX designer", role: "", guest: false, status: "answered", answer: "System, which nobody should see in the chat.", missing: null, answered_at: "" }],
+      status: "collecting", decision_ids: [], started_at: "", deadline: "", ended_at: null, delivered: false,
+    }],
+  };
+  setFeature(feature);
+  row(card("meeting", "m1"));
+  expect(screen.getByText("Meeting: Default theme")).toBeTruthy();
+  expect(screen.getByText("collecting · 1 of 1 answered")).toBeTruthy();
+  expect(screen.queryByText(/nobody should see/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Open in Team" }));
+  expect(useWorkerThreads.getState().views.owner).toEqual({ tab: "team", meeting: "m1" });
+  expect(useStore.getState().selectedId).toBe("owner");
+  cleanup();
+  setFeature({ ...feature, meetings: [{ ...feature.meetings[0], status: "complete" }] });
+  row(card("meeting", "m1"));
+  expect(screen.getByText("Meeting held: Default theme")).toBeTruthy();
+  expect(screen.getByText("1 attendee")).toBeTruthy();
 });

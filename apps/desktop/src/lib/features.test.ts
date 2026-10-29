@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import type { Feature, Item, UserQuestion } from "../gen";
-import { describeAutonomy, featureCard, openQuestions } from "./features";
+import type { Feature, Item, Meeting, UserQuestion } from "../gen";
+import { attendeesLine, describeAutonomy, featureCard, meetingState, oneOnOneLabel, openQuestions } from "./features";
 import { groupSteps } from "../views/transcript/replySteps";
 
 const item = (id: string, kind: Item["kind"], patch: Partial<Item> = {}): Item => ({ id, session_id: "o", turn_id: "t1", kind, status: "completed", title: null, text: "", data: {}, parent_id: null, started_at: "", ended_at: null, ...patch });
@@ -8,6 +8,7 @@ const item = (id: string, kind: Item["kind"], patch: Partial<Item> = {}): Item =
 it("reads the card a system item stands for, and nothing else", () => {
   expect(featureCard(item("c", "system", { data: { feature_card: { kind: "decision", id: "q1" }, message: "Which?" } }))).toEqual({ kind: "decision", id: "q1" });
   expect(featureCard(item("c", "system", { data: { feature_card: { kind: "report", id: "report" } } }))).toEqual({ kind: "report", id: "report" });
+  expect(featureCard(item("c", "system", { data: { feature_card: { kind: "meeting", id: "m1" } } }))).toEqual({ kind: "meeting", id: "m1" });
   expect(featureCard(item("c", "system", { data: { feature_card: { kind: "poll", id: "x" } } }))).toBeNull();
   expect(featureCard(item("c", "system", { data: { message: "compacted" } }))).toBeNull();
   expect(featureCard(item("c", "tool_call", { data: { feature_card: { kind: "decision", id: "q1" } } }))).toBeNull();
@@ -36,4 +37,17 @@ it("words autonomy as the daemon does and finds the open questions", () => {
   const f = { questions: [q("open"), q("answered", { answer: { option: "A", text: "", at: "", delivered: true } }), q("withdrawn", { withdrawn: true })] } as Feature;
   expect(openQuestions(f).map((x) => x.id)).toEqual(["open"]);
   expect(openQuestions(undefined)).toEqual([]);
+});
+
+it("words how far a meeting got and who asked whom", () => {
+  const a = (status: Meeting["attendees"][number]["status"]) => ({ worker_id: "w", name: "W", role: "", guest: false, status, answer: null, missing: null, answered_at: null });
+  const m = { id: "m1", topic: "T", agenda: "Q", context: "", attendees: [a("answered"), a("asked"), a("invited")], status: "collecting", decision_ids: [], started_at: "", deadline: "", ended_at: null, delivered: false } as Meeting;
+  expect(meetingState(m)).toBe("collecting · 1 of 3 answered");
+  expect(meetingState({ ...m, status: "incomplete" })).toBe("held · 2 missing");
+  expect(meetingState({ ...m, status: "complete", attendees: [a("answered")] })).toBe("held");
+  expect(attendeesLine({ ...m, attendees: [a("answered")] })).toBe("1 attendee");
+  expect(attendeesLine({ ...m, attendees: [a("answered"), a("late")] })).toBe("2 attendees · 1 missing");
+  const ask = { id: "a1", from_id: "b", from_name: "Builder", to_id: "d", to_name: "Designer", to_owner: false, question: "?", answer: null, error: null, status: "open", asked_at: "", answered_at: null, sent: false, delivered: false } as const;
+  expect(oneOnOneLabel(ask)).toBe("Builder → Designer");
+  expect(oneOnOneLabel({ ...ask, to_owner: true, to_name: "Owner" })).toBe("Builder → Owner (owner)");
 });

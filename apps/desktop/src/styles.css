@@ -726,3 +726,47 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 .feature-section .feature-decisions { margin-top: 6px; font-size: 12px; }
 .feature-section .feature-decisions ol { margin: 4px 0 0; padding-left: 18px; }
 .feature-section .feature-decisions .chip { margin-left: 6px; }
+
+/* A feature owner's Team tab */
+.team-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.team-body { flex: 1; overflow: auto; padding: 14px 18px 28px; display: flex; flex-direction: column; gap: 18px; }
+.team-body:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent); }
+.team-section { display: flex; flex-direction: column; gap: 6px; }
+.team-section > h4 { margin: 0 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-dim); display: flex; gap: 6px; align-items: baseline; }
+.team-section > h4 .dim { text-transform: none; letter-spacing: 0; }
+.team-feature-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.team-feature-head .name { font-weight: 600; font-size: 14px; }
+.team-goal { white-space: pre-wrap; color: var(--fg-muted); line-height: 1.5; user-select: text; }
+.team-members { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); }
+.team-member { display: flex; gap: 10px; align-items: center; padding: 7px 10px; }
+.team-member + .team-member { border-top: 1px solid var(--border); }
+.team-member .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.team-member .grow .dim { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-member-name { font-weight: 600; }
+.team-member.gone .team-member-name { color: var(--fg-dim); }
+.team-member > .dim { font-size: 11px; white-space: nowrap; }
+.team-entry { border: 1px solid var(--border); border-left: 2px solid var(--border-strong); border-radius: var(--radius); }
+.team-entry.collecting, .team-entry.open { border-left-color: var(--info); }
+.team-entry.complete, .team-entry.answered { border-left-color: var(--ok); }
+.team-entry.incomplete, .team-entry.failed { border-left-color: var(--warn); }
+.team-entry-head { display: flex; gap: 8px; align-items: center; width: 100%; padding: 7px 10px; background: none; border: none; color: inherit; text-align: left; font-size: 12px; cursor: pointer; }
+.team-entry-head:hover { background: var(--bg-hover); }
+.team-entry-head .name { font-weight: 600; white-space: nowrap; }
+.team-entry-head .dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.team-entry-head .spacer { flex: 1; }
+.team-entry-head > .dim:last-child, .team-entry-head > span[title] { flex: none; }
+.team-entry-body { padding: 4px 12px 10px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; user-select: text; }
+.team-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-dim); margin-top: 4px; }
+.team-context summary { cursor: pointer; color: var(--fg-muted); font-size: 12px; }
+.team-contribution { padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
+.team-contribution.missing, .team-contribution.invited, .team-contribution.asked { background: none; border-style: dashed; }
+.team-contribution .thread-head .chip { margin-left: 2px; }
+.team-outcome { margin: 0; padding-left: 18px; }
+.team-decisions { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); }
+.team-decisions li { display: flex; gap: 8px; align-items: baseline; padding: 6px 10px; font-size: 12px; user-select: text; }
+.team-decisions li + li { border-top: 1px solid var(--border); }
+.team-decisions .grow { flex: 1; min-width: 0; }
+.team-decisions li > .dim { white-space: nowrap; }
+.card.feature-card.meeting { border-color: var(--border-strong); padding: 6px 12px; }
+.card.feature-card.meeting .meeting-line { margin-bottom: 0; font-weight: 500; }
+.card.feature-card.meeting .meeting-line .dim { font-weight: 400; }

@@ -20,6 +20,7 @@ import { Transcript } from "./views/Transcript";
 import { Composer } from "./views/Composer";
 import { Inspector } from "./views/Inspector";
 import { OrchestratorTabs, WorkerThreads } from "./views/WorkerThreads";
+import { TeamView } from "./views/TeamView";
 import { useWorkerThreads } from "./state/workerThreads";
 import { setFeatures } from "./state/features";
 import { Overlays } from "./components/Overlays";
@@ -47,6 +48,8 @@ export default function App() {
   const session = useStore((s) => s.selectedId ? s.sessions[s.selectedId] : null);
   // An orchestrator showing its threads with its workers rather than its chat.
   const threads = useWorkerThreads((s) => (session?.orchestrator ? s.views[session.id]?.tab === "workers" : false));
+  // A feature owner showing its team, which the user opened.
+  const team = useWorkerThreads((s) => (session?.feature_owner ? s.views[session.id]?.tab === "team" : false));
   const prMode = useStore((s) => !!s.prSelection || s.reviewHistoryOpen);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
   const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !prMode;
@@ -205,7 +208,7 @@ export default function App() {
           ) : (
             <>
               {session.orchestrator && <OrchestratorTabs orchestratorId={session.id} />}
-              {threads ? <WorkerThreads key={`w-${session.id}`} orchestratorId={session.id} /> : <Transcript key={session.id} sessionId={session.id} />}
+              {team ? <TeamView key={`t-${session.id}`} ownerId={session.id} /> : threads ? <WorkerThreads key={`w-${session.id}`} orchestratorId={session.id} /> : <Transcript key={session.id} sessionId={session.id} />}
               <Composer key={`c-${session.id}`} sessionId={session.id} />
             </>
           )}
