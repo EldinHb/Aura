@@ -88,6 +88,18 @@ async fn a_sessions_token_acts_for_that_session_alone_and_never_as_the_user() {
         .await
         .unwrap();
     owner_a.call("provider.list", json!({})).await.unwrap();
+    // Its own meetings and suggestion pass are its owner's tools too.
+    let e = err(
+        &owner_a,
+        "owner.continue_meeting",
+        json!({ "owner": a, "meeting": "m9", "steer": "go" }),
+    )
+    .await;
+    assert!(e.contains("no meeting `m9`"), "{e}");
+    owner_a
+        .call("owner.suggest_specialists", json!({ "owner": a }))
+        .await
+        .unwrap();
     owner_a
         .call("orchestrator.projects", json!({}))
         .await
@@ -109,6 +121,22 @@ async fn a_sessions_token_acts_for_that_session_alone_and_never_as_the_user() {
             json!({ "id": a, "suggestion": "s1", "accept": true }),
         ),
         ("feature.set_autonomy", json!({ "id": a, "autonomy": null })),
+        (
+            "feature.set_meeting_mode",
+            json!({ "id": a, "mode": "live" }),
+        ),
+        (
+            "meetings.set",
+            json!({ "mode": "live", "max_rounds": 5, "turn_words": 400 }),
+        ),
+        ("suggestions.set_settings", json!({ "enabled": true })),
+        ("suggestions.resolve", json!({ "id": "r1", "accept": true })),
+        ("suggestions.run", json!({ "owner": a })),
+        ("suggestions.list", json!({})),
+        (
+            "owner.close_meeting",
+            json!({ "owner": b, "meeting": "m1", "outcome": "x" }),
+        ),
         (
             "autonomy.set",
             json!({ "level": "autonomous", "checkpoints": [] }),

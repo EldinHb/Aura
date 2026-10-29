@@ -123,6 +123,12 @@ pub enum Event {
         session_id: SessionId,
         feature: crate::features::Feature,
     },
+    /// The specialists Aura suggested from repeated ad-hoc work changed:
+    /// all of them, pending and resolved. Belongs to no session; not part
+    /// of the history (see `suggestions.list`).
+    SpecialistSuggestionsUpdated {
+        suggestions: Vec<crate::features::SpecialistSuggestion>,
+    },
 }
 
 impl Event {
@@ -147,6 +153,7 @@ impl Event {
             | Event::SettingChanged { session_id, .. }
             | Event::NoticesCleared { session_id }
             | Event::FeatureUpdated { session_id, .. } => session_id,
+            Event::SpecialistSuggestionsUpdated { .. } => "",
         }
     }
 
@@ -160,6 +167,7 @@ impl Event {
                 | Event::SessionRemoved { .. }
                 | Event::ItemDelta { .. }
                 | Event::FeatureUpdated { .. }
+                | Event::SpecialistSuggestionsUpdated { .. }
         )
     }
 }

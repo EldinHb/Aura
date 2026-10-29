@@ -6017,3 +6017,914 @@ async fn a_worker_the_user_stopped_is_not_started_again_by_an_answer() {
     wait_sent(&calls, "[Aura] Answer from a teammate.", 1).await;
     wait_feature(&m, &owner.id, |f| f.one_on_ones[0].delivered).await;
 }
+
+// ---------------------------------------------------------- live meetings
+
+async fn allow_live(m: &Manager, rounds: u32) {
+    m.set_meeting_settings(MeetingSettings {
+        mode: MeetingMode::Live,
+        max_rounds: rounds,
+        turn_words: 100,
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_live_meeting_goes_round_by_round_and_its_chair_steers_and_closes_it() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    allow_live(&m, 2).await;
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let prompt = provider.prompts.lock()[0].clone().unwrap();
+    assert!(prompt.contains("## Meetings: live allowed"), "{prompt}");
+    assert!(prompt.contains("about 100 words") && prompt.contains("at most 2 rounds"));
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let b = teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    let reports = sent_reports(&calls).len();
+    let attention = m.get_session(&a.id).unwrap().attention;
+
+    // The mode follows the setting: live.
+    let held = m
+        .hold_meeting(&owner.id, meeting("Toggle", &["Designer", "Builder"]))
+        .await
+        .unwrap();
+    assert_eq!(held.mode, MeetingMode::Live);
+    assert_eq!((held.round, held.max_rounds, held.turn_words), (1, 2, 100));
+    assert!(wait_cards(&m, &owner.id, 1)
+        .await
+        .contains(&("meeting".into(), "m1".into())));
+
+    // The attendees speak in turn, each sent the thread so far.
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 2).await;
+    assert!(
+        turns[0].contains("It is your turn to speak, as Designer")
+            && turns[0].contains("You speak first")
+            && turns[0].contains("in at most 100 words")
+            && turns[0].contains("Speaking in this order: Designer, you, Builder"),
+        "{}",
+        turns[0]
+    );
+    assert!(
+        turns[1].contains("as Builder") && turns[1].contains("#### Round 1\n**Designer:** hello\n"),
+        "{}",
+        turns[1]
+    );
+    // After the round the chair gets it in one message, and no worker reports.
+    let notes = wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
+    assert!(
+        notes[0].contains("Round 1 of at most 2 is over.")
+            && notes[0].contains("**Designer:** hello\n**Builder:** hello\n")
+            && notes[0].contains("`continue_meeting`"),
+        "{}",
+        notes[0]
+    );
+    let f = wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    assert_eq!(f.meetings[0].status, MeetingStatus::WaitingOnChair);
+    assert_eq!(f.meetings[0].turns.len(), 2);
+    assert!(f.meetings[0]
+        .turns
+        .iter()
+        .all(|t| t.status == AttendeeStatus::Answered && t.text.as_deref() == Some("hello")));
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        sent_reports(&calls).len(),
+        reports,
+        "{:?}",
+        sent_reports(&calls)
+    );
+    assert_eq!(m.get_session(&a.id).unwrap().attention, attention);
+
+    // The chair steers a second round; the thread goes with it.
+    let err = |r: anyhow::Result<Meeting>| r.unwrap_err().to_string();
+    assert!(err(m.continue_meeting(&owner.id, "m1", " ")).contains("`steer` is required"));
+    let m2 = m
+        .continue_meeting(&owner.id, "m1", "Settle the icon")
+        .unwrap();
+    assert_eq!((m2.round, m2.status), (2, MeetingStatus::Collecting));
+    assert!(err(m.continue_meeting(&owner.id, "m1", "more")).contains("still under way"));
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 3).await;
+    assert!(
+        turns[2].contains("round 2 of at most 2")
+            && turns[2].contains(
+                "**Builder:** hello\n\n#### Round 2\n**Owner (chair):** Settle the icon\n"
+            ),
+        "{}",
+        turns[2]
+    );
+    let notes = wait_sent(&calls, "[Aura] Live meeting notes.", 2).await;
+    assert!(
+        notes[1].contains("Round 2 of at most 2 is over.")
+            && notes[1].contains("**Owner (chair):** Settle the icon")
+            && notes[1].contains("That was the last round")
+            && !notes[1].contains("Round 1 of"),
+        "{}",
+        notes[1]
+    );
+    wait_feature(&m, &owner.id, |f| {
+        f.meetings[0].status == MeetingStatus::WaitingOnChair && f.meetings[0].delivered
+    })
+    .await;
+    // The round cap holds.
+    assert!(err(m.continue_meeting(&owner.id, "m1", "again")).contains("had its 2 rounds"));
+
+    // The chair closes it with its outcome; a decision still links to it.
+    let closed = m
+        .close_meeting(&owner.id, "m1", "Moon icon, top right")
+        .unwrap();
+    assert_eq!(closed.status, MeetingStatus::Complete);
+    assert_eq!(closed.outcome.as_deref(), Some("Moon icon, top right"));
+    assert!(closed.ended_at.is_some());
+    let d = m
+        .record_decision(&owner.id, "Moon icon", "Both agreed", Some("m1"))
+        .unwrap();
+    assert_eq!(
+        m.feature(&owner.id).unwrap().meetings[0].decision_ids,
+        [d.id]
+    );
+    assert!(
+        err(m.close_meeting(&owner.id, "m1", "again")).contains("closed with its outcome already")
+    );
+    assert!(err(m.continue_meeting(&owner.id, "m1", "again")).contains("is closed"));
+    // Four turns, two rounds of notes: nothing twice.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(count_sent(&calls, "[Aura] Live meeting."), 4);
+    assert_eq!(count_sent(&calls, "[Aura] Live meeting notes."), 2);
+    assert_eq!(sent_reports(&calls).len(), reports);
+    let _ = b;
+}
+
+#[tokio::test]
+async fn live_meetings_are_refused_in_written_mode_and_held_back_by_reviews() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m
+        .create_session(CreateSessionOpts {
+            autonomy: checkpoints(vec![Checkpoint::AfterDesign]),
+            ..owner_opts(&cwd, "")
+        })
+        .await
+        .unwrap();
+    let prompt = provider.prompts.lock()[0].clone().unwrap();
+    assert!(prompt.contains("## Meetings: written"), "{prompt}");
+    teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let live = |topic: &str| MeetingSpec {
+        mode: Some(MeetingMode::Live),
+        ..meeting(topic, &["Designer"])
+    };
+    let err = |r: anyhow::Result<Meeting>| r.unwrap_err().to_string();
+
+    // Written by default: live is refused, written goes ahead.
+    let e = err(m.hold_meeting(&owner.id, live("x")).await);
+    assert!(e.contains("the user set meetings to written:"), "{e}");
+    let written = m
+        .hold_meeting(&owner.id, meeting("Plain", &["Designer"]))
+        .await
+        .unwrap();
+    assert_eq!(written.mode, MeetingMode::Written);
+    wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    let e = err(m.continue_meeting(&owner.id, "m1", "go on"));
+    assert!(e.contains("is written"), "{e}");
+
+    // This feature's own mode allows it, with the setting's round cap.
+    m.set_feature_meeting_mode(&owner.id, Some(MeetingMode::Live))
+        .await
+        .unwrap();
+    let held = m
+        .hold_meeting(
+            &owner.id,
+            MeetingSpec {
+                rounds: Some(9),
+                ..live("Live")
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!((held.mode, held.max_rounds), (MeetingMode::Live, 2));
+    wait_feature(&m, &owner.id, |f| {
+        f.meetings[1].status == MeetingStatus::WaitingOnChair && f.meetings[1].delivered
+    })
+    .await;
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+
+    // Live everywhere, but this feature keeps to written.
+    allow_live(&m, 3).await;
+    m.set_feature_meeting_mode(&owner.id, Some(MeetingMode::Written))
+        .await
+        .unwrap();
+    let e = err(m.hold_meeting(&owner.id, live("x")).await);
+    assert!(e.contains("written for this feature"), "{e}");
+    m.set_feature_meeting_mode(&owner.id, None).await.unwrap();
+
+    // An open checkpoint review holds the next round and new meetings.
+    m.checkpoint(&owner.id, Checkpoint::AfterDesign, "Designs in docs/")
+        .unwrap();
+    let e = err(m.continue_meeting(&owner.id, "m2", "go on"));
+    assert!(e.contains("wait for the user's review"), "{e}");
+    let e = err(m.hold_meeting(&owner.id, live("x")).await);
+    assert!(e.contains("wait for the user's review"), "{e}");
+    // Closing is not work: it goes.
+    let closed = m
+        .close_meeting(&owner.id, "m2", "Decided without it")
+        .unwrap();
+    assert_eq!(closed.status, MeetingStatus::Complete);
+    // A written meeting that closed records its outcome too.
+    let plain = m.close_meeting(&owner.id, "m1", "Kept it").unwrap();
+    assert_eq!(plain.outcome.as_deref(), Some("Kept it"));
+}
+
+#[tokio::test]
+async fn a_live_meeting_goes_on_at_its_turn_after_a_restart_without_saying_anything_twice() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, calls, _provider) = owner_setup(store.clone());
+        allow_live(&m, 2).await;
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        teammate(&m, &calls, &owner.id, "Designer", "look").await;
+        let busy = teammate(&m, &calls, &owner.id, "Builder", "approve the plan").await;
+        wait_status(&m, &busy.id, SessionStatus::WaitingApproval).await;
+        m.hold_meeting(&owner.id, meeting("Restart", &["Designer", "Builder"]))
+            .await
+            .unwrap();
+        // The designer spoke; the builder's turn waits until it is free.
+        let f = wait_feature(&m, &owner.id, |f| {
+            f.meetings[0].turns[0].status == AttendeeStatus::Answered
+        })
+        .await;
+        assert_eq!(f.meetings[0].turns[1].status, AttendeeStatus::Invited);
+        m.shutdown().await;
+        assert_eq!(count_sent(&calls, "[Aura] Live meeting."), 1);
+        assert_eq!(count_sent(&calls, "[Aura] Live meeting notes"), 0);
+        owner.id
+    };
+    let (m, calls, _provider) = owner_setup(store.clone());
+    m.restore().unwrap();
+    // Only the builder is given its turn, with the designer's in the thread.
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 1).await;
+    assert!(
+        turns[0].contains("as Builder") && turns[0].contains("**Designer:** hello"),
+        "{}",
+        turns[0]
+    );
+    let notes = wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
+    assert!(notes[0].contains("**Builder:** hello"), "{}", notes[0]);
+    let f = wait_feature(&m, &owner_id, |f| f.meetings[0].delivered).await;
+    assert_eq!(f.meetings[0].status, MeetingStatus::WaitingOnChair);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(count_sent(&calls, "[Aura] Live meeting."), 1);
+    assert_eq!(count_sent(&calls, "[Aura] Live meeting notes."), 1);
+    m.shutdown().await;
+
+    // Again: the round's notes were delivered, so nothing is sent again.
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        count_sent(&calls, "[Aura] Live meeting"),
+        0,
+        "{:?}",
+        calls.lock()
+    );
+    let f = m.feature(&owner_id).unwrap();
+    assert_eq!(f.meetings[0].status, MeetingStatus::WaitingOnChair);
+    // The chair takes it from there.
+    m.continue_meeting(&owner_id, "m1", "Decide the port")
+        .unwrap();
+    wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
+}
+
+#[tokio::test]
+async fn a_live_rounds_time_runs_out_and_a_deleted_speaker_misses_its_turns() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    allow_live(&m, 3).await;
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let busy = teammate(&m, &calls, &owner.id, "Builder", "approve the plan").await;
+    wait_status(&m, &busy.id, SessionStatus::WaitingApproval).await;
+    tokio::time::pause();
+    m.hold_meeting(
+        &owner.id,
+        MeetingSpec {
+            timeout_minutes: Some(1),
+            ..meeting("Slow", &["Builder", "Designer"])
+        },
+    )
+    .await
+    .unwrap();
+    // The busy builder speaks first, so nothing happens until the round's time is up.
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let notes = wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
+    assert!(
+        notes[0].contains("**Builder:** (no turn: no answer within a minute)")
+            && notes[0].contains("**Designer:** (no turn: no answer within a minute)"),
+        "{}",
+        notes[0]
+    );
+    assert_eq!(count_sent(&calls, "[Aura] Live meeting."), 0);
+    wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+
+    // Deleted, the builder misses the next round and the designer speaks.
+    m.delete_worker(&owner.id, &busy.id).await.unwrap();
+    let next = m
+        .continue_meeting(&owner.id, "m1", "Without the builder")
+        .unwrap();
+    let speakers: Vec<&str> = next
+        .round_turns(2)
+        .filter(|t| !t.chair)
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(speakers, ["Designer"]);
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 1).await;
+    assert!(
+        turns[0].contains("Speaking in this order: Designer, you\n"),
+        "{}",
+        turns[0]
+    );
+    wait_sent(&calls, "[Aura] Live meeting notes.", 2).await;
+    let f = wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    let closed = m.close_meeting(&owner.id, "m1", "Designer's call").unwrap();
+    assert_eq!(
+        closed.status,
+        MeetingStatus::Incomplete,
+        "round 1 had no turns"
+    );
+    assert_eq!(f.meetings[0].round, 2);
+}
+
+/// The live meeting turns sent, in order.
+fn turns_sent(calls: &Calls) -> Vec<String> {
+    calls
+        .lock()
+        .iter()
+        .filter_map(|c| {
+            c.strip_prefix("send:")
+                .filter(|t| t.starts_with("[Aura] Live meeting."))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_live_turn_that_fails_before_the_speaker_took_it_goes_again_and_is_not_missed() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    m.set_note_retry_delays(vec![Duration::from_millis(50)]);
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    allow_live(&m, 2).await;
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    provider.knobs.lock().no_echo = true;
+    m.hold_meeting(&owner.id, meeting("Retry", &["Designer", "Builder"]))
+        .await
+        .unwrap();
+    wait_sent(&calls, "[Aura] Live meeting.", 1).await;
+    let first = turns_sent(&calls)[0].clone();
+    provider.knobs.lock().no_echo = false;
+    // The agent shows the turn, then its turn fails before any output.
+    let t = turn(&a.id, "failed-before-receipt", TurnStatus::Running);
+    push(
+        &provider,
+        Event::TurnStarted {
+            session_id: a.id.clone(),
+            turn: t.clone(),
+        },
+    );
+    push(
+        &provider,
+        Event::ItemCompleted {
+            session_id: a.id.clone(),
+            item: Item::new(&a.id, Some(t.id.clone()), ItemKind::UserMessage)
+                .with_text(first.clone())
+                .completed(),
+        },
+    );
+    push(
+        &provider,
+        Event::TurnCompleted {
+            session_id: a.id.clone(),
+            turn: Turn {
+                status: TurnStatus::Failed,
+                error: Some("overloaded".into()),
+                ..t
+            },
+        },
+    );
+    // The same turn goes again; the designer's answer counts, then the builder speaks.
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 3).await;
+    assert_eq!(
+        turns[1],
+        format!("send:{first}"),
+        "the same turn, unchanged"
+    );
+    assert!(
+        turns[2].contains("as Builder") && turns[2].contains("**Designer:** hello"),
+        "{}",
+        turns[2]
+    );
+    let f = wait_feature(&m, &owner.id, |f| {
+        f.meetings[0].status == MeetingStatus::WaitingOnChair
+    })
+    .await;
+    assert!(f.meetings[0]
+        .turns
+        .iter()
+        .all(|t| t.status == AttendeeStatus::Answered));
+}
+
+#[tokio::test]
+async fn a_live_turn_that_fails_after_the_speaker_took_it_is_missed_and_the_next_one_speaks() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    allow_live(&m, 2).await;
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    provider.knobs.lock().no_echo = true;
+    m.hold_meeting(&owner.id, meeting("Fails", &["Designer", "Builder"]))
+        .await
+        .unwrap();
+    wait_sent(&calls, "[Aura] Live meeting.", 1).await;
+    let first = turns_sent(&calls)[0].clone();
+    provider.knobs.lock().no_echo = false;
+    // The agent took the turn in (it wrote), then its turn failed.
+    let t = turn(&a.id, "failed-after-receipt", TurnStatus::Running);
+    push(
+        &provider,
+        Event::TurnStarted {
+            session_id: a.id.clone(),
+            turn: t.clone(),
+        },
+    );
+    push(
+        &provider,
+        Event::ItemCompleted {
+            session_id: a.id.clone(),
+            item: Item::new(&a.id, Some(t.id.clone()), ItemKind::UserMessage)
+                .with_text(first)
+                .completed(),
+        },
+    );
+    push(
+        &provider,
+        Event::ItemCompleted {
+            session_id: a.id.clone(),
+            item: Item::new(&a.id, Some(t.id.clone()), ItemKind::AgentMessage)
+                .with_text("half a thought")
+                .completed(),
+        },
+    );
+    push(
+        &provider,
+        Event::TurnCompleted {
+            session_id: a.id.clone(),
+            turn: Turn {
+                status: TurnStatus::Failed,
+                error: Some("overloaded".into()),
+                ..t
+            },
+        },
+    );
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 2).await;
+    assert!(
+        turns[1].contains("as Builder")
+            && turns[1].contains("**Designer:** (no turn: its turn failed: overloaded)"),
+        "{}",
+        turns[1]
+    );
+    let f = wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    let mt = &f.meetings[0];
+    assert_eq!(mt.status, MeetingStatus::WaitingOnChair);
+    assert_eq!(mt.turns[0].status, AttendeeStatus::Missing);
+    assert_eq!(
+        mt.turns[0].text, None,
+        "only a completed turn's reply counts"
+    );
+    // It still speaks in the next round: a failed turn is not gone for good.
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    let next = m.continue_meeting(&owner.id, "m1", "Again").unwrap();
+    assert_eq!(next.round_turns(2).filter(|t| !t.chair).count(), 2);
+    wait_sent(&calls, "[Aura] Live meeting notes.", 2).await;
+    assert_eq!(count_sent(&calls, "[Aura] Live meeting."), 2 + 2);
+}
+
+#[tokio::test]
+async fn a_speaker_the_user_stopped_or_archived_skips_every_turn_left() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    allow_live(&m, 3).await;
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "approve the plan").await;
+    teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    let c = teammate(&m, &calls, &owner.id, "Tester", "approve the plan").await;
+    wait_status(&m, &a.id, SessionStatus::WaitingApproval).await;
+    wait_status(&m, &c.id, SessionStatus::WaitingApproval).await;
+    let reports = sent_reports(&calls).len();
+    m.hold_meeting(
+        &owner.id,
+        meeting("Gone", &["Designer", "Builder", "Tester"]),
+    )
+    .await
+    .unwrap();
+    // The designer is busy, so its turn waits; the user stops it.
+    m.stop_by_request(&a.id).await.unwrap();
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 1).await;
+    assert!(turns[0].contains("as Builder"), "{}", turns[0]);
+    // The tester's turn waits too; the user archives it, which ends the round.
+    wait_feature(&m, &owner.id, |f| {
+        f.meetings[0].turns[1].status == AttendeeStatus::Answered
+    })
+    .await;
+    m.set_archived(&c.id, true).await.unwrap();
+    let notes = wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
+    assert!(
+        notes[0].contains("**Designer:** (no turn: Designer was stopped)")
+            && notes[0].contains("**Builder:** hello")
+            && notes[0].contains("**Tester:** (no turn: Tester was archived)"),
+        "{}",
+        notes[0]
+    );
+    let f = wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    assert_eq!(f.meetings[0].left, [a.id.clone(), c.id.clone()]);
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+
+    // Set going again, the designer does not get its old turn, nor a new one.
+    m.send(
+        &a.id,
+        Input {
+            text: "go on".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &a.id, SessionStatus::Idle).await;
+    let next = m.continue_meeting(&owner.id, "m1", "Without them").unwrap();
+    let speakers: Vec<&str> = next
+        .round_turns(2)
+        .filter(|t| !t.chair)
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(speakers, ["Builder"]);
+    wait_sent(&calls, "[Aura] Live meeting notes.", 2).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let turns = turns_sent(&calls);
+    assert_eq!(turns.len(), 2, "{turns:#?}");
+    assert!(turns.iter().all(|t| t.contains("as Builder")));
+    // Its turns were no work it reports.
+    assert!(sent_reports(&calls).len() <= reports + 1);
+}
+
+#[tokio::test]
+async fn a_live_turn_cut_off_by_a_restart_is_given_again_not_taken_from_its_partial_reply() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, calls, provider) = owner_setup(store.clone());
+        allow_live(&m, 2).await;
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+        provider.knobs.lock().no_echo = true;
+        m.hold_meeting(&owner.id, meeting("Cut", &["Designer"]))
+            .await
+            .unwrap();
+        wait_sent(&calls, "[Aura] Live meeting.", 1).await;
+        let first = turns_sent(&calls)[0].clone();
+        // The designer takes its turn in and starts writing; the daemon goes.
+        let t = turn(&a.id, "cut-off", TurnStatus::Running);
+        push(
+            &provider,
+            Event::TurnStarted {
+                session_id: a.id.clone(),
+                turn: t.clone(),
+            },
+        );
+        push(
+            &provider,
+            Event::ItemCompleted {
+                session_id: a.id.clone(),
+                item: Item::new(&a.id, Some(t.id.clone()), ItemKind::UserMessage)
+                    .with_text(first)
+                    .completed(),
+            },
+        );
+        push(
+            &provider,
+            Event::ItemCompleted {
+                session_id: a.id.clone(),
+                item: Item::new(&a.id, Some(t.id.clone()), ItemKind::AgentMessage)
+                    .with_text("half a thought")
+                    .completed(),
+            },
+        );
+        wait_feature(&m, &owner.id, |f| {
+            f.meetings[0].turns[0].status == AttendeeStatus::Asked
+        })
+        .await;
+        m.shutdown().await;
+        owner.id
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    // The turn went with the daemon: it is given again, and its answer counts.
+    let turns = wait_sent(&calls, "[Aura] Live meeting.", 1).await;
+    assert!(turns[0].contains("as Designer"), "{}", turns[0]);
+    let f = wait_feature(&m, &owner_id, |f| f.meetings[0].delivered).await;
+    assert_eq!(f.meetings[0].turns[0].text.as_deref(), Some("hello"));
+    let notes = wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
+    assert!(!notes[0].contains("half a thought"), "{}", notes[0]);
+}
+
+// ------------------------------------------------- suggested specialists
+
+/// A cheap model that answers what the test scripts and keeps what it was asked.
+#[derive(Default)]
+struct FakeModel {
+    answer: Mutex<String>,
+    asked: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl aura_core::suggestions::SuggestionModel for FakeModel {
+    async fn complete(
+        &self,
+        settings: &SuggestionSettings,
+        prompt: &str,
+        _schema: &serde_json::Value,
+    ) -> anyhow::Result<String> {
+        assert_eq!(settings.model, "haiku");
+        self.asked.lock().push(prompt.to_string());
+        Ok(self.answer.lock().clone())
+    }
+}
+
+const MIGRATIONS: &str = r#"{"roles":[
+    {"name":"Migration writer","role":"Writes database migrations","description":"SQL migrations that roll back","instructions":"Write reversible SQL migrations and test the rollback.","briefs":["b1","b2"]},
+    {"name":"QA Tester","role":"Tests features","description":"","instructions":"Test it.","briefs":["b1","b2"]}
+]}"#;
+
+async fn adhoc(m: &Manager, calls: &Calls, owner: &str, title: &str, brief: &str) {
+    let reports = sent_reports(calls).len();
+    m.start_worker(
+        owner,
+        WorkerSpec {
+            agent: "claude".into(),
+            prompt: brief.into(),
+            title: Some(title.into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_reports(calls, reports + 1).await;
+    wait_status(m, owner, SessionStatus::Idle).await;
+}
+
+#[tokio::test]
+async fn repeated_ad_hoc_roles_become_suggestions_from_a_cheap_model_pass() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let model = Arc::new(FakeModel::default());
+    *model.answer.lock() = MIGRATIONS.into();
+    m.set_suggestion_model(model.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let first = m
+        .create_session(owner_opts(&cwd, "Orders export"))
+        .await
+        .unwrap();
+    adhoc(
+        &m,
+        &calls,
+        &first.id,
+        "Migration writer",
+        "Write the SQL migrations for the orders table and check they roll back.",
+    )
+    .await;
+    adhoc(
+        &m,
+        &calls,
+        &first.id,
+        "Copy editor",
+        "Polish the wording of the onboarding screens.",
+    )
+    .await;
+
+    // Ad-hoc workers are kept with their brief, role and feature.
+    let briefs = m.adhoc_briefs().unwrap();
+    assert_eq!(briefs.len(), 2);
+    assert_eq!(
+        briefs[0].summary,
+        "Migration writer: Write the SQL migrations for the orders table and check they roll back"
+    );
+    assert_eq!(briefs[0].feature, "Orders export");
+    assert_eq!(briefs[0].project, cwd);
+
+    // One of a kind is no repeated work: the model does not run.
+    let run = m.suggest_specialists(Some(&first.id)).await.unwrap();
+    assert!(
+        run.suggestions.is_empty() && run.note.contains("No two"),
+        "{}",
+        run.note
+    );
+    assert!(model.asked.lock().is_empty());
+
+    // The same role in a second feature, whose owner goes: its brief stays.
+    let second = m
+        .create_session(owner_opts(&cwd, "Invoices"))
+        .await
+        .unwrap();
+    adhoc(
+        &m,
+        &calls,
+        &second.id,
+        "Migration writer",
+        "Write SQL migrations for the invoices table; make sure they roll back cleanly.",
+    )
+    .await;
+    m.delete(&second.id, false).await.unwrap();
+    assert_eq!(m.adhoc_briefs().unwrap().len(), 3);
+
+    // Off: nothing runs.
+    m.set_suggestion_settings(SuggestionSettings {
+        enabled: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let run = m.suggest_specialists(None).await.unwrap();
+    assert!(run.note.contains("off"), "{}", run.note);
+    assert!(model.asked.lock().is_empty());
+    m.set_suggestion_settings(SuggestionSettings::default())
+        .unwrap();
+
+    // On: the model reads the two alike, bounded, and finds the role; the
+    // tester is left out, a specialist covers it.
+    let mut rx = m.subscribe();
+    let run = m.suggest_specialists(Some(&first.id)).await.unwrap();
+    assert_eq!(model.asked.lock().len(), 1);
+    let asked = model.asked.lock()[0].clone();
+    assert!(asked.len() <= aura_core::suggestions::MODEL_INPUT_LIMIT);
+    assert!(
+        asked.contains("Migration writer · feature: Invoices") && !asked.contains("onboarding"),
+        "{asked}"
+    );
+    assert!(
+        asked.contains("- Tester (QA) (tester)"),
+        "existing specialists are named: {asked}"
+    );
+    assert_eq!(run.suggestions.len(), 1, "{}", run.note);
+    let s = &run.suggestions[0];
+    assert_eq!(
+        (s.id.as_str(), s.specialist.id.as_str()),
+        ("r1", "migration-writer")
+    );
+    assert_eq!(s.status, SuggestionStatus::Pending);
+    assert_eq!(
+        s.specialist.scope,
+        SpecialistScope::Project,
+        "both briefs come from one repository"
+    );
+    assert_eq!(s.specialist.project.as_deref(), Some(cwd.as_str()));
+    assert_eq!(s.evidence.len(), 2);
+    assert!(
+        s.reason.contains("2 ad-hoc workers") && s.reason.contains("2 features"),
+        "{}",
+        s.reason
+    );
+    assert!(wait_cards(&m, &first.id, 1)
+        .await
+        .contains(&("role_suggestion".into(), "r1".into())));
+    let announced = drain(&mut rx).await;
+    assert!(announced.iter().any(|e| matches!(e, Event::SpecialistSuggestionsUpdated { suggestions } if suggestions.len() == 1)));
+    // Nothing is created until the user says so.
+    assert!(m
+        .specialists(Some(&cwd))
+        .unwrap()
+        .iter()
+        .all(|x| x.id != "migration-writer"));
+
+    // Asked again, the same briefs are not looked at again.
+    let run = m.suggest_specialists(None).await.unwrap();
+    assert!(
+        run.suggestions.is_empty() && run.note.contains("No two"),
+        "{}",
+        run.note
+    );
+    assert_eq!(model.asked.lock().len(), 1);
+
+    // Dismissed, it is not made again from the same briefs, also when the
+    // model finds it once more among new ones.
+    m.resolve_role_suggestion("r1", false, None).unwrap();
+    assert!(m
+        .resolve_role_suggestion("r1", true, None)
+        .unwrap_err()
+        .to_string()
+        .contains("dismissed already"));
+    let third = m.create_session(owner_opts(&cwd, "Refunds")).await.unwrap();
+    adhoc(
+        &m,
+        &calls,
+        &third.id,
+        "Migration writer",
+        "Write the SQL migration for the refunds table, with a rollback.",
+    )
+    .await;
+    // The briefs come most recent first: the refunds, invoices, then orders.
+    *model.answer.lock() = r#"{"roles":[{"name":"Migration writer","role":"Writes migrations","description":"","instructions":"Write reversible migrations.","briefs":["b2","b3"]}]}"#.into();
+    let run = m.suggest_specialists(Some(&third.id)).await.unwrap();
+    assert_eq!(model.asked.lock().len(), 2);
+    assert!(run.suggestions.is_empty(), "{}", run.note);
+    assert!(run.note.contains("suggested before"), "{}", run.note);
+    // With a new brief behind it, it is suggested again.
+    *model.answer.lock() = r#"{"roles":[{"name":"Migration writer","role":"Writes migrations","description":"","instructions":"Write reversible migrations.","briefs":["b1","b2","b3"]}]}"#.into();
+    let fourth = m.create_session(owner_opts(&cwd, "Payouts")).await.unwrap();
+    adhoc(
+        &m,
+        &calls,
+        &fourth.id,
+        "Migration writer",
+        "Write SQL migrations for payouts that roll back.",
+    )
+    .await;
+    let run = m.suggest_specialists(Some(&fourth.id)).await.unwrap();
+    assert_eq!(run.suggestions.len(), 1, "{}", run.note);
+    assert_eq!(run.suggestions[0].id, "r2");
+
+    // Accepted, it becomes a specialist once.
+    let accepted = m.resolve_role_suggestion("r2", true, None).unwrap();
+    assert_eq!(accepted.status, SuggestionStatus::Accepted);
+    assert_eq!(accepted.accepted_id.as_deref(), Some("migration-writer"));
+    assert!(m
+        .specialists(Some(&cwd))
+        .unwrap()
+        .iter()
+        .any(|x| x.id == "migration-writer"));
+    assert!(m.resolve_role_suggestion("r2", true, None).is_err());
+    let all = m.role_suggestions().unwrap();
+    assert_eq!(
+        all.iter().map(|s| s.status).collect::<Vec<_>>(),
+        [SuggestionStatus::Dismissed, SuggestionStatus::Accepted]
+    );
+}
+
+#[tokio::test]
+async fn delivering_a_feature_looks_for_repeated_roles_in_the_background() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let model = Arc::new(FakeModel::default());
+    *model.answer.lock() = MIGRATIONS.into();
+    m.set_suggestion_model(model.clone());
+    let one = tempfile::tempdir().unwrap();
+    let two = tempfile::tempdir().unwrap();
+    let (a, b) = (
+        one.path().to_string_lossy().to_string(),
+        two.path().to_string_lossy().to_string(),
+    );
+    let first = m.create_session(owner_opts(&a, "Orders")).await.unwrap();
+    adhoc(
+        &m,
+        &calls,
+        &first.id,
+        "Migration writer",
+        "Write the SQL migrations for the orders table and check they roll back.",
+    )
+    .await;
+    let owner = m.create_session(owner_opts(&b, "Invoices")).await.unwrap();
+    adhoc(
+        &m,
+        &calls,
+        &owner.id,
+        "Migration writer",
+        "Write SQL migrations for the invoices table; make sure they roll back cleanly.",
+    )
+    .await;
+    m.deliver_report(&owner.id, report_spec()).unwrap();
+    // Found in two repositories, it is suggested for every project, in the delivering owner's chat.
+    let cards = wait_cards(&m, &owner.id, 2).await;
+    assert!(
+        cards.contains(&("role_suggestion".into(), "r1".into())),
+        "{cards:?}"
+    );
+    let s = &m.role_suggestions().unwrap()[0];
+    assert_eq!(s.specialist.scope, SpecialistScope::Global);
+    assert_eq!(s.owner_id.as_deref(), Some(owner.id.as_str()));
+    // Without a model, a pass that needs one says so.
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    m.save_specialist(specialist("x", "y")).unwrap();
+    let run = m.suggest_specialists(None).await.unwrap();
+    assert!(run.note.contains("No two"), "{}", run.note);
+}

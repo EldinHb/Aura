@@ -88,8 +88,8 @@ pub(super) struct State {
     tokens: HashMap<String, SessionId>,
     /// Workers sent a note to answer whose turn has not started yet.
     answer_next: HashMap<SessionId, NoteAbout>,
-    /// Workers whose current turn answers a note: a meeting's agenda or a
-    /// teammate's question.
+    /// Workers whose current turn answers a note: a meeting's agenda, a
+    /// live meeting's turn or a teammate's question.
     answering: HashMap<SessionId, NoteAbout>,
     /// The daemon is stopping: agents that stop now did not fail, and what
     /// they were answering is asked again after the restart.
@@ -119,6 +119,16 @@ pub(super) enum NoteAbout {
     },
     /// Every answer to a meeting, for its owner.
     Meeting(String),
+    /// A live meeting's thread so far for the attendee whose turn it is, who
+    /// speaks in reply.
+    Turn {
+        owner: SessionId,
+        meeting: String,
+        round: u32,
+        worker: SessionId,
+    },
+    /// A live meeting's round that ended, for its chair, the owner.
+    Round { meeting: String, round: u32 },
     /// A one-on-one question for the one asked: a teammate answers it in
     /// its turn, the owner with `reply_to_teammate`.
     Ask { owner: SessionId, id: String },
@@ -132,6 +142,7 @@ impl NoteAbout {
     pub(super) fn owner(&self) -> Option<&str> {
         match self {
             NoteAbout::Agenda { owner, .. }
+            | NoteAbout::Turn { owner, .. }
             | NoteAbout::Ask { owner, .. }
             | NoteAbout::Reply { owner, .. } => Some(owner),
             _ => None,
@@ -141,7 +152,7 @@ impl NoteAbout {
     /// Whether the turn it starts on `receiver` answers it.
     fn answered_by(&self, receiver: &str) -> bool {
         match self {
-            NoteAbout::Agenda { .. } => true,
+            NoteAbout::Agenda { .. } | NoteAbout::Turn { .. } => true,
             NoteAbout::Ask { owner, .. } => owner != receiver,
             _ => false,
         }
@@ -372,9 +383,11 @@ impl Manager {
                     crate::features::Feature::new(&s.id, "", None)
                 });
                 p = format!(
-                    "{p}\n\n{}\n\n{}",
+                    "{p}\n\n{}\n\n{}\n\n{}",
                     crate::prompts::feature_owner_prompt(&feature.goal),
-                    self.effective_autonomy(&feature).prompt()
+                    self.effective_autonomy(&feature).prompt(),
+                    self.meeting_settings()
+                        .prompt(self.effective_meeting_mode(&feature))
                 );
             }
             // Unreadable settings leave the load balancer off rather than the
@@ -641,7 +654,18 @@ impl Manager {
             // Checked again now it has started: a checkpoint review opened
             // meanwhile keeps it from the team and its task.
             Ok(o) if o.feature_owner => {
-                if let Err(e) = self.join_team(orchestrator, &session, specialist, guest_of) {
+                let project = match &session.worktree {
+                    Some(wt) => wt.repo_root.clone(),
+                    None => {
+                        let (me, cwd) = (self.clone(), session.cwd.clone());
+                        tokio::task::spawn_blocking(move || me.project_root(&cwd))
+                            .await
+                            .unwrap_or_else(|_| session.cwd.clone())
+                    }
+                };
+                let brief = Some((spec.prompt.as_str(), project.as_str()));
+                if let Err(e) = self.join_team(orchestrator, &session, specialist, guest_of, brief)
+                {
                     let _ = self.delete(&session.id, false).await;
                     return Err(e);
                 }
@@ -1203,7 +1227,7 @@ impl Manager {
             message: Some(m), ..
         } = ev
         {
-            self.unavailable(&s, &format!("failed: {m}"));
+            self.unavailable(&s, &format!("failed: {m}"), false);
         }
         // A worker that waits on a teammate's or the owner's answer is not
         // done: it is reported when it goes on with the answer.
@@ -1480,6 +1504,7 @@ impl Manager {
         if o.mode != SessionMode::Structured || busy || !(free || failed) {
             return;
         }
+        self.drop_stale_meeting_notes(orchestrator);
         // Claim the gate in the same lock that checks it, so a message from
         // `send_when_free` cannot start a second turn at the same time.
         let workers = {
@@ -1531,6 +1556,36 @@ impl Manager {
             return;
         }
         self.deliver(orchestrator, Delivery::Report(report_message(&reports)));
+    }
+
+    /// Drop the meeting notes waiting for a session that are out of date
+    /// (see `stale_meeting_note`), before it is sent the next.
+    fn drop_stale_meeting_notes(&self, id: &str) {
+        let waiting: Vec<NoteAbout> = self
+            .inner
+            .orchestration
+            .lock()
+            .notes
+            .get(id)
+            .map(|q| {
+                q.iter()
+                    .filter_map(|n| n.about.clone())
+                    .filter(|a| matches!(a, NoteAbout::Agenda { .. } | NoteAbout::Turn { .. }))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let stale: Vec<NoteAbout> = waiting
+            .into_iter()
+            .filter(|a| self.stale_meeting_note(a))
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        let mut st = self.inner.orchestration.lock();
+        if let Some(q) = st.notes.get_mut(id) {
+            q.retain(|n| !n.about.as_ref().is_some_and(|a| stale.contains(a)));
+        }
+        st.notes.retain(|_, q| !q.is_empty());
     }
 
     /// Queue a message from Aura (not a worker report) for a session, sent

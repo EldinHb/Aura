@@ -94,6 +94,9 @@ async fn main() -> Result<()> {
 
     let manager = Manager::new(store.clone(), providers, Some(Arc::new(aura_git::Git)));
     manager.enable_attachments(data_dir.join("attachments"));
+    // Specialists suggested from repeated work are found by a cheap model,
+    // run once and headless with Claude Code.
+    manager.set_suggestion_model(Arc::new(aura_core::suggestions::ClaudeCli));
     manager.enable_orchestrator_dirs(
         std::fs::canonicalize(&data_dir)
             .unwrap_or_else(|_| data_dir.clone())

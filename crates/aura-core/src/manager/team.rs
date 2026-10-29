@@ -1,13 +1,22 @@
-//! A feature owner's team at work together: written meetings and
-//! one-on-ones. Both go over notes (messages from Aura queued until the one
-//! they go to is free), and both are kept in the feature record.
+//! A feature owner's team at work together: meetings and one-on-ones. Both
+//! go over notes (messages from Aura queued until the one they go to is
+//! free), and both are kept in the feature record.
 //!
-//! - A **meeting** (`hold_meeting`) sends every attendee the agenda at once.
-//!   The turn an attendee answers it in is not reported to the owner; its
-//!   final reply is the attendee's contribution. When every attendee answered
-//!   or the meeting's time ran out, the owner gets one message with every
-//!   contribution. One that fails, is stopped, archived or deleted closes the
-//!   meeting at once, without those still to answer.
+//! - A **written meeting** (`hold_meeting`) sends every attendee the agenda
+//!   at once. The turn an attendee answers it in is not reported to the
+//!   owner; its final reply is the attendee's contribution. When every
+//!   attendee answered or the meeting's time ran out, the owner gets one
+//!   message with every contribution. One that fails, is stopped, archived or
+//!   deleted closes the meeting at once, without those still to answer.
+//! - A **live meeting** (see [`crate::meetings`]) is a thread in rounds the
+//!   owner chairs. In a round the attendees speak one after the other, each
+//!   sent the thread so far in one note, answered like an agenda. A speaker
+//!   whose turn fails misses it and the next one speaks; one that is deleted,
+//!   archived or stopped by the user skips every turn left. When the round is
+//!   over (everyone spoke or missed, or the round's time ran out) the owner
+//!   gets the round in one message and continues the meeting with a steer
+//!   (`continue_meeting`), up to the round cap, or closes it
+//!   (`close_meeting`) with the outcome.
 //! - A **one-on-one** is a question a worker puts to a teammate
 //!   (`ask_teammate`), answered in the teammate's turn, or to the owner
 //!   (`ask_owner`), answered with `reply_to_teammate`. The answer reaches the
@@ -37,14 +46,16 @@
 //! turn it came from completed; otherwise the attendee or teammate is asked
 //! again (that turn went with the daemon). A meeting past its deadline closes
 //! after taking those answers; what was answered but not delivered is
-//! delivered.
+//! delivered. A live meeting goes on at the turn it was at, the same way.
 use super::orchestrator::{tail, Note, NoteAbout};
 use super::{HireSpec, Manager};
 use crate::event::*;
 use crate::features::*;
+use crate::meetings::MeetingMode;
 use crate::types::*;
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Attendees a meeting may have, guests included.
 pub const MAX_ATTENDEES: usize = 6;
@@ -71,8 +82,14 @@ pub struct MeetingSpec {
     pub guests: Vec<String>,
     /// Where guests work; defaults to the owner's folder.
     pub cwd: Option<String>,
-    /// How long to wait for answers, 1 to 120 minutes.
+    /// How long to wait for answers, 1 to 120 minutes; for a live meeting,
+    /// for each round's turns.
     pub timeout_minutes: Option<u64>,
+    /// Written or live; defaults to the mode the feature follows. Live is
+    /// refused when the user set meetings to written.
+    pub mode: Option<MeetingMode>,
+    /// For a live meeting: the most rounds, up to the user's cap.
+    pub rounds: Option<u32>,
 }
 
 impl Manager {
@@ -248,6 +265,20 @@ impl Manager {
             .unwrap_or(MEETING_MINUTES)
             .clamp(1, 120);
         let feature = self.feature(owner)?;
+        let settings = self.meeting_settings();
+        let follows = self.effective_meeting_mode(&feature);
+        let mode = spec.mode.unwrap_or(follows);
+        if mode == MeetingMode::Live && follows == MeetingMode::Written {
+            bail!(
+                "the user set meetings to written{}: live meetings cost a turn per attendee per round, so they are off. Hold it written (leave out `mode`), or decide yourself",
+                if feature.meeting_mode.is_some() {
+                    " for this feature"
+                } else {
+                    ""
+                }
+            );
+        }
+        let live = mode == MeetingMode::Live;
         let attendee = |s: &Session| MeetingAttendee {
             worker_id: s.id.clone(),
             name: s.title.clone(),
@@ -276,6 +307,20 @@ impl Manager {
                 deadline: now + chrono::Duration::minutes(minutes as i64),
                 ended_at: None,
                 delivered: false,
+                mode,
+                round: 0,
+                max_rounds: if live {
+                    spec.rounds
+                        .unwrap_or(settings.max_rounds)
+                        .clamp(1, settings.max_rounds)
+                } else {
+                    0
+                },
+                turn_words: if live { settings.turn_words } else { 0 },
+                turns: vec![],
+                outcome: None,
+                timeout_minutes: if live { minutes as u32 } else { 0 },
+                left: vec![],
             };
             f.meetings.push(m.clone());
             if f.status == FeatureStatus::Planning {
@@ -335,14 +380,42 @@ impl Manager {
             owner,
             FeatureCardKind::Meeting,
             &meeting.id,
-            &format!("Meeting: {}", meeting.topic),
+            &format!(
+                "{}: {}",
+                if live { "Live meeting" } else { "Meeting" },
+                meeting.topic
+            ),
         );
-        for a in meeting.attendees.iter().filter(|a| a.status.pending()) {
-            self.send_agenda(&o, &meeting, a);
+        if live {
+            let speakers: HashSet<String> = meeting
+                .attendees
+                .iter()
+                .filter(|a| a.status.pending())
+                .map(|a| a.worker_id.clone())
+                .collect();
+            let (_, m) = self.change_feature(owner, |f| {
+                let m = f
+                    .meetings
+                    .iter_mut()
+                    .find(|m| m.id == meeting.id)
+                    .ok_or_else(|| anyhow!("the meeting is gone"))?;
+                open_round(m, None, &speakers);
+                Ok(m.clone())
+            })?;
+            self.arm_deadline(owner, &m);
+            match m.current_turn() {
+                Some(_) => self.send_turn(&o, &m),
+                // Every guest failed to start, and nobody else was asked.
+                None => self.end_meeting(owner, &m.id, "nobody could take part"),
+            }
+        } else {
+            for a in meeting.attendees.iter().filter(|a| a.status.pending()) {
+                self.send_agenda(&o, &meeting, a);
+            }
+            self.arm_deadline(owner, &meeting);
+            // Every guest may have failed to start.
+            self.settle_meeting(owner, &meeting.id);
         }
-        self.arm_deadline(owner, &meeting);
-        // Every guest may have failed to start.
-        self.settle_meeting(owner, &meeting.id);
         Ok(self
             .feature(owner)?
             .meeting(&meeting.id)
@@ -364,21 +437,42 @@ impl Manager {
         );
     }
 
-    /// Close the meeting when its deadline passes, with what came in by then.
+    /// When the deadline passes: close a written meeting with what came in
+    /// by then, or end a live meeting's round with the turns given.
     fn arm_deadline(&self, owner: &str, m: &Meeting) {
         let me = self.clone();
-        let (owner, id) = (owner.to_string(), m.id.clone());
+        let (owner, id, deadline) = (owner.to_string(), m.id.clone(), m.deadline);
         let wait = (m.deadline - crate::now()).to_std().unwrap_or_default();
-        let minutes = (m.deadline - m.started_at).num_minutes().max(1);
         tokio::spawn(async move {
             tokio::time::sleep(wait).await;
-            me.close_meeting(&owner, &id, &no_answer_within(minutes));
+            me.deadline_passed(&owner, &id, deadline);
         });
     }
 
+    fn deadline_passed(&self, owner: &str, id: &str, deadline: chrono::DateTime<chrono::Utc>) {
+        let Some(m) = self
+            .feature(owner)
+            .ok()
+            .and_then(|f| f.meeting(id).cloned())
+        else {
+            return;
+        };
+        // A later round of a live meeting has a deadline of its own.
+        if m.deadline != deadline {
+            return;
+        }
+        let why = no_answer_within(m.minutes());
+        if m.live() {
+            self.end_round(owner, id, &why);
+        } else {
+            self.end_meeting(owner, id, &why);
+        }
+    }
+
     /// Close a meeting still collecting: who has not answered is missing,
-    /// and their agenda, if not sent yet, is dropped.
-    pub(super) fn close_meeting(&self, owner: &str, id: &str, why: &str) {
+    /// and their agenda, if not sent yet, is dropped. A live meeting closes
+    /// with the turns given.
+    pub(super) fn end_meeting(&self, owner: &str, id: &str, why: &str) {
         let closed = self.change_feature(owner, |f| {
             let Some(m) = f.meetings.iter_mut().find(|m| m.id == id) else {
                 return Ok(None);
@@ -386,6 +480,9 @@ impl Manager {
             for a in m.attendees.iter_mut().filter(|a| a.status.pending()) {
                 a.status = AttendeeStatus::Missing;
                 a.missing = Some(why.to_string());
+            }
+            if m.live() {
+                return Ok(close_live(m, why).then(|| m.clone()));
             }
             Ok(m.settle().then(|| m.clone()))
         });
@@ -412,9 +509,7 @@ impl Manager {
 
     /// A meeting closed: the owner gets every answer in one message.
     fn meeting_closed(&self, owner: &str, m: &Meeting) {
-        self.drop_notes(|about| {
-            matches!(about, NoteAbout::Agenda { owner: o, meeting, .. } if o == owner && meeting == &m.id)
-        });
+        self.drop_meeting_notes(owner, &m.id, None);
         if self.feature_owner_session(owner).is_err() {
             return;
         }
@@ -425,6 +520,195 @@ impl Manager {
                 about: Some(NoteAbout::Meeting(m.id.clone())),
             },
         );
+    }
+
+    /// Drop the queued notes of a meeting: all of them, or those of one
+    /// round of a live meeting.
+    fn drop_meeting_notes(&self, owner: &str, id: &str, round: Option<u32>) {
+        self.drop_notes(|about| match about {
+            NoteAbout::Agenda {
+                owner: o, meeting, ..
+            } => o == owner && meeting == id,
+            NoteAbout::Turn {
+                owner: o,
+                meeting,
+                round: r,
+                ..
+            } => o == owner && meeting == id && round.is_none_or(|n| n == *r),
+            _ => false,
+        });
+    }
+
+    // -------------------------------------------------------- live meetings
+
+    /// Send the attendee whose turn it is in a live meeting the thread so far.
+    fn send_turn(&self, owner: &Session, m: &Meeting) {
+        let Some(i) = m.current_turn() else { return };
+        let t = &m.turns[i];
+        if t.status != AttendeeStatus::Invited {
+            return;
+        }
+        self.queue_note(&t.worker_id, self.turn_note(owner, m, i));
+    }
+
+    fn turn_note(&self, owner: &Session, m: &Meeting, i: usize) -> Note {
+        let t = &m.turns[i];
+        Note {
+            text: live_turn_message(m, &owner.title, i),
+            about: Some(NoteAbout::Turn {
+                owner: owner.id.clone(),
+                meeting: m.id.clone(),
+                round: t.round,
+                worker: t.worker_id.clone(),
+            }),
+        }
+    }
+
+    /// End a live meeting's round: who has not spoken misses it.
+    fn end_round(&self, owner: &str, id: &str, why: &str) {
+        let ended = self.change_feature(owner, |f| {
+            let Some(m) = f.meetings.iter_mut().find(|m| m.id == id) else {
+                return Ok(None);
+            };
+            if m.status != MeetingStatus::Collecting {
+                return Ok(None);
+            }
+            let round = m.round;
+            for i in 0..m.turns.len() {
+                let t = &mut m.turns[i];
+                if t.round == round && !t.chair && t.status.pending() {
+                    t.status = AttendeeStatus::Missing;
+                    t.missing = Some(why.to_string());
+                    m.sync_attendee(i);
+                }
+            }
+            Ok(m.settle_round().then(|| m.clone()))
+        });
+        match ended {
+            Ok((_, Some(m))) => self.round_ended(owner, &m),
+            Ok(_) => {}
+            Err(e) => tracing::debug!("end round of meeting {id} of {owner}: {e:#}"),
+        }
+    }
+
+    /// A live meeting's round ended: its chair gets the round in one message.
+    fn round_ended(&self, owner: &str, m: &Meeting) {
+        self.drop_meeting_notes(owner, &m.id, Some(m.round));
+        if self.feature_owner_session(owner).is_err() {
+            return;
+        }
+        self.queue_unless_received(owner, round_note(m));
+    }
+
+    /// The chair of a live meeting starts its next round with a steer: what
+    /// the round should settle. Refused while a round is under way, after
+    /// the last round the user allows, and while a checkpoint review is open.
+    pub fn continue_meeting(&self, owner: &str, id: &str, steer: &str) -> Result<Meeting> {
+        let o = self.feature_owner_session(owner)?;
+        let steer = steer.trim();
+        if steer.is_empty() {
+            bail!("`steer` is required: what the next round should settle, in a line or two");
+        }
+        self.may_message(owner)?;
+        let speakers: HashSet<String> = self
+            .workers_of(owner)
+            .into_iter()
+            .filter(|s| !s.archived && s.mode == SessionMode::Structured)
+            .map(|s| s.id)
+            .collect();
+        let (_, m) = self.change_feature(owner, |f| {
+            let m = f
+                .meetings
+                .iter_mut()
+                .find(|m| m.id == id.trim())
+                .ok_or_else(|| anyhow!("no meeting `{id}` in this feature"))?;
+            if !m.live() {
+                bail!("meeting `{}` is written: it ends once the answers are in. Hold another one, or ask with send_message", m.id);
+            }
+            match m.status {
+                MeetingStatus::WaitingOnChair => {}
+                MeetingStatus::Collecting => bail!(
+                    "round {} of meeting `{}` is still under way; Aura sends you its notes when it is over",
+                    m.round,
+                    m.id
+                ),
+                _ => bail!("meeting `{}` is closed", m.id),
+            }
+            if m.round >= m.max_rounds {
+                bail!(
+                    "meeting `{}` had its {} rounds, the most allowed; close it with `close_meeting` and the outcome",
+                    m.id,
+                    m.max_rounds
+                );
+            }
+            if !m
+                .attendees
+                .iter()
+                .any(|a| speakers.contains(&a.worker_id) && !m.left.contains(&a.worker_id))
+            {
+                bail!("nobody of meeting `{}` is still on the team; close it with `close_meeting`", m.id);
+            }
+            let chair = MeetingTurn {
+                round: m.round + 1,
+                worker_id: o.id.clone(),
+                name: o.title.clone(),
+                role: String::new(),
+                chair: true,
+                status: AttendeeStatus::Answered,
+                text: Some(steer.to_string()),
+                missing: None,
+                at: Some(crate::now()),
+            };
+            open_round(m, Some(chair), &speakers);
+            Ok(m.clone())
+        })?;
+        self.arm_deadline(owner, &m);
+        self.send_turn(&o, &m);
+        Ok(m)
+    }
+
+    /// The owner closes a meeting with its outcome. A live meeting ends
+    /// here, its turns not given yet dropped; a written one still collecting
+    /// closes with the answers in, which the owner gets as usual. The outcome
+    /// of a meeting that closed already is recorded once.
+    pub fn close_meeting(&self, owner: &str, id: &str, outcome: &str) -> Result<Meeting> {
+        self.feature_owner_session(owner)?;
+        let outcome = outcome.trim();
+        if outcome.is_empty() {
+            bail!("`outcome` is required: what the meeting settled, in a line or two");
+        }
+        let why = "the chair closed the meeting";
+        let (_, (m, notes)) = self.change_feature(owner, |f| {
+            let m = f
+                .meetings
+                .iter_mut()
+                .find(|m| m.id == id.trim())
+                .ok_or_else(|| anyhow!("no meeting `{id}` in this feature"))?;
+            if m.outcome.is_some() {
+                bail!("meeting `{}` is closed with its outcome already", m.id);
+            }
+            m.outcome = Some(outcome.to_string());
+            let mut notes = false;
+            if m.open() {
+                for a in m.attendees.iter_mut().filter(|a| a.status.pending()) {
+                    a.status = AttendeeStatus::Missing;
+                    a.missing = Some(why.to_string());
+                }
+                if m.live() {
+                    close_live(m, why);
+                    // The chair has what it closed it with.
+                    m.delivered = true;
+                } else {
+                    notes = m.settle();
+                }
+            }
+            Ok((m.clone(), notes))
+        })?;
+        self.drop_meeting_notes(owner, &m.id, None);
+        if notes {
+            self.meeting_closed(owner, &m);
+        }
+        Ok(m)
     }
 
     // ---------------------------------------------------------- one-on-ones
@@ -708,6 +992,57 @@ impl Manager {
                     self.meeting_closed(&owner, &m);
                 }
             }
+            NoteAbout::Turn {
+                owner,
+                meeting,
+                round,
+                worker,
+            } => {
+                let result = self.change_feature(&owner, |f| {
+                    let Some(m) = f.meetings.iter_mut().find(|m| m.id == meeting) else {
+                        return Ok(None);
+                    };
+                    let Some(i) = m
+                        .turns
+                        .iter()
+                        .position(|t| t.round == round && !t.chair && t.worker_id == worker)
+                    else {
+                        return Ok(None);
+                    };
+                    let current = m.current_turn() == Some(i);
+                    let t = &mut m.turns[i];
+                    match (&outcome, current) {
+                        (Ok(text), true) => {
+                            t.status = AttendeeStatus::Answered;
+                            t.text = Some(text.clone());
+                            t.at = Some(crate::now());
+                        }
+                        (Err(why), true) => {
+                            t.status = AttendeeStatus::Missing;
+                            t.missing = Some(why.clone());
+                        }
+                        // Too late for the round; kept for the user.
+                        (Ok(text), false) if t.status == AttendeeStatus::Missing => {
+                            t.status = AttendeeStatus::Late;
+                            t.text = Some(text.clone());
+                            t.at = Some(crate::now());
+                        }
+                        _ => return Ok(None),
+                    }
+                    m.sync_attendee(i);
+                    let ended = m.settle_round();
+                    Ok(Some((m.clone(), current, ended)))
+                });
+                match result {
+                    Ok((_, Some((m, _, true)))) => self.round_ended(&owner, &m),
+                    Ok((_, Some((m, true, false)))) => {
+                        if let Ok(o) = self.get_session(&owner) {
+                            self.send_turn(&o, &m);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             NoteAbout::Ask { owner, id } => {
                 let result = self.change_feature(&owner, |f| {
                     let Some(a) = f
@@ -747,10 +1082,19 @@ impl Manager {
         let gone = format!("{} was deleted", s.title);
         let result = self.change_feature(&owner, |f| {
             let mut closed = vec![];
+            let mut rounds = vec![];
+            let mut next = vec![];
+            for m in f.meetings.iter_mut() {
+                match leave_live(m, &s.id, &gone) {
+                    Some(true) => rounds.push(m.clone()),
+                    Some(false) => next.push(m.clone()),
+                    None => {}
+                }
+            }
             for m in f
                 .meetings
                 .iter_mut()
-                .filter(|m| m.status == MeetingStatus::Collecting)
+                .filter(|m| !m.live() && m.status == MeetingStatus::Collecting)
             {
                 if attendee_missing(m, &s.id, &gone) {
                     closed.push(m.clone());
@@ -773,12 +1117,20 @@ impl Manager {
                     a.delivered = true;
                 }
             }
-            Ok((closed, failed))
+            Ok((closed, failed, rounds, next))
         });
         // The owner may be going too, with its feature.
-        let Ok((f, (closed, failed))) = result else {
+        let Ok((f, (closed, failed, rounds, next))) = result else {
             return;
         };
+        for m in rounds {
+            self.round_ended(&owner, &m);
+        }
+        if let Ok(o) = self.get_session(&owner) {
+            for m in next {
+                self.send_turn(&o, &m);
+            }
+        }
         let asked: Vec<String> = f
             .one_on_ones
             .iter()
@@ -801,7 +1153,13 @@ impl Manager {
     /// answer gets no answer, so nobody waits for good: its meetings close
     /// without it, and the questions put to it (to the owner, when it is
     /// the owner) fail, which the askers are told.
-    pub(super) fn unavailable(&self, s: &Session, why: &str) {
+    ///
+    /// In a live meeting, one gone `for_good` (archived, or stopped by the
+    /// user) misses its turn and gets no more; the next speaker goes on. One
+    /// whose agent failed is left to its turn: a turn that failed before the
+    /// agent took the note in is sent again, one that failed after is missed
+    /// (see `answer_ended`).
+    pub(super) fn unavailable(&self, s: &Session, why: &str, for_good: bool) {
         let owner = if s.feature_owner {
             s.id.clone()
         } else {
@@ -821,12 +1179,24 @@ impl Manager {
         };
         let attends = |m: &Meeting| {
             !is_owner
+                && !m.live()
                 && m.status == MeetingStatus::Collecting
                 && m.attendee(&s.id).is_some_and(|a| a.status.pending())
         };
+        let speaks = |m: &Meeting| {
+            for_good
+                && !is_owner
+                && m.live()
+                && m.open()
+                && m.attendee(&s.id).is_some()
+                && !m.left.contains(&s.id)
+        };
         // Nothing waits on it: the record is left alone.
         let Ok(f) = self.feature(&owner) else { return };
-        if !f.one_on_ones.iter().any(asked) && !f.meetings.iter().any(attends) {
+        if !f.one_on_ones.iter().any(asked)
+            && !f.meetings.iter().any(attends)
+            && !f.meetings.iter().any(speaks)
+        {
             return;
         }
         let reason = format!("{} {why}", s.title);
@@ -837,6 +1207,14 @@ impl Manager {
                     closed.push(m.clone());
                 }
             }
+            let (mut rounds, mut next) = (vec![], vec![]);
+            for m in f.meetings.iter_mut().filter(|m| speaks(m)) {
+                match leave_live(m, &s.id, &reason) {
+                    Some(true) => rounds.push(m.clone()),
+                    Some(false) => next.push(m.clone()),
+                    None => {}
+                }
+            }
             let mut failed = vec![];
             for a in f.one_on_ones.iter_mut().filter(|a| asked(a)) {
                 a.status = OneOnOneStatus::Failed;
@@ -844,22 +1222,64 @@ impl Manager {
                 a.answered_at = Some(crate::now());
                 failed.push(a.clone());
             }
-            Ok((closed, failed))
+            Ok((closed, failed, rounds, next))
         });
-        let Ok((_, (closed, failed))) = result else {
+        let Ok((_, (closed, failed, rounds, next))) = result else {
             return;
         };
         let ids: Vec<String> = failed.iter().map(|a| a.id.clone()).collect();
         self.drop_notes(|about| match about {
             NoteAbout::Ask { owner: o, id } => o == &owner && ids.contains(id),
             NoteAbout::Agenda { worker, .. } => worker == &s.id,
+            NoteAbout::Turn { worker, .. } => for_good && worker == &s.id,
             _ => false,
         });
+        for m in rounds {
+            self.round_ended(&owner, &m);
+        }
+        if let Ok(o) = self.get_session(&owner) {
+            for m in next {
+                self.send_turn(&o, &m);
+            }
+        }
         for m in closed {
             self.meeting_closed(&owner, &m);
         }
         for a in failed {
             self.send_reply(&owner, &a);
+        }
+    }
+
+    /// Whether a meeting's note still waiting in a queue is out of date: its
+    /// meeting closed, its attendee answered or missed it, or the turn it
+    /// gives passed (a speaker the user stopped while it was queued, say).
+    /// Such a note would cost a turn for nothing.
+    pub(super) fn stale_meeting_note(&self, about: &NoteAbout) -> bool {
+        let meeting = |owner: &str, id: &str| {
+            self.feature(owner)
+                .ok()
+                .and_then(|f| f.meeting(id).cloned())
+        };
+        match about {
+            NoteAbout::Agenda {
+                owner,
+                meeting: id,
+                worker,
+            } => meeting(owner, id).is_none_or(|m| {
+                m.status != MeetingStatus::Collecting
+                    || !m.attendee(worker).is_some_and(|a| a.status.pending())
+            }),
+            NoteAbout::Turn {
+                owner,
+                meeting: id,
+                round,
+                worker,
+            } => meeting(owner, id).is_none_or(|m| {
+                m.current_turn()
+                    .map(|i| &m.turns[i])
+                    .is_none_or(|t| t.round != *round || &t.worker_id != worker)
+            }),
+            _ => false,
         }
     }
 
@@ -877,6 +1297,10 @@ impl Manager {
                 .is_ok_and(|s| s.orchestrator_id.as_deref() == Some(owner.as_str()))
         };
         for m in &f.meetings {
+            if m.live() {
+                self.resume_live(&o, m, &on_team);
+                continue;
+            }
             match m.status {
                 MeetingStatus::Collecting => self.resume_meeting(&o, m, &on_team),
                 _ if !m.delivered => self.meeting_closed(owner, m),
@@ -969,8 +1393,7 @@ impl Manager {
             }
         }
         if m.deadline <= crate::now() {
-            let minutes = (m.deadline - m.started_at).num_minutes().max(1);
-            self.close_meeting(owner, &m.id, &no_answer_within(minutes));
+            self.end_meeting(owner, &m.id, &no_answer_within(m.minutes()));
             return;
         }
         let still = self
@@ -985,6 +1408,57 @@ impl Manager {
                 self.queue_note(&a.worker_id, note(a));
             }
             self.arm_deadline(owner, &m);
+        }
+    }
+
+    /// After a restart, a live meeting goes on where it was: the round ends
+    /// when its time ran out meanwhile; otherwise speakers that went miss
+    /// their turn and the one whose turn it is is asked again, or its turn
+    /// taken from its transcript. A round's notes not delivered are.
+    fn resume_live(&self, o: &Session, m: &Meeting, on_team: &dyn Fn(&str) -> bool) {
+        let owner = o.id.as_str();
+        match m.status {
+            MeetingStatus::Collecting if m.deadline <= crate::now() => {
+                self.end_round(owner, &m.id, &no_answer_within(m.minutes()));
+            }
+            MeetingStatus::Collecting => {
+                let result = self.change_feature(owner, |f| {
+                    let Some(m) = f.meetings.iter_mut().find(|x| x.id == m.id) else {
+                        return Ok(None);
+                    };
+                    let round = m.round;
+                    for i in 0..m.turns.len() {
+                        let t = &mut m.turns[i];
+                        if t.round != round || t.chair || !t.status.pending() {
+                            continue;
+                        }
+                        if on_team(&t.worker_id) {
+                            t.status = AttendeeStatus::Invited;
+                        } else {
+                            t.status = AttendeeStatus::Missing;
+                            t.missing = Some("it is no longer on the team".into());
+                        }
+                        m.sync_attendee(i);
+                    }
+                    let ended = m.settle_round();
+                    Ok(Some((m.clone(), ended)))
+                });
+                match result {
+                    Ok((_, Some((m, true)))) => self.round_ended(owner, &m),
+                    Ok((_, Some((m, false)))) => {
+                        self.arm_deadline(owner, &m);
+                        if let Some(i) = m.current_turn() {
+                            self.ask_again(&m.turns[i].worker_id, self.turn_note(o, &m, i));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            MeetingStatus::WaitingOnChair if !m.delivered => {
+                self.queue_unless_received(owner, round_note(m));
+            }
+            _ if !m.delivered => self.meeting_closed(owner, m),
+            _ => {}
         }
     }
 
@@ -1067,6 +1541,108 @@ fn attendee_missing(m: &mut Meeting, worker: &str, why: &str) -> bool {
         a.missing = Some(others.clone());
     }
     m.settle()
+}
+
+/// An attendee of a live meeting is gone for good (deleted, archived or
+/// stopped by the user): it misses the turn it has now and gets none in
+/// later rounds. What it means for the others: `Some(true)` when that ended
+/// the round, `Some(false)` when the next speaker is up now.
+fn leave_live(m: &mut Meeting, worker: &str, why: &str) -> Option<bool> {
+    if !m.live() || !m.open() || m.attendee(worker).is_none() {
+        return None;
+    }
+    if !m.left.iter().any(|w| w == worker) {
+        m.left.push(worker.to_string());
+    }
+    let current = m.current_turn();
+    let mut missed = false;
+    for i in 0..m.turns.len() {
+        let t = &mut m.turns[i];
+        if t.worker_id == worker && !t.chair && t.status.pending() {
+            t.status = AttendeeStatus::Missing;
+            t.missing = Some(why.to_string());
+            m.sync_attendee(i);
+            missed = true;
+        }
+    }
+    if m.settle_round() {
+        Some(true)
+    } else {
+        (missed && m.current_turn() != current).then_some(false)
+    }
+}
+
+/// Open a live meeting's next round, after the chair's steer if there is
+/// one: every attendee among `speakers` gets a turn, in the meeting's order;
+/// the others miss it. Its turns have the round's time.
+fn open_round(m: &mut Meeting, steer: Option<MeetingTurn>, speakers: &HashSet<String>) {
+    m.round += 1;
+    m.status = MeetingStatus::Collecting;
+    m.delivered = false;
+    m.deadline = crate::now() + chrono::Duration::minutes(m.minutes());
+    m.turns.extend(steer);
+    let round = m.round;
+    let mut turns = vec![];
+    for a in m.attendees.iter_mut() {
+        // Gone for good: it keeps how it left.
+        if m.left.contains(&a.worker_id) {
+            continue;
+        }
+        if !a.worker_id.is_empty() && speakers.contains(&a.worker_id) {
+            a.status = AttendeeStatus::Invited;
+            a.missing = None;
+            turns.push(MeetingTurn {
+                round,
+                worker_id: a.worker_id.clone(),
+                name: a.name.clone(),
+                role: a.role.clone(),
+                chair: false,
+                status: AttendeeStatus::Invited,
+                text: None,
+                missing: None,
+                at: None,
+            });
+        } else if a.status != AttendeeStatus::Missing {
+            a.status = AttendeeStatus::Missing;
+            a.missing = Some("it is no longer on the team".into());
+        }
+    }
+    m.turns.extend(turns);
+}
+
+/// Close a live meeting that is still open: complete when every turn it
+/// had was given. True when this closed it.
+fn close_live(m: &mut Meeting, why: &str) -> bool {
+    if !m.open() {
+        return false;
+    }
+    for t in m.turns.iter_mut().filter(|t| t.status.pending()) {
+        t.status = AttendeeStatus::Missing;
+        t.missing = Some(why.to_string());
+    }
+    let given = m.turns.iter().filter(|t| !t.chair).count();
+    m.status = if given > 0
+        && m.turns
+            .iter()
+            .all(|t| t.chair || t.status == AttendeeStatus::Answered)
+    {
+        MeetingStatus::Complete
+    } else {
+        MeetingStatus::Incomplete
+    };
+    m.ended_at = Some(crate::now());
+    true
+}
+
+/// The note that brings the chair a live meeting's latest round.
+fn round_note(m: &Meeting) -> Note {
+    Note {
+        text: live_round_message(m),
+        about: Some(NoteAbout::Round {
+            meeting: m.id.clone(),
+            round: m.round,
+        }),
+    }
 }
 
 /// Why an attendee is missing when the meeting's time ran out.

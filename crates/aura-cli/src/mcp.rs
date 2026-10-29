@@ -121,7 +121,7 @@ impl Server {
                     "instructions": if self.worker {
                         "Work with your team in Aura: see who is on it, and ask a teammate or the feature owner a question. Answers come back as messages from Aura."
                     } else if self.feature_owner {
-                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold written meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too."
+                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too."
                     } else {
                         "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too."
                     },
@@ -413,7 +413,7 @@ impl Server {
             "hold_meeting" => {
                 let mut p =
                     json!({ "owner": o, "topic": req(a, "topic")?, "agenda": req(a, "agenda")? });
-                for key in ["context", "cwd"] {
+                for key in ["context", "cwd", "mode"] {
                     if let Some(v) = opt(a, key) {
                         p[key] = json!(v);
                     }
@@ -421,8 +421,10 @@ impl Server {
                 for key in ["attendees", "guests"] {
                     p[key] = json!(strings(a, key));
                 }
-                if let Some(t) = a.get("timeout_minutes").and_then(Value::as_u64) {
-                    p["timeout_minutes"] = json!(t);
+                for key in ["timeout_minutes", "rounds"] {
+                    if let Some(t) = a.get(key).and_then(Value::as_u64) {
+                        p[key] = json!(t);
+                    }
                 }
                 let m: Meeting = serde_json::from_value(self.rpc("owner.hold_meeting", p).await?)?;
                 let names: Vec<String> = m
@@ -438,12 +440,68 @@ impl Server {
                         _ => format!("{} (`{}`)", a.name, a.worker_id),
                     })
                     .collect();
-                let minutes = (m.deadline - m.started_at).num_minutes();
+                let minutes = m.minutes();
+                if m.live() {
+                    return Ok(match m.status {
+                        MeetingStatus::Collecting => format!(
+                            "Live meeting `{}` started with {}, who speak in that order, each in about {} words. Aura brings you each round in a message that starts with `[Aura] Live meeting notes`, at the latest {minutes} minutes after it starts; then `continue_meeting` (at most {} rounds) or `close_meeting`. End your turn now rather than wait.",
+                            m.id,
+                            names.join(", "),
+                            m.turn_words,
+                            m.max_rounds
+                        ),
+                        _ => format!(
+                            "Live meeting `{}` could not start: {}. Decide yourself or hold another one.",
+                            m.id,
+                            names.join(", ")
+                        ),
+                    });
+                }
                 Ok(format!(
                     "Meeting `{}` started with {}. Aura sends each the question and brings you every answer in one message that starts with `[Aura] Meeting notes`, at the latest in {minutes} minutes. End your turn now rather than wait.",
                     m.id,
                     names.join(", ")
                 ))
+            }
+            "continue_meeting" => {
+                let m: Meeting = serde_json::from_value(
+                    self.rpc(
+                        "owner.continue_meeting",
+                        json!({ "owner": o, "meeting": req(a, "meeting")?, "steer": req(a, "steer")? }),
+                    )
+                    .await?,
+                )?;
+                Ok(format!(
+                    "Round {} of meeting `{}` started (at most {}). Aura brings you the round in a message that starts with `[Aura] Live meeting notes`. End your turn now rather than wait.",
+                    m.round, m.id, m.max_rounds
+                ))
+            }
+            "close_meeting" => {
+                let m: Meeting = serde_json::from_value(
+                    self.rpc(
+                        "owner.close_meeting",
+                        json!({ "owner": o, "meeting": req(a, "meeting")?, "outcome": req(a, "outcome")? }),
+                    )
+                    .await?,
+                )?;
+                Ok(format!(
+                    "Closed meeting `{}` with its outcome. Record the decisions it led to with `record_decision` and `meeting: \"{}\"`, then brief the team.",
+                    m.id, m.id
+                ))
+            }
+            "suggest_specialists" => {
+                let r: SuggestionRun = serde_json::from_value(
+                    self.rpc("owner.suggest_specialists", json!({ "owner": o }))
+                        .await?,
+                )?;
+                Ok(if r.suggestions.is_empty() {
+                    r.note
+                } else {
+                    format!(
+                        "{} They show as cards in your chat; you need not wait for the user.",
+                        r.note
+                    )
+                })
             }
             "reply_to_teammate" => {
                 let r: OneOnOne = serde_json::from_value(
@@ -511,10 +569,16 @@ impl Server {
                 struct Status {
                     feature: Feature,
                     autonomy: Autonomy,
+                    #[serde(default)]
+                    meeting_mode: MeetingMode,
                 }
                 let s: Status =
                     serde_json::from_value(self.rpc("owner.status", json!({ "owner": o })).await?)?;
-                Ok(aura_core::features::describe(&s.feature, &s.autonomy))
+                Ok(aura_core::features::describe(
+                    &s.feature,
+                    &s.autonomy,
+                    s.meeting_mode,
+                ))
             }
             _ => bail!("unknown tool {tool}"),
         }
@@ -730,6 +794,7 @@ fn owner_tools() -> Value {
                 "properties": {
                     "decision": { "type": "string", "description": "What was decided, in one sentence." },
                     "rationale": { "type": "string", "description": "Why, in a line or two." },
+                    "meeting": { "type": "string", "description": "The id of the meeting it came out of, such as `m2`, so the user sees it as the meeting's outcome." },
                 },
                 "required": ["decision", "rationale"],
             },
@@ -788,7 +853,7 @@ fn owner_tools() -> Value {
         },
         {
             "name": "hold_meeting",
-            "description": "Hold a written meeting: Aura sends every attendee your question at once, each answers in writing in its next turn, and you get all answers in one message from Aura. Returns at once: end your turn after calling it. For decisions that need several roles' views; every attendee costs a turn, so keep it to the two to four who matter.",
+            "description": "Hold a meeting. Written: Aura sends every attendee your question at once, each answers in writing in its next turn, and you get all answers in one message from Aura. Live (only when the user allows it): you chair a thread in which the attendees speak in turn, round by round; after each round you continue_meeting or close_meeting. Returns at once: end your turn after calling it. For decisions that need several roles' views; every attendee costs a turn (per round, when live), so keep it to the two to four who matter.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -798,10 +863,41 @@ fn owner_tools() -> Value {
                     "guests": { "type": "array", "items": { "type": "string" }, "description": "Specialist ids to hire just for their input to this meeting. They join the team." },
                     "context": { "type": "string", "description": "What the attendees need to know to answer: the options, constraints, files. They do not see your conversation." },
                     "cwd": { "type": "string", "description": "Where guests work. Defaults to your folder; required for guests when you have none." },
-                    "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 120, "description": "How long to wait for answers. Default 20." },
+                    "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 120, "description": "How long to wait for answers; in a live meeting, for each round. Default 20." },
+                    "mode": { "type": "string", "enum": ["written", "live"], "description": "Defaults to the mode the user set for meetings. `live` is refused when the user set meetings to written." },
+                    "rounds": { "type": "integer", "minimum": 1, "maximum": 5, "description": "For a live meeting: the most rounds, up to the user's cap. Fewer is cheaper." },
                 },
                 "required": ["topic", "agenda"],
             },
+        },
+        {
+            "name": "continue_meeting",
+            "description": "Start the next round of a live meeting you chair, after its round notes came: your steer opens the round, and each attendee speaks in turn again. Only while the round cap allows; returns at once, end your turn after calling it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "meeting": { "type": "string", "description": "The meeting's id, such as `m2`." },
+                    "steer": { "type": "string", "description": "What this round should settle, in a line or two: the open question, the conflict to resolve." },
+                },
+                "required": ["meeting", "steer"],
+            },
+        },
+        {
+            "name": "close_meeting",
+            "description": "Close a meeting with its outcome, shown to the user in the Team tab. Ends a live meeting; a written one still collecting closes with the answers in, which Aura sends you. Record the decisions with record_decision and `meeting`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "meeting": { "type": "string", "description": "The meeting's id, such as `m2`." },
+                    "outcome": { "type": "string", "description": "What the meeting settled, in a line or two." },
+                },
+                "required": ["meeting", "outcome"],
+            },
+        },
+        {
+            "name": "suggest_specialists",
+            "description": "Have Aura look for roles that feature owners keep starting ad-hoc workers for, across features, and suggest them to the user as reusable specialists. Cheap: it runs a small model only when two ad-hoc briefs look alike. The user accepts, edits or dismisses each suggestion in your chat.",
+            "inputSchema": { "type": "object", "properties": {} },
         },
         {
             "name": "reply_to_teammate",
@@ -991,6 +1087,9 @@ mod tests {
                 "deliver_report",
                 "feature_status",
                 "hold_meeting",
+                "continue_meeting",
+                "close_meeting",
+                "suggest_specialists",
                 "reply_to_teammate"
             ]
         );

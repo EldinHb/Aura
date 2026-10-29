@@ -743,6 +743,44 @@ async fn dispatch(
             let P { owner, spec } = params(p)?;
             ok(m.hold_meeting(&owner, spec).await?)
         }
+        "owner.continue_meeting" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                meeting: String,
+                #[serde(default)]
+                steer: String,
+            }
+            let P {
+                owner,
+                meeting,
+                steer,
+            } = params(p)?;
+            ok(m.continue_meeting(&owner, &meeting, &steer)?)
+        }
+        "owner.close_meeting" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                meeting: String,
+                #[serde(default)]
+                outcome: String,
+            }
+            let P {
+                owner,
+                meeting,
+                outcome,
+            } = params(p)?;
+            ok(m.close_meeting(&owner, &meeting, &outcome)?)
+        }
+        "owner.suggest_specialists" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+            }
+            let P { owner } = params(p)?;
+            ok(m.suggest_specialists(Some(&owner)).await?)
+        }
         "owner.reply_to_teammate" => {
             #[derive(Deserialize)]
             struct P {
@@ -840,7 +878,8 @@ async fn dispatch(
             m.feature_owner_session(&owner)?;
             let f = m.feature(&owner)?;
             let autonomy = m.effective_autonomy(&f);
-            ok(json!({ "feature": f, "autonomy": autonomy }))
+            let meeting_mode = m.effective_meeting_mode(&f);
+            ok(json!({ "feature": f, "autonomy": autonomy, "meeting_mode": meeting_mode }))
         }
         "feature.get" => {
             let IdParams { id } = params(p)?;
@@ -899,6 +938,51 @@ async fn dispatch(
         }
         "autonomy.get" => ok(m.autonomy()?),
         "autonomy.set" => ok(m.set_autonomy(params(p)?).await?),
+        "feature.set_meeting_mode" => {
+            /// `mode: null` follows the setting for every feature owner again.
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                mode: Option<MeetingMode>,
+            }
+            let P { id, mode } = params(p)?;
+            ok(m.set_feature_meeting_mode(&id, mode).await?)
+        }
+        "meetings.get" => ok(m.meeting_settings()),
+        "meetings.set" => ok(m.set_meeting_settings(params(p)?).await?),
+        "suggestions.settings" => ok(m.suggestion_settings()),
+        "suggestions.set_settings" => ok(m.set_suggestion_settings(params(p)?)?),
+        "suggestions.list" => ok(m.role_suggestions()?),
+        "suggestions.run" => {
+            /// With `owner`, the suggestions also show in that feature owner's chat.
+            #[derive(Deserialize)]
+            struct P {
+                #[serde(default)]
+                owner: Option<String>,
+            }
+            let P { owner } = params(p)?;
+            ok(m.suggest_specialists(owner.as_deref()).await?)
+        }
+        "suggestions.resolve" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                accept: bool,
+                #[serde(default)]
+                specialist: Option<SpecialistInput>,
+            }
+            let P {
+                id,
+                accept,
+                specialist,
+            } = params(p)?;
+            let m = m.clone();
+            ok(tokio::task::spawn_blocking(move || {
+                m.resolve_role_suggestion(&id, accept, specialist)
+            })
+            .await
+            .map_err(|e| anyhow!(e))??)
+        }
         "specialists.list" => {
             /// Without `project`, the global specialists; with one, those
             /// that apply there: its own and the global ones it does not override.

@@ -11,7 +11,9 @@
 //! [`card_data`]), so it sits where it happened and shows the record's
 //! current state, answered or not.
 use crate::autonomy::{Autonomy, Checkpoint};
+use crate::meetings::MeetingMode;
 use crate::specialists::SpecialistInput;
+use crate::suggestions::SuggestionEvidence;
 use crate::types::SessionId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -207,6 +209,14 @@ pub struct SpecialistSuggestion {
     /// The owner was told what became of it.
     #[serde(default)]
     pub delivered: bool,
+    /// For a suggestion Aura found in repeated ad-hoc work rather than one
+    /// the owner proposed: the briefs it found the role in.
+    #[serde(default)]
+    pub evidence: Vec<SuggestionEvidence>,
+    /// For a suggestion Aura found: the feature owner whose chat shows it,
+    /// when it was found for one.
+    #[serde(default)]
+    pub owner_id: Option<SessionId>,
 }
 
 /// What the user gets when the feature is done.
@@ -238,6 +248,8 @@ pub enum MeetingStatus {
     Complete,
     /// Closed with answers missing: an attendee failed, went, or the time ran out.
     Incomplete,
+    /// A live meeting's round is over: the chair reads it and continues or closes it.
+    WaitingOnChair,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
@@ -286,9 +298,37 @@ pub struct MeetingAttendee {
     pub answered_at: Option<DateTime<Utc>>,
 }
 
-/// A written meeting the owner held with `hold_meeting`: every attendee is
+/// One entry in a live meeting's thread: an attendee's turn, or the steer
+/// with which the chair opens a round after the first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MeetingTurn {
+    /// The round, from 1.
+    pub round: u32,
+    /// The attendee, or the owner for the chair's steer.
+    pub worker_id: SessionId,
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
+    /// The chair's steer, not an attendee's turn.
+    #[serde(default)]
+    pub chair: bool,
+    /// Invited until it is this attendee's turn and it is free; asked once sent.
+    #[serde(default)]
+    pub status: AttendeeStatus,
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Why there is no turn.
+    #[serde(default)]
+    pub missing: Option<String>,
+    #[serde(default)]
+    pub at: Option<DateTime<Utc>>,
+}
+
+/// A meeting the owner held with `hold_meeting`. Written: every attendee is
 /// sent the agenda and answers in writing, and the owner gets all answers in
-/// one message from Aura.
+/// one message from Aura. Live: a thread in rounds the owner chairs, in
+/// which the attendees speak in turn (see [`crate::meetings`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Meeting {
@@ -309,9 +349,34 @@ pub struct Meeting {
     pub deadline: DateTime<Utc>,
     #[serde(default)]
     pub ended_at: Option<DateTime<Utc>>,
-    /// The owner was sent the answers.
+    /// The owner was sent the answers: for a live meeting, those of its
+    /// latest round.
     #[serde(default)]
     pub delivered: bool,
+    #[serde(default)]
+    pub mode: MeetingMode,
+    /// For a live meeting: the round under way or last held, from 1.
+    #[serde(default)]
+    pub round: u32,
+    /// For a live meeting: the most rounds it may have.
+    #[serde(default)]
+    pub max_rounds: u32,
+    /// For a live meeting: about how many words each turn keeps to.
+    #[serde(default)]
+    pub turn_words: u32,
+    /// For a live meeting: the thread, in order.
+    #[serde(default)]
+    pub turns: Vec<MeetingTurn>,
+    /// What the chair closed the meeting with.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// For a live meeting: the minutes each round waits for its turns.
+    #[serde(default)]
+    pub timeout_minutes: u32,
+    /// For a live meeting: attendees gone for good (deleted, archived or
+    /// stopped by the user), who get no more turns.
+    #[serde(default)]
+    pub left: Vec<SessionId>,
 }
 
 impl Meeting {
@@ -319,10 +384,79 @@ impl Meeting {
         self.attendees.iter().find(|a| a.worker_id == worker_id)
     }
 
+    pub fn live(&self) -> bool {
+        self.mode == MeetingMode::Live
+    }
+
+    /// The minutes the meeting, or each round of a live one, waits for answers.
+    pub fn minutes(&self) -> i64 {
+        if self.timeout_minutes > 0 {
+            return self.timeout_minutes as i64;
+        }
+        (self.deadline - self.started_at).num_minutes().max(1)
+    }
+
+    /// Not closed yet: collecting answers, or a live meeting waiting on its chair.
+    pub fn open(&self) -> bool {
+        matches!(
+            self.status,
+            MeetingStatus::Collecting | MeetingStatus::WaitingOnChair
+        )
+    }
+
+    /// For a live meeting: the index in `turns` of the turn whose speaker is
+    /// to speak now.
+    pub fn current_turn(&self) -> Option<usize> {
+        if !self.live() || self.status != MeetingStatus::Collecting {
+            return None;
+        }
+        self.turns
+            .iter()
+            .position(|t| t.round == self.round && !t.chair && t.status.pending())
+    }
+
+    /// The turns of a round, the chair's steer first.
+    pub fn round_turns(&self, round: u32) -> impl Iterator<Item = &MeetingTurn> {
+        self.turns.iter().filter(move |t| t.round == round)
+    }
+
+    /// End a live meeting's round once nobody in it is expected to speak:
+    /// the chair takes it from there. True when this ended it.
+    pub fn settle_round(&mut self) -> bool {
+        if !self.live() || self.status != MeetingStatus::Collecting || self.current_turn().is_some()
+        {
+            return false;
+        }
+        self.status = MeetingStatus::WaitingOnChair;
+        self.delivered = false;
+        true
+    }
+
+    /// Mirror a live meeting's turn on its attendee, so the attendee shows
+    /// how it took part last.
+    pub fn sync_attendee(&mut self, turn: usize) {
+        let Some(t) = self.turns.get(turn).cloned() else {
+            return;
+        };
+        if let Some(a) = self
+            .attendees
+            .iter_mut()
+            .find(|a| a.worker_id == t.worker_id)
+        {
+            a.status = t.status;
+            if t.text.is_some() {
+                a.answer = t.text;
+                a.answered_at = t.at;
+            }
+            a.missing = t.missing;
+        }
+    }
+
     /// Close the meeting once nobody is expected to answer any more. True
-    /// when this closed it.
+    /// when this closed it. Live meetings are closed by their chair.
     pub fn settle(&mut self) -> bool {
-        if self.status != MeetingStatus::Collecting
+        if self.live()
+            || self.status != MeetingStatus::Collecting
             || self.attendees.iter().any(|a| a.status.pending())
         {
             return false;
@@ -399,6 +533,9 @@ pub struct Feature {
     /// This feature's own autonomy; none follows the setting for all feature owners.
     #[serde(default)]
     pub autonomy: Option<Autonomy>,
+    /// This feature's own meeting mode; none follows the setting for all feature owners.
+    #[serde(default)]
+    pub meeting_mode: Option<MeetingMode>,
     #[serde(default)]
     pub team: Vec<TeamMember>,
     #[serde(default)]
@@ -520,6 +657,7 @@ impl Feature {
             goal: goal.trim().to_string(),
             status: FeatureStatus::Planning,
             autonomy: autonomy.map(Autonomy::tidy),
+            meeting_mode: None,
             team: vec![],
             decisions: vec![],
             questions: vec![],
@@ -578,6 +716,9 @@ pub enum FeatureCardKind {
     Suggestion,
     /// A meeting the owner held (`Meeting`): a one-line pointer to the Team tab.
     Meeting,
+    /// A specialist Aura found in the team's repeated ad-hoc work
+    /// (`SpecialistSuggestion`, kept with the user's other suggestions, not in the feature).
+    RoleSuggestion,
 }
 
 /// `data` of the `system` item that puts a card in the owner's chat.
@@ -720,6 +861,121 @@ pub fn meeting_message(m: &Meeting) -> String {
     out
 }
 
+/// A live meeting's thread up to (not including) the turn at `upto`, as
+/// attendees and the chair read it.
+fn thread(m: &Meeting, upto: usize) -> String {
+    let mut out = String::new();
+    let mut round = 0;
+    for t in &m.turns[..upto.min(m.turns.len())] {
+        if t.round != round {
+            round = t.round;
+            out.push_str(&format!("\n#### Round {round}\n"));
+        }
+        let speaker = if t.chair {
+            format!("{} (chair)", t.name)
+        } else {
+            who(&t.name, &t.role)
+        };
+        match (&t.text, t.status) {
+            (Some(text), AttendeeStatus::Answered) => {
+                out.push_str(&format!("**{speaker}:** {}\n", text.trim()))
+            }
+            _ if t.status.pending() => {}
+            _ => out.push_str(&format!(
+                "**{speaker}:** (no turn: {})\n",
+                t.missing.as_deref().unwrap_or("none came")
+            )),
+        }
+    }
+    out
+}
+
+/// The message from Aura that gives an attendee of a live meeting its turn:
+/// the thread so far, and what to say.
+pub fn live_turn_message(m: &Meeting, owner: &str, turn: usize) -> String {
+    let t = &m.turns[turn];
+    let order: Vec<String> = m
+        .round_turns(t.round)
+        .filter(|x| !x.chair)
+        .map(|x| {
+            let me = if x.worker_id == t.worker_id {
+                ", you"
+            } else {
+                ""
+            };
+            format!("{}{me}", who(&x.name, &x.role))
+        })
+        .collect();
+    let mut out = format!(
+        "{}{owner}, the feature owner, chairs a live meeting (`{}`), round {} of at most {}. It is your turn to speak, as {}.\nTopic: {}\nSpeaking in this order: {}\n\nQuestion:\n{}\n",
+        crate::prompts::aura_header("Live meeting"),
+        m.id,
+        t.round,
+        m.max_rounds,
+        who(&t.name, &t.role),
+        m.topic.trim(),
+        order.join(", "),
+        m.agenda.trim(),
+    );
+    if !m.context.trim().is_empty() {
+        out.push_str(&format!("\nContext:\n{}\n", m.context.trim()));
+    }
+    let so_far = thread(m, turn);
+    if so_far.trim().is_empty() {
+        out.push_str("\nYou speak first.\n");
+    } else {
+        out.push_str(&format!("\nThe thread so far:\n{so_far}"));
+    }
+    out.push_str(&format!(
+        "\nSpeak in your final message of this turn, in at most {} words: react to what was said, add what your role sees that is new, and say what you recommend. Do not repeat others, do not start on the work itself and do not ask anyone. Aura adds your turn to the thread.",
+        m.turn_words
+    ));
+    out
+}
+
+/// The message from Aura that brings the chair of a live meeting the round
+/// that just ended.
+pub fn live_round_message(m: &Meeting) -> String {
+    let start = m
+        .turns
+        .iter()
+        .position(|t| t.round == m.round)
+        .unwrap_or(m.turns.len());
+    let end = m
+        .turns
+        .iter()
+        .rposition(|t| t.round == m.round)
+        .map_or(start, |i| i + 1);
+    let round: String = {
+        let mut copy = m.clone();
+        copy.turns = m.turns[start..end].to_vec();
+        thread(&copy, copy.turns.len())
+    };
+    let mut out = format!(
+        "{}Live meeting `{}`: {}\nRound {} of at most {} is over.\n{}",
+        crate::prompts::aura_header("Live meeting notes"),
+        m.id,
+        m.topic.trim(),
+        m.round,
+        m.max_rounds,
+        round
+    );
+    if m.round < m.max_rounds {
+        out.push_str(&format!(
+            "\nContinue with `continue_meeting` (`meeting: \"{}\"`) and a short steer for round {} only if the attendees must still react to each other; otherwise close it with `close_meeting` and the outcome. Record what you decided with `record_decision` and `meeting: \"{}\"`.",
+            m.id,
+            m.round + 1,
+            m.id
+        ));
+    } else {
+        out.push_str(&format!(
+            "\nThat was the last round. Close the meeting with `close_meeting` (`meeting: \"{}\"`) and the outcome, and record what you decided with `record_decision` and `meeting: \"{}\"`.",
+            m.id, m.id
+        ));
+    }
+    out
+}
+
 /// The message from Aura that brings a teammate another's question.
 pub fn teammate_question_message(a: &OneOnOne, from_role: &str) -> String {
     format!(
@@ -807,16 +1063,15 @@ pub fn review_options(c: Checkpoint) -> Vec<DecisionOption> {
 }
 
 /// The feature as text for its owner, for `feature_status`-style answers.
-pub fn describe(f: &Feature, autonomy: &Autonomy) -> String {
+pub fn describe(f: &Feature, autonomy: &Autonomy, meetings: MeetingMode) -> String {
+    let own = |yes: bool| if yes { " (this feature's own)" } else { "" };
     let mut out = format!(
-        "Feature status: {} · autonomy: {}{}\n",
+        "Feature status: {} · autonomy: {}{} · meetings: {}{}\n",
         f.status.label(),
         autonomy.describe(),
-        if f.autonomy.is_some() {
-            " (this feature's own)"
-        } else {
-            ""
-        }
+        own(f.autonomy.is_some()),
+        meetings.as_str(),
+        own(f.meeting_mode.is_some()),
     );
     if !f.team.is_empty() {
         out.push_str("Team:\n");
@@ -839,6 +1094,20 @@ pub fn describe(f: &Feature, autonomy: &Autonomy) -> String {
             out.push_str(&format!("- (`{}`) {}\n", q.id, q.question));
         }
     }
+    let chairing: Vec<&Meeting> = f
+        .meetings
+        .iter()
+        .filter(|m| m.status == MeetingStatus::WaitingOnChair)
+        .collect();
+    if !chairing.is_empty() {
+        out.push_str("Live meetings waiting on you (`continue_meeting` or `close_meeting`):\n");
+        for m in chairing {
+            out.push_str(&format!(
+                "- (`{}`) {}: round {} of at most {} is over\n",
+                m.id, m.topic, m.round, m.max_rounds
+            ));
+        }
+    }
     let meetings: Vec<&Meeting> = f
         .meetings
         .iter()
@@ -847,6 +1116,18 @@ pub fn describe(f: &Feature, autonomy: &Autonomy) -> String {
     if !meetings.is_empty() {
         out.push_str("Meetings collecting answers:\n");
         for m in meetings {
+            if m.live() {
+                let spoke = m
+                    .round_turns(m.round)
+                    .filter(|t| !t.chair && !t.status.pending())
+                    .count();
+                let speakers = m.round_turns(m.round).filter(|t| !t.chair).count();
+                out.push_str(&format!(
+                    "- (`{}`) {}: live, round {}, {spoke} of {speakers} spoke\n",
+                    m.id, m.topic, m.round
+                ));
+                continue;
+            }
             let answered = m
                 .attendees
                 .iter()
@@ -1021,6 +1302,14 @@ mod tests {
             deadline: now,
             ended_at: None,
             delivered: false,
+            mode: MeetingMode::Written,
+            round: 0,
+            max_rounds: 0,
+            turn_words: 0,
+            turns: vec![],
+            outcome: None,
+            timeout_minutes: 0,
+            left: vec![],
         };
         assert!(!m.settle());
         m.attendees[1].status = AttendeeStatus::Missing;

@@ -157,9 +157,11 @@ Your tools as feature owner, on the same `aura` MCP server:
 - `record_decision`: log a decision you made and its rationale. The user reads the log.
 - `checkpoint`: report that the feature reached a stage (`after_design`, `before_implementation`, `before_delivery`) with a summary. Aura answers whether the user wants to review it first.
 - `propose_specialist`: suggest a new reusable specialist when the team needs a role no specialist covers and other features will need it too. The user accepts, edits or dismisses it.
+- `suggest_specialists`: have Aura look for roles that ad-hoc workers keep being started for, across features, and suggest them to the user as specialists. Aura also does this when you deliver; use it when you notice you keep briefing the same kind of ad-hoc worker.
 - `deliver_report`: deliver the finished feature: what was done, why, how to test it and where.
 - `feature_status`: the feature's status, team and open questions as Aura has them.
-- `hold_meeting`: a written meeting. Each attendee (team members, and specialists hired just for it with `guests`) gets your question at once and answers in writing; Aura sends you every answer in one message that starts with `[Aura] Meeting notes`. End your turn after calling it.
+- `hold_meeting`: a meeting with team members, and specialists hired just for it with `guests`. Written: each attendee gets your question at once and answers once; Aura sends you every answer in one message that starts with `[Aura] Meeting notes`. Live, when the user allows it (see Meetings below): you chair a thread in rounds. End your turn after calling it.
+- `continue_meeting` and `close_meeting`: after a live meeting's round, start the next one with a steer, or close the meeting with its outcome.
 - `reply_to_teammate`: answer a team member's question, which comes in a message that starts with `[Aura] Question from a teammate`.
 
 How to own the feature:
@@ -186,7 +188,7 @@ You work on a feature owner's team. The `aura` MCP server has your team's tools:
 - `ask_teammate`: ask one teammate a question, by its title or specialist. It answers in its next turn and Aura brings you the answer in a message that starts with `[Aura] Answer from a teammate`.
 - `ask_owner`: ask the feature owner, for what only it can decide. The answer comes in a message that starts with `[Aura] Answer from the feature owner`.
 
-Ask only when you cannot go on well without the answer, and ask briefly; after asking, end your turn if you cannot go on, and Aura brings you the answer. When Aura sends you a meeting (`[Aura] Meeting`) or a teammate's question (`[Aura] Question from a teammate`), answer it in your final message of that turn, briefly, without starting other work and without asking anyone.".to_string()
+Ask only when you cannot go on well without the answer, and ask briefly; after asking, end your turn if you cannot go on, and Aura brings you the answer. When Aura sends you a meeting (`[Aura] Meeting`) or a teammate's question (`[Aura] Question from a teammate`), answer it in your final message of that turn, briefly, without starting other work and without asking anyone. In a live meeting (`[Aura] Live meeting`) it is your turn to speak: read the thread so far and speak in your final message, within the words it gives, the same way.".to_string()
 }
 
 /// Added to a worker's system prompt.
@@ -309,6 +311,9 @@ mod tests {
             "`deliver_report`",
             "`feature_status`",
             "`hold_meeting`",
+            "`continue_meeting`",
+            "`close_meeting`",
+            "`suggest_specialists`",
             "`reply_to_teammate`",
         ] {
             assert!(p.contains(tool), "missing {tool}");

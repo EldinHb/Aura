@@ -5,6 +5,7 @@ import type { Decision } from "./Decision";
 import type { DeliveryReport } from "./DeliveryReport";
 import type { FeatureStatus } from "./FeatureStatus";
 import type { Meeting } from "./Meeting";
+import type { MeetingMode } from "./MeetingMode";
 import type { OneOnOne } from "./OneOnOne";
 import type { SpecialistSuggestion } from "./SpecialistSuggestion";
 import type { TeamMember } from "./TeamMember";
@@ -18,7 +19,11 @@ owner_id: string, goal: string, status: FeatureStatus,
 /**
  * This feature's own autonomy; none follows the setting for all feature owners.
  */
-autonomy: Autonomy | null, team: Array<TeamMember>, decisions: Array<Decision>, questions: Array<UserQuestion>, checkpoints: Array<CheckpointRecord>, suggestions: Array<SpecialistSuggestion>, meetings: Array<Meeting>, one_on_ones: Array<OneOnOne>, report: DeliveryReport | null, created_at: string, updated_at: string, 
+autonomy: Autonomy | null, 
+/**
+ * This feature's own meeting mode; none follows the setting for all feature owners.
+ */
+meeting_mode: MeetingMode | null, team: Array<TeamMember>, decisions: Array<Decision>, questions: Array<UserQuestion>, checkpoints: Array<CheckpointRecord>, suggestions: Array<SpecialistSuggestion>, meetings: Array<Meeting>, one_on_ones: Array<OneOnOne>, report: DeliveryReport | null, created_at: string, updated_at: string, 
 /**
  * The last number handed out per id prefix (`q` questions, `d`
  * decisions, `s` suggestions), so an id is never handed out twice, also

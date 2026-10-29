@@ -11,6 +11,7 @@ use super::Manager;
 use crate::autonomy::{self, Autonomy, AutonomyLevel, Checkpoint};
 use crate::event::*;
 use crate::features::*;
+use crate::meetings::{self, MeetingMode, MeetingSettings};
 use crate::specialists::{self, Specialist, SpecialistInput};
 use crate::types::*;
 use anyhow::{anyhow, bail, Context, Result};
@@ -118,6 +119,66 @@ impl Manager {
         Ok(f)
     }
 
+    // ------------------------------------------------------------- meetings
+
+    /// How every feature owner's team meets unless its feature has its own mode.
+    pub fn meeting_settings(&self) -> MeetingSettings {
+        match self.inner.store.get_setting(meetings::SETTING_KEY) {
+            Ok(Some(raw)) => meetings::parse_stored(&raw),
+            Ok(None) => MeetingSettings::default(),
+            Err(e) => {
+                tracing::warn!("meeting settings: {e:#}");
+                MeetingSettings::default()
+            }
+        }
+    }
+
+    /// Save how feature owners' teams meet. Idle owners whose prompt it
+    /// changes restart with it on their next message.
+    pub async fn set_meeting_settings(&self, s: MeetingSettings) -> Result<MeetingSettings> {
+        let s = s.tidy();
+        let before = self.meeting_settings();
+        self.inner
+            .store
+            .set_setting(meetings::SETTING_KEY, &serde_json::to_string(&s)?)?;
+        if before != s {
+            // Every owner's prompt names the rounds and words when live is
+            // allowed; the mode only reaches those that follow it.
+            let own: HashSet<String> = self
+                .features()?
+                .into_iter()
+                .filter(|f| f.meeting_mode.is_some())
+                .map(|f| f.owner_id)
+                .collect();
+            let numbers = before.max_rounds != s.max_rounds || before.turn_words != s.turn_words;
+            self.restart_idle_agents(|x| x.feature_owner && (!own.contains(&x.id) || numbers))
+                .await;
+        }
+        Ok(s)
+    }
+
+    /// The meeting mode a feature's owner follows: the feature's own, or the setting.
+    pub fn effective_meeting_mode(&self, f: &Feature) -> MeetingMode {
+        f.meeting_mode
+            .unwrap_or_else(|| self.meeting_settings().mode)
+    }
+
+    /// Give a feature its own meeting mode, or (`None`) make it follow the
+    /// setting again. Its idle owner restarts with it on its next message.
+    pub async fn set_feature_meeting_mode(
+        &self,
+        owner: &str,
+        mode: Option<MeetingMode>,
+    ) -> Result<Feature> {
+        self.feature_owner_session(owner)?;
+        let (f, _) = self.change_feature(owner, |f| {
+            f.meeting_mode = mode;
+            Ok(())
+        })?;
+        self.restart_idle_agents(|s| s.id == owner).await;
+        Ok(f)
+    }
+
     // -------------------------------------------------------------- records
 
     /// The session, if it is a feature owner.
@@ -213,13 +274,16 @@ impl Manager {
     /// or ad-hoc, or as a guest of a meeting. Work has started once there is
     /// a team. Refused, adding nobody, when a checkpoint review holds staffing
     /// back: checked in the same locked update that adds the member, after the
-    /// worker started, so a review opened meanwhile keeps its task back.
+    /// worker started, so a review opened meanwhile keeps its task back. An
+    /// ad-hoc worker that joins has its brief kept too, past the feature, for
+    /// the suggestions of specialists (see [`crate::suggestions`]).
     pub(super) fn join_team(
         &self,
         owner: &str,
         worker: &Session,
         specialist: Option<&Specialist>,
         guest_of: Option<&str>,
+        brief: Option<(&str, &str)>,
     ) -> Result<()> {
         let member = TeamMember {
             worker_id: worker.id.clone(),
@@ -245,6 +309,17 @@ impl Manager {
             }
             Ok(())
         })?;
+        if let (None, Some((brief, project))) = (specialist, brief) {
+            let goal = self.feature(owner).map(|f| f.goal).unwrap_or_default();
+            self.save_brief(&crate::suggestions::AdHocBrief::new(
+                owner,
+                &worker.id,
+                &goal,
+                &worker.title,
+                brief,
+                project,
+            ));
+        }
         Ok(())
     }
 
@@ -632,6 +707,8 @@ impl Manager {
             Ok(())
         })?;
         self.post_card(owner, FeatureCardKind::Report, "report", "Delivery report");
+        // A good moment to look back at the roles the team kept improvising.
+        self.suggest_in_background(owner);
         Ok(f)
     }
 
@@ -690,6 +767,8 @@ impl Manager {
                 created_at: crate::now(),
                 resolved_at: None,
                 delivered: false,
+                evidence: vec![],
+                owner_id: None,
             };
             f.suggestions.push(s.clone());
             Ok(s)
@@ -800,6 +879,33 @@ impl Manager {
                         m.delivered = true;
                     }
                 }
+                NoteAbout::Turn {
+                    meeting,
+                    round,
+                    worker,
+                    ..
+                } => {
+                    if let Some(m) = f.meetings.iter_mut().find(|m| &m.id == meeting) {
+                        if let Some(i) = m.turns.iter().position(|t| {
+                            t.round == *round
+                                && !t.chair
+                                && &t.worker_id == worker
+                                && t.status == AttendeeStatus::Invited
+                        }) {
+                            m.turns[i].status = AttendeeStatus::Asked;
+                            m.sync_attendee(i);
+                        }
+                    }
+                }
+                NoteAbout::Round { meeting, round } => {
+                    if let Some(m) = f
+                        .meetings
+                        .iter_mut()
+                        .find(|m| &m.id == meeting && m.round == *round)
+                    {
+                        m.delivered = true;
+                    }
+                }
                 NoteAbout::Ask { id, .. } => {
                     if let Some(a) = f.one_on_ones.iter_mut().find(|a| &a.id == id) {
                         a.sent = true;
@@ -887,6 +993,7 @@ impl Manager {
             FeatureCardKind::Report => "Delivery report",
             FeatureCardKind::Suggestion => "Specialist suggestion",
             FeatureCardKind::Meeting => "Meeting",
+            FeatureCardKind::RoleSuggestion => "Specialist suggestion",
         };
         let item = Item::new(owner, turn, ItemKind::System)
             .with_title(title)

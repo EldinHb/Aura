@@ -3,4 +3,4 @@
 /**
  * What a card in the owner's chat shows.
  */
-export type FeatureCardKind = "decision" | "report" | "suggestion" | "meeting";
+export type FeatureCardKind = "decision" | "report" | "suggestion" | "meeting" | "role_suggestion";

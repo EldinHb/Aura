@@ -14,12 +14,14 @@ mod attachments;
 mod features;
 mod orchestrator;
 mod specialists;
+mod suggest;
 mod team;
 pub use features::{AskSpec, CheckpointOutcome, HireSpec, ReportSpec};
 pub use orchestrator::{
     agent_line, describe_projects, describe_workers, report_message, Project, WaitResult,
     WorkerReport, WorkerSpec,
 };
+pub use suggest::SuggestionRun;
 pub use team::MeetingSpec;
 
 /// Git worktree creation is provided by `aura-git`; the manager only needs this.
@@ -71,6 +73,12 @@ struct Inner {
     features: Mutex<()>,
     /// Serialises changes to the stored specialists.
     specialists: Mutex<()>,
+    /// Serialises changes to the specialists suggested from repeated work.
+    suggestions: Mutex<()>,
+    /// Held while a suggestion pass runs: one at a time.
+    suggesting: tokio::sync::Mutex<()>,
+    /// The cheap model suggestion passes run on; none in tests unless set.
+    suggestion_model: Mutex<Option<Arc<dyn crate::suggestions::SuggestionModel>>>,
     orchestration: Mutex<orchestrator::State>,
     /// Where sent images are kept; see `attachments`.
     attachments_dir: Mutex<Option<std::path::PathBuf>>,
@@ -102,6 +110,9 @@ impl Manager {
             groups: Mutex::new(()),
             features: Mutex::new(()),
             specialists: Mutex::new(()),
+            suggestions: Mutex::new(()),
+            suggesting: tokio::sync::Mutex::new(()),
+            suggestion_model: Mutex::new(None),
             orchestration: Mutex::new(Default::default()),
             attachments_dir: Mutex::new(None),
         });
@@ -653,7 +664,7 @@ impl Manager {
             let meetings = f
                 .meetings
                 .into_iter()
-                .filter(|m| m.status != crate::features::MeetingStatus::Collecting)
+                .filter(|m| !m.open())
                 .map(|m| crate::features::Meeting {
                     delivered: true,
                     ..m
@@ -954,7 +965,7 @@ impl Manager {
         }
         let s = self.update_session(id, |s| s.archived = archived)?;
         if archived {
-            self.unavailable(&s, "was archived");
+            self.unavailable(&s, "was archived", true);
         }
         Ok(s)
     }
@@ -971,7 +982,7 @@ impl Manager {
         if !s.orchestrator && self.team_owner(&s).is_some() {
             self.hold_all_notes(id);
         }
-        self.unavailable(&s, "was stopped");
+        self.unavailable(&s, "was stopped", true);
         Ok(())
     }
 
