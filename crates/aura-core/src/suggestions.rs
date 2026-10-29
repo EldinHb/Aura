@@ -696,7 +696,11 @@ impl SuggestionModel for ClaudeCli {
         };
         let Ok(((out, more), (err, _), status)) = tokio::time::timeout(TIME_LIMIT, run).await
         else {
+            // Its whole job is killed when `_job` goes, whatever it started
+            // and however far it got; the child itself is also reaped, so
+            // it does not linger as a zombie.
             let _ = child.start_kill();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
             bail!("Claude Code took longer than three minutes");
         };
         if more {

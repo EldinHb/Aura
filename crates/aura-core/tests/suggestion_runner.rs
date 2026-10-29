@@ -18,16 +18,39 @@ fn fake_claude(dir: &Path, script: &str) {
     std::env::set_var("AURA_CLAUDE_BIN", &bin);
 }
 
+/// Wait, in real time and at most `limit`, until `check` holds.
+async fn eventually(limit: Duration, check: impl Fn() -> bool) -> bool {
+    let until = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < until {
+        if check() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    check()
+}
+
+/// Whether a process is gone: no longer there, or killed and not yet reaped.
+fn gone(pid: &str) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout);
+    stat.trim().is_empty() || stat.trim().starts_with('Z')
+}
+
 #[tokio::test]
 async fn a_claude_that_stops_reading_is_stopped_at_the_time_limit() {
     let _turn = ONE_AT_A_TIME.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let pid_file = dir.path().join("pid");
+    // It says who it is (written whole, by a rename), then never reads.
     fake_claude(
         dir.path(),
         &format!(
-            "import os, time\nopen({:?}, 'w').write(str(os.getpid()))\ntime.sleep(30)\n",
-            pid_file.to_string_lossy()
+            "import os, time\nopen({p:?} + '.tmp', 'w').write(str(os.getpid()))\nos.rename({p:?} + '.tmp', {p:?})\ntime.sleep(60)\n",
+            p = pid_file.to_string_lossy()
         ),
     );
     // More than a pipe holds: writing it blocks while nobody reads.
@@ -41,29 +64,32 @@ async fn a_claude_that_stops_reading_is_stopped_at_the_time_limit() {
             )
             .await
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Running, however long its start took under load.
+    let started = eventually(Duration::from_secs(30), || pid_file.exists()).await;
+    let pid = std::fs::read_to_string(&pid_file).unwrap_or_default();
+    if !started {
+        task.abort();
+        let _ = task.await;
+        std::env::remove_var("AURA_CLAUDE_BIN");
+        panic!("the fake claude never started");
+    }
+    // Its three minutes pass.
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(181)).await;
-    for _ in 0..50 {
-        tokio::task::yield_now().await;
-    }
     tokio::time::resume();
-    let finished = task.is_finished();
-    task.abort();
-    let result = task.await;
+    let result = tokio::time::timeout(Duration::from_secs(30), task).await;
     std::env::remove_var("AURA_CLAUDE_BIN");
-    assert!(finished, "still writing the prompt after the time limit");
-    let err = result.unwrap().unwrap_err().to_string();
+    let err = result
+        .expect("still writing the prompt after the time limit")
+        .unwrap()
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("three minutes"), "{err}");
     // And the child is gone.
-    let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let alive = std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .unwrap()
-        .success();
-    assert!(!alive, "the child still runs");
+    assert!(
+        eventually(Duration::from_secs(10), || gone(pid.trim())).await,
+        "the child {pid} still runs"
+    );
 }
 
 #[tokio::test]

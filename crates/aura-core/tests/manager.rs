@@ -6319,11 +6319,16 @@ async fn a_live_rounds_time_runs_out_and_a_deleted_speaker_misses_its_turns() {
     )
     .await
     .unwrap();
-    // The busy builder speaks first, so nothing happens until the round's time is up.
-    for _ in 0..20 {
+    // The busy builder speaks first, so nothing happens until the round's
+    // time is up. Its deadline timer may register a little later: time goes
+    // on in steps until the round is over, however the tasks were scheduled.
+    for _ in 0..10 {
+        tokio::time::advance(Duration::from_secs(61)).await;
         tokio::task::yield_now().await;
+        if m.feature(&owner.id).unwrap().meetings[0].status != MeetingStatus::Collecting {
+            break;
+        }
     }
-    tokio::time::advance(Duration::from_secs(61)).await;
     tokio::time::resume();
     let notes = wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
     assert!(
