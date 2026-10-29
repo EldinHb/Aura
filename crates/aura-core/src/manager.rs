@@ -975,6 +975,11 @@ impl Manager {
     /// owner's team, gets no answer. Aura's own stops (a prompt changed, the
     /// daemon stopping) leave that waiting.
     pub async fn stop_by_request(&self, id: &str) -> Result<()> {
+        // A feature owner the user stopped is sent nothing until the user
+        // messages it: paused before the stop, so nothing slips in meanwhile.
+        if self.get_session(id)?.feature_owner {
+            self.pause_owner(id, true);
+        }
         self.stop(id).await?;
         let s = self.get_session(id)?;
         // A team member's notes (an answer it asked for, say) wait until it

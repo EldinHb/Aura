@@ -391,8 +391,10 @@ when it is busy, failed or the daemon restarts in between. An answer counts as
 delivered only once the owner's agent shows it took it in (its own reply to it, or
 the turn ending well), not when it merely shows up in the chat; one it took in is
 not sent twice. When the agent cannot take an answer, Aura tries again a few times
-with growing pauses, then waits until the agent works again. Stopping an owner
-stops those tries: it is not started again until you message it. On top of the orchestrator's
+with growing pauses, then waits until the agent works again. An owner you stop is
+sent nothing from Aura (answers, meeting notes, teammates' questions, worker reports,
+review activity) until you message it, also across a daemon restart; then what
+waited comes, one message at a time. On top of the orchestrator's
 tools it has `list_specialists`, `hire`, `ask_user`, `record_decision`, `checkpoint`,
 `propose_specialist`, `deliver_report`, `feature_status`, `hold_meeting`,
 `continue_meeting`, `close_meeting`, `suggest_specialists` and `reply_to_teammate`. Each worker on its team gets an MCP server of its own

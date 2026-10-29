@@ -86,6 +86,9 @@ pub(super) struct State {
     retry_delays: Option<Vec<Duration>>,
     /// Session token -> the session whose tools hold it (see `session_token`).
     tokens: HashMap<String, SessionId>,
+    /// Feature owners the user stopped: sent nothing from Aura until a turn
+    /// of theirs starts, which only the user can start then (see `pause_owner`).
+    paused: HashSet<SessionId>,
     /// Workers sent a note to answer whose turn has not started yet.
     answer_next: HashMap<SessionId, NoteAbout>,
     /// Workers whose current turn answers a note: a meeting's agenda, a
@@ -475,6 +478,7 @@ impl Manager {
         st.note_failures.remove(id);
         st.held.remove(id);
         st.retry_gen.remove(id);
+        st.paused.remove(id);
         st.tokens.retain(|_, s| s != id);
         st.answer_next.remove(id);
         st.answering.remove(id);
@@ -1179,6 +1183,13 @@ impl Manager {
     /// answered (see [`Manager::answer_turn`]).
     pub(super) fn on_orchestration_event(&self, ev: &Event, answered: Option<NoteAbout>) {
         self.note_events(ev);
+        // A turn of a paused owner is the user's (Aura sends it nothing):
+        // they set it going again, and what waited goes once the turn ends.
+        if let Event::TurnStarted { session_id, .. } = ev {
+            if self.paused(session_id) {
+                self.pause_owner(session_id, false);
+            }
+        }
         // Called for every event, streamed text included: leave early.
         if !matches!(
             ev,
@@ -1343,6 +1354,42 @@ impl Manager {
         }
     }
 
+    /// Pause a feature owner the user stopped, or (`false`) let Aura send it
+    /// messages again. Kept in its feature too, for after a restart.
+    pub(super) fn pause_owner(&self, id: &str, paused: bool) {
+        {
+            let mut st = self.inner.orchestration.lock();
+            if paused {
+                st.paused.insert(id.to_string());
+            } else if !st.paused.remove(id) {
+                return;
+            }
+        }
+        let saved = self.change_feature(id, |f| {
+            f.stopped = paused;
+            Ok(())
+        });
+        if let Err(e) = saved {
+            tracing::warn!("keep whether {id} is paused: {e:#}");
+        }
+    }
+
+    /// Whether Aura holds everything back from a feature owner the user stopped.
+    pub(super) fn paused(&self, id: &str) -> bool {
+        self.inner.orchestration.lock().paused.contains(id)
+    }
+
+    /// After a restart: owners the user had stopped stay paused.
+    pub(super) fn restore_paused(&self, f: &crate::features::Feature) {
+        if f.stopped {
+            self.inner
+                .orchestration
+                .lock()
+                .paused
+                .insert(f.owner_id.clone());
+        }
+    }
+
     /// The agent works: notes go again, with a fresh count of failures.
     fn clear_hold(st: &mut State, id: &str) {
         st.held.remove(id);
@@ -1443,7 +1490,8 @@ impl Manager {
     pub async fn send_when_free(&self, id: &str, text: String) -> Result<bool> {
         let s = self.get_session(id)?;
         // Checked and claimed under one lock, so a worker report cannot slip in.
-        if !self.takes_aura_message(&s)
+        if self.paused(id)
+            || !self.takes_aura_message(&s)
             || !self
                 .inner
                 .orchestration
@@ -1489,6 +1537,10 @@ impl Manager {
         };
         if o.archived {
             self.inner.orchestration.lock().queued.remove(orchestrator);
+            return;
+        }
+        // The user stopped it: notes and reports wait until they resume it.
+        if self.paused(orchestrator) {
             return;
         }
         let busy = self

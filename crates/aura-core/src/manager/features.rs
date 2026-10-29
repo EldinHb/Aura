@@ -936,6 +936,9 @@ impl Manager {
             }
         };
         for f in features {
+            // An owner the user had stopped stays paused: what is queued for
+            // it below waits until they resume it.
+            self.restore_paused(&f);
             // Meetings and one-on-ones first: an owner's notes are sent one
             // per turn, in the order queued.
             self.resume_team(&f);

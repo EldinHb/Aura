@@ -560,6 +560,12 @@ pub struct Feature {
     #[serde(default)]
     #[ts(type = "Record<string, number>")]
     pub counters: BTreeMap<String, u64>,
+    /// The user stopped the owner: Aura sends it nothing (no answers, notes,
+    /// reports or review activity) until the user messages it again. Kept
+    /// here so a daemon restart does not start it either.
+    #[serde(default)]
+    #[ts(skip)]
+    pub stopped: bool,
 }
 
 /// What a checkpoint review keeps the owner from doing.
@@ -669,6 +675,7 @@ impl Feature {
             created_at: now,
             updated_at: now,
             counters: BTreeMap::new(),
+            stopped: false,
         }
     }
 

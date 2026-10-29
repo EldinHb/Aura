@@ -6928,3 +6928,213 @@ async fn delivering_a_feature_looks_for_repeated_roles_in_the_background() {
     let run = m.suggest_specialists(None).await.unwrap();
     assert!(run.note.contains("No two"), "{}", run.note);
 }
+
+// ------------------------------------------------- final review fixes
+
+#[tokio::test]
+async fn an_owner_the_user_stopped_is_sent_nothing_until_the_user_resumes_it() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    allow_live(&m, 2).await;
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let designer = teammate(&m, &calls, &owner.id, "Designer", "approve the plan").await;
+    let builder = teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    wait_status(&m, &designer.id, SessionStatus::WaitingApproval).await;
+    let q = m
+        .ask_user(
+            &owner.id,
+            AskSpec {
+                question: "Which theme first?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    m.hold_meeting(&owner.id, meeting("Live", &["Designer"]))
+        .await
+        .unwrap();
+    let reports = sent_reports(&calls).len();
+    m.stop_by_request(&owner.id).await.unwrap();
+
+    // While it is stopped: a teammate asks it, the user answers its question,
+    // the live round ends (the designer answers once free), and the
+    // designer's own work ends, which is a report.
+    m.ask_owner(&builder.id, "Is the beta in scope?").unwrap();
+    m.answer_question(&owner.id, &q.id, None, "Dark".into())
+        .unwrap();
+    m.respond_approval(&designer.id, "ap1", approve())
+        .await
+        .unwrap();
+    wait_feature(&m, &owner.id, |f| {
+        f.meetings[0].status == MeetingStatus::WaitingOnChair
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    for held in [
+        "[Aura] Live meeting notes",
+        "[Aura] Question from a teammate",
+        "[Aura] Decision from the user",
+    ] {
+        assert_eq!(count_sent(&calls, held), 0, "{held} restarted the owner");
+    }
+    assert_eq!(
+        sent_reports(&calls).len(),
+        reports,
+        "a report restarted the owner"
+    );
+    assert!(!m
+        .send_when_free(&owner.id, "[Aura] Review. x".into())
+        .await
+        .unwrap());
+
+    // The user sets it going again: then everything comes, one at a time.
+    m.send(
+        &owner.id,
+        Input {
+            text: "go on".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_sent(&calls, "[Aura] Live meeting notes.", 1).await;
+    wait_sent(&calls, "[Aura] Question from a teammate.", 1).await;
+    wait_sent(&calls, "[Aura] Decision from the user.", 1).await;
+    wait_reports(&calls, reports + 1).await;
+}
+
+#[tokio::test]
+async fn an_owner_the_user_stopped_stays_stopped_across_a_restart() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, _calls, _provider) = owner_setup(store.clone());
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        let q = m
+            .ask_user(
+                &owner.id,
+                AskSpec {
+                    question: "Which theme first?".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        m.stop_by_request(&owner.id).await.unwrap();
+        m.answer_question(&owner.id, &q.id, None, "Dark".into())
+            .unwrap();
+        m.shutdown().await;
+        owner.id
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(count_sent(&calls, "[Aura] Decision from the user"), 0);
+    m.send(
+        &owner_id,
+        Input {
+            text: "go on".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_sent(&calls, "[Aura] Decision from the user.", 1).await;
+}
+
+#[tokio::test]
+async fn a_folderless_owner_meets_its_team_without_naming_a_folder() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    m.enable_orchestrator_dirs(dir.path().join("owners"));
+    let owner = m.create_session(owner_opts("", "")).await.unwrap();
+    assert!(owner.folderless);
+    m.start_worker(
+        &owner.id,
+        WorkerSpec {
+            agent: "claude".into(),
+            prompt: "look".into(),
+            title: Some("Designer".into()),
+            cwd: Some(dir.path().to_string_lossy().to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_reports(&calls, 1).await;
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    // Its own team needs no folder, written or live.
+    m.hold_meeting(&owner.id, meeting("Written", &["Designer"]))
+        .await
+        .unwrap();
+    wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    m.set_feature_meeting_mode(&owner.id, Some(MeetingMode::Live))
+        .await
+        .unwrap();
+    let live = m
+        .hold_meeting(&owner.id, meeting("Live", &["Designer"]))
+        .await
+        .unwrap();
+    assert_eq!(live.mode, MeetingMode::Live);
+    // Guests are hired, so they need one.
+    let err = m
+        .hold_meeting(
+            &owner.id,
+            MeetingSpec {
+                guests: vec!["tester".into()],
+                ..meeting("Guests", &[])
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("`cwd` is required"), "{err}");
+}
+
+#[tokio::test]
+async fn a_restart_after_a_live_rounds_deadline_keeps_the_answers_its_transcripts_hold() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, calls, _provider) = owner_setup(store.clone());
+        allow_live(&m, 2).await;
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        teammate(&m, &calls, &owner.id, "Designer", "look").await;
+        m.hold_meeting(&owner.id, meeting("Recovery", &["Designer"]))
+            .await
+            .unwrap();
+        wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+        m.shutdown().await;
+        // As if the daemon went between the designer's turn completing and
+        // its answer being recorded, and came back after the round's deadline.
+        let mut f = m.feature(&owner.id).unwrap();
+        let mt = &mut f.meetings[0];
+        mt.status = MeetingStatus::Collecting;
+        mt.delivered = false;
+        mt.turns[0].status = AttendeeStatus::Asked;
+        mt.turns[0].text = None;
+        mt.turns[0].at = None;
+        mt.attendees[0].status = AttendeeStatus::Asked;
+        mt.attendees[0].answer = None;
+        mt.deadline = now() - chrono::Duration::minutes(1);
+        store
+            .save_feature_record(NAMESPACE, &owner.id, &serde_json::to_string(&f).unwrap())
+            .unwrap();
+        owner.id
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    let f = wait_feature(&m, &owner_id, |f| f.meetings[0].delivered).await;
+    assert_eq!(f.meetings[0].turns[0].status, AttendeeStatus::Answered);
+    assert_eq!(f.meetings[0].turns[0].text.as_deref(), Some("hello"));
+    assert_eq!(f.meetings[0].status, MeetingStatus::WaitingOnChair);
+    // The owner had these very notes before the daemon went: not sent twice.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(count_sent(&calls, "[Aura] Live meeting notes"), 0);
+    assert_eq!(
+        count_sent(&calls, "[Aura] Live meeting."),
+        0,
+        "not asked again"
+    );
+}

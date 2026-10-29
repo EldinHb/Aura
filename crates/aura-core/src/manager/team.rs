@@ -251,8 +251,14 @@ impl Manager {
         if count > MAX_ATTENDEES {
             bail!("{count} attendees is too many: at most {MAX_ATTENDEES}, and fewer is better; every attendee costs a turn");
         }
-        // Guests' specialists are checked before anything is recorded.
-        let cwd = self.worker_cwd(&o, spec.cwd.as_deref())?;
+        // Guests' specialists are checked before anything is recorded. Only
+        // guests are started, so only they need a folder: an owner without
+        // one of its own meets its team without naming one.
+        let cwd = if guests.is_empty() {
+            String::new()
+        } else {
+            self.worker_cwd(&o, spec.cwd.as_deref())?
+        };
         for g in &guests {
             let me = self.clone();
             let (id, dir) = (g.clone(), cwd.clone());
@@ -1418,9 +1424,6 @@ impl Manager {
     fn resume_live(&self, o: &Session, m: &Meeting, on_team: &dyn Fn(&str) -> bool) {
         let owner = o.id.as_str();
         match m.status {
-            MeetingStatus::Collecting if m.deadline <= crate::now() => {
-                self.end_round(owner, &m.id, &no_answer_within(m.minutes()));
-            }
             MeetingStatus::Collecting => {
                 let result = self.change_feature(owner, |f| {
                     let Some(m) = f.meetings.iter_mut().find(|x| x.id == m.id) else {
@@ -1445,6 +1448,12 @@ impl Manager {
                 });
                 match result {
                     Ok((_, Some((m, true)))) => self.round_ended(owner, &m),
+                    // Its time ran out meanwhile: the turns given before the
+                    // daemon went count, then the round ends without the rest.
+                    Ok((_, Some((m, false)))) if m.deadline <= crate::now() => {
+                        let m = self.take_given_turns(o, m);
+                        self.end_round(owner, &m.id, &no_answer_within(m.minutes()));
+                    }
                     Ok((_, Some((m, false)))) => {
                         self.arm_deadline(owner, &m);
                         if let Some(i) = m.current_turn() {
@@ -1460,6 +1469,37 @@ impl Manager {
             _ if !m.delivered => self.meeting_closed(owner, m),
             _ => {}
         }
+    }
+
+    /// After a restart past a live round's deadline: take the turns its
+    /// speakers completed before the daemon went from their transcripts, in
+    /// order, without giving anyone the next turn.
+    fn take_given_turns(&self, o: &Session, mut m: Meeting) -> Meeting {
+        while let Some(i) = m.current_turn() {
+            let note = self.turn_note(o, &m, i);
+            let Some(answer) = self.completed_reply(&m.turns[i].worker_id, &note.text) else {
+                break;
+            };
+            let taken = self.change_feature(&o.id, |f| {
+                let Some(x) = f.meetings.iter_mut().find(|x| x.id == m.id) else {
+                    return Ok(None);
+                };
+                if x.current_turn() != Some(i) {
+                    return Ok(None);
+                }
+                let t = &mut x.turns[i];
+                t.status = AttendeeStatus::Answered;
+                t.text = Some(answer.clone());
+                t.at = Some(crate::now());
+                x.sync_attendee(i);
+                Ok(Some(x.clone()))
+            });
+            match taken {
+                Ok((_, Some(x))) => m = x,
+                _ => break,
+            }
+        }
+        m
     }
 
     /// After a restart, a note a worker answers: one it answered before the
@@ -1478,6 +1518,19 @@ impl Manager {
         let Some(about) = note.about.clone() else {
             return false;
         };
+        match self.completed_reply(worker, &note.text) {
+            Some(answer) => {
+                self.note_delivered(worker, &about);
+                self.take_answer(about, Ok(answer));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A worker's answer to a message in its stored history: the last reply
+    /// of the turn the message started, if that turn completed.
+    fn completed_reply(&self, worker: &str, text: &str) -> Option<String> {
         let events = self
             .inner
             .store
@@ -1490,14 +1543,11 @@ impl Manager {
                 _ => None,
             })
             .collect();
-        let Some(turn) = items
+        let turn = items
             .iter()
             .rev()
-            .find(|i| i.kind == ItemKind::UserMessage && i.text.trim() == note.text.trim())
-            .and_then(|i| i.turn_id.clone())
-        else {
-            return false;
-        };
+            .find(|i| i.kind == ItemKind::UserMessage && i.text.trim() == text.trim())
+            .and_then(|i| i.turn_id.clone())?;
         let completed = events.iter().any(|e| {
             matches!(&e.event, Event::TurnCompleted { turn: t, .. }
                 if t.id == turn && t.status == TurnStatus::Completed)
@@ -1511,14 +1561,7 @@ impl Manager {
                     && !i.text.trim().is_empty()
             })
             .map(|i| tail(i.text.trim(), ANSWER_LIMIT));
-        match answer.filter(|_| completed) {
-            Some(answer) => {
-                self.note_delivered(worker, &about);
-                self.take_answer(about, Ok(answer));
-                true
-            }
-            None => false,
-        }
+        answer.filter(|_| completed)
     }
 }
 
