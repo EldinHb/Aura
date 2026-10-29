@@ -432,10 +432,21 @@ impl Manager {
             .filter(|s| s.orchestrator_id.as_deref() == Some(id))
             .map(|s| s.id)
             .collect();
-        for w in workers {
-            let _ = self.update_session(&w, |s| s.orchestrator_id = None);
+        for w in &workers {
+            let _ = self.update_session(w, |s| s.orchestrator_id = None);
         }
         self.drop_reports(id);
+        // They are on no team now: their team's tools and messages go.
+        let mut st = self.inner.orchestration.lock();
+        st.tokens.retain(|_, s| !workers.contains(s));
+        for w in &workers {
+            st.answer_next.remove(w);
+            st.answering.remove(w);
+        }
+        for q in st.notes.values_mut() {
+            q.retain(|n| n.about.as_ref().is_none_or(|a| a.owner() != Some(id)));
+        }
+        st.notes.retain(|_, q| !q.is_empty());
     }
 
     /// Drop the reports from and to a session that is deleted or no longer orchestrates.
@@ -1324,6 +1335,14 @@ impl Manager {
         if st.notes.get(id).is_some_and(|n| !n.is_empty()) || st.held.contains(id) {
             st.held.insert(id.to_string());
         }
+    }
+
+    /// Hold a session's notes until its agent works again, whether or not
+    /// any wait now, so one that comes later does not start it either.
+    pub(super) fn hold_all_notes(&self, id: &str) {
+        let mut st = self.inner.orchestration.lock();
+        *st.retry_gen.entry(id.to_string()).or_default() += 1;
+        st.held.insert(id.to_string());
     }
 
     /// An orchestrator's agent could not take a note: it goes back to the

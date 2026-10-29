@@ -966,6 +966,11 @@ impl Manager {
     pub async fn stop_by_request(&self, id: &str) -> Result<()> {
         self.stop(id).await?;
         let s = self.get_session(id)?;
+        // A team member's notes (an answer it asked for, say) wait until it
+        // works again, rather than start it again on their own.
+        if !s.orchestrator && self.team_owner(&s).is_some() {
+            self.hold_all_notes(id);
+        }
         self.unavailable(&s, "was stopped");
         Ok(())
     }

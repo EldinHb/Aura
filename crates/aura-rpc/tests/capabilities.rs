@@ -290,4 +290,7 @@ async fn a_team_members_token_reaches_its_own_team_and_nothing_else() {
     // The user's token does not act as a team member either.
     let e = err(&user, "team.list", json!({ "worker": designer })).await;
     assert!(e.contains("session token"), "{e}");
+    // Its owner no longer owns a feature: it is on no team, and its token goes.
+    m.set_orchestrator(&a, false).await.unwrap();
+    assert!(worker.call("provider.list", json!({})).await.is_err());
 }

@@ -26,8 +26,12 @@
 //! approved. One-on-ones and `reply_to_teammate` are never held: they only
 //! pass on what the team already knows.
 //!
-//! Notes go the way of every note: a turn on one counts once its agent
-//! echoes it, and one its agent could not take is tried again.
+//! Notes go the way of every note: one counts as received once its agent
+//! echoes it and then shows output or ends that turn well, and one its agent
+//! could not take (a failed send or turn, a crash) is tried again after a
+//! back-off. Only a turn on a received note answers it: one that fails before
+//! is no answer, the note just goes again. A worker the user stopped gets
+//! its notes once it works again, not before.
 //!
 //! After a daemon restart, an answer in a worker's transcript counts when the
 //! turn it came from completed; otherwise the attendee or teammate is asked
@@ -635,6 +639,13 @@ impl Manager {
     /// A worker's turn that answered a note ended: its last reply is the
     /// answer, unless the turn failed or the agent stopped first.
     pub(super) fn answer_ended(&self, worker: &str, about: NoteAbout, ev: &Event) {
+        // Its agent did not take the note in (it failed, crashed or was
+        // stopped first): the note is back in the queue and goes again, after
+        // a back-off, or, for a crash or a stop the user asked for, fails
+        // there (see `unavailable`). Nothing was answered yet.
+        if self.queued_again(worker, &about) {
+            return;
+        }
         let outcome: std::result::Result<String, String> = match ev {
             Event::TurnCompleted { turn, .. } => match turn.status {
                 TurnStatus::Completed => self
@@ -650,10 +661,6 @@ impl Manager {
                         .unwrap_or_default()
                 )),
             },
-            // Its agent failed before it showed it got the note: the note
-            // went back to the queue and is sent again (see
-            // `acknowledge_note`).
-            Event::ProcessExited { .. } if self.queued_again(worker, &about) => return,
             Event::ProcessExited {
                 message: Some(m), ..
             } => Err(format!("its agent stopped: {m}")),

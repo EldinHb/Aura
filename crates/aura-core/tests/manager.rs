@@ -5928,3 +5928,92 @@ async fn an_attendee_that_fails_or_goes_closes_the_meeting_at_once() {
     assert_eq!(mt.attendees[1].status, AttendeeStatus::Missing);
     wait_sent(&calls, "[Aura] Meeting notes, incomplete.", 2).await;
 }
+
+// ------------------------------------- team notes on proven receipt (phase 1)
+
+#[tokio::test]
+async fn an_agenda_whose_turn_fails_before_the_agent_took_it_is_sent_again() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    m.set_note_retry_delays(vec![Duration::from_millis(50)]);
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    provider.knobs.lock().no_echo = true;
+    m.hold_meeting(&owner.id, meeting("Retry", &["Designer"]))
+        .await
+        .unwrap();
+    wait_sent(&calls, "[Aura] Meeting.", 1).await;
+    let agenda = agenda_sent(&calls);
+    provider.knobs.lock().no_echo = false;
+    // The agent shows the agenda, then its turn fails before any output.
+    let t = turn(&a.id, "failed-before-receipt", TurnStatus::Running);
+    push(
+        &provider,
+        Event::TurnStarted {
+            session_id: a.id.clone(),
+            turn: t.clone(),
+        },
+    );
+    push(
+        &provider,
+        Event::ItemCompleted {
+            session_id: a.id.clone(),
+            item: Item::new(&a.id, Some(t.id.clone()), ItemKind::UserMessage)
+                .with_text(agenda)
+                .completed(),
+        },
+    );
+    push(
+        &provider,
+        Event::TurnCompleted {
+            session_id: a.id.clone(),
+            turn: Turn {
+                status: TurnStatus::Failed,
+                error: Some("overloaded".into()),
+                ..t
+            },
+        },
+    );
+    // Nothing was answered: the agenda goes again and the answer counts.
+    wait_sent(&calls, "[Aura] Meeting.", 2).await;
+    let f = wait_feature(&m, &owner.id, |f| {
+        f.meetings[0].status != MeetingStatus::Collecting
+    })
+    .await;
+    assert_eq!(f.meetings[0].status, MeetingStatus::Complete);
+    assert_eq!(f.meetings[0].attendees[0].answer.as_deref(), Some("hello"));
+}
+
+#[tokio::test]
+async fn a_worker_the_user_stopped_is_not_started_again_by_an_answer() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let b = teammate(&m, &calls, &owner.id, "Builder", "approve the plan").await;
+    wait_status(&m, &b.id, SessionStatus::WaitingApproval).await;
+    m.ask_teammate(&a.id, "Builder", "Which port?").unwrap();
+    m.stop_by_request(&a.id).await.unwrap();
+    // The teammate answers once it is free; the answer waits for the asker.
+    m.respond_approval(&b.id, "ap1", approve()).await.unwrap();
+    wait_feature(&m, &owner.id, |f| {
+        f.one_on_ones[0].status == OneOnOneStatus::Answered
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(count_sent(&calls, "[Aura] Answer from a teammate"), 0);
+    // The user sets it going again: then it gets the answer.
+    m.send(
+        &a.id,
+        Input {
+            text: "go on".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_sent(&calls, "[Aura] Answer from a teammate.", 1).await;
+    wait_feature(&m, &owner.id, |f| f.one_on_ones[0].delivered).await;
+}
