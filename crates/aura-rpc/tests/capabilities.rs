@@ -294,3 +294,25 @@ async fn a_team_members_token_reaches_its_own_team_and_nothing_else() {
     m.set_orchestrator(&a, false).await.unwrap();
     assert!(worker.call("provider.list", json!({})).await.is_err());
 }
+
+#[tokio::test]
+async fn a_call_on_a_connection_the_daemon_closed_fails_at_once() {
+    let (m, a, _b, _plain) = sessions();
+    let dir = tempfile::tempdir().unwrap();
+    let server = RpcServer::start(m.clone(), dir.path(), None).await.unwrap();
+    let tools = RpcClient::connect(server.info.port, &m.session_token(&a))
+        .await
+        .unwrap();
+    m.set_orchestrator(&a, false).await.unwrap();
+    // The revoked token closes the connection.
+    assert!(tools.call("provider.list", json!({})).await.is_err());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // A call after that is refused now, not after the two-minute timeout.
+    let late = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tools.call("provider.list", json!({})),
+    )
+    .await
+    .expect("a call on a closed connection must not wait for its timeout");
+    assert_eq!(late.unwrap_err().to_string(), "connection closed");
+}

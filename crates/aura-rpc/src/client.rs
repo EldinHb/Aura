@@ -6,7 +6,7 @@ use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
@@ -15,6 +15,9 @@ use tokio_tungstenite::tungstenite::Message;
 pub struct RpcClient {
     out: mpsc::Sender<Message>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>,
+    /// The daemon closed the connection: calls fail at once rather than wait
+    /// out their timeout. Set under the `pending` lock.
+    closed: Arc<AtomicBool>,
     next_id: Arc<AtomicU64>,
     events: broadcast::Sender<aura_core::Event>,
     pty: broadcast::Sender<(String, Vec<u8>)>,
@@ -50,6 +53,8 @@ impl RpcClient {
                 }
             }
         });
+        let closed = Arc::new(AtomicBool::new(false));
+        let closed2 = closed.clone();
         let p2 = pending.clone();
         let ev2 = events.clone();
         let pty2 = pty.clone();
@@ -90,12 +95,16 @@ impl RpcClient {
                     _ => {}
                 }
             }
-            // Fail the calls still waiting instead of letting them run into their timeout.
-            p2.lock().clear();
+            // Fail the calls still waiting instead of letting them run into
+            // their timeout, and the calls made from now on too.
+            let mut pending = p2.lock();
+            closed2.store(true, Ordering::SeqCst);
+            pending.clear();
         });
         Ok(Self {
             out,
             pending,
+            closed,
             next_id: Arc::new(AtomicU64::new(1)),
             events,
             pty,
@@ -133,7 +142,13 @@ impl RpcClient {
     ) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().insert(id, tx);
+        {
+            let mut pending = self.pending.lock();
+            if self.closed.load(Ordering::SeqCst) {
+                bail!("connection closed");
+            }
+            pending.insert(id, tx);
+        }
         let req = Request {
             id: Some(Value::from(id)),
             method: method.into(),
