@@ -36,6 +36,15 @@ struct Knob {
     /// `send` takes the message but the agent never gets to it, like an ACP
     /// prompt queued behind a process that dies: no turn, no user message.
     no_echo: bool,
+    /// `send` returns a while after the agent echoed the message (Claude
+    /// emits its user message before it writes the prompt).
+    slow_send: bool,
+    /// `send` queues the message and the agent dies before it gets to it,
+    /// like an ACP agent crashing with a prompt in its queue.
+    crash_queued: bool,
+    /// The user message is shown, then writing the prompt fails, as when
+    /// Claude's or an ACP agent's pipe breaks.
+    fail_after_echo: bool,
 }
 type Knobs = Arc<Mutex<Knob>>;
 
@@ -44,6 +53,19 @@ impl Driver for FakeDriver {
     async fn send(&self, input: Input) -> anyhow::Result<()> {
         self.calls.lock().push(format!("send:{}", input.text));
         if self.knobs.lock().no_echo {
+            return Ok(());
+        }
+        if self.knobs.lock().crash_queued {
+            let sink = self.sink.clone();
+            let sid = self.session_id.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let _ = sink.send(Event::ProcessExited {
+                    session_id: sid,
+                    exit_code: Some(1),
+                    message: Some("died before it took the prompt".into()),
+                });
+            });
             return Ok(());
         }
         let turn = Turn {
@@ -70,6 +92,13 @@ impl Driver for FakeDriver {
             .with_text(input.text.clone())
             .completed(),
         });
+        let slow = self.knobs.lock().slow_send;
+        if slow {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        if self.knobs.lock().fail_after_echo {
+            anyhow::bail!("broken pipe before the prompt was written");
+        }
         let item = Item::new(
             &self.session_id,
             Some(turn.id.clone()),
@@ -4406,5 +4435,325 @@ async fn one_suggestion_is_resolved_once() {
             .unwrap()
             .status,
         SuggestionStatus::Pending
+    );
+}
+
+// ------------------------------------------ second review fixes (Codex)
+
+fn sends(calls: &Calls, prefix: &str) -> usize {
+    calls
+        .lock()
+        .iter()
+        .filter(|c| c.starts_with(&format!("send:{prefix}")))
+        .count()
+}
+
+fn answer_delivered(m: &Manager, owner: &str) -> bool {
+    m.feature(owner).unwrap().questions[0]
+        .answer
+        .as_ref()
+        .unwrap()
+        .delivered
+}
+
+async fn wait_delivered(m: &Manager, owner: &str) {
+    for _ in 0..100 {
+        if answer_delivered(m, owner) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the answer was never marked delivered");
+}
+
+/// An owner that asked "Ship?" and got "Yes".
+async fn answered_owner(m: &Manager, cwd: &str) -> Session {
+    let owner = m.create_session(owner_opts(cwd, "")).await.unwrap();
+    m.ask_user(
+        &owner.id,
+        AskSpec {
+            question: "Ship?".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    owner
+}
+
+#[tokio::test]
+async fn a_prompt_the_agent_never_got_is_sent_again_after_a_restart() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, _calls, provider) = owner_setup(store.clone());
+        m.set_note_retry_delays(vec![]);
+        let owner = answered_owner(&m, &cwd).await;
+        // The message shows in the chat, but writing it to the agent fails.
+        provider.knobs.lock().fail_after_echo = true;
+        m.answer_question(&owner.id, "q1", None, "Yes".into())
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!answer_delivered(&m, &owner.id));
+        m.shutdown().await;
+        owner.id
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    wait_sent(&calls, "[Aura] Decision from the user", 1).await;
+    wait_delivered(&m, &owner_id).await;
+}
+
+#[tokio::test]
+async fn an_echo_before_send_returns_counts_and_the_answer_goes_once() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let owner = answered_owner(&m, &dir.path().to_string_lossy()).await;
+    provider.knobs.lock().slow_send = true;
+    m.answer_question(&owner.id, "q1", None, "Yes".into())
+        .unwrap();
+    wait_delivered(&m, &owner.id).await;
+    // A later crash sends nothing again.
+    let sink = provider.knobs.lock().sink.clone().unwrap();
+    sink.send(Event::ProcessExited {
+        session_id: owner.id.clone(),
+        exit_code: Some(1),
+        message: Some("later crash".into()),
+    })
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(sends(&calls, "[Aura] Decision"), 1);
+}
+
+#[tokio::test]
+async fn a_crash_before_the_agent_takes_a_note_is_retried_within_the_bound() {
+    for (delays, want) in [(vec![], 1), (vec![Duration::from_millis(15); 2], 3)] {
+        let (m, calls, provider) = owner_setup(Default::default());
+        m.set_note_retry_delays(delays);
+        let dir = tempfile::tempdir().unwrap();
+        let owner = answered_owner(&m, &dir.path().to_string_lossy()).await;
+        provider.knobs.lock().crash_queued = true;
+        m.answer_question(&owner.id, "q1", None, "Yes".into())
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(sends(&calls, "[Aura] Decision"), want);
+        assert!(!answer_delivered(&m, &owner.id));
+        // Once the agent works again, the answer goes with its next turn.
+        provider.knobs.lock().crash_queued = false;
+        m.send(
+            &owner.id,
+            Input {
+                text: "go on".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        wait_delivered(&m, &owner.id).await;
+    }
+}
+
+#[tokio::test]
+async fn a_review_opened_while_a_worker_starts_keeps_its_task_back() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let owner = m
+        .create_session(owner_opts(&dir.path().to_string_lossy(), ""))
+        .await
+        .unwrap();
+    m.set_feature_autonomy(
+        &owner.id,
+        checkpoints(vec![Checkpoint::BeforeImplementation]),
+    )
+    .await
+    .unwrap();
+    provider.knobs.lock().slow_start = true;
+    let (other, id) = (m.clone(), owner.id.clone());
+    let starting = tokio::spawn(async move {
+        other
+            .start_worker(
+                &id,
+                WorkerSpec {
+                    agent: "claude".into(),
+                    prompt: "implement while review is open".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    m.checkpoint(&owner.id, Checkpoint::BeforeImplementation, "review design")
+        .unwrap();
+    let err = starting.await.unwrap().unwrap_err().to_string();
+    assert!(err.contains("wait for the user's review"), "{err}");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!calls
+        .lock()
+        .iter()
+        .any(|c| c == "send:implement while review is open"));
+    assert!(m.feature(&owner.id).unwrap().team.is_empty());
+    assert!(
+        !m.list_sessions()
+            .iter()
+            .any(|s| s.orchestrator_id.as_deref() == Some(owner.id.as_str())),
+        "the worker that started meanwhile is removed"
+    );
+}
+
+#[tokio::test]
+async fn a_pending_retry_does_not_start_an_owner_the_user_stopped() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let owner = answered_owner(&m, &dir.path().to_string_lossy()).await;
+    m.stop(&owner.id).await.unwrap();
+    m.set_note_retry_delays(vec![Duration::from_millis(150)]);
+    provider.knobs.lock().fail_start = true;
+    let mut rx = m.subscribe();
+    m.answer_question(&owner.id, "q1", None, "Yes".into())
+        .unwrap();
+    loop {
+        if let Ok(Event::Notice { message, .. }) = rx.recv().await {
+            if message.starts_with("Could not deliver") {
+                break;
+            }
+        }
+    }
+    m.stop(&owner.id).await.unwrap();
+    provider.knobs.lock().fail_start = false;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(sends(&calls, "[Aura] Decision"), 0, "{:?}", calls.lock());
+    // The user's next message starts it, and the answer follows.
+    m.send(
+        &owner.id,
+        Input {
+            text: "go on".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_delivered(&m, &owner.id).await;
+}
+
+#[tokio::test]
+async fn a_fork_of_a_record_without_counters_does_not_reuse_ids() {
+    let store: Arc<MemoryStore> = Default::default();
+    let (m, _calls, _provider) = owner_setup(store.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let owner = m
+        .create_session(CreateSessionOpts {
+            initial_prompt: Some("hello".into()),
+            ..owner_opts(&dir.path().to_string_lossy(), "")
+        })
+        .await
+        .unwrap();
+    wait_native_id(&m, &owner.id).await;
+    let q = m
+        .ask_user(
+            &owner.id,
+            AskSpec {
+                question: "Original?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // Saved before features had counters.
+    let mut raw = serde_json::to_value(m.feature(&owner.id).unwrap()).unwrap();
+    raw.as_object_mut().unwrap().remove("counters");
+    store
+        .save_feature_record(NAMESPACE, &owner.id, &raw.to_string())
+        .unwrap();
+    let fork = m.fork(&owner.id).await.unwrap();
+    let new = m
+        .ask_user(
+            &fork.id,
+            AskSpec {
+                question: "New?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_ne!(q.id, new.id);
+}
+
+/// Every directory is its own repository; the thread named `resolving` is
+/// held at its second look-up until the test lets it go.
+struct PausingRepos {
+    calls: std::sync::atomic::AtomicUsize,
+    reached: std::sync::mpsc::SyncSender<()>,
+    resume: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl WorktreeBackend for PausingRepos {
+    fn create(&self, _cwd: &str, _opts: &WorktreeOpts) -> anyhow::Result<WorktreeInfo> {
+        anyhow::bail!("unused")
+    }
+    fn remove(&self, _info: &WorktreeInfo) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn repo_root(&self, cwd: &str) -> Option<String> {
+        if std::thread::current().name() == Some("resolving")
+            && self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+        {
+            let _ = self.reached.send(());
+            let _ = self.resume.lock().recv_timeout(Duration::from_secs(5));
+        }
+        Some(cwd.to_string())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepting_a_suggestion_never_overwrites_a_save_made_at_the_same_time() {
+    let (reached_tx, reached) = std::sync::mpsc::sync_channel(1);
+    let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+    let repos = PausingRepos {
+        calls: Default::default(),
+        reached: reached_tx,
+        resume: Mutex::new(resume_rx),
+    };
+    let (_, _, provider) = owner_setup(Default::default());
+    let m = Manager::new(
+        Arc::new(MemoryStore::default()),
+        vec![provider],
+        Some(Arc::new(repos)),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let proposed = SpecialistInput {
+        scope: SpecialistScope::Project,
+        project: Some(cwd.clone()),
+        ..specialist("race-role", "proposed version")
+    };
+    let s = m
+        .propose_specialist(&owner.id, proposed.clone(), "needed")
+        .unwrap();
+    let rt = tokio::runtime::Handle::current();
+    let (other, id) = (m.clone(), owner.id.clone());
+    let resolving = std::thread::Builder::new()
+        .name("resolving".into())
+        .spawn(move || {
+            let _rt = rt.enter();
+            other.resolve_suggestion(&id, &s.id, true, None)
+        })
+        .unwrap();
+    // While the acceptance is under way, the user saves their own version.
+    let paused = reached.recv_timeout(Duration::from_millis(500)).is_ok();
+    let user = m.clone();
+    let saving = std::thread::spawn(move || {
+        user.save_specialist(SpecialistInput {
+            instructions: "user version".into(),
+            ..proposed
+        })
+    });
+    if paused {
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = resume.send(());
+    }
+    let _accepted = resolving.join().unwrap();
+    saving.join().unwrap().unwrap();
+    assert_eq!(
+        m.specialist("race-role", Some(&cwd)).unwrap().instructions,
+        "user version"
     );
 }

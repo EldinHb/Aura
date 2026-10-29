@@ -193,3 +193,28 @@ async fn a_sessions_token_hears_none_of_the_users_events() {
     let leaked = tokio::time::timeout(std::time::Duration::from_millis(300), to_tools.recv()).await;
     assert!(leaked.is_err(), "the tools hear nothing: {leaked:?}");
 }
+
+#[tokio::test]
+async fn a_revoked_token_stops_working_on_a_connection_already_open() {
+    let (m, a, _b, _plain) = sessions();
+    let dir = tempfile::tempdir().unwrap();
+    let server = RpcServer::start(m.clone(), dir.path(), None).await.unwrap();
+    let token = m.session_token(&a);
+    let tools = RpcClient::connect(server.info.port, &token).await.unwrap();
+    tools.call("provider.list", json!({})).await.unwrap();
+    m.set_orchestrator(&a, false).await.unwrap();
+    assert!(tools.call("provider.list", json!({})).await.is_err());
+    // Made an orchestrator again, the old connection still gets nothing.
+    m.set_orchestrator(&a, true).await.unwrap();
+    assert!(tools
+        .call("orchestrator.workers", json!({ "orchestrator": a }))
+        .await
+        .is_err());
+    let fresh = RpcClient::connect(server.info.port, &m.session_token(&a))
+        .await
+        .unwrap();
+    fresh
+        .call("orchestrator.workers", json!({ "orchestrator": a }))
+        .await
+        .unwrap();
+}

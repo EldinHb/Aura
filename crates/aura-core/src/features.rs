@@ -264,8 +264,18 @@ pub enum ReviewHold {
 }
 
 impl Feature {
-    /// A new id with `prefix`, higher than any that prefix had before.
-    pub fn next_id(&mut self, prefix: &str) -> String {
+    /// Raise the counters to the ids in use, so ids the record had before
+    /// counters were kept are never handed out again, also once they are gone
+    /// (a fork leaves out the questions still open). Call it on the whole
+    /// record before taking anything out of it.
+    pub fn seed_counters(&mut self) {
+        for prefix in ["q", "d", "s"] {
+            self.next_id_seed(prefix);
+        }
+    }
+
+    /// Raise the counter of `prefix` to the highest id in use; returns it.
+    fn next_id_seed(&mut self, prefix: &str) -> u64 {
         let used = match prefix {
             "q" => self
                 .questions
@@ -280,7 +290,14 @@ impl Feature {
         .filter_map(|id| id.strip_prefix(prefix)?.parse::<u64>().ok())
         .max()
         .unwrap_or(0);
-        let n = self.counters.get(prefix).copied().unwrap_or(0).max(used) + 1;
+        let n = self.counters.entry(prefix.to_string()).or_default();
+        *n = (*n).max(used);
+        *n
+    }
+
+    /// A new id with `prefix`, higher than any that prefix had before.
+    pub fn next_id(&mut self, prefix: &str) -> String {
+        let n = self.next_id_seed(prefix) + 1;
         self.counters.insert(prefix.to_string(), n);
         format!("{prefix}{n}")
     }

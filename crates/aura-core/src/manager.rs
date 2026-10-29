@@ -642,7 +642,9 @@ impl Manager {
                 own_dir,
             )
             .await?;
-        if let Some(f) = feature {
+        if let Some(mut f) = feature {
+            // Before the open questions are left out, so their ids stay taken.
+            f.seed_counters();
             let copy = crate::features::Feature {
                 owner_id: forked.id.clone(),
                 team: vec![],
@@ -931,6 +933,8 @@ impl Manager {
     /// Stop the process(es) behind a session but keep it (resumable).
     pub async fn stop(&self, id: &str) -> Result<()> {
         let _ = self.get_session(id)?;
+        // A stopped orchestrator is not started again by a note it has waiting.
+        self.hold_notes(id);
         let (driver, pty) = {
             let mut rt = self.inner.runtimes.lock();
             let rt = rt.entry(id.to_string()).or_default();

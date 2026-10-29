@@ -252,7 +252,8 @@ gets more (see below); a plain orchestrator has exactly these. Each orchestrator
 `aura mcp` connects to the daemon with a token of its own, which only lets it use that
 orchestrator's tools: it cannot act for another session, answer questions meant for
 you, change settings, read other sessions or receive their events. These tools in turn
-refuse the daemon's own token in `daemon.json`. That token still opens everything the
+refuse the daemon's own token in `daemon.json`. A session's token stops working, also
+on a connection already open, when the session is deleted or stops orchestrating. That token still opens everything the
 app can do, and any program running as you can read it, so Aura keeps agents apart
 from each other's tools, not from your account. ACP agents decide
 themselves whether to ask before an MCP tool call; if yours does, the requests show up
@@ -313,9 +314,12 @@ exactly as before; a feature owner is one with more to do.
 
 Everything a feature owner records is kept in its feature record in Aura's database,
 across restarts, and goes when the owner is deleted. Your answers reach the owner even
-when it is busy, failed or the daemon restarts in between: an answer counts as
-delivered only once the owner's agent shows it received it, and one it already
-received is not sent twice. On top of the orchestrator's
+when it is busy, failed or the daemon restarts in between. An answer counts as
+delivered only once the owner's agent shows it took it in (its own reply to it, or
+the turn ending well), not when it merely shows up in the chat; one it took in is
+not sent twice. When the agent cannot take an answer, Aura tries again a few times
+with growing pauses, then waits until the agent works again. Stopping an owner
+stops those tries: it is not started again until you message it. On top of the orchestrator's
 tools it has `list_specialists`, `hire`, `ask_user`, `record_decision`, `checkpoint`,
 `propose_specialist`, `deliver_report` and `feature_status`.
 

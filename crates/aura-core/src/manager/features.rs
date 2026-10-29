@@ -211,7 +211,15 @@ impl Manager {
 
     /// Record a worker an owner started on its team: hired as a specialist,
     /// or ad-hoc. Work has started once there is a team.
-    pub(super) fn join_team(&self, owner: &str, worker: &Session, specialist: Option<&Specialist>) {
+    /// Refused, adding nobody, when a checkpoint review holds staffing back:
+    /// checked in the same locked update that adds the member, after the
+    /// worker started, so a review opened meanwhile keeps its task back.
+    pub(super) fn join_team(
+        &self,
+        owner: &str,
+        worker: &Session,
+        specialist: Option<&Specialist>,
+    ) -> Result<()> {
         let member = TeamMember {
             worker_id: worker.id.clone(),
             specialist_id: specialist.map(|s| s.id.clone()),
@@ -224,17 +232,18 @@ impl Manager {
                 .unwrap_or_default(),
             hired_at: crate::now(),
         };
-        let result = self.change_feature(owner, |f| {
+        self.change_feature(owner, |f| {
+            if let Some(hold) = f.review_hold(&self.effective_autonomy(f)) {
+                bail!("{}", hold_message(&hold));
+            }
             f.team.retain(|m| m.worker_id != member.worker_id);
             f.team.push(member);
             if f.status == FeatureStatus::Planning {
                 f.status = FeatureStatus::InProgress;
             }
             Ok(())
-        });
-        if let Err(e) = result {
-            tracing::warn!("record team member of {owner}: {e:#}");
-        }
+        })?;
+        Ok(())
     }
 
     /// The section of a hired worker's system prompt that makes it its
@@ -602,7 +611,11 @@ impl Manager {
     /// Whether a feature owner may take someone new on: hire, or start an
     /// ad-hoc worker. Not while a checkpoint review is open or asked for changes.
     pub(super) fn may_staff(&self, owner: &str) -> Result<()> {
-        let f = self.feature(owner)?;
+        // Read under the lock checkpoints change the record under.
+        let f = {
+            let _guard = self.inner.features.lock();
+            self.feature(owner)?
+        };
         match f.review_hold(&self.effective_autonomy(&f)) {
             Some(hold) => bail!("{}", hold_message(&hold)),
             None => Ok(()),
@@ -613,7 +626,10 @@ impl Manager {
     /// checkpoint review is open; after a request for changes it may, so the
     /// team can rework.
     pub(super) fn may_message(&self, owner: &str) -> Result<()> {
-        let f = self.feature(owner)?;
+        let f = {
+            let _guard = self.inner.features.lock();
+            self.feature(owner)?
+        };
         match f.review_hold(&self.effective_autonomy(&f)) {
             Some(hold @ ReviewHold::Open(..)) => bail!("{}", hold_message(&hold)),
             _ => Ok(()),
@@ -686,18 +702,8 @@ impl Manager {
                 SuggestionStatus::Dismissed => bail!("this suggestion was dismissed already"),
             }
             if accept {
-                let input = specialists::validate(specialist.unwrap_or_else(|| s.specialist.clone()))?;
-                if self.specialist_taken(&input)? {
-                    bail!(
-                        "a specialist `{}` exists already{}; edit the suggestion to give it another id, or dismiss it",
-                        input.id,
-                        match &input.project {
-                            Some(p) => format!(" in {p}"),
-                            None => String::new(),
-                        }
-                    );
-                }
-                let saved = self.save_specialist(input)?;
+                let saved =
+                    self.save_new_specialist(specialist.unwrap_or_else(|| s.specialist.clone()))?;
                 s.accepted_id = Some(saved.id.clone());
                 created = Some(saved);
             }
@@ -787,18 +793,13 @@ impl Manager {
             if notes.is_empty() {
                 continue;
             }
-            // The agent may have had one before its mark was stored: its
-            // transcript says so, and it is not sent twice.
-            let received: Vec<String> = self
-                .items(&f.owner_id)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|i| i.kind == ItemKind::UserMessage)
-                .map(|i| i.text.trim().to_string())
-                .collect();
+            // The agent may have taken one in before its mark was stored: its
+            // history shows that (not the transcript entry alone, which
+            // Claude and ACP make before they write the prompt), and it is
+            // not sent twice.
             for note in notes {
                 match note.about.as_ref() {
-                    Some(about) if received.iter().any(|t| *t == note.text.trim()) => {
+                    Some(about) if self.received_in_history(&f.owner_id, &note.text) => {
                         self.note_delivered(&f.owner_id, about)
                     }
                     _ => self.queue_note(&f.owner_id, note),

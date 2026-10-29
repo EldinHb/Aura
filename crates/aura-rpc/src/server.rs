@@ -133,8 +133,9 @@ enum Caller {
     /// The daemon's own token, from `daemon.json`: the app, the CLI. The user.
     User,
     /// The token of one session's tools (`Manager::session_token`), which
-    /// Aura hands that session's `aura mcp` and nobody else.
-    Session(String),
+    /// Aura hands that session's `aura mcp` and nobody else. Checked again
+    /// on every request: once the daemon revokes it, the connection closes.
+    Session { id: String, token: String },
 }
 
 /// Whether `caller` may call `method` with `params`. A session's tools may
@@ -154,7 +155,7 @@ fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), Dispat
             "{method} acts for a session's tools and needs that session's own session token, which Aura hands only to its `aura mcp`"
         ))),
         Caller::User => Ok(()),
-        Caller::Session(id) => {
+        Caller::Session { id, .. } => {
             let acts_for = |key: &str| params.get(key).and_then(Value::as_str) == Some(id.as_str());
             let allowed = match method {
                 "daemon.ping" | "provider.list" | "provider.models" | "orchestrator.projects" => true,
@@ -182,7 +183,10 @@ async fn ws_handler(
     let caller = match q.token.as_deref() {
         Some(t) if t == state.token => Caller::User,
         Some(t) => match state.manager.session_for_token(t) {
-            Some(id) => Caller::Session(id),
+            Some(id) => Caller::Session {
+                id,
+                token: t.to_string(),
+            },
             None => return (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response(),
         },
         None => return (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response(),
@@ -315,6 +319,27 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
                         continue;
                     }
                 };
+                // A revoked token (its session deleted or no longer
+                // orchestrating) ends the connection, whatever it asks.
+                if let Caller::Session { id, token } = &caller {
+                    if state.manager.session_for_token(token).as_deref() != Some(id.as_str()) {
+                        if let Some(rid) = req.id {
+                            let resp = Response {
+                                id: rid,
+                                result: None,
+                                error: Some(RpcError {
+                                    code: ERR_FORBIDDEN,
+                                    message: "this session token was revoked: its session was deleted or stopped orchestrating".into(),
+                                    data: None,
+                                }),
+                            };
+                            let _ = out_tx
+                                .send(Message::Text(serde_json::to_string(&resp).unwrap()))
+                                .await;
+                        }
+                        break;
+                    }
+                }
                 let state = state.clone();
                 let out = out_tx.clone();
                 let attached = attached.clone();

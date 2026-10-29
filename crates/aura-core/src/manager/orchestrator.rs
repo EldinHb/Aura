@@ -58,11 +58,21 @@ pub(super) struct State {
     /// such as the user's answers to a feature owner. Sent one per turn,
     /// before worker reports.
     notes: HashMap<SessionId, VecDeque<Note>>,
-    /// Notes sent to an orchestrator that its agent has not shown it got:
-    /// a note counts as delivered once the agent echoes it as a user message.
-    unacked: HashMap<SessionId, Note>,
-    /// Orchestrator id -> notes that could not be sent in a row.
+    /// The note sent to an orchestrator whose agent has not yet shown it
+    /// took it (see `note_events`). Registered before the send, so an echo
+    /// that comes before `send` returns is not missed. One at a time.
+    unacked: HashMap<SessionId, Pending>,
+    /// Numbers deliveries, so a failed send only cleans up its own.
+    next_delivery: u64,
+    /// Orchestrator id -> notes its agent failed to take in a row.
     note_failures: HashMap<SessionId, u32>,
+    /// Orchestrators whose notes wait: out a back-off after a failure, after
+    /// the last retry, or after the user stopped it, until its agent works
+    /// again (a turn ends well) or a retry is due.
+    held: HashSet<SessionId>,
+    /// Bumped to cancel the retry timers of an orchestrator: when it is
+    /// stopped, deleted or demoted, or the daemon stops.
+    retry_gen: HashMap<SessionId, u64>,
     /// Overrides [`NOTE_RETRY_DELAYS`].
     retry_delays: Option<Vec<Duration>>,
     /// Session token -> the session whose tools hold it (see `session_token`).
@@ -84,6 +94,18 @@ pub(super) enum NoteAbout {
     Answer(String),
     /// What the user made of this specialist suggestion.
     Suggestion(String),
+}
+
+/// A note sent and not yet taken in by the agent.
+#[derive(Debug, Clone)]
+pub(super) struct Pending {
+    delivery: u64,
+    note: Note,
+    /// The turn the agent's echo of the note came in: unset until it comes.
+    /// The echo alone is no proof (Claude and ACP show it before they write
+    /// the prompt): the agent's own output in that turn, or that turn ending
+    /// well, is.
+    echoed: Option<Option<String>>,
 }
 
 /// What `deliver` sends.
@@ -361,6 +383,8 @@ impl Manager {
         st.notes.remove(id);
         st.unacked.remove(id);
         st.note_failures.remove(id);
+        st.held.remove(id);
+        st.retry_gen.remove(id);
         st.tokens.retain(|_, s| s != id);
         for q in st.queued.values_mut() {
             q.remove(id);
@@ -533,11 +557,15 @@ impl Manager {
                     session.id
                 );
             }
-            Ok(o) => {
-                if o.feature_owner {
-                    self.join_team(orchestrator, &session, specialist);
+            // Checked again now it has started: a checkpoint review opened
+            // meanwhile keeps it from the team and its task.
+            Ok(o) if o.feature_owner => {
+                if let Err(e) = self.join_team(orchestrator, &session, specialist) {
+                    let _ = self.delete(&session.id, false).await;
+                    return Err(e);
                 }
             }
+            Ok(_) => {}
         }
         self.dispatch(orchestrator, &session.id, spec.prompt)
             .await?;
@@ -979,7 +1007,7 @@ impl Manager {
     /// Follow events that matter to orchestration. Called for every event
     /// after the session row is updated.
     pub(super) fn on_orchestration_event(&self, ev: &Event) {
-        self.acknowledge_note(ev);
+        self.note_events(ev);
         // Called for every event, streamed text included: leave early.
         if !matches!(
             ev,
@@ -1039,56 +1067,154 @@ impl Manager {
         }
     }
 
-    /// A note counts as delivered when the agent echoes it as a user message,
-    /// the sign every agent gives that it took the message in. One whose
-    /// agent fails first goes back to the front of the queue. One whose agent
-    /// was stopped (the user, a prompt change, the daemon shutting down) is
-    /// left unmarked in its record, which sends it again after a restart,
-    /// rather than start the agent again at once.
-    fn acknowledge_note(&self, ev: &Event) {
-        let (sid, echoed) = match ev {
-            Event::ItemCompleted { session_id, item }
-                if item.kind == ItemKind::UserMessage && item.parent_id.is_none() =>
-            {
-                (session_id, Some(item.text.trim()))
-            }
-            Event::ProcessExited {
-                session_id,
-                message,
-                ..
-            } => {
-                if message.is_none() {
-                    self.inner
-                        .orchestration
-                        .lock()
-                        .unacked
-                        .remove(session_id.as_str());
-                    return;
-                }
-                (session_id, None)
-            }
-            _ => return,
+    /// Follow the note an orchestrator was sent until its agent shows it
+    /// took it in: its echo of the note, then its own output in that turn or
+    /// the turn ending well. A failed turn or a crash before that is a
+    /// failure to take it (see `note_failed`); a stop puts it back, held. A
+    /// turn that ends well also shows the agent works again, which ends a hold.
+    fn note_events(&self, ev: &Event) {
+        let sid = ev.session_id();
+        let mut st = self.inner.orchestration.lock();
+        let in_turn = |echoed: &Option<Option<String>>, turn: &Option<String>| match echoed {
+            Some(None) => true,
+            Some(t) => t == turn,
+            None => false,
         };
-        let about = {
-            let mut st = self.inner.orchestration.lock();
-            let Some(note) = st.unacked.get(sid.as_str()) else {
-                return;
-            };
-            match echoed {
-                Some(text) if text == note.text.trim() => {
-                    st.unacked.remove(sid.as_str()).and_then(|n| n.about)
-                }
-                Some(_) => return,
-                None => {
-                    let note = st.unacked.remove(sid.as_str()).expect("checked above");
-                    st.notes.entry(sid.clone()).or_default().push_front(note);
-                    return;
-                }
-            }
-        };
-        if let Some(about) = about {
-            self.note_delivered(sid, &about);
+        enum Outcome {
+            Received(Option<NoteAbout>),
+            Failed(Note),
+            Stopped(Note),
         }
+        let mut outcome = None;
+        if let Some(p) = st.unacked.get_mut(sid) {
+            match ev {
+                Event::ItemCompleted { item, .. }
+                    if item.kind == ItemKind::UserMessage
+                        && item.parent_id.is_none()
+                        && p.echoed.is_none()
+                        && item.text.trim() == p.note.text.trim() =>
+                {
+                    p.echoed = Some(item.turn_id.clone());
+                }
+                Event::ItemStarted { item, .. } | Event::ItemCompleted { item, .. }
+                    if agent_output(item.kind) && in_turn(&p.echoed, &item.turn_id) =>
+                {
+                    outcome = Some(Outcome::Received(p.note.about.clone()));
+                }
+                Event::TurnCompleted { turn, .. } if in_turn(&p.echoed, &Some(turn.id.clone())) => {
+                    outcome = Some(if turn.status == TurnStatus::Failed {
+                        Outcome::Failed(p.note.clone())
+                    } else {
+                        Outcome::Received(p.note.about.clone())
+                    });
+                }
+                Event::ProcessExited { message, .. } => {
+                    outcome = Some(if message.is_some() {
+                        Outcome::Failed(p.note.clone())
+                    } else {
+                        Outcome::Stopped(p.note.clone())
+                    });
+                }
+                _ => {}
+            }
+        }
+        if outcome.is_some() {
+            st.unacked.remove(sid);
+        }
+        let works =
+            matches!(ev, Event::TurnCompleted { turn, .. } if turn.status == TurnStatus::Completed);
+        match outcome {
+            Some(Outcome::Received(about)) => {
+                Self::clear_hold(&mut st, sid);
+                drop(st);
+                if let Some(about) = about {
+                    self.note_delivered(sid, &about);
+                }
+            }
+            Some(Outcome::Failed(note)) => {
+                drop(st);
+                self.note_failed(sid, note, "its agent stopped before it took it in".into());
+            }
+            Some(Outcome::Stopped(note)) => {
+                st.notes
+                    .entry(sid.to_string())
+                    .or_default()
+                    .push_front(note);
+                st.held.insert(sid.to_string());
+            }
+            None if works => Self::clear_hold(&mut st, sid),
+            None => {}
+        }
+    }
+
+    /// The agent works: notes go again, with a fresh count of failures.
+    fn clear_hold(st: &mut State, id: &str) {
+        st.held.remove(id);
+        st.note_failures.remove(id);
+        *st.retry_gen.entry(id.to_string()).or_default() += 1;
+    }
+
+    /// The user stopped an orchestrator (or the daemon stops): its retry
+    /// timers are void, and its notes wait until its agent works again,
+    /// rather than start it again on their own.
+    pub(super) fn hold_notes(&self, id: &str) {
+        let mut st = self.inner.orchestration.lock();
+        *st.retry_gen.entry(id.to_string()).or_default() += 1;
+        if st.notes.get(id).is_some_and(|n| !n.is_empty()) || st.held.contains(id) {
+            st.held.insert(id.to_string());
+        }
+    }
+
+    /// An orchestrator's agent could not take a note: it goes back to the
+    /// front of the queue, which is held, and is tried again after the next
+    /// of the retry delays. After the last it waits until the agent works again.
+    fn note_failed(&self, id: &str, note: Note, why: String) {
+        let (delay, generation) = {
+            let mut st = self.inner.orchestration.lock();
+            st.notes.entry(id.to_string()).or_default().push_front(note);
+            st.held.insert(id.to_string());
+            let failures = st.note_failures.entry(id.to_string()).or_default();
+            *failures += 1;
+            let n = *failures as usize;
+            let delay = st
+                .retry_delays
+                .as_deref()
+                .unwrap_or(&NOTE_RETRY_DELAYS)
+                .get(n - 1)
+                .copied();
+            let generation = st.retry_gen.entry(id.to_string()).or_default();
+            *generation += 1;
+            (delay, *generation)
+        };
+        self.publish(Event::Notice {
+            session_id: id.to_string(),
+            level: NoticeLevel::Warn,
+            message: format!(
+                "Could not deliver a message from Aura: {why}. {}",
+                if delay.is_some() {
+                    "Aura tries again shortly."
+                } else {
+                    "Aura sends it once the agent works again."
+                }
+            ),
+        });
+        let Some(delay) = delay else { return };
+        let me = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let due = {
+                let mut st = me.inner.orchestration.lock();
+                let due = st.retry_gen.get(&id) == Some(&generation);
+                if due {
+                    st.held.remove(&id);
+                }
+                due
+            };
+            if due {
+                me.flush_reports(&id);
+            }
+        });
     }
 
     /// Free to take a message from Aura: a structured session that is not
@@ -1183,7 +1309,12 @@ impl Manager {
             }
             // Other messages from Aura first, one per turn; the reports
             // follow when that turn ends.
-            let note = st.notes.get_mut(orchestrator).and_then(VecDeque::pop_front);
+            // One note at a time, and none while they are held.
+            let note = if st.held.contains(orchestrator) || st.unacked.contains_key(orchestrator) {
+                None
+            } else {
+                st.notes.get_mut(orchestrator).and_then(VecDeque::pop_front)
+            };
             if st.notes.get(orchestrator).is_some_and(VecDeque::is_empty) {
                 st.notes.remove(orchestrator);
             }
@@ -1232,19 +1363,35 @@ impl Manager {
         self.flush_reports(orchestrator);
     }
 
-    /// Send a message the `delivering` gate was claimed for. A note waits
-    /// for its agent's echo to count as delivered (see `acknowledge_note`). One
-    /// that cannot be sent goes back to the front of the queue and is tried
-    /// again after each of the retry delays, then at the next chance.
+    /// Send a message the `delivering` gate was claimed for. A note is
+    /// registered as pending before it is sent (see `note_events`); one that
+    /// cannot be sent counts as a failure (see `note_failed`).
     fn deliver(&self, orchestrator: &str, delivery: Delivery) {
         let me = self.clone();
         let id = orchestrator.to_string();
+        let number = match &delivery {
+            Delivery::Note(note) => {
+                let mut st = self.inner.orchestration.lock();
+                st.next_delivery += 1;
+                let number = st.next_delivery;
+                st.unacked.insert(
+                    id.clone(),
+                    Pending {
+                        delivery: number,
+                        note: note.clone(),
+                        echoed: None,
+                    },
+                );
+                Some(number)
+            }
+            Delivery::Report(_) => None,
+        };
         tokio::spawn(async move {
-            let (text, what) = match &delivery {
-                Delivery::Report(text) => (text.clone(), "a worker report"),
-                Delivery::Note(n) => (n.text.clone(), "a message from Aura"),
+            let text = match &delivery {
+                Delivery::Report(text) => text.clone(),
+                Delivery::Note(n) => n.text.clone(),
             };
-            let sent = me
+            let Err(e) = me
                 .send(
                     &id,
                     Input {
@@ -1252,49 +1399,82 @@ impl Manager {
                         ..Default::default()
                     },
                 )
-                .await;
-            match (sent, delivery) {
-                (Ok(()), Delivery::Note(note)) => {
-                    let mut st = me.inner.orchestration.lock();
-                    st.note_failures.remove(&id);
-                    if note.about.is_some() {
-                        st.unacked.insert(id.clone(), note);
-                    }
-                }
-                (Ok(()), Delivery::Report(_)) => {}
-                (Err(e), delivery) => {
-                    let retry = {
+                .await
+            else {
+                return;
+            };
+            {
+                let mut st = me.inner.orchestration.lock();
+                st.delivering.remove(&id);
+                st.reporting.remove(&id);
+            }
+            match delivery {
+                Delivery::Note(note) => {
+                    let ours = {
                         let mut st = me.inner.orchestration.lock();
-                        st.delivering.remove(&id);
-                        st.reporting.remove(&id);
-                        match delivery {
-                            Delivery::Note(note) => {
-                                st.notes.entry(id.clone()).or_default().push_front(note);
-                                let failures = st.note_failures.entry(id.clone()).or_default();
-                                *failures += 1;
-                                let n = *failures as usize;
-                                st.retry_delays
-                                    .as_deref()
-                                    .unwrap_or(&NOTE_RETRY_DELAYS)
-                                    .get(n - 1)
-                                    .copied()
-                            }
-                            Delivery::Report(_) => None,
+                        let ours = st.unacked.get(&id).map(|p| Some(p.delivery)) == Some(number);
+                        if ours {
+                            st.unacked.remove(&id);
                         }
+                        ours
                     };
-                    me.publish(Event::Notice {
-                        session_id: id.clone(),
-                        level: NoticeLevel::Warn,
-                        message: format!("Could not deliver {what}: {e:#}"),
-                    });
-                    if let Some(delay) = retry {
-                        tokio::time::sleep(delay).await;
-                        me.flush_reports(&id);
+                    if ours {
+                        me.note_failed(&id, note, format!("{e:#}"));
                     }
                 }
+                Delivery::Report(_) => me.publish(Event::Notice {
+                    session_id: id,
+                    level: NoticeLevel::Warn,
+                    message: format!("Could not deliver a worker report: {e:#}"),
+                }),
             }
         });
     }
+
+    /// Whether the stored history of a session shows its agent took `text`
+    /// in: its echo, then its own output in that turn or the turn ending well.
+    pub(super) fn received_in_history(&self, id: &str, text: &str) -> bool {
+        let Ok(events) = self.inner.store.events(id, 0, usize::MAX) else {
+            return false;
+        };
+        let mut turns: Vec<Option<String>> = vec![];
+        for e in events {
+            match e.event {
+                Event::ItemCompleted { item, .. }
+                    if item.kind == ItemKind::UserMessage
+                        && item.parent_id.is_none()
+                        && item.text.trim() == text.trim() =>
+                {
+                    turns.push(item.turn_id);
+                }
+                Event::ItemStarted { item, .. } | Event::ItemCompleted { item, .. }
+                    if agent_output(item.kind)
+                        && turns.iter().any(|t| t.is_none() || *t == item.turn_id) =>
+                {
+                    return true;
+                }
+                Event::TurnCompleted { turn, .. }
+                    if turn.status != TurnStatus::Failed
+                        && turns
+                            .iter()
+                            .any(|t| t.is_none() || t.as_deref() == Some(turn.id.as_str())) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+}
+
+/// Whether an item is the agent's own doing, which shows it took in the
+/// message of its turn.
+fn agent_output(kind: ItemKind) -> bool {
+    !matches!(
+        kind,
+        ItemKind::UserMessage | ItemKind::System | ItemKind::Error
+    )
 }
 
 /// Whether a worker's user message came from its orchestrator, not the user.

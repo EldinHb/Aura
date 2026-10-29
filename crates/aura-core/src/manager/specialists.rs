@@ -116,6 +116,17 @@ impl Manager {
     /// Create or change a specialist. Saving a built-in keeps it a built-in
     /// that can be reset; saving a deleted one brings it back.
     pub fn save_specialist(&self, input: SpecialistInput) -> Result<Specialist> {
+        self.store_specialist(input, false)
+    }
+
+    /// Save a specialist that must be new in its scope: the check and the
+    /// save happen under one lock, so a save made at the same time is never
+    /// overwritten. A built-in the user deleted counts as free.
+    pub(super) fn save_new_specialist(&self, input: SpecialistInput) -> Result<Specialist> {
+        self.store_specialist(input, true)
+    }
+
+    fn store_specialist(&self, input: SpecialistInput, new_only: bool) -> Result<Specialist> {
         let mut input = specialists::validate(input)?;
         if input.scope == SpecialistScope::Project {
             let root = self.project_root(input.project.as_deref().unwrap_or_default());
@@ -128,6 +139,27 @@ impl Manager {
             }
         };
         let _guard = self.inner.specialists.lock();
+        if new_only {
+            let taken = match input.scope {
+                SpecialistScope::Global => {
+                    self.global_specialists()?.iter().any(|s| s.id == input.id)
+                }
+                SpecialistScope::Project => self
+                    .stored_specialists(&namespace)?
+                    .iter()
+                    .any(|s| s.id == input.id),
+            };
+            if taken {
+                bail!(
+                    "a specialist `{}` exists already{}; edit the suggestion to give it another id, or dismiss it",
+                    input.id,
+                    match &input.project {
+                        Some(p) => format!(" in {p}"),
+                        None => String::new(),
+                    }
+                );
+            }
+        }
         let now = crate::now();
         let existing = self
             .stored_specialists(&namespace)?
@@ -203,21 +235,6 @@ impl Manager {
             }
         }
         Ok(())
-    }
-
-    /// Whether saving `input` would replace a specialist that exists in its
-    /// scope: one of the project's own, or a global one (a built-in the user
-    /// deleted does not count).
-    pub(super) fn specialist_taken(&self, input: &SpecialistInput) -> Result<bool> {
-        Ok(match input.scope {
-            SpecialistScope::Global => self.global_specialists()?.iter().any(|s| s.id == input.id),
-            SpecialistScope::Project => {
-                let root = self.project_root(input.project.as_deref().unwrap_or_default());
-                self.stored_specialists(&specialists::project_namespace(&root))?
-                    .iter()
-                    .any(|s| s.id == input.id)
-            }
-        })
     }
 
     /// Bring a built-in back as Aura ships it, edited or deleted.
