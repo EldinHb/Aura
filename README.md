@@ -319,8 +319,9 @@ exactly as before; a feature owner is one with more to do.
   button in Settings → Specialists), Aura looks across those briefs for roles that
   keep coming back. A cheap check runs first: only when at least two briefs look alike,
   and no suggestion was made from them yet, does a small model (Claude Haiku through
-  Claude Code, headless, with no tools; at most 24 briefs and 24,000 characters) group
-  them into roles. Each role becomes a suggestion card, in the owner's chat and under
+  Claude Code, headless and in safe mode, with no tools, settings or MCP servers, in
+  a scratch directory and with only the environment it needs to sign in; at most 24
+  briefs and 24,000 bytes, three minutes all told) group them into roles. Each role becomes a suggestion card, in the owner's chat and under
   **Suggestions** in Settings → Specialists, with the briefs it was found in and a
   scope: the project when they all come from one repository, otherwise every project.
   Nothing is created until you accept it. Roles an existing specialist covers are left
