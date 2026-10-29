@@ -248,7 +248,13 @@ Aura. Aura hands it to Claude Code (`--mcp-config`, with the tools allowed), Cod
 are `list_agents`, `list_projects`, `start_session`, `send_message`, `list_sessions`,
 `read_session`, `wait_for_sessions`, `interrupt_session`, `stop_session` and
 `delete_session`, and they only reach the orchestrator's own workers. A feature owner
-gets more (see below); a plain orchestrator has exactly these. ACP agents decide
+gets more (see below); a plain orchestrator has exactly these. Each orchestrator's
+`aura mcp` connects to the daemon with a token of its own, which only lets it use that
+orchestrator's tools: it cannot act for another session, answer questions meant for
+you, change settings, read other sessions or receive their events. These tools in turn
+refuse the daemon's own token in `daemon.json`. That token still opens everything the
+app can do, and any program running as you can read it, so Aura keeps agents apart
+from each other's tools, not from your account. ACP agents decide
 themselves whether to ask before an MCP tool call; if yours does, the requests show up
 as approvals like any other. Turning an orchestrator that has a folder back into a
 regular session leaves its workers as regular sessions.
@@ -287,8 +293,13 @@ exactly as before; a feature owner is one with more to do.
     work cannot go on well without it.
   - *Checkpoints*: as blocking decisions, and stops for your review at the checkpoints
     you pick: after design, before implementation, before delivery. The checkpoint
-    becomes a card to approve or send back; Aura refuses the delivery report until you
-    approved the delivery checkpoint.
+    becomes a card to approve or send back. While a review is open, Aura refuses to let
+    the owner hire, start or message workers, or deliver. After you ask for changes it
+    can rework with its team, but nobody new joins and nothing is delivered until a later
+    review of that checkpoint is approved. Delivery waits until the latest review of
+    every checkpoint you chose is approved, and never withdraws an open review. Only the
+    **Approve** option, or an answer that is exactly "approve", "yes", "ok" or "lgtm",
+    approves; anything else you write asks for changes.
 
   At every level the owner asks before irreversible or outward-facing actions: pushing
   to a shared branch or merging, pull requests and issues, releases and deployments,
@@ -301,7 +312,10 @@ exactly as before; a feature owner is one with more to do.
   test it and where (branch, worktree, URL or screen).
 
 Everything a feature owner records is kept in its feature record in Aura's database,
-across restarts, and goes when the owner is deleted. On top of the orchestrator's
+across restarts, and goes when the owner is deleted. Your answers reach the owner even
+when it is busy, failed or the daemon restarts in between: an answer counts as
+delivered only once the owner's agent shows it received it, and one it already
+received is not sent twice. On top of the orchestrator's
 tools it has `list_specialists`, `hire`, `ask_user`, `record_decision`, `checkpoint`,
 `propose_specialist`, `deliver_report` and `feature_status`.
 

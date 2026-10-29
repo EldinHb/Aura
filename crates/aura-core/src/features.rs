@@ -14,6 +14,7 @@ use crate::specialists::SpecialistInput;
 use crate::types::SessionId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use ts_rs::TS;
 
 /// Feature-record namespace of features, by owner session id.
@@ -245,9 +246,83 @@ pub struct Feature {
     pub report: Option<DeliveryReport>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The last number handed out per id prefix (`q` questions, `d`
+    /// decisions, `s` suggestions), so an id is never handed out twice, also
+    /// when a fork leaves out the questions still open.
+    #[serde(default)]
+    #[ts(type = "Record<string, number>")]
+    pub counters: BTreeMap<String, u64>,
+}
+
+/// What a checkpoint review keeps the owner from doing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReviewHold {
+    /// The user has not answered this review (by question id) yet: the owner waits.
+    Open(Checkpoint, String),
+    /// The user asked for changes at this checkpoint, and no later review was approved.
+    ChangesAsked(Checkpoint),
 }
 
 impl Feature {
+    /// A new id with `prefix`, higher than any that prefix had before.
+    pub fn next_id(&mut self, prefix: &str) -> String {
+        let used = match prefix {
+            "q" => self
+                .questions
+                .iter()
+                .map(|q| q.id.as_str())
+                .collect::<Vec<_>>(),
+            "d" => self.decisions.iter().map(|d| d.id.as_str()).collect(),
+            "s" => self.suggestions.iter().map(|s| s.id.as_str()).collect(),
+            _ => vec![],
+        }
+        .into_iter()
+        .filter_map(|id| id.strip_prefix(prefix)?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+        let n = self.counters.get(prefix).copied().unwrap_or(0).max(used) + 1;
+        self.counters.insert(prefix.to_string(), n);
+        format!("{prefix}{n}")
+    }
+
+    /// The latest record of a checkpoint: the one whose review counts.
+    pub fn latest_checkpoint(&self, c: Checkpoint) -> Option<&CheckpointRecord> {
+        self.checkpoints.iter().rev().find(|r| r.checkpoint == c)
+    }
+
+    /// What the checkpoint reviews hold back: a review still open (whatever
+    /// the autonomy says now, the user was asked), or else the latest review
+    /// of a checkpoint the user still stops at, which asked for changes.
+    pub fn review_hold(&self, autonomy: &Autonomy) -> Option<ReviewHold> {
+        if let Some(q) = self
+            .questions
+            .iter()
+            .find(|q| q.kind == QuestionKind::Checkpoint && q.open())
+        {
+            let c = q.checkpoint.unwrap_or(Checkpoint::BeforeDelivery);
+            return Some(ReviewHold::Open(c, q.id.clone()));
+        }
+        Checkpoint::ALL
+            .into_iter()
+            .find(|c| {
+                autonomy.stops_at(*c)
+                    && self
+                        .latest_checkpoint(*c)
+                        .is_some_and(|r| r.approved == Some(false))
+            })
+            .map(ReviewHold::ChangesAsked)
+    }
+
+    /// A checkpoint the user stops at whose latest review is not an approval.
+    pub fn unapproved_checkpoint(&self, autonomy: &Autonomy) -> Option<Checkpoint> {
+        Checkpoint::ALL.into_iter().find(|c| {
+            autonomy.stops_at(*c)
+                && self
+                    .latest_checkpoint(*c)
+                    .is_none_or(|r| r.approved != Some(true))
+        })
+    }
+
     pub fn new(owner_id: &str, goal: &str, autonomy: Option<Autonomy>) -> Self {
         let now = crate::now();
         Feature {
@@ -263,6 +338,7 @@ impl Feature {
             report: None,
             created_at: now,
             updated_at: now,
+            counters: BTreeMap::new(),
         }
     }
 
@@ -338,8 +414,15 @@ pub fn answer_message(q: &UserQuestion) -> String {
             ));
         }
     }
+    if q.kind == QuestionKind::Checkpoint && q.answer.is_some() {
+        out.push_str(if approves(q) {
+            "Verdict: approved.\n"
+        } else {
+            "Verdict: changes requested.\n"
+        });
+    }
     out.push_str(match q.kind {
-        QuestionKind::Checkpoint => "\nThe user's answer is recorded in the feature's decision log. Go on when they approved; otherwise rework what they asked for and call `checkpoint` again.",
+        QuestionKind::Checkpoint => "\nThe user's answer is recorded in the feature's decision log. Go on past the checkpoint only when the verdict is approved; otherwise rework what they asked for with the team you have and call `checkpoint` again. Nobody new joins the team and nothing is delivered until they approve.",
         QuestionKind::Irreversible => "\nThe answer is recorded in the feature's decision log. Act on it: go ahead only if the user said yes.",
         QuestionKind::Decision => "\nThe answer is recorded in the feature's decision log. Continue with it.",
     });
@@ -363,20 +446,22 @@ pub fn suggestion_message(s: &SpecialistSuggestion) -> String {
     }
 }
 
-/// Whether a checkpoint review answer approves it: the first option
-/// (`Approve`), or an answer that starts with a yes.
+/// Whether a checkpoint review answer approves it: the approve option (the
+/// first), whatever note comes with it, or words of the user's own that are
+/// exactly an approval (`approve`, `yes`, `lgtm`). Anything else the user
+/// writes asks for changes.
 pub fn approves(q: &UserQuestion) -> bool {
     let Some(a) = &q.answer else { return false };
-    let first = q.options.first().map(|o| o.label.as_str());
     match a.option.as_deref() {
-        Some(o) => Some(o) == first,
+        Some(o) => q.options.first().is_some_and(|first| first.label == o),
         None => {
-            let t = a.text.trim().to_lowercase();
-            let word = t.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
-            [
-                "approve", "approved", "yes", "ok", "okay", "lgtm", "go", "ship",
-            ]
-            .contains(&word)
+            let t = a
+                .text
+                .trim()
+                .trim_end_matches(['.', '!'])
+                .trim()
+                .to_lowercase();
+            ["approve", "approved", "yes", "ok", "okay", "lgtm"].contains(&t.as_str())
         }
     }
 }
@@ -488,9 +573,42 @@ mod tests {
         assert!(approves(&q));
         q.answer = answer(Some("Request changes"), "yes but");
         assert!(!approves(&q));
-        q.answer = answer(None, "Yes, go ahead");
+        q.answer = answer(None, "Yes");
         assert!(approves(&q));
+        q.answer = answer(None, "Yes, go ahead");
+        assert!(!approves(&q), "more than a yes is a request");
         q.answer = answer(None, "yesterday's version please");
+        assert!(!approves(&q));
+    }
+
+    #[test]
+    fn only_an_approve_option_or_an_exact_approval_approves() {
+        let mut q = question(QuestionKind::Checkpoint);
+        let answer = |option: Option<&str>, text: &str| {
+            Some(QuestionAnswer {
+                option: option.map(Into::into),
+                text: text.into(),
+                at: crate::now(),
+                delivered: false,
+            })
+        };
+        for changes in [
+            "Go back and add regression tests",
+            "ok but rename it",
+            "Yes, after you fix the tests",
+            "ship it once the reviewer is happy",
+            "approve? no",
+        ] {
+            q.answer = answer(None, changes);
+            assert!(!approves(&q), "{changes:?} asks for changes");
+        }
+        for yes in ["Approve", "approved.", " LGTM ", "yes!", "ok"] {
+            q.answer = answer(None, yes);
+            assert!(approves(&q), "{yes:?} approves");
+        }
+        q.answer = answer(Some("Approve"), "nice work");
+        assert!(approves(&q));
+        q.answer = answer(Some("Request changes"), "approve");
         assert!(!approves(&q));
     }
 
@@ -503,6 +621,23 @@ mod tests {
         f.questions[0].withdrawn = true;
         f.settle_status();
         assert_eq!(f.status, FeatureStatus::InProgress);
+    }
+
+    #[test]
+    fn ids_are_never_handed_out_twice() {
+        let mut f = Feature::new("o", "", None);
+        assert_eq!(f.next_id("q"), "q1");
+        assert_eq!(f.next_id("q"), "q2");
+        assert_eq!(f.next_id("d"), "d1");
+        // A record from before the counters: ids go on after the highest in use.
+        let mut old = Feature::new("o", "", None);
+        let mut q = question(QuestionKind::Decision);
+        q.id = "q7".into();
+        old.questions.push(q);
+        assert_eq!(old.next_id("q"), "q8");
+        // Ids that are gone are not reused.
+        old.questions.clear();
+        assert_eq!(old.next_id("q"), "q9");
     }
 
     #[test]

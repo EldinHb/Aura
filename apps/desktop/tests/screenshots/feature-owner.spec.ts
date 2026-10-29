@@ -96,6 +96,7 @@ const feature: Feature = {
   },
   created_at: at(200),
   updated_at: at(19),
+  counters: { q: 1, d: 1, s: 1 },
 };
 
 const spec = (sid: string, name: string, role: string, over: Partial<Specialist> = {}): Specialist => ({

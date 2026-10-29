@@ -16,4 +16,10 @@ owner_id: string, goal: string, status: FeatureStatus,
 /**
  * This feature's own autonomy; none follows the setting for all feature owners.
  */
-autonomy: Autonomy | null, team: Array<TeamMember>, decisions: Array<Decision>, questions: Array<UserQuestion>, checkpoints: Array<CheckpointRecord>, suggestions: Array<SpecialistSuggestion>, report: DeliveryReport | null, created_at: string, updated_at: string, };
+autonomy: Autonomy | null, team: Array<TeamMember>, decisions: Array<Decision>, questions: Array<UserQuestion>, checkpoints: Array<CheckpointRecord>, suggestions: Array<SpecialistSuggestion>, report: DeliveryReport | null, created_at: string, updated_at: string, 
+/**
+ * The last number handed out per id prefix (`q` questions, `d`
+ * decisions, `s` suggestions), so an id is never handed out twice, also
+ * when a fork leaves out the questions still open.
+ */
+counters: Record<string, number>, };

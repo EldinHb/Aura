@@ -55,6 +55,7 @@ beforeEach(() => {
     report: { what: "- Added a toggle", why: "Users asked", how_to_test: "Open settings", where_to_test: "branch `dark`", notes: "", delivered_at: "2026-10-02T00:00:00Z" },
     created_at: "",
     updated_at: "",
+    counters: {},
   };
   useFeatures.setState({ features: {} });
   setFeature(feature);
@@ -134,4 +135,15 @@ it("shows a resolved suggestion without its buttons", () => {
   row(card("suggestion", "s1"));
   expect(screen.getByText("accepted as data-engineer")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
+});
+
+it("says on a checkpoint review that words of the user's own ask for changes", async () => {
+  feature = { ...feature, questions: [question({ kind: "checkpoint", checkpoint: "before_delivery", options: [{ label: "Approve", description: null }, { label: "Request changes", description: null }], recommended: null })] };
+  setFeature(feature);
+  row(card("decision", "q1"));
+  expect((screen.getByLabelText("Your answer") as HTMLInputElement).placeholder).toMatch(/what to change/);
+  fireEvent.click(screen.getByRole("radio", { name: /Approve/ }));
+  fireEvent.change(screen.getByLabelText("Your answer"), { target: { value: "nice" } });
+  fireEvent.click(screen.getByRole("button", { name: /Answer/ }));
+  await waitFor(() => expect(answerQuestion).toHaveBeenCalledWith("owner", "q1", "Approve", "nice"));
 });

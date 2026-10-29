@@ -2,6 +2,9 @@
 //! for every orchestrator session, whatever its agent, and it forwards each
 //! tool call to the daemon's `orchestrator.*` methods. A feature owner's
 //! server (`--feature-owner`) has the owner's tools too, which call `owner.*`.
+//!
+//! It connects with the session token Aura made for its session (`--token`),
+//! not the daemon's own token: the daemon lets it act for that session only.
 
 use anyhow::{anyhow, bail, Result};
 use aura_core::*;
@@ -20,14 +23,22 @@ struct Server {
     orchestrator: String,
     /// The orchestrator owns a feature: it gets the owner's tools.
     feature_owner: bool,
+    /// The session token the daemon made for this orchestrator's tools.
+    token: String,
     client: Mutex<Option<RpcClient>>,
 }
 
-pub async fn run(data_dir: PathBuf, orchestrator: String, feature_owner: bool) -> Result<()> {
+pub async fn run(
+    data_dir: PathBuf,
+    orchestrator: String,
+    feature_owner: bool,
+    token: String,
+) -> Result<()> {
     let server = Arc::new(Server {
         data_dir,
         orchestrator,
         feature_owner,
+        token,
         client: Mutex::new(None),
     });
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
@@ -125,13 +136,19 @@ impl Server {
         }
     }
 
-    /// The daemon connection, re-established after the daemon restarts.
+    /// The daemon connection, with this session's token, re-established
+    /// when it drops. The daemon that started this server is the one it
+    /// talks to: a daemon started since knows no such token, and says so.
     async fn connected(&self) -> Result<RpcClient> {
         let mut guard = self.client.lock().await;
         if let Some(c) = guard.as_ref() {
             return Ok(c.clone());
         }
-        let c = crate::connect_or_start(&self.data_dir).await?;
+        let info = aura_rpc::read_daemon_info(&self.data_dir)
+            .ok_or_else(|| anyhow!("the Aura daemon is not running"))?;
+        let c = RpcClient::connect(info.port, &self.token)
+            .await
+            .map_err(|e| anyhow!("could not connect to the Aura daemon with this session's token ({e}); the daemon may have restarted, which restarts this session's tools on its next message"))?;
         *guard = Some(c.clone());
         Ok(c)
     }
@@ -803,6 +820,7 @@ mod tests {
             data_dir: PathBuf::from("/nonexistent"),
             orchestrator: "o".into(),
             feature_owner: false,
+            token: "t".into(),
             client: Mutex::new(None),
         };
         let err = server.call("hire", &json!({})).await.unwrap_err();

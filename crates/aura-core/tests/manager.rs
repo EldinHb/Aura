@@ -33,6 +33,9 @@ struct Knob {
     slow_stop: Option<String>,
     /// Starting an agent takes a moment, so other calls run meanwhile.
     slow_start: bool,
+    /// `send` takes the message but the agent never gets to it, like an ACP
+    /// prompt queued behind a process that dies: no turn, no user message.
+    no_echo: bool,
 }
 type Knobs = Arc<Mutex<Knob>>;
 
@@ -40,6 +43,9 @@ type Knobs = Arc<Mutex<Knob>>;
 impl Driver for FakeDriver {
     async fn send(&self, input: Input) -> anyhow::Result<()> {
         self.calls.lock().push(format!("send:{}", input.text));
+        if self.knobs.lock().no_echo {
+            return Ok(());
+        }
         let turn = Turn {
             id: new_id(),
             session_id: self.session_id.clone(),
@@ -1639,6 +1645,7 @@ async fn orchestrators_get_tools_and_workers_report_back() {
     let mcp = provider.mcp.lock()[0].clone();
     assert_eq!(mcp.len(), 1);
     assert_eq!(mcp[0].command, "/opt/aura/aura");
+    let token = m.session_token(&orch.id);
     assert_eq!(
         mcp[0].args,
         vec![
@@ -1646,9 +1653,17 @@ async fn orchestrators_get_tools_and_workers_report_back() {
             "--data-dir",
             "/data",
             "--orchestrator",
-            orch.id.as_str()
+            orch.id.as_str(),
+            "--token",
+            token.as_str()
         ]
     );
+    // The token acts for this orchestrator alone, and only while it is one.
+    assert_eq!(
+        m.session_for_token(&token).as_deref(),
+        Some(orch.id.as_str())
+    );
+    assert_eq!(m.session_token(&orch.id), token, "one token per session");
     let prompt = provider.prompts.lock()[0].clone().unwrap();
     assert!(prompt.contains("You are an orchestrator"), "{prompt}");
     assert!(prompt.contains(FORMAT_PROMPT), "{prompt}");
@@ -3269,8 +3284,11 @@ async fn feature_owners_get_their_tools_and_prompt_and_plain_orchestrators_keep_
     assert!(owner.feature_owner && owner.orchestrator);
     assert!(!plain.feature_owner);
 
-    // The plain orchestrator's server and prompt are as they were.
+    // The plain orchestrator's server and prompt are as they were, each
+    // server with its session's own token.
     let mcp = provider.mcp.lock().clone();
+    let (plain_token, owner_token) = (m.session_token(&plain.id), m.session_token(&owner.id));
+    assert_ne!(plain_token, owner_token);
     assert_eq!(
         mcp[0][0].args,
         [
@@ -3278,7 +3296,9 @@ async fn feature_owners_get_their_tools_and_prompt_and_plain_orchestrators_keep_
             "--data-dir",
             "/data",
             "--orchestrator",
-            plain.id.as_str()
+            plain.id.as_str(),
+            "--token",
+            plain_token.as_str()
         ]
     );
     assert_eq!(
@@ -3289,6 +3309,8 @@ async fn feature_owners_get_their_tools_and_prompt_and_plain_orchestrators_keep_
             "/data",
             "--orchestrator",
             owner.id.as_str(),
+            "--token",
+            owner_token.as_str(),
             "--feature-owner"
         ]
     );
@@ -3363,6 +3385,11 @@ async fn feature_owners_get_their_tools_and_prompt_and_plain_orchestrators_keep_
     // Made a regular session again, it stops owning the feature too.
     let demoted = m.set_orchestrator(&owner.id, false).await.unwrap();
     assert!(!demoted.orchestrator && !demoted.feature_owner);
+    assert_eq!(
+        m.session_for_token(&owner_token),
+        None,
+        "its tools' token goes with the role"
+    );
     assert!(m.feature(&owner.id).is_ok(), "its record stays");
 }
 
@@ -3914,4 +3941,470 @@ async fn an_answer_the_busy_owner_did_not_take_reaches_it_after_a_restart() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("the answer was never marked delivered");
+}
+
+// ------------------------------------------------- review fixes (Codex)
+
+fn hire_spec(specialist: &str) -> HireSpec {
+    HireSpec {
+        specialist: specialist.into(),
+        worker: WorkerSpec {
+            prompt: "do it".into(),
+            ..Default::default()
+        },
+    }
+}
+
+fn report_spec() -> ReportSpec {
+    ReportSpec {
+        what: "Done".into(),
+        why: "Asked".into(),
+        how_to_test: "Run it".into(),
+        where_to_test: "branch `x`".into(),
+        notes: String::new(),
+    }
+}
+
+fn checkpoints(list: Vec<Checkpoint>) -> Option<Autonomy> {
+    Some(Autonomy {
+        level: AutonomyLevel::Checkpoints,
+        checkpoints: list,
+    })
+}
+
+#[tokio::test]
+async fn an_open_or_rejected_checkpoint_holds_the_team_back_and_is_never_withdrawn() {
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m
+        .create_session(CreateSessionOpts {
+            autonomy: checkpoints(vec![Checkpoint::BeforeImplementation]),
+            ..owner_opts(&cwd, "Ship")
+        })
+        .await
+        .unwrap();
+    let designer = m.hire(&owner.id, hire_spec("ux-designer")).await.unwrap();
+    // A selected checkpoint never reviewed keeps the feature from delivery.
+    let err = m.deliver_report(&owner.id, report_spec()).unwrap_err();
+    assert!(err.to_string().contains("before_implementation"), "{err}");
+
+    // Open: nobody is hired, started or sent anything, and nothing is delivered.
+    let q = m
+        .checkpoint(&owner.id, Checkpoint::BeforeImplementation, "Plan in docs/")
+        .unwrap()
+        .review
+        .unwrap();
+    let waits = |e: anyhow::Error| {
+        let e = e.to_string();
+        assert!(e.contains("wait for the user's review"), "{e}");
+    };
+    waits(
+        m.hire(&owner.id, hire_spec("frontend-engineer"))
+            .await
+            .unwrap_err(),
+    );
+    waits(
+        m.start_worker(
+            &owner.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "build".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err(),
+    );
+    waits(
+        m.message_worker(&owner.id, &designer.id, "go build".into())
+            .await
+            .unwrap_err(),
+    );
+    waits(m.deliver_report(&owner.id, report_spec()).unwrap_err());
+    assert!(m
+        .feature(&owner.id)
+        .unwrap()
+        .question(&q.id)
+        .unwrap()
+        .open());
+
+    // Changes asked for: the team can rework, but nobody new joins and nothing is delivered.
+    m.answer_question(&owner.id, &q.id, None, "Go back and add tests".into())
+        .unwrap();
+    let err = m
+        .hire(&owner.id, hire_spec("frontend-engineer"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("asked for changes"), "{err}");
+    assert!(m.deliver_report(&owner.id, report_spec()).is_err());
+    wait_status(&m, &designer.id, SessionStatus::Idle).await;
+    m.message_worker(&owner.id, &designer.id, "add the tests".into())
+        .await
+        .unwrap();
+
+    // Approved: work goes on and the feature can be delivered.
+    let q = m
+        .checkpoint(&owner.id, Checkpoint::BeforeImplementation, "Tests added")
+        .unwrap()
+        .review
+        .unwrap();
+    m.answer_question(&owner.id, &q.id, Some("Approve".into()), String::new())
+        .unwrap();
+    m.hire(&owner.id, hire_spec("frontend-engineer"))
+        .await
+        .unwrap();
+
+    // A review left open when the checkpoint is no longer chosen is not withdrawn by delivery.
+    let open = m
+        .checkpoint(&owner.id, Checkpoint::BeforeImplementation, "One more look")
+        .unwrap()
+        .review
+        .unwrap();
+    m.set_feature_autonomy(&owner.id, Some(Autonomy::default()))
+        .await
+        .unwrap();
+    assert!(m.deliver_report(&owner.id, report_spec()).is_err());
+    assert!(m
+        .feature(&owner.id)
+        .unwrap()
+        .question(&open.id)
+        .unwrap()
+        .open());
+    m.answer_question(&owner.id, &open.id, Some("Approve".into()), String::new())
+        .unwrap();
+    m.deliver_report(&owner.id, report_spec()).unwrap();
+}
+
+#[tokio::test]
+async fn a_later_request_for_changes_outweighs_an_earlier_approval() {
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m
+        .create_session(CreateSessionOpts {
+            autonomy: checkpoints(vec![Checkpoint::BeforeDelivery]),
+            ..owner_opts(&cwd, "Ship")
+        })
+        .await
+        .unwrap();
+    let review = |summary: &str| {
+        m.checkpoint(&owner.id, Checkpoint::BeforeDelivery, summary)
+            .unwrap()
+            .review
+            .unwrap()
+    };
+    let first = review("v1");
+    m.answer_question(&owner.id, &first.id, Some("Approve".into()), String::new())
+        .unwrap();
+    let second = review("v2");
+    m.answer_question(
+        &owner.id,
+        &second.id,
+        Some("Request changes".into()),
+        "Not yet".into(),
+    )
+    .unwrap();
+    let err = m.deliver_report(&owner.id, report_spec()).unwrap_err();
+    assert!(err.to_string().contains("asked for changes"), "{err}");
+    assert_eq!(
+        m.feature(&owner.id).unwrap().status,
+        FeatureStatus::InProgress
+    );
+}
+
+#[tokio::test]
+async fn an_answer_reaches_an_owner_that_failed_also_after_a_restart() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, _calls, provider) = owner_setup(store.clone());
+        m.set_note_retry_delays(vec![]);
+        let owner = m
+            .create_session(CreateSessionOpts {
+                initial_prompt: Some("crash".into()),
+                ..owner_opts(&cwd, "")
+            })
+            .await
+            .unwrap();
+        wait_status(&m, &owner.id, SessionStatus::Error).await;
+        m.ask_user(
+            &owner.id,
+            AskSpec {
+                question: "Ship on Friday?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The failed owner is started again to take the answer, which fails this time.
+        provider.knobs.lock().fail_start = true;
+        let mut rx = m.subscribe();
+        m.answer_question(&owner.id, "q1", None, "Yes".into())
+            .unwrap();
+        let tried = drain(&mut rx)
+            .await
+            .into_iter()
+            .any(|e| matches!(e, Event::Notice { message, .. } if message.starts_with("Could not deliver a message from Aura")));
+        assert!(tried, "a failed owner is started for the answer");
+        m.shutdown().await;
+        owner.id
+    };
+    // After a restart the owner is still failed, and still gets the answer.
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    let sent = wait_sent(&calls, "[Aura] Decision from the user", 1).await;
+    assert!(sent[0].contains("Ship on Friday?"), "{}", sent[0]);
+    for _ in 0..100 {
+        if m.feature(&owner_id).unwrap().questions[0]
+            .answer
+            .as_ref()
+            .unwrap()
+            .delivered
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the answer was never marked delivered");
+}
+
+#[tokio::test]
+async fn an_owner_that_cannot_start_is_retried_a_bounded_number_of_times() {
+    let (m, _calls, provider) = owner_setup(Default::default());
+    m.set_note_retry_delays(vec![Duration::from_millis(20), Duration::from_millis(20)]);
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m
+        .create_session(CreateSessionOpts {
+            initial_prompt: Some("crash".into()),
+            ..owner_opts(&cwd, "")
+        })
+        .await
+        .unwrap();
+    wait_status(&m, &owner.id, SessionStatus::Error).await;
+    m.ask_user(
+        &owner.id,
+        AskSpec {
+            question: "Ship?".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    provider.knobs.lock().fail_start = true;
+    let mut rx = m.subscribe();
+    m.answer_question(&owner.id, "q1", None, "Yes".into())
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let failures = drain(&mut rx)
+        .await
+        .into_iter()
+        .filter(|e| matches!(e, Event::Notice { message, .. } if message.starts_with("Could not deliver a message from Aura")))
+        .count();
+    assert_eq!(failures, 3, "the first try and two retries");
+    // The next start takes it.
+    provider.knobs.lock().fail_start = false;
+    m.send(
+        &owner.id,
+        Input {
+            text: "go on".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    // Given up on, the answer still waits in the queue for the next time the owner is free.
+    for _ in 0..100 {
+        let f = m.feature(&owner.id).unwrap();
+        if f.questions[0].answer.as_ref().unwrap().delivered {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the answer never reached the owner once it could start");
+}
+
+#[tokio::test]
+async fn a_note_counts_as_delivered_only_once_the_agent_has_it() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner_id = {
+        let (m, calls, provider) = owner_setup(store.clone());
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        m.ask_user(
+            &owner.id,
+            AskSpec {
+                question: "Ship?".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        provider.knobs.lock().no_echo = true;
+        m.answer_question(&owner.id, "q1", None, "Yes".into())
+            .unwrap();
+        wait_sent(&calls, "[Aura] Decision from the user", 1).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !m.feature(&owner.id).unwrap().questions[0]
+                .answer
+                .as_ref()
+                .unwrap()
+                .delivered,
+            "queued with the agent is not received by it"
+        );
+        m.shutdown().await;
+        owner.id
+    };
+    // Sent again after a restart, and then it counts.
+    let (m, calls, _provider) = owner_setup(store.clone());
+    m.restore().unwrap();
+    wait_sent(&calls, "[Aura] Decision from the user", 1).await;
+    let delivered = || {
+        m.feature(&owner_id).unwrap().questions[0]
+            .answer
+            .as_ref()
+            .unwrap()
+            .delivered
+    };
+    for _ in 0..100 {
+        if delivered() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(delivered());
+    m.shutdown().await;
+
+    // A message the agent got whose mark went missing is not sent twice.
+    let mut f = m.feature(&owner_id).unwrap();
+    f.questions[0].answer.as_mut().unwrap().delivered = false;
+    store
+        .save_feature_record(NAMESPACE, &owner_id, &serde_json::to_string(&f).unwrap())
+        .unwrap();
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !calls
+            .lock()
+            .iter()
+            .any(|c| c.starts_with("send:[Aura] Decision")),
+        "{:?}",
+        calls.lock()
+    );
+    assert!(
+        m.feature(&owner_id).unwrap().questions[0]
+            .answer
+            .as_ref()
+            .unwrap()
+            .delivered
+    );
+}
+
+#[tokio::test]
+async fn a_fork_never_hands_out_an_id_twice() {
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let ask = |q: &str| AskSpec {
+        question: q.into(),
+        ..Default::default()
+    };
+    let open = m.ask_user(&owner.id, ask("Still open?")).unwrap();
+    let answered = m.ask_user(&owner.id, ask("Answered?")).unwrap();
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    m.answer_question(&owner.id, &answered.id, None, "Yes".into())
+        .unwrap();
+    wait_native_id(&m, &owner.id).await;
+    let fork = m.fork(&owner.id).await.unwrap();
+    let new = m.ask_user(&fork.id, ask("New?")).unwrap();
+    let ids: Vec<String> = m
+        .feature(&fork.id)
+        .unwrap()
+        .questions
+        .iter()
+        .map(|q| q.id.clone())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "{ids:?}");
+    assert_ne!(
+        new.id, open.id,
+        "the fork must not reuse an id of the original either"
+    );
+    let d = m.record_decision(&fork.id, "x", "y").unwrap();
+    assert!(
+        m.feature(&fork.id)
+            .unwrap()
+            .decisions
+            .iter()
+            .filter(|x| x.id == d.id)
+            .count()
+            == 1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_suggestion_is_resolved_once() {
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    for i in 0..40 {
+        let s = m
+            .propose_specialist(
+                &owner.id,
+                specialist(&format!("role-{i}"), "Do it."),
+                "needed",
+            )
+            .unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let run = |accept: bool| {
+            let (m, owner, id, barrier) =
+                (m.clone(), owner.id.clone(), s.id.clone(), barrier.clone());
+            tokio::task::spawn_blocking(move || {
+                barrier.wait();
+                m.resolve_suggestion(&owner, &id, accept, None).is_ok()
+            })
+        };
+        let (a, b) = (run(true), run(false));
+        let (a, b) = (a.await.unwrap(), b.await.unwrap());
+        assert!(a ^ b, "round {i}: accept {a}, dismiss {b}");
+        let status = m
+            .feature(&owner.id)
+            .unwrap()
+            .suggestions
+            .last()
+            .unwrap()
+            .status;
+        assert_eq!(
+            m.specialist(&format!("role-{i}"), None).is_ok(),
+            status == SuggestionStatus::Accepted,
+            "round {i}"
+        );
+    }
+    // A suggestion that would overwrite a specialist the user has is refused, and stays pending.
+    let taken = m
+        .propose_specialist(&owner.id, specialist("tester", "Mine now."), "")
+        .unwrap();
+    let err = m
+        .resolve_suggestion(&owner.id, &taken.id, true, None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("`tester` exists already"), "{err}");
+    assert_ne!(
+        m.specialist("tester", None).unwrap().instructions,
+        "Mine now."
+    );
+    assert_eq!(
+        m.feature(&owner.id)
+            .unwrap()
+            .suggestions
+            .last()
+            .unwrap()
+            .status,
+        SuggestionStatus::Pending
+    );
 }

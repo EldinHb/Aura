@@ -359,7 +359,7 @@ impl Manager {
         };
         let (_, q) = self.change_feature(owner, |f| {
             let q = UserQuestion {
-                id: format!("q{}", f.questions.len() + 1),
+                id: f.next_id("q"),
                 question,
                 context: ask.context.trim().to_string(),
                 options,
@@ -424,9 +424,9 @@ impl Manager {
                 delivered: false,
             });
             let q = q.clone();
-            let n = f.decisions.len() + 1;
+            let decision_id = f.next_id("d");
             f.decisions.push(Decision {
-                id: format!("d{n}"),
+                id: decision_id,
                 decision: format!(
                     "{} → {}",
                     q.question,
@@ -483,7 +483,7 @@ impl Manager {
         }
         let (_, d) = self.change_feature(owner, |f| {
             let d = Decision {
-                id: format!("d{}", f.decisions.len() + 1),
+                id: f.next_id("d"),
                 decision: decision.to_string(),
                 rationale: rationale.to_string(),
                 decided_by: DecidedBy::Owner,
@@ -516,7 +516,7 @@ impl Manager {
         let review = autonomy.stops_at(checkpoint);
         let (_, q) = self.change_feature(owner, |f| {
             let q = review.then(|| UserQuestion {
-                id: format!("q{}", f.questions.len() + 1),
+                id: f.next_id("q"),
                 question: format!("Checkpoint {}: approve to go on?", checkpoint.label()),
                 context: summary.clone(),
                 options: review_options(checkpoint),
@@ -553,8 +553,10 @@ impl Manager {
     }
 
     /// Deliver the feature: the report goes into the record and shows as a
-    /// card. Refused until the user approved the delivery checkpoint, when
-    /// they want to review it. Questions still open are withdrawn.
+    /// card. Refused while a checkpoint review is open or asked for changes,
+    /// and until the latest review of every checkpoint the user stops at
+    /// approved it; checked in the same update that delivers. Other
+    /// questions still open are withdrawn; a checkpoint review never is.
     pub fn deliver_report(&self, owner: &str, report: ReportSpec) -> Result<Feature> {
         self.feature_owner_session(owner)?;
         for (name, v) in [
@@ -567,17 +569,14 @@ impl Manager {
                 bail!("`{name}` is required");
             }
         }
-        let feature = self.feature(owner)?;
-        let autonomy = self.effective_autonomy(&feature);
-        if autonomy.stops_at(Checkpoint::BeforeDelivery)
-            && !feature
-                .checkpoints
-                .iter()
-                .any(|c| c.checkpoint == Checkpoint::BeforeDelivery && c.approved == Some(true))
-        {
-            bail!("the user wants to review the work before delivery: call `checkpoint` with `before_delivery` and a summary, end your turn, and deliver once they approve");
-        }
         let (f, _) = self.change_feature(owner, |f| {
+            let autonomy = self.effective_autonomy(f);
+            if let Some(hold) = f.review_hold(&autonomy) {
+                bail!("{}", hold_message(&hold));
+            }
+            if let Some(c) = f.unapproved_checkpoint(&autonomy) {
+                bail!("the user wants to review the checkpoint {}: call `checkpoint` with `{}` and a summary, end your turn, and deliver once they approve", c.label(), c.as_str());
+            }
             f.report = Some(DeliveryReport {
                 what: report.what.trim().to_string(),
                 why: report.why.trim().to_string(),
@@ -586,7 +585,11 @@ impl Manager {
                 notes: report.notes.trim().to_string(),
                 delivered_at: crate::now(),
             });
-            for q in f.questions.iter_mut().filter(|q| q.open()) {
+            for q in f
+                .questions
+                .iter_mut()
+                .filter(|q| q.open() && q.kind != QuestionKind::Checkpoint)
+            {
                 q.withdrawn = true;
             }
             f.status = FeatureStatus::Delivered;
@@ -594,6 +597,27 @@ impl Manager {
         })?;
         self.post_card(owner, FeatureCardKind::Report, "report", "Delivery report");
         Ok(f)
+    }
+
+    /// Whether a feature owner may take someone new on: hire, or start an
+    /// ad-hoc worker. Not while a checkpoint review is open or asked for changes.
+    pub(super) fn may_staff(&self, owner: &str) -> Result<()> {
+        let f = self.feature(owner)?;
+        match f.review_hold(&self.effective_autonomy(&f)) {
+            Some(hold) => bail!("{}", hold_message(&hold)),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether a feature owner may send its workers work. Not while a
+    /// checkpoint review is open; after a request for changes it may, so the
+    /// team can rework.
+    pub(super) fn may_message(&self, owner: &str) -> Result<()> {
+        let f = self.feature(owner)?;
+        match f.review_hold(&self.effective_autonomy(&f)) {
+            Some(hold @ ReviewHold::Open(..)) => bail!("{}", hold_message(&hold)),
+            _ => Ok(()),
+        }
     }
 
     // ---------------------------------------------------------- suggestions
@@ -615,7 +639,7 @@ impl Manager {
                 bail!("you proposed `{}` already", specialist.id);
             }
             let s = SpecialistSuggestion {
-                id: format!("s{}", f.suggestions.len() + 1),
+                id: f.next_id("s"),
                 specialist,
                 reason: reason.trim().to_string(),
                 status: SuggestionStatus::Pending,
@@ -638,7 +662,9 @@ impl Manager {
 
     /// The user accepts a suggestion, as proposed or as they edited it
     /// (`specialist`, which also says the scope), or dismisses it. The owner
-    /// hears which.
+    /// hears which. The suggestion is claimed and the specialist saved in the
+    /// one locked update of the feature, so of two resolutions at once only
+    /// one succeeds; a specialist with its id is never overwritten.
     pub fn resolve_suggestion(
         &self,
         owner: &str,
@@ -647,41 +673,52 @@ impl Manager {
         specialist: Option<SpecialistInput>,
     ) -> Result<Feature> {
         self.feature_owner_session(owner)?;
-        let pending = self
-            .feature(owner)?
-            .suggestions
-            .into_iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| anyhow!("no suggestion `{id}` in this feature"))?;
-        if pending.status != SuggestionStatus::Pending {
-            bail!(
-                "this suggestion was {} already",
-                match pending.status {
-                    SuggestionStatus::Accepted => "accepted",
-                    _ => "dismissed",
-                }
-            );
-        }
-        let created = if accept {
-            Some(self.save_specialist(specialist.unwrap_or(pending.specialist))?)
-        } else {
-            None
-        };
-        let (f, s) = self.change_feature(owner, |f| {
+        let mut created: Option<Specialist> = None;
+        let result = self.change_feature(owner, |f| {
             let s = f
                 .suggestions
                 .iter_mut()
                 .find(|s| s.id == id)
                 .ok_or_else(|| anyhow!("no suggestion `{id}` in this feature"))?;
+            match s.status {
+                SuggestionStatus::Pending => {}
+                SuggestionStatus::Accepted => bail!("this suggestion was accepted already"),
+                SuggestionStatus::Dismissed => bail!("this suggestion was dismissed already"),
+            }
+            if accept {
+                let input = specialists::validate(specialist.unwrap_or_else(|| s.specialist.clone()))?;
+                if self.specialist_taken(&input)? {
+                    bail!(
+                        "a specialist `{}` exists already{}; edit the suggestion to give it another id, or dismiss it",
+                        input.id,
+                        match &input.project {
+                            Some(p) => format!(" in {p}"),
+                            None => String::new(),
+                        }
+                    );
+                }
+                let saved = self.save_specialist(input)?;
+                s.accepted_id = Some(saved.id.clone());
+                created = Some(saved);
+            }
             s.status = if accept {
                 SuggestionStatus::Accepted
             } else {
                 SuggestionStatus::Dismissed
             };
-            s.accepted_id = created.map(|c| c.id);
             s.resolved_at = Some(crate::now());
             Ok(s.clone())
-        })?;
+        });
+        let (f, s) = match result {
+            Ok(r) => r,
+            Err(e) => {
+                // Saved, but the suggestion could not be marked: take it back.
+                if let Some(c) = created {
+                    let _ = self.delete_specialist(&c.id, c.scope, c.project.as_deref());
+                }
+                return Err(e);
+            }
+        };
         self.queue_note(
             owner,
             Note {
@@ -730,26 +767,41 @@ impl Manager {
             }
         };
         for f in features {
+            let mut notes = vec![];
             for q in &f.questions {
                 if q.answer.as_ref().is_some_and(|a| !a.delivered) {
-                    self.queue_note(
-                        &f.owner_id,
-                        Note {
-                            text: answer_message(q),
-                            about: Some(NoteAbout::Answer(q.id.clone())),
-                        },
-                    );
+                    notes.push(Note {
+                        text: answer_message(q),
+                        about: Some(NoteAbout::Answer(q.id.clone())),
+                    });
                 }
             }
             for s in &f.suggestions {
                 if s.status != SuggestionStatus::Pending && !s.delivered {
-                    self.queue_note(
-                        &f.owner_id,
-                        Note {
-                            text: suggestion_message(s),
-                            about: Some(NoteAbout::Suggestion(s.id.clone())),
-                        },
-                    );
+                    notes.push(Note {
+                        text: suggestion_message(s),
+                        about: Some(NoteAbout::Suggestion(s.id.clone())),
+                    });
+                }
+            }
+            if notes.is_empty() {
+                continue;
+            }
+            // The agent may have had one before its mark was stored: its
+            // transcript says so, and it is not sent twice.
+            let received: Vec<String> = self
+                .items(&f.owner_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|i| i.kind == ItemKind::UserMessage)
+                .map(|i| i.text.trim().to_string())
+                .collect();
+            for note in notes {
+                match note.about.as_ref() {
+                    Some(about) if received.iter().any(|t| *t == note.text.trim()) => {
+                        self.note_delivered(&f.owner_id, about)
+                    }
+                    _ => self.queue_note(&f.owner_id, note),
                 }
             }
         }
@@ -780,5 +832,13 @@ impl Manager {
             session_id: owner.to_string(),
             item,
         });
+    }
+}
+
+/// What the owner is told when a checkpoint review holds it back.
+fn hold_message(hold: &ReviewHold) -> String {
+    match hold {
+        ReviewHold::Open(c, q) => format!("wait for the user's review: the checkpoint {} (question `{q}`) is open. End your turn; Aura sends you their answer. Until then nobody is hired, started or sent work, and nothing is delivered", c.label()),
+        ReviewHold::ChangesAsked(c) => format!("the user asked for changes at the checkpoint {}: rework it with the team you have (send_message still works), then call `checkpoint` again. Nobody new joins the team and nothing is delivered until they approve", c.label()),
     }
 }

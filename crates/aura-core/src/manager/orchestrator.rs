@@ -23,6 +23,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+/// How long to wait before each new try to send a note to an orchestrator
+/// whose agent could not take it; after the last, the note waits for the
+/// next time the orchestrator is free.
+const NOTE_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(5),
+    Duration::from_secs(30),
+    Duration::from_secs(120),
+];
+
 /// Longest last reply included in a report; longer ones keep their end, where
 /// agents put their summary.
 const REPLY_LIMIT: usize = 6000;
@@ -49,6 +58,15 @@ pub(super) struct State {
     /// such as the user's answers to a feature owner. Sent one per turn,
     /// before worker reports.
     notes: HashMap<SessionId, VecDeque<Note>>,
+    /// Notes sent to an orchestrator that its agent has not shown it got:
+    /// a note counts as delivered once the agent echoes it as a user message.
+    unacked: HashMap<SessionId, Note>,
+    /// Orchestrator id -> notes that could not be sent in a row.
+    note_failures: HashMap<SessionId, u32>,
+    /// Overrides [`NOTE_RETRY_DELAYS`].
+    retry_delays: Option<Vec<Duration>>,
+    /// Session token -> the session whose tools hold it (see `session_token`).
+    tokens: HashMap<String, SessionId>,
 }
 
 /// A message from Aura that is not a worker report.
@@ -150,6 +168,36 @@ impl Manager {
         self.inner.orchestration.lock().dirs = Some(dir);
     }
 
+    /// The token a session's tools (its `aura mcp`) connect to the daemon
+    /// with, made the first time it is asked for. It only lets them act for
+    /// this session, never as the user; the daemon forgets it when the
+    /// session is deleted or stops orchestrating, and when it stops.
+    pub fn session_token(&self, id: &str) -> String {
+        let mut st = self.inner.orchestration.lock();
+        if let Some((token, _)) = st.tokens.iter().find(|(_, s)| *s == id) {
+            return token.clone();
+        }
+        let token = format!(
+            "s-{}{}",
+            crate::new_id().replace('-', ""),
+            crate::new_id().replace('-', "")
+        );
+        st.tokens.insert(token.clone(), id.to_string());
+        token
+    }
+
+    /// The session a session token belongs to.
+    pub fn session_for_token(&self, token: &str) -> Option<SessionId> {
+        self.inner.orchestration.lock().tokens.get(token).cloned()
+    }
+
+    /// How long to wait before each new try to send a note an orchestrator's
+    /// agent could not take. For tests and tuning; the default backs off from
+    /// seconds to minutes.
+    pub fn set_note_retry_delays(&self, delays: Vec<Duration>) {
+        self.inner.orchestration.lock().retry_delays = Some(delays);
+    }
+
     fn orchestrator_dirs(&self) -> PathBuf {
         self.inner
             .orchestration
@@ -213,6 +261,8 @@ impl Manager {
             data_dir.to_string_lossy().into_owned(),
             "--orchestrator".into(),
             s.id.clone(),
+            "--token".into(),
+            self.session_token(&s.id),
         ];
         // A feature owner's server adds the owner's tools.
         if s.feature_owner {
@@ -309,6 +359,9 @@ impl Manager {
         st.report_turns.remove(id);
         st.dispatched.remove(id);
         st.notes.remove(id);
+        st.unacked.remove(id);
+        st.note_failures.remove(id);
+        st.tokens.retain(|_, s| s != id);
         for q in st.queued.values_mut() {
             q.remove(id);
         }
@@ -424,6 +477,9 @@ impl Manager {
         if spec.prompt.trim().is_empty() {
             bail!("a worker needs a prompt");
         }
+        if orch.feature_owner {
+            self.may_staff(&orch.id)?;
+        }
         let (provider, agent) = parse_agent(&spec.agent)?;
         let model = spec.model.filter(|m| !m.is_empty());
         let key = agent.as_deref().unwrap_or(provider.as_str());
@@ -495,10 +551,13 @@ impl Manager {
         worker: &str,
         text: String,
     ) -> Result<Session> {
-        self.orchestrator(orchestrator)?;
+        let orch = self.orchestrator(orchestrator)?;
         let w = self.worker(orchestrator, worker)?;
         if text.trim().is_empty() {
             bail!("empty message");
+        }
+        if orch.feature_owner {
+            self.may_message(&orch.id)?;
         }
         self.dispatch(orchestrator, &w.id, text).await?;
         self.get_session(&w.id)
@@ -849,7 +908,7 @@ impl Manager {
     }
 
     /// Completed items of a session, in order.
-    fn items(&self, id: &str) -> Result<Vec<Item>> {
+    pub(super) fn items(&self, id: &str) -> Result<Vec<Item>> {
         Ok(self
             .inner
             .store
@@ -920,6 +979,7 @@ impl Manager {
     /// Follow events that matter to orchestration. Called for every event
     /// after the session row is updated.
     pub(super) fn on_orchestration_event(&self, ev: &Event) {
+        self.acknowledge_note(ev);
         // Called for every event, streamed text included: leave early.
         if !matches!(
             ev,
@@ -976,6 +1036,58 @@ impl Manager {
         let interrupted = matches!(ev, Event::TurnCompleted { turn, .. } if turn.status == TurnStatus::Interrupted);
         if s.orchestrator && !interrupted {
             self.flush_reports(&s.id);
+        }
+    }
+
+    /// A note counts as delivered when the agent echoes it as a user message,
+    /// the sign every agent gives that it took the message in. One whose
+    /// agent fails first goes back to the front of the queue. One whose agent
+    /// was stopped (the user, a prompt change, the daemon shutting down) is
+    /// left unmarked in its record, which sends it again after a restart,
+    /// rather than start the agent again at once.
+    fn acknowledge_note(&self, ev: &Event) {
+        let (sid, echoed) = match ev {
+            Event::ItemCompleted { session_id, item }
+                if item.kind == ItemKind::UserMessage && item.parent_id.is_none() =>
+            {
+                (session_id, Some(item.text.trim()))
+            }
+            Event::ProcessExited {
+                session_id,
+                message,
+                ..
+            } => {
+                if message.is_none() {
+                    self.inner
+                        .orchestration
+                        .lock()
+                        .unacked
+                        .remove(session_id.as_str());
+                    return;
+                }
+                (session_id, None)
+            }
+            _ => return,
+        };
+        let about = {
+            let mut st = self.inner.orchestration.lock();
+            let Some(note) = st.unacked.get(sid.as_str()) else {
+                return;
+            };
+            match echoed {
+                Some(text) if text == note.text.trim() => {
+                    st.unacked.remove(sid.as_str()).and_then(|n| n.about)
+                }
+                Some(_) => return,
+                None => {
+                    let note = st.unacked.remove(sid.as_str()).expect("checked above");
+                    st.notes.entry(sid.clone()).or_default().push_front(note);
+                    return;
+                }
+            }
+        };
+        if let Some(about) = about {
+            self.note_delivered(sid, &about);
         }
     }
 
@@ -1055,7 +1167,11 @@ impl Manager {
             .lock()
             .get(orchestrator)
             .is_some_and(|r| r.current_turn.is_some());
-        if o.mode != SessionMode::Structured || o.status != SessionStatus::Idle || busy {
+        // A failed orchestrator still takes notes, such as the user's answer
+        // it waits for: sending one starts its agent again.
+        let free = o.status == SessionStatus::Idle;
+        let failed = o.status == SessionStatus::Error;
+        if o.mode != SessionMode::Structured || busy || !(free || failed) {
             return;
         }
         // Claim the gate in the same lock that checks it, so a message from
@@ -1075,6 +1191,9 @@ impl Manager {
                 st.delivering.insert(orchestrator.to_string());
                 drop(st);
                 self.deliver(orchestrator, Delivery::Note(note));
+                return;
+            }
+            if !free {
                 return;
             }
             match st.queued.remove(orchestrator) {
@@ -1113,9 +1232,10 @@ impl Manager {
         self.flush_reports(orchestrator);
     }
 
-    /// Send a message the `delivering` gate was claimed for. A note that
-    /// cannot be sent goes back to the front of the queue, for the next time
-    /// the orchestrator is free; one that is sent is marked in its record.
+    /// Send a message the `delivering` gate was claimed for. A note waits
+    /// for its agent's echo to count as delivered (see `acknowledge_note`). One
+    /// that cannot be sent goes back to the front of the queue and is tried
+    /// again after each of the retry delays, then at the next chance.
     fn deliver(&self, orchestrator: &str, delivery: Delivery) {
         let me = self.clone();
         let id = orchestrator.to_string();
@@ -1134,27 +1254,43 @@ impl Manager {
                 )
                 .await;
             match (sent, delivery) {
-                (
-                    Ok(()),
-                    Delivery::Note(Note {
-                        about: Some(about), ..
-                    }),
-                ) => me.note_delivered(&id, &about),
-                (Ok(()), _) => {}
+                (Ok(()), Delivery::Note(note)) => {
+                    let mut st = me.inner.orchestration.lock();
+                    st.note_failures.remove(&id);
+                    if note.about.is_some() {
+                        st.unacked.insert(id.clone(), note);
+                    }
+                }
+                (Ok(()), Delivery::Report(_)) => {}
                 (Err(e), delivery) => {
-                    {
+                    let retry = {
                         let mut st = me.inner.orchestration.lock();
                         st.delivering.remove(&id);
                         st.reporting.remove(&id);
-                        if let Delivery::Note(note) = delivery {
-                            st.notes.entry(id.clone()).or_default().push_front(note);
+                        match delivery {
+                            Delivery::Note(note) => {
+                                st.notes.entry(id.clone()).or_default().push_front(note);
+                                let failures = st.note_failures.entry(id.clone()).or_default();
+                                *failures += 1;
+                                let n = *failures as usize;
+                                st.retry_delays
+                                    .as_deref()
+                                    .unwrap_or(&NOTE_RETRY_DELAYS)
+                                    .get(n - 1)
+                                    .copied()
+                            }
+                            Delivery::Report(_) => None,
                         }
-                    }
+                    };
                     me.publish(Event::Notice {
-                        session_id: id,
+                        session_id: id.clone(),
                         level: NoticeLevel::Warn,
                         message: format!("Could not deliver {what}: {e:#}"),
                     });
+                    if let Some(delay) = retry {
+                        tokio::time::sleep(delay).await;
+                        me.flush_reports(&id);
+                    }
                 }
             }
         });

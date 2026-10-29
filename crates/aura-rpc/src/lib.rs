@@ -64,6 +64,9 @@ pub const ERR_PARSE: i64 = -32700;
 pub const ERR_METHOD: i64 = -32601;
 pub const ERR_PARAMS: i64 = -32602;
 pub const ERR_INTERNAL: i64 = -32000;
+/// The caller may not use this method: a session's tools asked for something
+/// that is the user's, or for another session.
+pub const ERR_FORBIDDEN: i64 = -32003;
 
 pub fn encode_pty_frame(kind: u8, session_id: &str, data: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(1 + SESSION_ID_LEN + data.len());

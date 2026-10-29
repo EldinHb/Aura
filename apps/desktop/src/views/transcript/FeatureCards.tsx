@@ -93,7 +93,7 @@ export function DecisionBody({ ownerId, q, cwd }: { ownerId: string; q: UserQues
             className="other-input"
             aria-label="Your answer"
             value={text}
-            placeholder={q.options.length ? "Add a note, or answer in your own words" : "Your answer"}
+            placeholder={q.kind === "checkpoint" ? "Say what to change (only Approve, or a plain “approve”, lets the work go on)" : q.options.length ? "Add a note, or answer in your own words" : "Your answer"}
             onClick={(e) => e.stopPropagation()}
             data-hint
             onChange={(e) => setText(e.target.value)}

@@ -122,6 +122,9 @@ enum Cmd {
         /// The orchestrator is a feature owner: serve the owner's tools too
         #[arg(long)]
         feature_owner: bool,
+        /// The session token Aura made for this orchestrator's tools
+        #[arg(long)]
+        token: String,
     },
 }
 
@@ -145,9 +148,10 @@ async fn main() -> Result<()> {
     if let Cmd::Mcp {
         orchestrator,
         feature_owner,
+        token,
     } = cli.cmd
     {
-        return mcp::run(data_dir, orchestrator, feature_owner).await;
+        return mcp::run(data_dir, orchestrator, feature_owner, token).await;
     }
     let client = connect_or_start(&data_dir).await?;
     match cli.cmd {

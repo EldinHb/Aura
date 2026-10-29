@@ -127,21 +127,76 @@ struct WsQuery {
     token: Option<String>,
 }
 
+/// Who a connection acts for, by the token it connected with.
+#[derive(Debug, Clone, PartialEq)]
+enum Caller {
+    /// The daemon's own token, from `daemon.json`: the app, the CLI. The user.
+    User,
+    /// The token of one session's tools (`Manager::session_token`), which
+    /// Aura hands that session's `aura mcp` and nobody else.
+    Session(String),
+}
+
+/// Whether `caller` may call `method` with `params`. A session's tools may
+/// only use the orchestrator's and feature owner's tools for that session,
+/// and read the agents; nothing that is the user's (answers, settings,
+/// sessions, history, the daemon's own token). The user's token cannot act
+/// as a session's tools.
+fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), DispatchError> {
+    let session_tool = method.starts_with("owner.")
+        || (method.starts_with("orchestrator.") && method != "orchestrator.projects");
+    let forbidden = |message: String| DispatchError {
+        code: ERR_FORBIDDEN,
+        message,
+    };
+    match caller {
+        Caller::User if session_tool => Err(forbidden(format!(
+            "{method} acts for a session's tools and needs that session's own session token, which Aura hands only to its `aura mcp`"
+        ))),
+        Caller::User => Ok(()),
+        Caller::Session(id) => {
+            let acts_for = |key: &str| params.get(key).and_then(Value::as_str) == Some(id.as_str());
+            let allowed = match method {
+                "daemon.ping" | "provider.list" | "provider.models" | "orchestrator.projects" => true,
+                m if m.starts_with("orchestrator.") => acts_for("orchestrator"),
+                m if m.starts_with("owner.") => acts_for("owner"),
+                _ => false,
+            };
+            if allowed {
+                Ok(())
+            } else {
+                Err(forbidden(format!(
+                    "{method} is not allowed: this connection holds the session token of {} and may only use that session's own tools",
+                    &id[..id.len().min(8)]
+                )))
+            }
+        }
+    }
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    if q.token.as_deref() != Some(state.token.as_str()) {
-        return (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response();
-    }
+    let caller = match q.token.as_deref() {
+        Some(t) if t == state.token => Caller::User,
+        Some(t) => match state.manager.session_for_token(t) {
+            Some(id) => Caller::Session(id),
+            None => return (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response(),
+        },
+        None => return (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response(),
+    };
     ws.max_message_size(64 * 1024 * 1024)
-        .on_upgrade(move |socket| handle_socket(socket, state))
+        .on_upgrade(move |socket| handle_socket(socket, state, caller))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState) {
+async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
     tracing::info!("rpc client connected");
+    // A session's tools get answers only: no events, notifications or
+    // terminal output of the user's sessions.
+    let user = caller == Caller::User;
     let (mut sink, mut stream) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(4096);
     let attached: Arc<parking_lot::Mutex<HashSet<String>>> = Default::default();
@@ -158,38 +213,40 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Event fan-out.
     let mut events = state.manager.subscribe();
     let ev_tx = out_tx.clone();
-    let ev_task = tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(ev) => {
-                    let n = Notification {
-                        method: "event".into(),
-                        params: serde_json::to_value(&ev).unwrap_or(Value::Null),
-                    };
-                    if ev_tx
-                        .send(Message::Text(serde_json::to_string(&n).unwrap()))
-                        .await
-                        .is_err()
-                    {
-                        break;
+    let ev_task = user.then(|| {
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(ev) => {
+                        let n = Notification {
+                            method: "event".into(),
+                            params: serde_json::to_value(&ev).unwrap_or(Value::Null),
+                        };
+                        if ev_tx
+                            .send(Message::Text(serde_json::to_string(&n).unwrap()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("client lagged {n} events");
+                        let n = Notification {
+                            method: "lagged".into(),
+                            params: json!({ "count": n }),
+                        };
+                        let _ = ev_tx
+                            .send(Message::Text(serde_json::to_string(&n).unwrap()))
+                            .await;
+                    }
+                    Err(_) => break,
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("client lagged {n} events");
-                    let n = Notification {
-                        method: "lagged".into(),
-                        params: json!({ "count": n }),
-                    };
-                    let _ = ev_tx
-                        .send(Message::Text(serde_json::to_string(&n).unwrap()))
-                        .await;
-                }
-                Err(_) => break,
             }
-        }
+        })
     });
 
-    let extra_task = state.notifications.as_ref().map(|sender| {
+    let extra_task = state.notifications.as_ref().filter(|_| user).map(|sender| {
         let mut rx = sender.subscribe();
         let tx = out_tx.clone();
         tokio::spawn(async move {
@@ -216,22 +273,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let mut pty = state.manager.subscribe_pty();
     let pty_tx = out_tx.clone();
     let attached2 = attached.clone();
-    let pty_task = tokio::spawn(async move {
-        loop {
-            match pty.recv().await {
-                Ok(chunk) => {
-                    if !attached2.lock().contains(&chunk.session_id) {
-                        continue;
+    let pty_task = user.then(|| {
+        tokio::spawn(async move {
+            loop {
+                match pty.recv().await {
+                    Ok(chunk) => {
+                        if !attached2.lock().contains(&chunk.session_id) {
+                            continue;
+                        }
+                        let frame =
+                            encode_pty_frame(FRAME_PTY_OUTPUT, &chunk.session_id, &chunk.data);
+                        if pty_tx.send(Message::Binary(frame)).await.is_err() {
+                            break;
+                        }
                     }
-                    let frame = encode_pty_frame(FRAME_PTY_OUTPUT, &chunk.session_id, &chunk.data);
-                    if pty_tx.send(Message::Binary(frame)).await.is_err() {
-                        break;
-                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
             }
-        }
+        })
     });
 
     while let Some(Ok(msg)) = stream.next().await {
@@ -258,9 +318,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 let state = state.clone();
                 let out = out_tx.clone();
                 let attached = attached.clone();
+                let caller = caller.clone();
                 tokio::spawn(async move {
                     let id = req.id.clone();
-                    let result = dispatch(&state, &attached, req).await;
+                    let result = match authorize(&caller, &req.method, &req.params) {
+                        Ok(()) => dispatch(&state, &attached, req).await,
+                        Err(e) => Err(e),
+                    };
                     if let Some(id) = id {
                         let resp = match result {
                             Ok(v) => Response {
@@ -284,7 +348,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     }
                 });
             }
-            Message::Binary(frame) => {
+            Message::Binary(frame) if user => {
                 if let Some((FRAME_PTY_INPUT, sid, data)) = decode_pty_frame(&frame) {
                     if let Err(e) = state.manager.pty_input(&sid, data) {
                         tracing::debug!("pty input failed: {e}");
@@ -298,8 +362,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     if let Some(task) = extra_task {
         task.abort();
     }
-    ev_task.abort();
-    pty_task.abort();
+    for task in [ev_task, pty_task].into_iter().flatten() {
+        task.abort();
+    }
     drop(out_tx);
     let _ = writer.await;
     tracing::info!("rpc client disconnected");

@@ -25,6 +25,7 @@ beforeEach(() => {
     report: null,
     created_at: "",
     updated_at: "",
+    counters: {},
   });
   useStore.setState({ client: { autonomy: () => Promise.resolve(setting), setFeatureAutonomy } as unknown as RpcClient });
 });
