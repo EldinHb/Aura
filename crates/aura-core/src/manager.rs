@@ -952,7 +952,22 @@ impl Manager {
         if archived {
             self.stop(id).await?;
         }
-        self.update_session(id, |s| s.archived = archived)
+        let s = self.update_session(id, |s| s.archived = archived)?;
+        if archived {
+            self.unavailable(&s, "was archived");
+        }
+        Ok(s)
+    }
+
+    /// Stop a session because the user (or its orchestrator) asked to: as
+    /// [`Manager::stop`], and what waits for it to answer, on a feature
+    /// owner's team, gets no answer. Aura's own stops (a prompt changed, the
+    /// daemon stopping) leave that waiting.
+    pub async fn stop_by_request(&self, id: &str) -> Result<()> {
+        self.stop(id).await?;
+        let s = self.get_session(id)?;
+        self.unavailable(&s, "was stopped");
+        Ok(())
     }
 
     /// Stop the process(es) behind a session but keep it (resumable).

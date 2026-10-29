@@ -318,20 +318,24 @@ exactly as before; a feature owner is one with more to do.
   meeting (`hold_meeting`): a topic, one question, a few team members, and specialists
   hired just for their input if needed. Aura sends every attendee the question at
   once; each answers in writing in its next turn, briefly and without starting on the
-  work. When all have answered, one failed, was stopped or deleted, or the meeting's
-  time ran out (20 minutes unless the owner says otherwise), the owner gets one
-  message with every answer and records what it decided from it. An attendee busy
+  work. When all have answered, or the meeting's time ran out (20 minutes unless the
+  owner says otherwise), the owner gets one message with every answer and records
+  what it decided from it. When an attendee fails, is stopped, archived or deleted,
+  the meeting closes at once, without those still to answer. An attendee busy
   with other work gets the question once it is free. Answers reach the owner only in
   that message, not again as worker reports, so a meeting costs one turn per attendee
   and one for the owner. After a daemon restart, a meeting still collecting asks
   again the attendees that had not answered and closes at its deadline, which may
-  have passed already. A checkpoint review holds meetings like other work: none while
+  have passed already; answers given before the daemon went count, but only from a
+  turn that finished. A checkpoint review holds meetings like other work: none while
   the review is open, and after you asked for changes only with the team the owner
   has, without guests.
 - **One-on-ones.** Workers on the team can ask each other (`ask_teammate`) and the
   owner (`ask_owner`) directly. The teammate answers in its next turn, the owner with
   `reply_to_teammate`, and the answer comes back to the one who asked. A worker
-  waiting on an answer is not reported to the owner until it goes on with it. Against
+  waiting on an answer is not reported to the owner until it goes on with it. When
+  the one asked is stopped, archived, deleted or fails first, the question gets no
+  answer and the asker is told at once. Against
   loops: nobody asks while answering a meeting or a question, a worker has at most two
   questions open and one per teammate, asks the same teammate at most eight times per
   feature, and cannot ask itself or anyone outside the team. One-on-ones go on during

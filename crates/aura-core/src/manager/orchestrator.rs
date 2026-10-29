@@ -25,7 +25,7 @@ use crate::types::*;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -50,7 +50,10 @@ pub(super) struct State {
     /// Where orchestrators without a folder get their directories.
     dirs: Option<PathBuf>,
     /// Orchestrator id -> workers with a report not yet delivered.
-    queued: HashMap<SessionId, BTreeSet<SessionId>>,
+    /// Each with its report as it was when the worker stopped, so a turn it
+    /// takes before the report goes out (answering a meeting, say) does not
+    /// replace what it reported.
+    queued: HashMap<SessionId, BTreeMap<SessionId, WorkerReport>>,
     /// Orchestrators sent a report whose turn has not started yet.
     delivering: HashSet<SessionId>,
     /// Those of `delivering` sent a worker report, not another message from Aura.
@@ -708,7 +711,7 @@ impl Manager {
     pub async fn stop_worker(&self, orchestrator: &str, worker: &str) -> Result<()> {
         let w = self.worker(orchestrator, worker)?;
         self.inner.orchestration.lock().dispatched.remove(&w.id);
-        self.stop(&w.id).await
+        self.stop_by_request(&w.id).await
     }
 
     /// Delete one of the orchestrator's workers as the user would: stopped,
@@ -944,18 +947,20 @@ impl Manager {
                 tokio::time::timeout((deadline - now).min(Duration::from_secs(2)), rx.recv()).await;
         };
         let mut reports = vec![];
-        let mut st_done = vec![];
         for s in &targets {
             let s = self.get_session(&s.id)?;
-            if self.settled(&s.id) {
-                st_done.push(s.id.clone());
-            }
-            reports.push(self.report(&s));
-        }
-        if let Some(q) = self.inner.orchestration.lock().queued.get_mut(orchestrator) {
-            for id in &st_done {
-                q.remove(id);
-            }
+            // Returned here, it is not reported again; a report not yet sent
+            // is what it stopped with, which a turn answering a meeting since
+            // does not replace.
+            let queued = self.settled(&s.id).then(|| {
+                self.inner
+                    .orchestration
+                    .lock()
+                    .queued
+                    .get_mut(orchestrator)
+                    .and_then(|q| q.remove(&s.id))
+            });
+            reports.push(queued.flatten().unwrap_or_else(|| self.report(&s)));
         }
         Ok(WaitResult {
             timed_out,
@@ -1182,6 +1187,13 @@ impl Manager {
                 self.answer_ended(sid, about, ev);
             }
         }
+        // Its agent failed: what waits for it to answer gets no answer.
+        if let Event::ProcessExited {
+            message: Some(m), ..
+        } = ev
+        {
+            self.unavailable(&s, &format!("failed: {m}"));
+        }
         // A worker that waits on a teammate's or the owner's answer is not
         // done: it is reported when it goes on with the answer.
         let waits = matches!(ev, Event::TurnCompleted { turn, .. } if turn.status == TurnStatus::Completed)
@@ -1192,13 +1204,17 @@ impl Manager {
                 .clone()
                 .filter(|o| self.get_session(o).is_ok_and(|o| o.orchestrator))
             {
-                self.inner
-                    .orchestration
-                    .lock()
-                    .queued
-                    .entry(o.clone())
-                    .or_default()
-                    .insert(s.id.clone());
+                let mut report = self.report(&s);
+                {
+                    let mut st = self.inner.orchestration.lock();
+                    let q = st.queued.entry(o.clone()).or_default();
+                    // A stop without a reply of its own (an approval asked
+                    // for at once) keeps the reply not yet reported.
+                    if report.last_reply.is_none() {
+                        report.last_reply = q.get(&s.id).and_then(|r| r.last_reply.clone());
+                    }
+                    q.insert(s.id.clone(), report);
+                }
                 self.flush_reports(&o);
             }
         }
@@ -1486,9 +1502,8 @@ impl Manager {
             }
         };
         let reports: Vec<WorkerReport> = workers
-            .iter()
-            .filter_map(|w| self.get_session(w).ok())
-            .map(|s| self.report(&s))
+            .into_values()
+            .filter(|r| self.get_session(&r.id).is_ok())
             .collect();
         if reports.is_empty() {
             let mut st = self.inner.orchestration.lock();

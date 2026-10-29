@@ -1083,7 +1083,7 @@ async fn dispatch(
         }
         "session.stop" => {
             let IdParams { id } = params(p)?;
-            m.stop(&id).await?;
+            m.stop_by_request(&id).await?;
             ok(true)
         }
         "session.restart" => {

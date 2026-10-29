@@ -190,7 +190,10 @@ impl Driver for FakeDriver {
         } else {
             let _ = self.sink.send(Event::ItemCompleted {
                 session_id: self.session_id.clone(),
-                item: item.with_text("hello").completed(),
+                // `say:<reply>` scripts the reply.
+                item: item
+                    .with_text(script.split_once("say:").map_or("hello", |(_, r)| r.trim()))
+                    .completed(),
             });
             // Session totals, then the turn's own share of them.
             let _ = self.sink.send(Event::Usage {
@@ -5473,4 +5476,455 @@ async fn a_checkpoint_review_holds_meetings_but_not_one_on_ones() {
         .await
         .unwrap();
     assert_eq!((held.id.as_str(), held.attendees.len()), ("m1", 2));
+}
+
+// ------------------------------------------------- review fixes (phase 2)
+
+/// Push an event as if a session's agent sent it.
+fn push(provider: &FakeProvider, ev: Event) {
+    let sink = provider
+        .knobs
+        .lock()
+        .sink
+        .clone()
+        .expect("an agent started");
+    sink.send(ev).unwrap();
+}
+
+/// Busy the owner with a turn waiting on the user's approval.
+async fn busy(m: &Manager, id: &str) {
+    m.send(
+        id,
+        Input {
+            text: "please approve".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(m, id, SessionStatus::WaitingApproval).await;
+}
+
+fn approve() -> ApprovalDecision {
+    ApprovalDecision {
+        option: ApprovalOption::Accept,
+        updated_input: None,
+        message: None,
+    }
+}
+
+#[tokio::test]
+async fn questions_to_one_that_stops_fail_and_the_asker_hears_it() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let held = |title: &'static str| {
+        let (m, calls, owner) = (m.clone(), calls.clone(), owner.id.clone());
+        async move {
+            let w = teammate(&m, &calls, &owner, title, "approve the plan").await;
+            wait_status(&m, &w.id, SessionStatus::WaitingApproval).await;
+            w
+        }
+    };
+    let failed = |id: &str| {
+        let f = m.feature(&owner.id).unwrap();
+        let a = f.one_on_ones.iter().find(|a| a.id == id).unwrap().clone();
+        (a.status, a.error.unwrap_or_default())
+    };
+
+    // Archived while the question waits for it to be free.
+    let b = held("Builder").await;
+    let ask = m.ask_teammate(&a.id, "Builder", "Which port?").unwrap();
+    m.set_archived(&b.id, true).await.unwrap();
+    assert_eq!(
+        failed(&ask.id),
+        (OneOnOneStatus::Failed, "Builder was archived".into())
+    );
+    let none = wait_sent(&calls, "[Aura] No answer to your question.", 1).await;
+    assert!(none[0].contains("Builder was archived"), "{}", none[0]);
+    // Not waiting any more, the asker is reported again.
+    let reports = sent_reports(&calls).len();
+    m.message_worker(&owner.id, &a.id, "go on".into())
+        .await
+        .unwrap();
+    wait_reports(&calls, reports + 1).await;
+
+    // Stopped by its owner.
+    let c = held("Tester").await;
+    let ask = m.ask_teammate(&a.id, "Tester", "Which browsers?").unwrap();
+    m.stop_worker(&owner.id, &c.id).await.unwrap();
+    assert_eq!(
+        failed(&ask.id),
+        (OneOnOneStatus::Failed, "Tester was stopped".into())
+    );
+    wait_sent(&calls, "[Aura] No answer to your question.", 2).await;
+
+    // Its agent failed.
+    let d = held("Reviewer").await;
+    let ask = m.ask_teammate(&a.id, "Reviewer", "Looks right?").unwrap();
+    push(
+        &provider,
+        Event::ProcessExited {
+            session_id: d.id.clone(),
+            exit_code: Some(1),
+            message: Some("crashed".into()),
+        },
+    );
+    wait_feature(&m, &owner.id, |f| {
+        f.one_on_ones
+            .iter()
+            .any(|x| x.id == ask.id && x.status == OneOnOneStatus::Failed)
+    })
+    .await;
+    assert_eq!(failed(&ask.id).1, "Reviewer failed: crashed");
+    wait_sent(&calls, "[Aura] No answer to your question.", 3).await;
+
+    // The owner, asked, is stopped before it took the question.
+    busy(&m, &owner.id).await;
+    let ask = m.ask_owner(&a.id, "Is the beta in scope?").unwrap();
+    m.stop_by_request(&owner.id).await.unwrap();
+    assert_eq!(
+        failed(&ask.id),
+        (OneOnOneStatus::Failed, "Owner was stopped".into())
+    );
+    let none = wait_sent(&calls, "[Aura] No answer to your question.", 4).await;
+    assert!(
+        none[3].contains("The feature owner cannot answer your question"),
+        "{}",
+        none[3]
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        count_sent(&calls, "[Aura] Question from a teammate"),
+        0,
+        "none of the questions was sent"
+    );
+}
+
+#[tokio::test]
+async fn a_report_keeps_the_task_result_when_a_meeting_answer_follows() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let b = teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    busy(&m, &owner.id).await;
+    let reports = sent_reports(&calls).len();
+    for w in [&a, &b] {
+        m.message_worker(&owner.id, &w.id, format!("say:{} done", w.title))
+            .await
+            .unwrap();
+        wait_feature(&m, &owner.id, |_| {
+            m.last_reply(&w.id).is_some_and(|r| r.ends_with("done"))
+        })
+        .await;
+    }
+    // Both answer a meeting before the busy owner takes their reports.
+    m.hold_meeting(
+        &owner.id,
+        MeetingSpec {
+            context: "<<say:my view>>".into(),
+            ..meeting("Toggle", &["Designer", "Builder"])
+        },
+    )
+    .await
+    .unwrap();
+    wait_feature(&m, &owner.id, |f| {
+        f.meetings[0].status == MeetingStatus::Complete
+    })
+    .await;
+    assert_eq!(m.last_reply(&a.id).as_deref(), Some("my view"));
+
+    // Waiting returns what the worker reported, not its meeting answer.
+    let waited = m
+        .wait_workers(
+            &owner.id,
+            std::slice::from_ref(&b.id),
+            false,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        waited.workers[0].last_reply.as_deref(),
+        Some("Builder done")
+    );
+
+    m.respond_approval(&owner.id, "ap1", approve())
+        .await
+        .unwrap();
+    wait_reports(&calls, reports + 1).await;
+    let report = sent_reports(&calls).last().unwrap().clone();
+    assert!(report.contains("Last reply:\nDesigner done"), "{report}");
+    assert!(
+        !report.contains("my view") && !report.contains(&b.id),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn a_plain_orchestrators_report_keeps_the_reply_a_later_turn_has_not_replaced() {
+    let (m, calls, provider) = orchestrator_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let orch = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    busy(&m, &orch.id).await;
+    let w = m
+        .start_worker(
+            &orch.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "say:task a done".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    wait_status(&m, &w.id, SessionStatus::Idle).await;
+    // The user gives it more, which it is still working on.
+    let turn = turn(&w.id, "more", TurnStatus::Running);
+    push(
+        &provider,
+        Event::TurnStarted {
+            session_id: w.id.clone(),
+            turn: turn.clone(),
+        },
+    );
+    push(
+        &provider,
+        Event::ItemCompleted {
+            session_id: w.id.clone(),
+            item: Item::new(&w.id, Some(turn.id.clone()), ItemKind::UserMessage)
+                .with_text("and the tests")
+                .completed(),
+        },
+    );
+    wait_status(&m, &w.id, SessionStatus::Running).await;
+    m.respond_approval(&orch.id, "ap1", approve())
+        .await
+        .unwrap();
+    wait_reports(&calls, 1).await;
+    let report = &sent_reports(&calls)[0];
+    assert!(
+        report.contains(" · idle\nIn ") && report.contains("Last reply:\ntask a done\n"),
+        "{report}"
+    );
+}
+
+/// The agenda a worker was sent, from the calls.
+fn agenda_sent(calls: &Calls) -> String {
+    calls
+        .lock()
+        .iter()
+        .find_map(|c| {
+            c.strip_prefix("send:")
+                .filter(|t| t.starts_with("[Aura] Meeting."))
+        })
+        .unwrap()
+        .to_string()
+}
+
+/// Put a turn on a worker's message in the store, as an agent that had it
+/// before the daemon went would have.
+fn answered_in_store(
+    store: &MemoryStore,
+    worker: &str,
+    message: &str,
+    reply: &str,
+    completed: bool,
+) {
+    let turn = turn(worker, "before-restart", TurnStatus::Running);
+    store
+        .append_event(
+            worker,
+            &Event::TurnStarted {
+                session_id: worker.into(),
+                turn: turn.clone(),
+            },
+        )
+        .unwrap();
+    for (kind, text) in [
+        (ItemKind::UserMessage, message),
+        (ItemKind::AgentMessage, reply),
+    ] {
+        store
+            .append_event(
+                worker,
+                &Event::ItemCompleted {
+                    session_id: worker.into(),
+                    item: Item::new(worker, Some(turn.id.clone()), kind)
+                        .with_text(text)
+                        .completed(),
+                },
+            )
+            .unwrap();
+    }
+    if completed {
+        store
+            .append_event(
+                worker,
+                &Event::TurnCompleted {
+                    session_id: worker.into(),
+                    turn: Turn {
+                        status: TurnStatus::Completed,
+                        ..turn
+                    },
+                },
+            )
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_restart_asks_again_when_the_answering_turn_never_finished() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let (owner, a) = {
+        let (m, calls, provider) = owner_setup(store.clone());
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+        provider.knobs.lock().no_echo = true;
+        m.hold_meeting(&owner.id, meeting("Cut off", &["Designer"]))
+            .await
+            .unwrap();
+        wait_sent(&calls, "[Aura] Meeting.", 1).await;
+        let agenda = agenda_sent(&calls);
+        m.shutdown().await;
+        // It had begun to answer when the daemon went.
+        answered_in_store(
+            &store,
+            &a.id,
+            &agenda,
+            "Let me look at the files first.",
+            false,
+        );
+        (owner.id, a.id)
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    wait_sent(&calls, "[Aura] Meeting.", 1).await;
+    let f = wait_feature(&m, &owner, |f| {
+        f.meetings[0].status != MeetingStatus::Collecting
+    })
+    .await;
+    assert_eq!(
+        f.meetings[0].attendee(&a).unwrap().answer.as_deref(),
+        Some("hello")
+    );
+}
+
+#[tokio::test]
+async fn a_restart_past_the_deadline_keeps_the_answers_already_given() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let (owner, a, b) = {
+        let (m, calls, provider) = owner_setup(store.clone());
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+        let b = teammate(&m, &calls, &owner.id, "Builder", "build").await;
+        provider.knobs.lock().no_echo = true;
+        m.hold_meeting(&owner.id, meeting("Late", &["Designer", "Builder"]))
+            .await
+            .unwrap();
+        wait_sent(&calls, "[Aura] Meeting.", 2).await;
+        let agenda = calls
+            .lock()
+            .iter()
+            .find_map(|c| {
+                c.strip_prefix("send:")
+                    .filter(|t| t.starts_with("[Aura] Meeting.") && t.contains("as Designer"))
+            })
+            .unwrap()
+            .to_string();
+        m.shutdown().await;
+        answered_in_store(&store, &a.id, &agenda, "Top right.", true);
+        // The daemon was gone past the meeting's deadline.
+        let (_, json) = store
+            .feature_records(NAMESPACE)
+            .unwrap()
+            .into_iter()
+            .find(|(id, _)| *id == owner.id)
+            .unwrap();
+        let mut f: Feature = serde_json::from_str(&json).unwrap();
+        f.meetings[0].deadline = now() - chrono::Duration::minutes(1);
+        store
+            .save_feature_record(NAMESPACE, &owner.id, &serde_json::to_string(&f).unwrap())
+            .unwrap();
+        (owner.id, a.id, b.id)
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    let notes = wait_sent(&calls, "[Aura] Meeting notes, incomplete.", 1).await;
+    assert!(notes[0].contains("Top right."), "{}", notes[0]);
+    let f = m.feature(&owner).unwrap();
+    let mt = &f.meetings[0];
+    assert_eq!(mt.attendee(&a).unwrap().status, AttendeeStatus::Answered);
+    assert_eq!(mt.attendee(&b).unwrap().status, AttendeeStatus::Missing);
+    assert_eq!(
+        count_sent(&calls, "[Aura] Meeting."),
+        0,
+        "nobody is asked again"
+    );
+}
+
+#[tokio::test]
+async fn an_attendee_that_fails_or_goes_closes_the_meeting_at_once() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    for title in ["Builder", "Tester"] {
+        let w = teammate(&m, &calls, &owner.id, title, "approve the plan").await;
+        wait_status(&m, &w.id, SessionStatus::WaitingApproval).await;
+    }
+
+    // Its agent crashes on the agenda: the owner hears now, not at the deadline.
+    m.hold_meeting(
+        &owner.id,
+        MeetingSpec {
+            context: "<<crash>>".into(),
+            ..meeting("Crash", &["Designer", "Builder"])
+        },
+    )
+    .await
+    .unwrap();
+    let notes = wait_sent(&calls, "[Aura] Meeting notes, incomplete.", 1).await;
+    assert!(
+        notes[0].contains("No answer: its agent stopped: crashed.")
+            && notes[0].contains("No answer: the meeting closed when Designer could not answer."),
+        "{}",
+        notes[0]
+    );
+    let f = m.feature(&owner.id).unwrap();
+    assert_eq!(f.meetings[0].status, MeetingStatus::Incomplete);
+
+    // Archived while busy: the meeting closes too.
+    m.hold_meeting(&owner.id, meeting("Archive", &["Builder", "Tester"]))
+        .await
+        .unwrap();
+    let builder = m.team_member(&owner.id, "Builder").unwrap();
+    m.set_archived(&builder.id, true).await.unwrap();
+    let f = m.feature(&owner.id).unwrap();
+    let mt = &f.meetings[1];
+    assert_eq!(mt.status, MeetingStatus::Incomplete);
+    assert_eq!(
+        mt.attendees[0].missing.as_deref(),
+        Some("Builder was archived")
+    );
+    assert_eq!(mt.attendees[1].status, AttendeeStatus::Missing);
+    wait_sent(&calls, "[Aura] Meeting notes, incomplete.", 2).await;
 }

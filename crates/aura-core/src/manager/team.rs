@@ -4,14 +4,17 @@
 //!
 //! - A **meeting** (`hold_meeting`) sends every attendee the agenda at once.
 //!   The turn an attendee answers it in is not reported to the owner; its
-//!   final reply is the attendee's contribution. When every attendee answered,
-//!   or one failed or went, or the meeting's time ran out, the owner gets one
-//!   message with every contribution.
+//!   final reply is the attendee's contribution. When every attendee answered
+//!   or the meeting's time ran out, the owner gets one message with every
+//!   contribution. One that fails, is stopped, archived or deleted closes the
+//!   meeting at once, without those still to answer.
 //! - A **one-on-one** is a question a worker puts to a teammate
 //!   (`ask_teammate`), answered in the teammate's turn, or to the owner
 //!   (`ask_owner`), answered with `reply_to_teammate`. The answer reaches the
 //!   asker as a message from Aura. While it waits for one, a worker that ends
-//!   its turn is not reported to the owner.
+//!   its turn is not reported to the owner. When the one asked fails, is
+//!   stopped, archived or deleted first, the question fails and the asker is
+//!   told, so nobody waits for good.
 //!
 //! Against loops, nobody asks while answering a meeting or a question, a
 //! worker has at most [`MAX_OPEN_ASKS`] questions open and one per teammate,
@@ -26,10 +29,11 @@
 //! Notes go the way of every note: a turn on one counts once its agent
 //! echoes it, and one its agent could not take is tried again.
 //!
-//! After a daemon restart, meetings still collecting ask again the attendees
-//! that had not answered (the turn they answered in went with the daemon)
-//! and close when their deadline passes, which may have passed already; what
-//! was answered but not delivered is delivered.
+//! After a daemon restart, an answer in a worker's transcript counts when the
+//! turn it came from completed; otherwise the attendee or teammate is asked
+//! again (that turn went with the daemon). A meeting past its deadline closes
+//! after taking those answers; what was answered but not delivered is
+//! delivered.
 use super::orchestrator::{tail, Note, NoteAbout};
 use super::{HireSpec, Manager};
 use crate::event::*;
@@ -673,24 +677,22 @@ impl Manager {
                         return Ok(None);
                     };
                     let collecting = m.status == MeetingStatus::Collecting;
-                    if let Some(a) = m.attendees.iter_mut().find(|a| a.worker_id == worker) {
-                        match (&outcome, collecting && a.status.pending()) {
-                            (Ok(answer), true) => {
-                                a.status = AttendeeStatus::Answered;
-                                a.answer = Some(answer.clone());
-                                a.answered_at = Some(crate::now());
-                            }
-                            (Err(why), true) => {
-                                a.status = AttendeeStatus::Missing;
-                                a.missing = Some(why.clone());
-                            }
+                    if let Err(why) = &outcome {
+                        return Ok(attendee_missing(m, &worker, why).then(|| m.clone()));
+                    }
+                    if let (Some(a), Ok(answer)) = (
+                        m.attendees.iter_mut().find(|a| a.worker_id == worker),
+                        &outcome,
+                    ) {
+                        if collecting && a.status.pending() {
+                            a.status = AttendeeStatus::Answered;
+                            a.answer = Some(answer.clone());
+                            a.answered_at = Some(crate::now());
+                        } else if a.status == AttendeeStatus::Missing {
                             // Too late for the owner; kept for the user.
-                            (Ok(answer), false) if a.status == AttendeeStatus::Missing => {
-                                a.status = AttendeeStatus::Late;
-                                a.answer = Some(answer.clone());
-                                a.answered_at = Some(crate::now());
-                            }
-                            _ => {}
+                            a.status = AttendeeStatus::Late;
+                            a.answer = Some(answer.clone());
+                            a.answered_at = Some(crate::now());
                         }
                     }
                     Ok(m.settle().then(|| m.clone()))
@@ -743,15 +745,7 @@ impl Manager {
                 .iter_mut()
                 .filter(|m| m.status == MeetingStatus::Collecting)
             {
-                for a in m
-                    .attendees
-                    .iter_mut()
-                    .filter(|a| a.worker_id == s.id && a.status.pending())
-                {
-                    a.status = AttendeeStatus::Missing;
-                    a.missing = Some(gone.clone());
-                }
-                if m.settle() {
+                if attendee_missing(m, &s.id, &gone) {
                     closed.push(m.clone());
                 }
             }
@@ -795,9 +789,77 @@ impl Manager {
         }
     }
 
-    /// After a restart: ask again who had not answered a meeting or a
-    /// question, close meetings past their deadline, and deliver what was
-    /// not delivered.
+    /// A session stopped answering for now: the user (or its orchestrator)
+    /// stopped or archived it, or its agent failed. What waits for it to
+    /// answer gets no answer, so nobody waits for good: its meetings close
+    /// without it, and the questions put to it (to the owner, when it is
+    /// the owner) fail, which the askers are told.
+    pub(super) fn unavailable(&self, s: &Session, why: &str) {
+        let owner = if s.feature_owner {
+            s.id.clone()
+        } else {
+            match self.team_owner(s) {
+                Some(o) => o.id,
+                None => return,
+            }
+        };
+        let is_owner = owner == s.id;
+        let asked = |a: &OneOnOne| {
+            a.status == OneOnOneStatus::Open
+                && if is_owner {
+                    a.to_owner
+                } else {
+                    !a.to_owner && a.to_id == s.id
+                }
+        };
+        let attends = |m: &Meeting| {
+            !is_owner
+                && m.status == MeetingStatus::Collecting
+                && m.attendee(&s.id).is_some_and(|a| a.status.pending())
+        };
+        // Nothing waits on it: the record is left alone.
+        let Ok(f) = self.feature(&owner) else { return };
+        if !f.one_on_ones.iter().any(asked) && !f.meetings.iter().any(attends) {
+            return;
+        }
+        let reason = format!("{} {why}", s.title);
+        let result = self.change_feature(&owner, |f| {
+            let mut closed = vec![];
+            for m in f.meetings.iter_mut().filter(|m| attends(m)) {
+                if attendee_missing(m, &s.id, &reason) {
+                    closed.push(m.clone());
+                }
+            }
+            let mut failed = vec![];
+            for a in f.one_on_ones.iter_mut().filter(|a| asked(a)) {
+                a.status = OneOnOneStatus::Failed;
+                a.error = Some(reason.clone());
+                a.answered_at = Some(crate::now());
+                failed.push(a.clone());
+            }
+            Ok((closed, failed))
+        });
+        let Ok((_, (closed, failed))) = result else {
+            return;
+        };
+        let ids: Vec<String> = failed.iter().map(|a| a.id.clone()).collect();
+        self.drop_notes(|about| match about {
+            NoteAbout::Ask { owner: o, id } => o == &owner && ids.contains(id),
+            NoteAbout::Agenda { worker, .. } => worker == &s.id,
+            _ => false,
+        });
+        for m in closed {
+            self.meeting_closed(&owner, &m);
+        }
+        for a in failed {
+            self.send_reply(&owner, &a);
+        }
+    }
+
+    /// After a restart: take the answers given before the daemon went from
+    /// the transcripts, ask again who had not answered a meeting or a
+    /// question, close meetings past their deadline, and deliver what was not
+    /// delivered.
     pub(super) fn resume_team(&self, f: &Feature) {
         let owner = &f.owner_id;
         let Ok(o) = self.get_session(owner) else {
@@ -809,52 +871,7 @@ impl Manager {
         };
         for m in &f.meetings {
             match m.status {
-                MeetingStatus::Collecting if m.deadline <= crate::now() => {
-                    let minutes = (m.deadline - m.started_at).num_minutes().max(1);
-                    self.close_meeting(owner, &m.id, &no_answer_within(minutes));
-                }
-                MeetingStatus::Collecting => {
-                    let gone: Vec<String> = m
-                        .attendees
-                        .iter()
-                        .filter(|a| a.status.pending() && !on_team(&a.worker_id))
-                        .map(|a| a.worker_id.clone())
-                        .collect();
-                    let _ = self.change_feature(owner, |f| {
-                        if let Some(m) = f.meetings.iter_mut().find(|x| x.id == m.id) {
-                            for a in m.attendees.iter_mut().filter(|a| a.status.pending()) {
-                                if gone.contains(&a.worker_id) {
-                                    a.status = AttendeeStatus::Missing;
-                                    a.missing = Some("it is no longer on the team".into());
-                                } else {
-                                    a.status = AttendeeStatus::Invited;
-                                }
-                            }
-                        }
-                        Ok(())
-                    });
-                    if let Some(m) = self
-                        .feature(owner)
-                        .ok()
-                        .and_then(|f| f.meeting(&m.id).cloned())
-                    {
-                        for a in m.attendees.iter().filter(|a| a.status.pending()) {
-                            self.ask_again(
-                                &a.worker_id,
-                                Note {
-                                    text: agenda_message(&m, &o.title, a),
-                                    about: Some(NoteAbout::Agenda {
-                                        owner: owner.clone(),
-                                        meeting: m.id.clone(),
-                                        worker: a.worker_id.clone(),
-                                    }),
-                                },
-                            );
-                        }
-                        self.arm_deadline(owner, &m);
-                    }
-                    self.settle_meeting(owner, &m.id);
-                }
+                MeetingStatus::Collecting => self.resume_meeting(&o, m, &on_team),
                 _ if !m.delivered => self.meeting_closed(owner, m),
                 _ => {}
             }
@@ -893,33 +910,156 @@ impl Manager {
         }
     }
 
+    /// After a restart, a meeting still collecting: an attendee gone from
+    /// the team is missing; answers given before the daemon went are taken
+    /// from the transcripts; then, past its deadline, it closes without who
+    /// is still missing, or else those are asked again.
+    fn resume_meeting(&self, o: &Session, m: &Meeting, on_team: &dyn Fn(&str) -> bool) {
+        let owner = &o.id;
+        let gone: Vec<String> = m
+            .attendees
+            .iter()
+            .filter(|a| a.status.pending() && !on_team(&a.worker_id))
+            .map(|a| a.worker_id.clone())
+            .collect();
+        let closed = self.change_feature(owner, |f| {
+            let Some(m) = f.meetings.iter_mut().find(|x| x.id == m.id) else {
+                return Ok(None);
+            };
+            for a in m.attendees.iter_mut().filter(|a| a.status.pending()) {
+                a.status = AttendeeStatus::Invited;
+            }
+            for g in &gone {
+                if attendee_missing(m, g, "it is no longer on the team") {
+                    return Ok(Some(m.clone()));
+                }
+            }
+            Ok(None)
+        });
+        if let Ok((_, Some(m))) = closed {
+            self.meeting_closed(owner, &m);
+            return;
+        }
+        let Some(m) = self
+            .feature(owner)
+            .ok()
+            .and_then(|f| f.meeting(&m.id).cloned())
+        else {
+            return;
+        };
+        let note = |a: &MeetingAttendee| Note {
+            text: agenda_message(&m, &o.title, a),
+            about: Some(NoteAbout::Agenda {
+                owner: owner.clone(),
+                meeting: m.id.clone(),
+                worker: a.worker_id.clone(),
+            }),
+        };
+        let mut ask = vec![];
+        for a in m.attendees.iter().filter(|a| a.status.pending()) {
+            if !self.recover_answer(&a.worker_id, &note(a)) {
+                ask.push(a);
+            }
+        }
+        if m.deadline <= crate::now() {
+            let minutes = (m.deadline - m.started_at).num_minutes().max(1);
+            self.close_meeting(owner, &m.id, &no_answer_within(minutes));
+            return;
+        }
+        let still = self
+            .feature(owner)
+            .ok()
+            .and_then(|f| f.meeting(&m.id).cloned());
+        if still
+            .as_ref()
+            .is_some_and(|x| x.status == MeetingStatus::Collecting)
+        {
+            for a in ask {
+                self.queue_note(&a.worker_id, note(a));
+            }
+            self.arm_deadline(owner, &m);
+        }
+    }
+
     /// After a restart, a note a worker answers: one it answered before the
     /// daemon went is taken from its transcript; otherwise it is sent
     /// (again: the turn it was answering in went with the daemon).
     fn ask_again(&self, worker: &str, note: Note) {
+        if !self.recover_answer(worker, &note) {
+            self.queue_note(worker, note);
+        }
+    }
+
+    /// Take a worker's answer to a note from its transcript: the last reply
+    /// of the turn the note started, if that turn completed. A turn cut off
+    /// (by the daemon going, say) answered nothing, however far it got.
+    fn recover_answer(&self, worker: &str, note: &Note) -> bool {
         let Some(about) = note.about.clone() else {
-            return;
+            return false;
         };
-        let items = self.items(worker).unwrap_or_default();
+        let events = self
+            .inner
+            .store
+            .events(worker, 0, usize::MAX)
+            .unwrap_or_default();
+        let items: Vec<&Item> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                Event::ItemCompleted { item, .. } if item.parent_id.is_none() => Some(item),
+                _ => None,
+            })
+            .collect();
+        let Some(turn) = items
+            .iter()
+            .rev()
+            .find(|i| i.kind == ItemKind::UserMessage && i.text.trim() == note.text.trim())
+            .and_then(|i| i.turn_id.clone())
+        else {
+            return false;
+        };
+        let completed = events.iter().any(|e| {
+            matches!(&e.event, Event::TurnCompleted { turn: t, .. }
+                if t.id == turn && t.status == TurnStatus::Completed)
+        });
         let answer = items
             .iter()
-            .rposition(|i| i.kind == ItemKind::UserMessage && i.text.trim() == note.text.trim())
-            .and_then(|at| {
-                items[at + 1..]
-                    .iter()
-                    .take_while(|i| i.kind != ItemKind::UserMessage)
-                    .filter(|i| i.kind == ItemKind::AgentMessage && !i.text.trim().is_empty())
-                    .last()
+            .rev()
+            .find(|i| {
+                i.kind == ItemKind::AgentMessage
+                    && i.turn_id.as_deref() == Some(turn.as_str())
+                    && !i.text.trim().is_empty()
             })
             .map(|i| tail(i.text.trim(), ANSWER_LIMIT));
-        match answer {
+        match answer.filter(|_| completed) {
             Some(answer) => {
                 self.note_delivered(worker, &about);
                 self.take_answer(about, Ok(answer));
+                true
             }
-            None => self.queue_note(worker, note),
+            None => false,
         }
     }
+}
+
+/// An attendee will not answer (it failed, was stopped, archived or
+/// deleted): the meeting closes now, and attendees still to answer are
+/// missing too. True when this closed it.
+fn attendee_missing(m: &mut Meeting, worker: &str, why: &str) -> bool {
+    let Some(a) = m
+        .attendees
+        .iter_mut()
+        .find(|a| a.worker_id == worker && a.status.pending())
+    else {
+        return false;
+    };
+    a.status = AttendeeStatus::Missing;
+    a.missing = Some(why.to_string());
+    let others = format!("the meeting closed when {} could not answer", a.name);
+    for a in m.attendees.iter_mut().filter(|a| a.status.pending()) {
+        a.status = AttendeeStatus::Missing;
+        a.missing = Some(others.clone());
+    }
+    m.settle()
 }
 
 /// Why an attendee is missing when the meeting's time ran out.
