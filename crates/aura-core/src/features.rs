@@ -2,7 +2,8 @@
 //! owner, kept in the store's `features` namespace under the owner's session
 //! id, so it outlives the daemon: the goal, the status, the team, every
 //! decision with its rationale, the questions put to the user, the
-//! checkpoints passed, the specialists proposed and the delivery report.
+//! checkpoints passed, the specialists proposed, the team's meetings and
+//! one-on-ones, and the delivery report.
 //!
 //! The record is the source of truth for the cards the app shows in the
 //! owner's chat. Each card is a `system` item in the owner's transcript with
@@ -62,6 +63,9 @@ pub struct TeamMember {
     #[serde(default)]
     pub instructions: String,
     pub hired_at: DateTime<Utc>,
+    /// Hired as a guest of this meeting, for its input only.
+    #[serde(default)]
+    pub meeting: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -82,6 +86,9 @@ pub struct Decision {
     /// The question it answered, for the user's decisions.
     #[serde(default)]
     pub question_id: Option<String>,
+    /// The meeting it came out of.
+    #[serde(default)]
+    pub meeting_id: Option<String>,
     pub at: DateTime<Utc>,
 }
 
@@ -220,6 +227,166 @@ pub struct DeliveryReport {
     pub delivered_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MeetingStatus {
+    /// Waiting for the attendees' answers.
+    #[default]
+    Collecting,
+    /// Every attendee answered.
+    Complete,
+    /// Closed with answers missing: an attendee failed, went, or the time ran out.
+    Incomplete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AttendeeStatus {
+    /// The agenda waits for the attendee to be free.
+    #[default]
+    Invited,
+    /// The attendee was sent the agenda and is answering.
+    Asked,
+    Answered,
+    /// No answer: the attendee failed, was stopped or deleted, or the time ran out.
+    Missing,
+    /// Answered after the meeting closed; kept, not sent to the owner.
+    Late,
+}
+
+impl AttendeeStatus {
+    /// Still expected to answer.
+    pub fn pending(self) -> bool {
+        matches!(self, AttendeeStatus::Invited | AttendeeStatus::Asked)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MeetingAttendee {
+    pub worker_id: SessionId,
+    /// The team member's name.
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
+    /// Hired just for this meeting.
+    #[serde(default)]
+    pub guest: bool,
+    #[serde(default)]
+    pub status: AttendeeStatus,
+    /// What the attendee wrote: its final reply of the turn that answered.
+    #[serde(default)]
+    pub answer: Option<String>,
+    /// Why there is no answer.
+    #[serde(default)]
+    pub missing: Option<String>,
+    #[serde(default)]
+    pub answered_at: Option<DateTime<Utc>>,
+}
+
+/// A written meeting the owner held with `hold_meeting`: every attendee is
+/// sent the agenda and answers in writing, and the owner gets all answers in
+/// one message from Aura.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Meeting {
+    pub id: String,
+    pub topic: String,
+    /// The question the attendees answer.
+    pub agenda: String,
+    #[serde(default)]
+    pub context: String,
+    pub attendees: Vec<MeetingAttendee>,
+    #[serde(default)]
+    pub status: MeetingStatus,
+    /// The decisions the owner recorded from it: its outcome.
+    #[serde(default)]
+    pub decision_ids: Vec<String>,
+    pub started_at: DateTime<Utc>,
+    /// Answers not in by then are missing.
+    pub deadline: DateTime<Utc>,
+    #[serde(default)]
+    pub ended_at: Option<DateTime<Utc>>,
+    /// The owner was sent the answers.
+    #[serde(default)]
+    pub delivered: bool,
+}
+
+impl Meeting {
+    pub fn attendee(&self, worker_id: &str) -> Option<&MeetingAttendee> {
+        self.attendees.iter().find(|a| a.worker_id == worker_id)
+    }
+
+    /// Close the meeting once nobody is expected to answer any more. True
+    /// when this closed it.
+    pub fn settle(&mut self) -> bool {
+        if self.status != MeetingStatus::Collecting
+            || self.attendees.iter().any(|a| a.status.pending())
+        {
+            return false;
+        }
+        self.status = if self
+            .attendees
+            .iter()
+            .all(|a| a.status == AttendeeStatus::Answered)
+        {
+            MeetingStatus::Complete
+        } else {
+            MeetingStatus::Incomplete
+        };
+        self.ended_at = Some(crate::now());
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum OneOnOneStatus {
+    /// Waiting for the answer.
+    #[default]
+    Open,
+    Answered,
+    /// No answer will come: the one asked failed, was stopped or deleted.
+    Failed,
+}
+
+/// A question one team member put to another, or to the owner, with
+/// `ask_teammate` or `ask_owner`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OneOnOne {
+    pub id: String,
+    /// The worker that asked.
+    pub from_id: SessionId,
+    pub from_name: String,
+    /// The teammate asked, or the owner's id when the owner was asked.
+    pub to_id: SessionId,
+    pub to_name: String,
+    /// The owner was asked, not a teammate.
+    #[serde(default)]
+    pub to_owner: bool,
+    pub question: String,
+    #[serde(default)]
+    pub answer: Option<String>,
+    /// Why no answer will come.
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub status: OneOnOneStatus,
+    pub asked_at: DateTime<Utc>,
+    #[serde(default)]
+    pub answered_at: Option<DateTime<Utc>>,
+    /// The one asked was sent the question.
+    #[serde(default)]
+    pub sent: bool,
+    /// The asker was sent the answer, or told none will come.
+    #[serde(default)]
+    pub delivered: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Feature {
@@ -242,6 +409,10 @@ pub struct Feature {
     pub checkpoints: Vec<CheckpointRecord>,
     #[serde(default)]
     pub suggestions: Vec<SpecialistSuggestion>,
+    #[serde(default)]
+    pub meetings: Vec<Meeting>,
+    #[serde(default)]
+    pub one_on_ones: Vec<OneOnOne>,
     #[serde(default)]
     pub report: Option<DeliveryReport>,
     pub created_at: DateTime<Utc>,
@@ -269,7 +440,7 @@ impl Feature {
     /// (a fork leaves out the questions still open). Call it on the whole
     /// record before taking anything out of it.
     pub fn seed_counters(&mut self) {
-        for prefix in ["q", "d", "s"] {
+        for prefix in ["q", "d", "s", "m", "a"] {
             self.next_id_seed(prefix);
         }
     }
@@ -284,6 +455,8 @@ impl Feature {
                 .collect::<Vec<_>>(),
             "d" => self.decisions.iter().map(|d| d.id.as_str()).collect(),
             "s" => self.suggestions.iter().map(|s| s.id.as_str()).collect(),
+            "m" => self.meetings.iter().map(|m| m.id.as_str()).collect(),
+            "a" => self.one_on_ones.iter().map(|a| a.id.as_str()).collect(),
             _ => vec![],
         }
         .into_iter()
@@ -352,6 +525,8 @@ impl Feature {
             questions: vec![],
             checkpoints: vec![],
             suggestions: vec![],
+            meetings: vec![],
+            one_on_ones: vec![],
             report: None,
             created_at: now,
             updated_at: now,
@@ -380,6 +555,14 @@ impl Feature {
     pub fn member(&self, worker_id: &str) -> Option<&TeamMember> {
         self.team.iter().find(|m| m.worker_id == worker_id)
     }
+
+    pub fn meeting(&self, id: &str) -> Option<&Meeting> {
+        self.meetings.iter().find(|m| m.id == id)
+    }
+
+    pub fn one_on_one(&self, id: &str) -> Option<&OneOnOne> {
+        self.one_on_ones.iter().find(|a| a.id == id)
+    }
 }
 
 /// What a card in the owner's chat shows.
@@ -393,6 +576,8 @@ pub enum FeatureCardKind {
     Report,
     /// A proposed specialist (`SpecialistSuggestion`).
     Suggestion,
+    /// A meeting the owner held (`Meeting`): a one-line pointer to the Team tab.
+    Meeting,
 }
 
 /// `data` of the `system` item that puts a card in the owner's chat.
@@ -463,6 +648,130 @@ pub fn suggestion_message(s: &SpecialistSuggestion) -> String {
     }
 }
 
+/// A team member as messages name it: `Tester (QA engineer)`.
+fn who(name: &str, role: &str) -> String {
+    if role.trim().is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} ({})", role.trim())
+    }
+}
+
+/// The message from Aura that brings an attendee a meeting's agenda.
+pub fn agenda_message(m: &Meeting, owner: &str, attendee: &MeetingAttendee) -> String {
+    let others: Vec<String> = m
+        .attendees
+        .iter()
+        .filter(|a| a.worker_id != attendee.worker_id)
+        .map(|a| who(&a.name, &a.role))
+        .collect();
+    let mut out = format!(
+        "{}{owner}, the feature owner, holds a written meeting (`{}`) and asks for your input as {}.\nTopic: {}\n",
+        crate::prompts::aura_header("Meeting"),
+        m.id,
+        who(&attendee.name, &attendee.role),
+        m.topic.trim(),
+    );
+    if !others.is_empty() {
+        out.push_str(&format!("Also asked: {}\n", others.join(", ")));
+    }
+    out.push_str(&format!("\nQuestion:\n{}\n", m.agenda.trim()));
+    if !m.context.trim().is_empty() {
+        out.push_str(&format!("\nContext:\n{}\n", m.context.trim()));
+    }
+    out.push_str("\nAnswer in your final message of this turn, briefly: your view from your role, the risks you see and what you recommend. Do not start on the work itself and do not ask anyone; the owner decides and briefs the team. Aura gives your answer to the owner only.");
+    out
+}
+
+/// The one message from Aura that brings the owner every answer to its meeting.
+pub fn meeting_message(m: &Meeting) -> String {
+    let title = match m.status {
+        MeetingStatus::Complete => "Meeting notes",
+        _ => "Meeting notes, incomplete",
+    };
+    let mut out = format!(
+        "{}Meeting `{}`: {}\nQuestion: {}\n",
+        crate::prompts::aura_header(title),
+        m.id,
+        m.topic.trim(),
+        m.agenda.trim()
+    );
+    for a in &m.attendees {
+        out.push_str(&format!(
+            "\n### {} (`{}`){}\n",
+            who(&a.name, &a.role),
+            a.worker_id,
+            if a.guest { " · guest" } else { "" }
+        ));
+        match (a.status, &a.answer) {
+            (AttendeeStatus::Answered, Some(answer)) => {
+                out.push_str(&format!("{}\n", answer.trim()))
+            }
+            _ => out.push_str(&format!(
+                "No answer: {}.\n",
+                a.missing.as_deref().unwrap_or("none came")
+            )),
+        }
+    }
+    out.push_str(&format!(
+        "\nDecide now. Record what you decided with `record_decision` and `meeting: \"{}\"`, so the user sees the outcome; ask the user only when the decision is truly theirs. Then brief the team.",
+        m.id
+    ));
+    out
+}
+
+/// The message from Aura that brings a teammate another's question.
+pub fn teammate_question_message(a: &OneOnOne, from_role: &str) -> String {
+    format!(
+        "{}{}, on your team, asks you (question `{}`):\n\n{}\n\nAnswer in your final message of this turn, briefly. Aura passes it on to them. Do not start on other work in this turn and do not ask anyone yourself.",
+        crate::prompts::aura_header("Question from a teammate"),
+        who(&a.from_name, from_role),
+        a.id,
+        a.question.trim()
+    )
+}
+
+/// The message from Aura that brings the owner a teammate's question.
+pub fn owner_question_message(a: &OneOnOne, from_role: &str) -> String {
+    format!(
+        "{}{} (`{}`) asks you (question `{}`):\n\n{}\n\nAnswer with `reply_to_teammate` and `question: \"{}\"`; Aura passes it on. Keep it short. The worker waits for your answer before it goes on.",
+        crate::prompts::aura_header("Question from a teammate"),
+        who(&a.from_name, from_role),
+        a.from_id,
+        a.id,
+        a.question.trim(),
+        a.id
+    )
+}
+
+/// The message from Aura that brings the asker the answer to its question,
+/// or tells it none will come.
+pub fn reply_message(a: &OneOnOne) -> String {
+    let (title, by) = if a.to_owner {
+        (
+            "Answer from the feature owner",
+            "The feature owner".to_string(),
+        )
+    } else {
+        ("Answer from a teammate", a.to_name.clone())
+    };
+    match (&a.status, &a.answer) {
+        (OneOnOneStatus::Answered, Some(answer)) => format!(
+            "{}{by} answered your question (`{}`):\n> {}\n\n{}\n\nGo on with your task.",
+            crate::prompts::aura_header(title),
+            a.id,
+            a.question.trim().replace('\n', "\n> "),
+            answer.trim()
+        ),
+        _ => format!(
+            "{}{by} cannot answer your question (`{}`): {}. Go on with what you know and say in your report what is still open.",
+            crate::prompts::aura_header("No answer to your question"),
+            a.id,
+            a.error.as_deref().unwrap_or("no answer came")
+        ),
+    }
+}
+
 /// Whether a checkpoint review answer approves it: the approve option (the
 /// first), whatever note comes with it, or words of the user's own that are
 /// exactly an approval (`approve`, `yes`, `lgtm`). Anything else the user
@@ -528,6 +837,47 @@ pub fn describe(f: &Feature, autonomy: &Autonomy) -> String {
         out.push_str("Waiting on the user for:\n");
         for q in open {
             out.push_str(&format!("- (`{}`) {}\n", q.id, q.question));
+        }
+    }
+    let meetings: Vec<&Meeting> = f
+        .meetings
+        .iter()
+        .filter(|m| m.status == MeetingStatus::Collecting)
+        .collect();
+    if !meetings.is_empty() {
+        out.push_str("Meetings collecting answers:\n");
+        for m in meetings {
+            let answered = m
+                .attendees
+                .iter()
+                .filter(|a| a.status == AttendeeStatus::Answered)
+                .count();
+            out.push_str(&format!(
+                "- (`{}`) {}: {answered} of {} answered\n",
+                m.id,
+                m.topic,
+                m.attendees.len()
+            ));
+        }
+    }
+    let (to_owner, between): (Vec<&OneOnOne>, Vec<&OneOnOne>) = f
+        .one_on_ones
+        .iter()
+        .filter(|a| a.status == OneOnOneStatus::Open)
+        .partition(|a| a.to_owner);
+    if !to_owner.is_empty() {
+        out.push_str("Teammates waiting on your answer (`reply_to_teammate`):\n");
+        for a in to_owner {
+            out.push_str(&format!("- (`{}`) {}: {}\n", a.id, a.from_name, a.question));
+        }
+    }
+    if !between.is_empty() {
+        out.push_str("Teammates waiting on each other:\n");
+        for a in between {
+            out.push_str(&format!(
+                "- (`{}`) {} waits on {}: {}\n",
+                a.id, a.from_name, a.to_name, a.question
+            ));
         }
     }
     out
@@ -640,6 +990,100 @@ mod tests {
         assert_eq!(f.status, FeatureStatus::InProgress);
     }
 
+    fn attendee(id: &str, status: AttendeeStatus) -> MeetingAttendee {
+        MeetingAttendee {
+            worker_id: id.into(),
+            name: format!("{id} name"),
+            role: "Designs".into(),
+            guest: false,
+            status,
+            answer: None,
+            missing: None,
+            answered_at: None,
+        }
+    }
+
+    #[test]
+    fn a_meeting_closes_once_nobody_is_expected_to_answer() {
+        let now = crate::now();
+        let mut m = Meeting {
+            id: "m1".into(),
+            topic: "Toggle".into(),
+            agenda: "Where?".into(),
+            context: String::new(),
+            attendees: vec![
+                attendee("a", AttendeeStatus::Answered),
+                attendee("b", AttendeeStatus::Asked),
+            ],
+            status: MeetingStatus::Collecting,
+            decision_ids: vec![],
+            started_at: now,
+            deadline: now,
+            ended_at: None,
+            delivered: false,
+        };
+        assert!(!m.settle());
+        m.attendees[1].status = AttendeeStatus::Missing;
+        m.attendees[1].missing = Some("it failed".into());
+        m.attendees[0].answer = Some("Top right.".into());
+        assert!(m.settle());
+        assert!(!m.settle(), "only once");
+        assert_eq!(m.status, MeetingStatus::Incomplete);
+        let notes = meeting_message(&m);
+        assert!(
+            notes.starts_with("[Aura] Meeting notes, incomplete. "),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("### a name (Designs) (`a`)\nTop right.\n")
+                && notes.contains("### b name (Designs) (`b`)\nNo answer: it failed.\n"),
+            "{notes}"
+        );
+        let agenda = agenda_message(&m, "Owner", &m.attendees[0]);
+        assert!(agenda.starts_with("[Aura] Meeting. "), "{agenda}");
+        assert!(
+            agenda.contains("Also asked: b name (Designs)\n"),
+            "{agenda}"
+        );
+    }
+
+    #[test]
+    fn an_asker_hears_the_answer_or_that_none_comes() {
+        let mut a = OneOnOne {
+            id: "a1".into(),
+            from_id: "w1".into(),
+            from_name: "Builder".into(),
+            to_id: "w2".into(),
+            to_name: "Designer".into(),
+            to_owner: false,
+            question: "Which icon?\nFor the toggle.".into(),
+            answer: Some("The moon.".into()),
+            error: None,
+            status: OneOnOneStatus::Answered,
+            asked_at: crate::now(),
+            answered_at: None,
+            sent: true,
+            delivered: false,
+        };
+        let r = reply_message(&a);
+        assert!(r.starts_with("[Aura] Answer from a teammate. "), "{r}");
+        assert!(
+            r.contains("> Which icon?\n> For the toggle.\n\nThe moon."),
+            "{r}"
+        );
+        a.status = OneOnOneStatus::Failed;
+        a.error = Some("Designer was deleted".into());
+        let r = reply_message(&a);
+        assert!(r.starts_with("[Aura] No answer to your question. "), "{r}");
+        assert!(
+            r.contains("Designer cannot answer your question (`a1`): Designer was deleted."),
+            "{r}"
+        );
+        a.to_owner = true;
+        a.status = OneOnOneStatus::Answered;
+        assert!(reply_message(&a).starts_with("[Aura] Answer from the feature owner. "));
+    }
+
     #[test]
     fn ids_are_never_handed_out_twice() {
         let mut f = Feature::new("o", "", None);
@@ -665,5 +1109,6 @@ mod tests {
         .unwrap();
         assert_eq!(f.status, FeatureStatus::Planning);
         assert!(f.team.is_empty() && f.report.is_none());
+        assert!(f.meetings.is_empty() && f.one_on_ones.is_empty());
     }
 }

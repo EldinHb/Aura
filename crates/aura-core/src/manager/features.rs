@@ -196,7 +196,7 @@ impl Manager {
     }
 
     /// Change a feature, then store and announce it. Changes are made one at a time.
-    fn change_feature<T>(
+    pub(super) fn change_feature<T>(
         &self,
         owner: &str,
         f: impl FnOnce(&mut Feature) -> Result<T>,
@@ -210,15 +210,16 @@ impl Manager {
     }
 
     /// Record a worker an owner started on its team: hired as a specialist,
-    /// or ad-hoc. Work has started once there is a team.
-    /// Refused, adding nobody, when a checkpoint review holds staffing back:
-    /// checked in the same locked update that adds the member, after the
+    /// or ad-hoc, or as a guest of a meeting. Work has started once there is
+    /// a team. Refused, adding nobody, when a checkpoint review holds staffing
+    /// back: checked in the same locked update that adds the member, after the
     /// worker started, so a review opened meanwhile keeps its task back.
     pub(super) fn join_team(
         &self,
         owner: &str,
         worker: &Session,
         specialist: Option<&Specialist>,
+        guest_of: Option<&str>,
     ) -> Result<()> {
         let member = TeamMember {
             worker_id: worker.id.clone(),
@@ -231,6 +232,7 @@ impl Manager {
                 .map(|s| s.instructions.clone())
                 .unwrap_or_default(),
             hired_at: crate::now(),
+            meeting: guest_of.map(str::to_string),
         };
         self.change_feature(owner, |f| {
             if let Some(hold) = f.review_hold(&self.effective_autonomy(f)) {
@@ -271,6 +273,17 @@ impl Manager {
     /// preferred agent, model and effort unless the spec names others; a
     /// model or effort is only taken from the specialist for its own agent.
     pub async fn hire(&self, owner: &str, spec: HireSpec) -> Result<Session> {
+        self.hire_as(owner, spec, None).await
+    }
+
+    /// Hire a specialist, as a guest of a meeting when `guest_of` names it:
+    /// then it is sent no brief, the meeting's agenda comes first.
+    pub(super) async fn hire_as(
+        &self,
+        owner: &str,
+        spec: HireSpec,
+        guest_of: Option<&str>,
+    ) -> Result<Session> {
         let o = self.feature_owner_session(owner)?;
         let cwd = self.worker_cwd(&o, spec.worker.cwd.as_deref())?;
         let me = self.clone();
@@ -303,7 +316,8 @@ impl Manager {
             w.title = Some(specialist.name.clone());
         }
         w.cwd = Some(cwd);
-        self.start_worker_as(owner, w, Some(&specialist)).await
+        self.start_worker_as(owner, w, Some(&specialist), guest_of)
+            .await
     }
 
     // ------------------------------------------------------------ the user
@@ -448,6 +462,7 @@ impl Manager {
                 },
                 decided_by: DecidedBy::User,
                 question_id: Some(q.id.clone()),
+                meeting_id: None,
                 at: crate::now(),
             });
             if q.kind == QuestionKind::Checkpoint {
@@ -474,12 +489,13 @@ impl Manager {
         Ok(f)
     }
 
-    /// Log a decision the owner made.
+    /// Log a decision the owner made, out of `meeting` when it names one.
     pub fn record_decision(
         &self,
         owner: &str,
         decision: &str,
         rationale: &str,
+        meeting: Option<&str>,
     ) -> Result<Decision> {
         self.feature_owner_session(owner)?;
         let decision = decision.trim();
@@ -490,13 +506,24 @@ impl Manager {
         if rationale.is_empty() {
             bail!("`rationale` is required: say in a line why");
         }
+        let meeting = meeting.map(str::trim).filter(|m| !m.is_empty());
         let (_, d) = self.change_feature(owner, |f| {
+            let id = f.next_id("d");
+            if let Some(m) = meeting {
+                let m = f
+                    .meetings
+                    .iter_mut()
+                    .find(|x| x.id == m)
+                    .ok_or_else(|| anyhow!("no meeting `{m}` in this feature"))?;
+                m.decision_ids.push(id.clone());
+            }
             let d = Decision {
-                id: f.next_id("d"),
+                id,
                 decision: decision.to_string(),
                 rationale: rationale.to_string(),
                 decided_by: DecidedBy::Owner,
                 question_id: None,
+                meeting_id: meeting.map(str::to_string),
                 at: crate::now(),
             };
             f.decisions.push(d.clone());
@@ -735,8 +762,9 @@ impl Manager {
         Ok(f)
     }
 
-    /// Mark what a note brought the owner as delivered.
-    pub(super) fn note_delivered(&self, owner: &str, about: &NoteAbout) {
+    /// Mark what a note brought the session it went to as delivered.
+    pub(super) fn note_delivered(&self, receiver: &str, about: &NoteAbout) {
+        let owner = about.owner().unwrap_or(receiver);
         let result = self.change_feature(owner, |f| {
             match about {
                 NoteAbout::Answer(id) => {
@@ -754,6 +782,34 @@ impl Manager {
                         s.delivered = true;
                     }
                 }
+                NoteAbout::Agenda {
+                    meeting, worker, ..
+                } => {
+                    if let Some(a) = f
+                        .meetings
+                        .iter_mut()
+                        .find(|m| &m.id == meeting)
+                        .and_then(|m| m.attendees.iter_mut().find(|a| &a.worker_id == worker))
+                        .filter(|a| a.status == AttendeeStatus::Invited)
+                    {
+                        a.status = AttendeeStatus::Asked;
+                    }
+                }
+                NoteAbout::Meeting(id) => {
+                    if let Some(m) = f.meetings.iter_mut().find(|m| &m.id == id) {
+                        m.delivered = true;
+                    }
+                }
+                NoteAbout::Ask { id, .. } => {
+                    if let Some(a) = f.one_on_ones.iter_mut().find(|a| &a.id == id) {
+                        a.sent = true;
+                    }
+                }
+                NoteAbout::Reply { id, .. } => {
+                    if let Some(a) = f.one_on_ones.iter_mut().find(|a| &a.id == id) {
+                        a.delivered = true;
+                    }
+                }
             }
             Ok(())
         });
@@ -763,7 +819,8 @@ impl Manager {
     }
 
     /// Queue again what owners were not sent before the daemon stopped: the
-    /// user's answers and what became of their suggestions.
+    /// user's answers and what became of their suggestions. Meetings and
+    /// one-on-ones pick up where they were (see `team`).
     pub(super) fn requeue_undelivered(&self) {
         let features = match self.features() {
             Ok(f) => f,
@@ -773,38 +830,44 @@ impl Manager {
             }
         };
         for f in features {
-            let mut notes = vec![];
+            // Meetings and one-on-ones first: an owner's notes are sent one
+            // per turn, in the order queued.
+            self.resume_team(&f);
             for q in &f.questions {
                 if q.answer.as_ref().is_some_and(|a| !a.delivered) {
-                    notes.push(Note {
-                        text: answer_message(q),
-                        about: Some(NoteAbout::Answer(q.id.clone())),
-                    });
+                    self.queue_unless_received(
+                        &f.owner_id,
+                        Note {
+                            text: answer_message(q),
+                            about: Some(NoteAbout::Answer(q.id.clone())),
+                        },
+                    );
                 }
             }
             for s in &f.suggestions {
                 if s.status != SuggestionStatus::Pending && !s.delivered {
-                    notes.push(Note {
-                        text: suggestion_message(s),
-                        about: Some(NoteAbout::Suggestion(s.id.clone())),
-                    });
+                    self.queue_unless_received(
+                        &f.owner_id,
+                        Note {
+                            text: suggestion_message(s),
+                            about: Some(NoteAbout::Suggestion(s.id.clone())),
+                        },
+                    );
                 }
             }
-            if notes.is_empty() {
-                continue;
+        }
+    }
+
+    /// Queue a note again after a restart, unless the session's history
+    /// shows its agent took it in before its mark was stored (not the
+    /// transcript entry alone, which Claude and ACP make before they write
+    /// the prompt): then it is marked, not sent twice.
+    pub(super) fn queue_unless_received(&self, to: &str, note: Note) {
+        match note.about.as_ref() {
+            Some(about) if self.received_in_history(to, &note.text) => {
+                self.note_delivered(to, about)
             }
-            // The agent may have taken one in before its mark was stored: its
-            // history shows that (not the transcript entry alone, which
-            // Claude and ACP make before they write the prompt), and it is
-            // not sent twice.
-            for note in notes {
-                match note.about.as_ref() {
-                    Some(about) if self.received_in_history(&f.owner_id, &note.text) => {
-                        self.note_delivered(&f.owner_id, about)
-                    }
-                    _ => self.queue_note(&f.owner_id, note),
-                }
-            }
+            _ => self.queue_note(to, note),
         }
     }
 
@@ -812,7 +875,7 @@ impl Manager {
 
     /// Put a card in the owner's chat: a `system` item pointing into the
     /// feature record, in the turn that made it.
-    fn post_card(&self, owner: &str, kind: FeatureCardKind, id: &str, text: &str) {
+    pub(super) fn post_card(&self, owner: &str, kind: FeatureCardKind, id: &str, text: &str) {
         let turn = self
             .inner
             .runtimes
@@ -823,6 +886,7 @@ impl Manager {
             FeatureCardKind::Decision => "Decision for the user",
             FeatureCardKind::Report => "Delivery report",
             FeatureCardKind::Suggestion => "Specialist suggestion",
+            FeatureCardKind::Meeting => "Meeting",
         };
         let item = Item::new(owner, turn, ItemKind::System)
             .with_title(title)

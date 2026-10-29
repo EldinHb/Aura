@@ -16,4 +16,8 @@ name: string, role: string,
  * The specialist's instructions as they were when it was hired, used
  * when the specialist is deleted later.
  */
-instructions: string, hired_at: string, };
+instructions: string, hired_at: string, 
+/**
+ * Hired as a guest of this meeting, for its input only.
+ */
+meeting: string | null, };

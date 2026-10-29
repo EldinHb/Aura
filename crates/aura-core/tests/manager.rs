@@ -1,6 +1,6 @@
 //! Manager behaviour with a scripted fake provider.
 
-use aura_core::prompts::FORMAT_PROMPT;
+use aura_core::prompts::{self, FORMAT_PROMPT};
 use aura_core::*;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -55,6 +55,18 @@ impl Driver for FakeDriver {
         if self.knobs.lock().no_echo {
             return Ok(());
         }
+        // Messages from Aura quote what others wrote; only a cue such as
+        // `<<crash>>` in them scripts the turn.
+        let script = if prompts::is_aura_message(&input.text) {
+            input
+                .text
+                .split_once("<<")
+                .and_then(|(_, r)| r.split_once(">>"))
+                .map(|(cue, _)| cue.to_string())
+                .unwrap_or_default()
+        } else {
+            input.text.clone()
+        };
         if self.knobs.lock().crash_queued {
             let sink = self.sink.clone();
             let sid = self.session_id.clone();
@@ -118,7 +130,7 @@ impl Driver for FakeDriver {
             item_id: item.id.clone(),
             delta: ItemDelta::Text { text: "lo".into() },
         });
-        if input.text.contains("question") {
+        if script.contains("question") {
             let _ = self.sink.send(Event::UserInputRequested {
                 session_id: self.session_id.clone(),
                 request: UserInputRequest {
@@ -126,7 +138,7 @@ impl Driver for FakeDriver {
                     session_id: self.session_id.clone(),
                     turn_id: Some(turn.id.clone()),
                     item_id: None,
-                    questions: if input.text.contains("secret") {
+                    questions: if script.contains("secret") {
                         vec![Question {
                             id: "pw".into(),
                             header: None,
@@ -142,13 +154,13 @@ impl Driver for FakeDriver {
                     created_at: now(),
                 },
             });
-        } else if input.text.contains("crash") {
+        } else if script.contains("crash") {
             let _ = self.sink.send(Event::ProcessExited {
                 session_id: self.session_id.clone(),
                 exit_code: Some(1),
                 message: Some("crashed".into()),
             });
-        } else if input.text.contains("fail") {
+        } else if script.contains("fail") {
             let _ = self.sink.send(Event::TurnCompleted {
                 session_id: self.session_id.clone(),
                 turn: Turn {
@@ -158,7 +170,7 @@ impl Driver for FakeDriver {
                     ..turn
                 },
             });
-        } else if input.text.contains("approve") {
+        } else if script.contains("approve") {
             let approval = Approval {
                 id: "ap1".into(),
                 session_id: self.session_id.clone(),
@@ -3379,7 +3391,7 @@ async fn feature_owners_get_their_tools_and_prompt_and_plain_orchestrators_keep_
             },
         )
         .unwrap_err(),
-        m.record_decision(&plain.id, "x", "y").unwrap_err(),
+        m.record_decision(&plain.id, "x", "y", None).unwrap_err(),
         m.hire(
             &plain.id,
             HireSpec {
@@ -3541,7 +3553,7 @@ async fn a_feature_survives_a_restart_of_the_daemon() {
             })
             .await
             .unwrap();
-        m.record_decision(&owner.id, "Use the existing exporter", "Less code")
+        m.record_decision(&owner.id, "Use the existing exporter", "Less code", None)
             .unwrap();
         m.shutdown().await;
         owner.id
@@ -3900,7 +3912,8 @@ async fn a_fork_of_a_feature_owner_owns_a_copy_of_the_feature_without_the_team()
     )
     .await
     .unwrap();
-    m.record_decision(&owner.id, "Keep it", "Works").unwrap();
+    m.record_decision(&owner.id, "Keep it", "Works", None)
+        .unwrap();
     m.ask_user(
         &owner.id,
         AskSpec {
@@ -3909,12 +3922,31 @@ async fn a_fork_of_a_feature_owner_owns_a_copy_of_the_feature_without_the_team()
         },
     )
     .unwrap();
+    // A meeting that is over goes with the copy as history; one under way does not.
+    m.hold_meeting(&owner.id, meeting("Done", &["tester"]))
+        .await
+        .unwrap();
+    wait_feature(&m, &owner.id, |f| {
+        f.meetings[0].status == MeetingStatus::Complete
+    })
+    .await;
+    m.hold_meeting(
+        &owner.id,
+        MeetingSpec {
+            context: "<<approve>>".into(),
+            ..meeting("Under way", &["tester"])
+        },
+    )
+    .await
+    .unwrap();
     wait_native_id(&m, &owner.id).await;
     let fork = m.fork(&owner.id).await.unwrap();
     assert!(fork.feature_owner);
     let f = m.feature(&fork.id).unwrap();
     assert_eq!(f.goal, "Fork me");
     assert!(f.team.is_empty() && f.questions.is_empty());
+    assert_eq!(f.meetings.len(), 1);
+    assert!(f.meetings[0].delivered && f.meetings[0].topic == "Done");
     assert_eq!(f.decisions.len(), 1);
     assert_eq!(f.status, FeatureStatus::InProgress);
     assert_eq!(m.features().unwrap().len(), 2);
@@ -4363,7 +4395,7 @@ async fn a_fork_never_hands_out_an_id_twice() {
         new.id, open.id,
         "the fork must not reuse an id of the original either"
     );
-    let d = m.record_decision(&fork.id, "x", "y").unwrap();
+    let d = m.record_decision(&fork.id, "x", "y", None).unwrap();
     assert!(
         m.feature(&fork.id)
             .unwrap()
@@ -4756,4 +4788,689 @@ async fn accepting_a_suggestion_never_overwrites_a_save_made_at_the_same_time() 
         m.specialist("race-role", Some(&cwd)).unwrap().instructions,
         "user version"
     );
+}
+
+// ------------------------------------------------------------ team at work
+
+/// Wait until `check` holds for the owner's feature.
+async fn wait_feature(m: &Manager, owner: &str, check: impl Fn(&Feature) -> bool) -> Feature {
+    for _ in 0..150 {
+        let f = m.feature(owner).unwrap();
+        if check(&f) {
+            return f;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "the feature never got there: {:#?}",
+        m.feature(owner).unwrap()
+    );
+}
+
+fn count_sent(calls: &Calls, prefix: &str) -> usize {
+    calls
+        .lock()
+        .iter()
+        .filter(|c| c.starts_with(&format!("send:{prefix}")))
+        .count()
+}
+
+/// An ad-hoc worker on the owner's team, done with its brief and reported.
+async fn teammate(m: &Manager, calls: &Calls, owner: &str, title: &str, brief: &str) -> Session {
+    let reports = sent_reports(calls).len();
+    let w = m
+        .start_worker(
+            owner,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: brief.into(),
+                title: Some(title.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    if !brief.contains("approve") {
+        wait_reports(calls, reports + 1).await;
+    }
+    wait_status(m, owner, SessionStatus::Idle).await;
+    w
+}
+
+fn meeting(topic: &str, attendees: &[&str]) -> MeetingSpec {
+    MeetingSpec {
+        topic: topic.into(),
+        agenda: "Where does the toggle go?".into(),
+        attendees: attendees.iter().map(|a| a.to_string()).collect(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_meeting_brings_the_owner_every_answer_once_and_no_worker_reports() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m
+        .create_session(owner_opts(&cwd, "Dark mode"))
+        .await
+        .unwrap();
+    m.save_specialist(specialist("designer", "Design every state."))
+        .unwrap();
+    m.save_specialist(specialist("tester", "Test it.")).unwrap();
+    let designer = m
+        .hire(
+            &owner.id,
+            HireSpec {
+                specialist: "designer".into(),
+                worker: WorkerSpec {
+                    prompt: "design the toggle".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    wait_reports(&calls, 1).await;
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    let reports = sent_reports(&calls).len();
+
+    let held = m
+        .hold_meeting(
+            &owner.id,
+            MeetingSpec {
+                guests: vec!["tester".into()],
+                context: "The settings page has a header and a list.".into(),
+                ..meeting("Toggle placement", &["designer"])
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(held.id, "m1");
+    assert_eq!(held.attendees.len(), 2);
+    assert_eq!(held.attendees[0].worker_id, designer.id);
+    assert!(!held.attendees[0].guest && held.attendees[1].guest);
+    let guest = held.attendees[1].worker_id.clone();
+
+    // Each attendee gets the agenda; the owner gets one message with both answers.
+    let agendas = wait_sent(&calls, "[Aura] Meeting.", 2).await;
+    assert!(
+        agendas[0].contains("Where does the toggle go?")
+            && agendas[0].contains("The settings page has a header"),
+        "{}",
+        agendas[0]
+    );
+    let notes = wait_sent(&calls, "[Aura] Meeting notes.", 1).await;
+    assert!(
+        notes[0].contains(&format!("(`{}`)\nhello", designer.id))
+            && notes[0].contains(&format!("(`{guest}`) · guest\nhello")),
+        "{}",
+        notes[0]
+    );
+    assert!(notes[0].contains("`meeting: \"m1\"`"), "{}", notes[0]);
+    let f = wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    let mt = &f.meetings[0];
+    assert_eq!(mt.status, MeetingStatus::Complete);
+    assert!(mt
+        .attendees
+        .iter()
+        .all(|a| a.status == AttendeeStatus::Answered && a.answer.as_deref() == Some("hello")));
+    assert!(mt.ended_at.is_some());
+    // The guest is on the team now, as the meeting's guest.
+    let member = f.member(&guest).unwrap();
+    assert_eq!(member.meeting.as_deref(), Some("m1"));
+    assert_eq!(member.specialist_id.as_deref(), Some("tester"));
+    // A card points the user to it.
+    assert!(wait_cards(&m, &owner.id, 1)
+        .await
+        .contains(&("meeting".into(), "m1".into())));
+
+    // The answers came in the notes only, not again as worker reports.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        sent_reports(&calls).len(),
+        reports,
+        "{:?}",
+        sent_reports(&calls)
+    );
+    assert_eq!(count_sent(&calls, "[Aura] Meeting notes"), 1);
+    // Nor did the attendees want the user's attention for it.
+    assert_eq!(m.get_session(&guest).unwrap().attention, None);
+
+    // The owner records what it decided from it.
+    let d = m
+        .record_decision(&owner.id, "Top right", "Both agreed", Some("m1"))
+        .unwrap();
+    assert_eq!(d.meeting_id.as_deref(), Some("m1"));
+    assert_eq!(
+        m.feature(&owner.id).unwrap().meetings[0].decision_ids,
+        [d.id]
+    );
+    assert!(m
+        .record_decision(&owner.id, "x", "y", Some("m9"))
+        .unwrap_err()
+        .to_string()
+        .contains("no meeting `m9`"));
+
+    // Refused: no attendees, too many, strangers, the owner itself.
+    let err = |r: anyhow::Result<Meeting>| r.unwrap_err().to_string();
+    assert!(err(m.hold_meeting(&owner.id, meeting("x", &[])).await).contains("needs attendees"));
+    let seven = MeetingSpec {
+        guests: vec!["tester".into(); 6],
+        ..meeting("x", &["designer"])
+    };
+    assert!(err(m.hold_meeting(&owner.id, seven).await).contains("too many"));
+    let stranger = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(err(m
+        .hold_meeting(&owner.id, meeting("x", &[&stranger.id]))
+        .await)
+    .contains("is not on this team"));
+    assert!(
+        err(m.hold_meeting(&owner.id, meeting("x", &[&owner.id])).await)
+            .contains("is not on this team")
+    );
+    assert!(err(m
+        .hold_meeting(
+            &owner.id,
+            MeetingSpec {
+                guests: vec!["nobody".into()],
+                ..meeting("x", &[])
+            }
+        )
+        .await)
+    .contains("`designer`"));
+    assert_eq!(m.feature(&owner.id).unwrap().meetings.len(), 1);
+}
+
+#[tokio::test]
+async fn a_meeting_closes_without_the_attendees_that_fail_or_take_too_long() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let b = teammate(&m, &calls, &owner.id, "Builder", "build").await;
+
+    // An attendee whose agent crashes on the agenda is missing from the notes.
+    m.hold_meeting(
+        &owner.id,
+        MeetingSpec {
+            context: "<<crash>>".into(),
+            ..meeting("Crash", &["Designer"])
+        },
+    )
+    .await
+    .unwrap();
+    let notes = wait_sent(&calls, "[Aura] Meeting notes, incomplete.", 1).await;
+    assert!(
+        notes[0].contains("No answer: its agent stopped: crashed."),
+        "{}",
+        notes[0]
+    );
+    let f = wait_feature(&m, &owner.id, |f| f.meetings[0].delivered).await;
+    assert_eq!(f.meetings[0].status, MeetingStatus::Incomplete);
+    assert_eq!(f.meetings[0].attendees[0].status, AttendeeStatus::Missing);
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+
+    // One that waits on the user's approval misses a meeting whose time runs out.
+    let reports = sent_reports(&calls).len();
+    m.message_worker(&owner.id, &b.id, "approve the plan".into())
+        .await
+        .unwrap();
+    wait_status(&m, &b.id, SessionStatus::WaitingApproval).await;
+    wait_reports(&calls, reports + 1).await;
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+    tokio::time::pause();
+    let held = m
+        .hold_meeting(
+            &owner.id,
+            MeetingSpec {
+                timeout_minutes: Some(1),
+                ..meeting("Slow", &[&a.id, "Builder"])
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(held.id, "m2");
+    wait_feature(&m, &owner.id, |f| {
+        f.meetings[1].attendees[0].status == AttendeeStatus::Answered
+    })
+    .await;
+    assert_eq!(
+        m.feature(&owner.id).unwrap().meetings[1].attendees[1].status,
+        AttendeeStatus::Invited,
+        "busy, it was not sent the agenda yet"
+    );
+    tokio::time::advance(Duration::from_secs(61)).await;
+    let notes = wait_sent(&calls, "[Aura] Meeting notes, incomplete.", 2).await;
+    assert!(
+        notes[1].contains("hello") && notes[1].contains("No answer: no answer within a minute."),
+        "{}",
+        notes[1]
+    );
+    tokio::time::resume();
+    // Free again, the late attendee is not sent the closed meeting's agenda.
+    let agendas = count_sent(&calls, "[Aura] Meeting.");
+    m.respond_approval(
+        &b.id,
+        "ap1",
+        ApprovalDecision {
+            option: ApprovalOption::Accept,
+            updated_input: None,
+            message: None,
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &b.id, SessionStatus::Idle).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(count_sent(&calls, "[Aura] Meeting."), agendas);
+
+    // A deleted attendee is missing too, and the meeting closes without it.
+    m.message_worker(&owner.id, &b.id, "approve again".into())
+        .await
+        .unwrap();
+    wait_status(&m, &b.id, SessionStatus::WaitingApproval).await;
+    m.hold_meeting(&owner.id, meeting("Gone", &["Builder"]))
+        .await
+        .unwrap();
+    m.delete_worker(&owner.id, &b.id).await.unwrap();
+    let f = wait_feature(&m, &owner.id, |f| {
+        f.meetings[2].status != MeetingStatus::Collecting
+    })
+    .await;
+    assert_eq!(
+        f.meetings[2].attendees[0].missing.as_deref(),
+        Some("Builder was deleted")
+    );
+    wait_sent(&calls, "[Aura] Meeting notes, incomplete.", 3).await;
+}
+
+#[tokio::test]
+async fn a_meeting_goes_on_after_a_restart_of_the_daemon() {
+    let store: Arc<MemoryStore> = Default::default();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let (owner_id, busy_id) = {
+        let (m, calls, _provider) = owner_setup(store.clone());
+        let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+        teammate(&m, &calls, &owner.id, "Designer", "look").await;
+        let busy = teammate(&m, &calls, &owner.id, "Builder", "approve the plan").await;
+        wait_status(&m, &busy.id, SessionStatus::WaitingApproval).await;
+        m.hold_meeting(&owner.id, meeting("Restart", &["Designer", "Builder"]))
+            .await
+            .unwrap();
+        wait_feature(&m, &owner.id, |f| {
+            f.meetings[0].attendees[0].status == AttendeeStatus::Answered
+        })
+        .await;
+        m.shutdown().await;
+        assert_eq!(count_sent(&calls, "[Aura] Meeting notes"), 0);
+        (owner.id, busy.id)
+    };
+    let (m, calls, _provider) = owner_setup(store);
+    m.restore().unwrap();
+    // The attendee that had not answered is asked again and the notes follow.
+    let agenda = wait_sent(&calls, "[Aura] Meeting.", 1).await;
+    assert!(agenda[0].contains("as Builder"), "{}", agenda[0]);
+    let notes = wait_sent(&calls, "[Aura] Meeting notes.", 1).await;
+    assert_eq!(notes[0].matches("\nhello\n").count(), 2, "{}", notes[0]);
+    let f = wait_feature(&m, &owner_id, |f| f.meetings[0].delivered).await;
+    assert_eq!(f.meetings[0].status, MeetingStatus::Complete);
+    assert_eq!(
+        f.meetings[0].attendee(&busy_id).unwrap().status,
+        AttendeeStatus::Answered
+    );
+}
+
+#[tokio::test]
+async fn teammates_ask_each_other_and_the_answer_comes_back_to_the_asker() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let b = teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    let reports = sent_reports(&calls).len();
+
+    let ask = m
+        .ask_teammate(&a.id, "Builder", "Which port does the API use?")
+        .unwrap();
+    assert_eq!((ask.id.as_str(), ask.to_id.as_str()), ("a1", b.id.as_str()));
+    let q = wait_sent(&calls, "[Aura] Question from a teammate.", 1).await;
+    assert!(
+        q[0].contains("Designer, on your team, asks you") && q[0].contains("Which port"),
+        "{}",
+        q[0]
+    );
+    let answer = wait_sent(&calls, "[Aura] Answer from a teammate.", 1).await;
+    assert!(
+        answer[0].contains(
+            "Builder answered your question (`a1`):\n> Which port does the API use?\n\nhello"
+        ),
+        "{}",
+        answer[0]
+    );
+    let f = wait_feature(&m, &owner.id, |f| f.one_on_ones[0].delivered).await;
+    let o = &f.one_on_ones[0];
+    assert_eq!(o.status, OneOnOneStatus::Answered);
+    assert_eq!(o.answer.as_deref(), Some("hello"));
+    assert!(o.sent && !o.to_owner);
+
+    // The teammate's answer is not reported; the asker going on with it is.
+    wait_reports(&calls, reports + 1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let after = sent_reports(&calls);
+    assert_eq!(after.len(), reports + 1, "{after:?}");
+    let last = after.last().unwrap();
+    assert!(
+        last.contains(&format!("(`{}`)", a.id)) && !last.contains(&format!("(`{}`)", b.id)),
+        "{last}"
+    );
+}
+
+#[tokio::test]
+async fn a_teammate_asks_the_owner_which_replies() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let b = teammate(&m, &calls, &owner.id, "Builder", "build").await;
+
+    let ask = m.ask_owner(&a.id, "Is the beta in scope?").unwrap();
+    assert!(ask.to_owner);
+    let q = wait_sent(&calls, "[Aura] Question from a teammate.", 1).await;
+    assert!(
+        q[0].contains(&format!("Designer (`{}`) asks you (question `a1`)", a.id))
+            && q[0].contains("`reply_to_teammate`"),
+        "{}",
+        q[0]
+    );
+    wait_feature(&m, &owner.id, |f| f.one_on_ones[0].sent).await;
+    // Only one open question to the owner at a time.
+    assert!(m
+        .ask_owner(&a.id, "And the docs?")
+        .unwrap_err()
+        .to_string()
+        .contains("asked Owner already"));
+    wait_status(&m, &owner.id, SessionStatus::Idle).await;
+
+    let replied = m
+        .reply_to_teammate(&owner.id, "a1", "Yes, the beta too.")
+        .unwrap();
+    assert_eq!(replied.status, OneOnOneStatus::Answered);
+    let answer = wait_sent(&calls, "[Aura] Answer from the feature owner.", 1).await;
+    assert!(answer[0].contains("Yes, the beta too."), "{}", answer[0]);
+    wait_feature(&m, &owner.id, |f| f.one_on_ones[0].delivered).await;
+
+    // Replies only to open questions put to the owner, by the owner.
+    let err = |r: anyhow::Result<OneOnOne>| r.unwrap_err().to_string();
+    assert!(err(m.reply_to_teammate(&owner.id, "a1", "again")).contains("closed already"));
+    assert!(err(m.reply_to_teammate(&owner.id, "a9", "x")).contains("no question `a9`"));
+    m.ask_teammate(&b.id, "Designer", "Which icon?").unwrap();
+    assert!(err(m.reply_to_teammate(&owner.id, "a2", "x")).contains("put to Designer, not to you"));
+    assert!(err(m.reply_to_teammate(&a.id, "a1", "x")).contains("is not a feature owner"));
+}
+
+#[tokio::test]
+async fn one_on_ones_refuse_loops_strangers_and_asking_oneself() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    let b = teammate(&m, &calls, &owner.id, "Builder", "approve the plan").await;
+    wait_status(&m, &b.id, SessionStatus::WaitingApproval).await;
+    let c = teammate(&m, &calls, &owner.id, "Tester", "test").await;
+    let err = |r: anyhow::Result<OneOnOne>| r.unwrap_err().to_string();
+
+    assert!(err(m.ask_teammate(&a.id, "Designer", "x")).contains("cannot ask yourself"));
+    assert!(err(m.ask_teammate(&a.id, &owner.id, "x")).contains("`ask_owner`"));
+    let stranger = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            title: Some("Stranger".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(err(m.ask_teammate(&a.id, &stranger.id, "x")).contains("is not on this team"));
+    assert!(err(m.ask_teammate(&a.id, "Nobody", "x")).contains("nobody on the team matches"));
+    assert!(err(m.ask_teammate(&stranger.id, "Designer", "x"))
+        .contains("only workers on a feature owner's team"));
+    assert!(err(m.ask_teammate(&a.id, "Builder", " ")).contains("`question` is required"));
+
+    // A plain orchestrator's workers have no team.
+    let plain = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let pw = m
+        .start_worker(
+            &plain.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "go".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(err(m.ask_owner(&pw.id, "x")).contains("only workers on a feature owner's team"));
+    assert!(m.team_for(&pw.id).is_err());
+
+    // One open question per teammate, and at most two open at once.
+    m.ask_teammate(&a.id, "Builder", "When is the API ready?")
+        .unwrap();
+    assert!(err(m.ask_teammate(&a.id, &b.id, "Really?"))
+        .contains("asked Builder already (question `a1`)"));
+    m.ask_teammate(&a.id, "Tester", "Which browsers?").unwrap();
+    wait_feature(&m, &owner.id, |f| f.one_on_ones[1].delivered).await;
+    m.ask_teammate(&c.id, "Builder", "Is there a staging server?")
+        .unwrap();
+    m.ask_owner(&c.id, "Anything else?").unwrap();
+    assert_eq!(m.feature(&owner.id).unwrap().one_on_ones.len(), 4);
+    assert!(err(m.ask_teammate(&c.id, "Designer", "More?")).contains("2 questions open"));
+
+    // A worker waiting on an answer is not reported when its turn ends.
+    let reports = sent_reports(&calls).len();
+    m.message_worker(&owner.id, &a.id, "keep going".into())
+        .await
+        .unwrap();
+    wait_status(&m, &a.id, SessionStatus::Idle).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(sent_reports(&calls).len(), reports);
+
+    // Nobody asks while answering: the attendee waiting on an approval in
+    // the turn that answers a meeting cannot ask, and that wait is no report.
+    m.hold_meeting(
+        &owner.id,
+        MeetingSpec {
+            context: "<<approve>>".into(),
+            ..meeting("Loop", &["Tester"])
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &c.id, SessionStatus::WaitingApproval).await;
+    m.reply_to_teammate(&owner.id, "a4", "No.").unwrap();
+    wait_feature(&m, &owner.id, |f| {
+        f.one_on_ones[3].status == OneOnOneStatus::Answered
+    })
+    .await;
+    assert!(err(m.ask_teammate(&c.id, "Designer", "x")).contains("you are answering"));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(sent_reports(&calls).len(), reports);
+
+    // A teammate deleted before it answered: the asker hears no answer comes.
+    m.delete_worker(&owner.id, &b.id).await.unwrap();
+    let none = wait_sent(&calls, "[Aura] No answer to your question.", 1).await;
+    assert!(none[0].contains("Builder was deleted"), "{}", none[0]);
+    let f = m.feature(&owner.id).unwrap();
+    assert_eq!(f.one_on_ones[0].status, OneOnOneStatus::Failed);
+
+    // The team as a worker sees it.
+    let team = m.team_for(&a.id).unwrap();
+    assert!(team.contains(&format!("Owner (`{}`)", owner.id)), "{team}");
+    assert!(
+        team.contains(&format!("Designer (`{}`)", a.id)) && team.contains("· you"),
+        "{team}"
+    );
+    assert!(!team.contains("Builder"), "{team}");
+    drop(provider);
+}
+
+#[tokio::test]
+async fn only_a_feature_owners_workers_get_the_teams_tools_and_prompt() {
+    let (m, calls, provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let plain = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            title: Some("Lead".into()),
+            orchestrator: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let pw = m
+        .start_worker(
+            &plain.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "go".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    // Exactly as before: no MCP server, the worker prompt and nothing else.
+    assert!(provider.mcp.lock().last().unwrap().is_empty());
+    let prompt = provider.prompts.lock().last().cloned().flatten().unwrap();
+    assert_eq!(
+        prompt,
+        format!(
+            "{}\n\n{}",
+            prompts::compose(
+                prompts::DEFAULT_GLOBAL_PROMPT,
+                None,
+                &m.get_session(&pw.id).unwrap(),
+                "Fake"
+            ),
+            prompts::worker_prompt("Lead")
+        )
+    );
+
+    let owner = m.create_session(owner_opts(&cwd, "")).await.unwrap();
+    m.save_specialist(specialist("designer", "Design every state."))
+        .unwrap();
+    let w = m
+        .hire(
+            &owner.id,
+            HireSpec {
+                specialist: "designer".into(),
+                worker: WorkerSpec {
+                    prompt: "design".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let mcp = provider.mcp.lock().last().cloned().unwrap();
+    // With a token of its own, which acts for this worker only.
+    let token = m.session_token(&w.id);
+    assert_eq!(
+        mcp[0].args,
+        [
+            "mcp",
+            "--data-dir",
+            "/data",
+            "--worker",
+            w.id.as_str(),
+            "--token",
+            token.as_str()
+        ]
+    );
+    let prompt = provider.prompts.lock().last().cloned().flatten().unwrap();
+    let worker = prompt.find("## You are a worker").unwrap();
+    let team = prompt.find("## Your team").unwrap();
+    let role = prompt.find("## Your role: designer name").unwrap();
+    assert!(worker < team && team < role, "{prompt}");
+    for tool in ["`list_team`", "`ask_teammate`", "`ask_owner`"] {
+        assert!(prompt.contains(tool), "{tool} missing: {prompt}");
+    }
+    drop(calls);
+}
+
+#[tokio::test]
+async fn a_checkpoint_review_holds_meetings_but_not_one_on_ones() {
+    let (m, calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let owner = m
+        .create_session(CreateSessionOpts {
+            autonomy: checkpoints(vec![Checkpoint::AfterDesign]),
+            ..owner_opts(&cwd, "")
+        })
+        .await
+        .unwrap();
+    let a = teammate(&m, &calls, &owner.id, "Designer", "look").await;
+    teammate(&m, &calls, &owner.id, "Builder", "build").await;
+    m.checkpoint(&owner.id, Checkpoint::AfterDesign, "Designs in docs/")
+        .unwrap();
+    // Open: no meeting at all; teammates still talk to each other and the owner.
+    let err = m
+        .hold_meeting(&owner.id, meeting("x", &["Designer"]))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("wait for the user's review"),
+        "{err}"
+    );
+    m.ask_teammate(&a.id, "Builder", "Which port?").unwrap();
+    let ask = m.ask_owner(&a.id, "Is the beta in scope?").unwrap();
+    m.reply_to_teammate(&owner.id, &ask.id, "Yes.").unwrap();
+
+    // Changes asked for: a meeting with the team it has, no guests.
+    let q = m.feature(&owner.id).unwrap().questions[0].id.clone();
+    m.answer_question(
+        &owner.id,
+        &q,
+        Some("Request changes".into()),
+        "Bigger".into(),
+    )
+    .unwrap();
+    let err = m
+        .hold_meeting(
+            &owner.id,
+            MeetingSpec {
+                guests: vec!["tester".into()],
+                ..meeting("x", &["Designer"])
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("asked for changes"), "{err}");
+    let held = m
+        .hold_meeting(&owner.id, meeting("Rework", &["Designer", "Builder"]))
+        .await
+        .unwrap();
+    assert_eq!((held.id.as_str(), held.attendees.len()), ("m1", 2));
 }

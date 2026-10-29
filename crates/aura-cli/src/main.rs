@@ -117,14 +117,17 @@ enum Cmd {
     /// Serve an orchestrator's tools over MCP on stdin/stdout (Aura starts this itself)
     Mcp {
         /// The orchestrator session the tools act for
-        #[arg(long)]
-        orchestrator: String,
+        #[arg(long, required_unless_present = "worker", conflicts_with = "worker")]
+        orchestrator: Option<String>,
         /// The orchestrator is a feature owner: serve the owner's tools too
-        #[arg(long)]
+        #[arg(long, requires = "orchestrator")]
         feature_owner: bool,
-        /// The session token Aura made for this orchestrator's tools
+        /// The session token Aura made for this session's tools
         #[arg(long)]
         token: String,
+        /// A worker on a feature owner's team: serve the team's tools instead
+        #[arg(long)]
+        worker: Option<String>,
     },
 }
 
@@ -149,9 +152,15 @@ async fn main() -> Result<()> {
         orchestrator,
         feature_owner,
         token,
+        worker,
     } = cli.cmd
     {
-        return mcp::run(data_dir, orchestrator, feature_owner, token).await;
+        let role = match (orchestrator, worker) {
+            (Some(id), _) => mcp::Role::Orchestrator { id, feature_owner },
+            (None, Some(id)) => mcp::Role::Worker { id },
+            (None, None) => bail!("give --orchestrator or --worker"),
+        };
+        return mcp::run(data_dir, role, token).await;
     }
     let client = connect_or_start(&data_dir).await?;
     match cli.cmd {

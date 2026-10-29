@@ -140,11 +140,13 @@ enum Caller {
 
 /// Whether `caller` may call `method` with `params`. A session's tools may
 /// only use the orchestrator's and feature owner's tools for that session,
-/// and read the agents; nothing that is the user's (answers, settings,
-/// sessions, history, the daemon's own token). The user's token cannot act
-/// as a session's tools.
+/// or a team member's (`team.*`) for that worker, and read the agents;
+/// nothing that is the user's (answers, settings, sessions, history, the
+/// daemon's own token). The user's token cannot act as a session's tools.
+/// Whom a team member may reach is up to the manager: its own team only.
 fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), DispatchError> {
     let session_tool = method.starts_with("owner.")
+        || method.starts_with("team.")
         || (method.starts_with("orchestrator.") && method != "orchestrator.projects");
     let forbidden = |message: String| DispatchError {
         code: ERR_FORBIDDEN,
@@ -161,6 +163,7 @@ fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), Dispat
                 "daemon.ping" | "provider.list" | "provider.models" | "orchestrator.projects" => true,
                 m if m.starts_with("orchestrator.") => acts_for("orchestrator"),
                 m if m.starts_with("owner.") => acts_for("owner"),
+                m if m.starts_with("team.") => acts_for("worker"),
                 _ => false,
             };
             if allowed {
@@ -719,13 +722,71 @@ async fn dispatch(
                 decision: String,
                 #[serde(default)]
                 rationale: String,
+                #[serde(default)]
+                meeting: Option<String>,
             }
             let P {
                 owner,
                 decision,
                 rationale,
+                meeting,
             } = params(p)?;
-            ok(m.record_decision(&owner, &decision, &rationale)?)
+            ok(m.record_decision(&owner, &decision, &rationale, meeting.as_deref())?)
+        }
+        "owner.hold_meeting" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                #[serde(flatten)]
+                spec: MeetingSpec,
+            }
+            let P { owner, spec } = params(p)?;
+            ok(m.hold_meeting(&owner, spec).await?)
+        }
+        "owner.reply_to_teammate" => {
+            #[derive(Deserialize)]
+            struct P {
+                owner: String,
+                question: String,
+                answer: String,
+            }
+            let P {
+                owner,
+                question,
+                answer,
+            } = params(p)?;
+            ok(m.reply_to_teammate(&owner, &question, &answer)?)
+        }
+        "team.list" => {
+            #[derive(Deserialize)]
+            struct P {
+                worker: String,
+            }
+            let P { worker } = params(p)?;
+            ok(m.team_for(&worker)?)
+        }
+        "team.ask" => {
+            #[derive(Deserialize)]
+            struct P {
+                worker: String,
+                to: String,
+                question: String,
+            }
+            let P {
+                worker,
+                to,
+                question,
+            } = params(p)?;
+            ok(m.ask_teammate(&worker, &to, &question)?)
+        }
+        "team.ask_owner" => {
+            #[derive(Deserialize)]
+            struct P {
+                worker: String,
+                question: String,
+            }
+            let P { worker, question } = params(p)?;
+            ok(m.ask_owner(&worker, &question)?)
         }
         "owner.checkpoint" => {
             #[derive(Deserialize)]

@@ -218,3 +218,76 @@ async fn a_revoked_token_stops_working_on_a_connection_already_open() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn a_team_members_token_reaches_its_own_team_and_nothing_else() {
+    let store = Arc::new(MemoryStore::default());
+    let add = |title: &str, owner: bool, under: Option<&str>| {
+        let mut s = Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: "/tmp".into(),
+            title: Some(title.into()),
+            orchestrator: under.is_none(),
+            feature_owner: owner,
+            orchestrator_id: under.map(Into::into),
+            ..Default::default()
+        });
+        s.status = SessionStatus::Idle;
+        store.upsert_session(&s).unwrap();
+        s.id
+    };
+    let a = add("A", true, None);
+    let b = add("B", true, None);
+    let designer = add("Designer", false, Some(&a));
+    let builder = add("Builder", false, Some(&a));
+    let other = add("Other", false, Some(&b));
+    let m = Manager::new(store, vec![], None);
+    m.restore().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let server = RpcServer::start(m.clone(), dir.path(), None).await.unwrap();
+    let user = RpcClient::connect(server.info.port, &server.info.token)
+        .await
+        .unwrap();
+    let worker = RpcClient::connect(server.info.port, &m.session_token(&designer))
+        .await
+        .unwrap();
+
+    // Its own team's tools, as itself.
+    let team: String = worker
+        .call_as("team.list", json!({ "worker": designer }))
+        .await
+        .unwrap();
+    assert!(
+        team.contains("Builder") && !team.contains("Other"),
+        "{team}"
+    );
+    // Never as another worker, never the owner's tools, never the user's.
+    for (method, params) in [
+        ("team.list", json!({ "worker": builder })),
+        (
+            "team.ask",
+            json!({ "worker": builder, "to": "Designer", "question": "x" }),
+        ),
+        (
+            "owner.record_decision",
+            json!({ "owner": a, "decision": "x", "rationale": "y" }),
+        ),
+        ("orchestrator.workers", json!({ "orchestrator": a })),
+        ("feature.get", json!({ "id": a })),
+    ] {
+        let e = err(&worker, method, params).await;
+        assert!(e.contains("not allowed"), "{method}: {e}");
+    }
+    // Its team is its owner's: another owner's worker is no teammate.
+    let e = err(
+        &worker,
+        "team.ask",
+        json!({ "worker": designer, "to": other, "question": "x" }),
+    )
+    .await;
+    assert!(e.contains("is not on this team"), "{e}");
+    assert!(m.feature(&a).unwrap().one_on_ones.is_empty());
+    // The user's token does not act as a team member either.
+    let e = err(&user, "team.list", json!({ "worker": designer })).await;
+    assert!(e.contains("session token"), "{e}");
+}

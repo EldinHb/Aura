@@ -5,4 +5,8 @@ export type Decision = { id: string, decision: string, rationale: string, decide
 /**
  * The question it answered, for the user's decisions.
  */
-question_id: string | null, at: string, };
+question_id: string | null, 
+/**
+ * The meeting it came out of.
+ */
+meeting_id: string | null, at: string, };

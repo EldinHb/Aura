@@ -14,11 +14,13 @@ mod attachments;
 mod features;
 mod orchestrator;
 mod specialists;
+mod team;
 pub use features::{AskSpec, CheckpointOutcome, HireSpec, ReportSpec};
 pub use orchestrator::{
     agent_line, describe_projects, describe_workers, report_message, Project, WaitResult,
     WorkerReport, WorkerSpec,
 };
+pub use team::MeetingSpec;
 
 /// Git worktree creation is provided by `aura-git`; the manager only needs this.
 pub trait WorktreeBackend: Send + Sync {
@@ -445,6 +447,7 @@ impl Manager {
 
     /// Stop every process and flush scrollback. Sessions stay resumable.
     pub async fn shutdown(&self) {
+        self.begin_shutdown();
         let ids: Vec<String> = self.inner.sessions.lock().keys().cloned().collect();
         for id in ids {
             let _ = self.stop(&id).await;
@@ -645,9 +648,31 @@ impl Manager {
         if let Some(mut f) = feature {
             // Before the open questions are left out, so their ids stay taken.
             f.seed_counters();
+            // What is under way stays with the original's team; what is done
+            // is history the fork has already had.
+            let meetings = f
+                .meetings
+                .into_iter()
+                .filter(|m| m.status != crate::features::MeetingStatus::Collecting)
+                .map(|m| crate::features::Meeting {
+                    delivered: true,
+                    ..m
+                })
+                .collect();
+            let one_on_ones = f
+                .one_on_ones
+                .into_iter()
+                .filter(|a| a.status != crate::features::OneOnOneStatus::Open)
+                .map(|a| crate::features::OneOnOne {
+                    delivered: true,
+                    ..a
+                })
+                .collect();
             let copy = crate::features::Feature {
                 owner_id: forked.id.clone(),
                 team: vec![],
+                meetings,
+                one_on_ones,
                 questions: f.questions.into_iter().filter(|q| !q.open()).collect(),
                 status: match f.status {
                     crate::features::FeatureStatus::WaitingOnUser => {
@@ -1099,6 +1124,8 @@ impl Manager {
         self.inner.runtimes.lock().remove(&s.id);
         self.delete_attachments(&s.id);
         self.drop_reports(&s.id);
+        // Its meetings and one-on-ones go on without it.
+        self.left_team(s);
         // Kept while it lived, also by an owner that stopped owning it.
         self.delete_feature(&s.id);
         if remove_worktree {
@@ -1487,7 +1514,9 @@ impl Manager {
         // what finished before it is still news, and it is only news itself
         // once the orchestrator's workers are done.
         let report_turn = self.report_turn(&ev);
-        let quiet = report_turn && self.quiet_report_turn(&ev, pending);
+        // So is a turn in which a worker answers a meeting or a teammate.
+        let answer_turn = self.answer_turn(&ev);
+        let quiet = (report_turn && self.quiet_report_turn(&ev, pending)) || answer_turn.is_some();
 
         // Update the session row.
         let _ = self.update_session(&sid, |s| {
@@ -1501,6 +1530,7 @@ impl Manager {
             // It is running again: what finished before is no longer news.
             if matches!(ev, Event::TurnStarted { .. })
                 && !report_turn
+                && answer_turn.is_none()
                 && s.attention == Some(Attention::Done)
             {
                 s.attention = None;
@@ -1569,7 +1599,7 @@ impl Manager {
                 _ => {}
             }
         });
-        self.on_orchestration_event(&ev);
+        self.on_orchestration_event(&ev, answer_turn);
         self.broadcast(ev);
     }
 }

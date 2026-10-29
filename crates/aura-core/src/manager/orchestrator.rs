@@ -10,6 +10,12 @@
 //! a turn one starts marks the orchestrator for the user only once its
 //! workers are done.
 //!
+//! Messages from Aura that are not reports (notes) wait in a queue per
+//! session until it is free; besides the user's answers to a feature owner,
+//! they bring a feature owner's team its meetings and one-on-ones (see
+//! `team`). A turn such a note starts on a worker *answers* it: its end is
+//! not reported to the orchestrator, its last reply is the answer instead.
+//!
 //! An orchestrator need not belong to a folder. One created without one runs
 //! in a directory of its own under [`Manager::enable_orchestrator_dirs`] and
 //! names the folder of every worker it starts.
@@ -54,9 +60,9 @@ pub(super) struct State {
     /// Workers sent a message whose turn has not started yet, so a `wait`
     /// right after dispatching does not mistake them for finished.
     dispatched: HashSet<SessionId>,
-    /// Orchestrator id -> other messages from Aura waiting for it to be free,
-    /// such as the user's answers to a feature owner. Sent one per turn,
-    /// before worker reports.
+    /// Session id -> other messages from Aura waiting for it to be free,
+    /// such as the user's answers to a feature owner, or a meeting's agenda
+    /// for one of its workers. Sent one per turn, before worker reports.
     notes: HashMap<SessionId, VecDeque<Note>>,
     /// The note sent to an orchestrator whose agent has not yet shown it
     /// took it (see `note_events`). Registered before the send, so an echo
@@ -77,6 +83,14 @@ pub(super) struct State {
     retry_delays: Option<Vec<Duration>>,
     /// Session token -> the session whose tools hold it (see `session_token`).
     tokens: HashMap<String, SessionId>,
+    /// Workers sent a note to answer whose turn has not started yet.
+    answer_next: HashMap<SessionId, NoteAbout>,
+    /// Workers whose current turn answers a note: a meeting's agenda or a
+    /// teammate's question.
+    answering: HashMap<SessionId, NoteAbout>,
+    /// The daemon is stopping: agents that stop now did not fail, and what
+    /// they were answering is asked again after the restart.
+    shutting_down: bool,
 }
 
 /// A message from Aura that is not a worker report.
@@ -88,12 +102,47 @@ pub(super) struct Note {
     pub about: Option<NoteAbout>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum NoteAbout {
     /// The user's answer to this question.
     Answer(String),
     /// What the user made of this specialist suggestion.
     Suggestion(String),
+    /// A meeting's agenda for one of its attendees, who answers it.
+    Agenda {
+        owner: SessionId,
+        meeting: String,
+        worker: SessionId,
+    },
+    /// Every answer to a meeting, for its owner.
+    Meeting(String),
+    /// A one-on-one question for the one asked: a teammate answers it in
+    /// its turn, the owner with `reply_to_teammate`.
+    Ask { owner: SessionId, id: String },
+    /// The answer to a one-on-one, for the one who asked.
+    Reply { owner: SessionId, id: String },
+}
+
+impl NoteAbout {
+    /// The feature owner whose record the note is about, when it is not the
+    /// session it goes to.
+    pub(super) fn owner(&self) -> Option<&str> {
+        match self {
+            NoteAbout::Agenda { owner, .. }
+            | NoteAbout::Ask { owner, .. }
+            | NoteAbout::Reply { owner, .. } => Some(owner),
+            _ => None,
+        }
+    }
+
+    /// Whether the turn it starts on `receiver` answers it.
+    fn answered_by(&self, receiver: &str) -> bool {
+        match self {
+            NoteAbout::Agenda { .. } => true,
+            NoteAbout::Ask { owner, .. } => owner != receiver,
+            _ => false,
+        }
+    }
 }
 
 /// A note sent and not yet taken in by the agent.
@@ -271,7 +320,10 @@ impl Manager {
     }
 
     pub(super) fn mcp_servers_for(&self, s: &Session) -> Vec<McpServer> {
-        if !s.orchestrator {
+        // A worker on a feature owner's team gets the team's tools; other
+        // workers get none.
+        let teammate = !s.orchestrator && self.team_owner(s).is_some();
+        if !s.orchestrator && !teammate {
             return vec![];
         }
         let Some((aura, data_dir)) = self.inner.orchestration.lock().cli.clone() else {
@@ -281,11 +333,19 @@ impl Manager {
             "mcp".into(),
             "--data-dir".into(),
             data_dir.to_string_lossy().into_owned(),
-            "--orchestrator".into(),
+        ];
+        // Its own token lets the server act for this session only.
+        let role = if teammate {
+            "--worker"
+        } else {
+            "--orchestrator"
+        };
+        args.extend([
+            role.into(),
             s.id.clone(),
             "--token".into(),
             self.session_token(&s.id),
-        ];
+        ]);
         // A feature owner's server adds the owner's tools.
         if s.feature_owner {
             args.push("--feature-owner".into());
@@ -324,7 +384,10 @@ impl Manager {
             return Some(p);
         }
         let orchestrator = self.get_session(s.orchestrator_id.as_deref()?).ok()?;
-        let worker = crate::prompts::worker_prompt(&orchestrator.title);
+        let mut worker = crate::prompts::worker_prompt(&orchestrator.title);
+        if orchestrator.feature_owner && self.inner.orchestration.lock().cli.is_some() {
+            worker = format!("{worker}\n\n{}", crate::prompts::team_prompt());
+        }
         Some(match self.specialist_prompt(s) {
             Some(role) => format!("{worker}\n\n{role}"),
             None => worker,
@@ -386,6 +449,8 @@ impl Manager {
         st.held.remove(id);
         st.retry_gen.remove(id);
         st.tokens.retain(|_, s| s != id);
+        st.answer_next.remove(id);
+        st.answering.remove(id);
         for q in st.queued.values_mut() {
             q.remove(id);
         }
@@ -452,7 +517,7 @@ impl Manager {
         out
     }
 
-    fn workers_of(&self, orchestrator: &str) -> Vec<Session> {
+    pub(super) fn workers_of(&self, orchestrator: &str) -> Vec<Session> {
         let mut v: Vec<Session> = self
             .list_sessions()
             .into_iter()
@@ -464,7 +529,7 @@ impl Manager {
 
     /// Start a worker and give it its first task.
     pub async fn start_worker(&self, orchestrator: &str, spec: WorkerSpec) -> Result<Session> {
-        self.start_worker_as(orchestrator, spec, None).await
+        self.start_worker_as(orchestrator, spec, None, None).await
     }
 
     /// The folder a worker asked for in `cwd` works in.
@@ -490,15 +555,17 @@ impl Manager {
     }
 
     /// Start a worker, hired as `specialist` if given. A feature owner's
-    /// workers join its team.
+    /// workers join its team. A guest of a meeting is sent no brief: the
+    /// meeting's agenda is its first message.
     pub(super) async fn start_worker_as(
         &self,
         orchestrator: &str,
         spec: WorkerSpec,
         specialist: Option<&crate::specialists::Specialist>,
+        guest_of: Option<&str>,
     ) -> Result<Session> {
         let orch = self.orchestrator(orchestrator)?;
-        if spec.prompt.trim().is_empty() {
+        if guest_of.is_none() && spec.prompt.trim().is_empty() {
             bail!("a worker needs a prompt");
         }
         if orch.feature_owner {
@@ -560,15 +627,17 @@ impl Manager {
             // Checked again now it has started: a checkpoint review opened
             // meanwhile keeps it from the team and its task.
             Ok(o) if o.feature_owner => {
-                if let Err(e) = self.join_team(orchestrator, &session, specialist) {
+                if let Err(e) = self.join_team(orchestrator, &session, specialist, guest_of) {
                     let _ = self.delete(&session.id, false).await;
                     return Err(e);
                 }
             }
             Ok(_) => {}
         }
-        self.dispatch(orchestrator, &session.id, spec.prompt)
-            .await?;
+        if guest_of.is_none() {
+            self.dispatch(orchestrator, &session.id, spec.prompt)
+                .await?;
+        }
         self.get_session(&session.id)
     }
 
@@ -979,6 +1048,67 @@ impl Manager {
         }
     }
 
+    /// What the turn an event starts or ends answers, if it answers a note
+    /// (see [`NoteAbout::answered_by`]). Called for every event before the
+    /// session row is updated; an ending turn is forgotten here.
+    pub(super) fn answer_turn(&self, ev: &Event) -> Option<NoteAbout> {
+        if !matches!(
+            ev,
+            Event::TurnStarted { .. } | Event::TurnCompleted { .. } | Event::ProcessExited { .. }
+        ) {
+            return None;
+        }
+        let sid = ev.session_id();
+        let mut st = self.inner.orchestration.lock();
+        match ev {
+            Event::TurnStarted { .. } => {
+                let about = st.answer_next.remove(sid)?;
+                st.answering.insert(sid.to_string(), about.clone());
+                Some(about)
+            }
+            Event::TurnCompleted { .. } => st.answering.remove(sid),
+            // Gone before its turn started, too.
+            _ => st
+                .answering
+                .remove(sid)
+                .or_else(|| st.answer_next.remove(sid)),
+        }
+    }
+
+    /// Whether the session's current turn answers a note.
+    pub(super) fn is_answering(&self, id: &str) -> bool {
+        self.inner.orchestration.lock().answering.contains_key(id)
+    }
+
+    /// Stop treating agents that stop as stopped by the user: the daemon is
+    /// going, and what they answer is asked again when it is back.
+    pub(super) fn begin_shutdown(&self) {
+        self.inner.orchestration.lock().shutting_down = true;
+    }
+
+    pub(super) fn shutting_down(&self) -> bool {
+        self.inner.orchestration.lock().shutting_down
+    }
+
+    /// Whether a note about `about` waits in the session's queue again.
+    pub(super) fn queued_again(&self, id: &str, about: &NoteAbout) -> bool {
+        self.inner
+            .orchestration
+            .lock()
+            .notes
+            .get(id)
+            .is_some_and(|q| q.iter().any(|n| n.about.as_ref() == Some(about)))
+    }
+
+    /// Drop the queued notes `drop` picks, wherever they wait.
+    pub(super) fn drop_notes(&self, drop: impl Fn(&NoteAbout) -> bool) {
+        let mut st = self.inner.orchestration.lock();
+        for q in st.notes.values_mut() {
+            q.retain(|n| !n.about.as_ref().is_some_and(&drop));
+        }
+        st.notes.retain(|_, q| !q.is_empty());
+    }
+
     /// Whether a turn a report started ends with nothing for the user yet:
     /// it finished well and the orchestrator still has workers working or
     /// reports to take. When the last of them stops, the turn it reports
@@ -1005,8 +1135,9 @@ impl Manager {
     }
 
     /// Follow events that matter to orchestration. Called for every event
-    /// after the session row is updated.
-    pub(super) fn on_orchestration_event(&self, ev: &Event) {
+    /// after the session row is updated, with what the turn that `ev` ends
+    /// answered (see [`Manager::answer_turn`]).
+    pub(super) fn on_orchestration_event(&self, ev: &Event, answered: Option<NoteAbout>) {
         self.note_events(ev);
         // Called for every event, streamed text included: leave early.
         if !matches!(
@@ -1042,7 +1173,20 @@ impl Manager {
             Event::ProcessExited { message, .. } => message.is_some(),
             _ => false,
         };
-        if stopped {
+        // A turn that answers a meeting or a teammate brings its answer
+        // there, not to the orchestrator: no report, which would cost the
+        // orchestrator a turn for what it gets anyway.
+        let answering = answered.is_some() || (stopped && self.is_answering(sid));
+        if ended {
+            if let Some(about) = answered {
+                self.answer_ended(sid, about, ev);
+            }
+        }
+        // A worker that waits on a teammate's or the owner's answer is not
+        // done: it is reported when it goes on with the answer.
+        let waits = matches!(ev, Event::TurnCompleted { turn, .. } if turn.status == TurnStatus::Completed)
+            && self.waits_on_answer(&s);
+        if stopped && !answering && !waits {
             if let Some(o) = s
                 .orchestrator_id
                 .clone()
@@ -1062,7 +1206,8 @@ impl Manager {
         // resolved after it), it can take reports now. Not right after the
         // user interrupted it, though: that would set it going again at once.
         let interrupted = matches!(ev, Event::TurnCompleted { turn, .. } if turn.status == TurnStatus::Interrupted);
-        if s.orchestrator && !interrupted {
+        let notes = self.inner.orchestration.lock().notes.contains_key(sid);
+        if (s.orchestrator || notes) && !interrupted {
             self.flush_reports(&s.id);
         }
     }
@@ -1320,6 +1465,10 @@ impl Manager {
             }
             if let Some(note) = note {
                 st.delivering.insert(orchestrator.to_string());
+                // Claimed with the gate: the turn it starts answers it.
+                if let Some(about) = note.about.clone().filter(|a| a.answered_by(orchestrator)) {
+                    st.answer_next.insert(orchestrator.to_string(), about);
+                }
                 drop(st);
                 self.deliver(orchestrator, Delivery::Note(note));
                 return;
@@ -1350,8 +1499,8 @@ impl Manager {
         self.deliver(orchestrator, Delivery::Report(report_message(&reports)));
     }
 
-    /// Queue a message from Aura (not a worker report) for an orchestrator,
-    /// sent as soon as it is free.
+    /// Queue a message from Aura (not a worker report) for a session, sent
+    /// as soon as it is free.
     pub(super) fn queue_note(&self, orchestrator: &str, note: Note) {
         self.inner
             .orchestration
@@ -1415,6 +1564,8 @@ impl Manager {
                         let ours = st.unacked.get(&id).map(|p| Some(p.delivery)) == Some(number);
                         if ours {
                             st.unacked.remove(&id);
+                            // The turn it was to start never comes.
+                            st.answer_next.remove(&id);
                         }
                         ours
                     };
@@ -1647,7 +1798,7 @@ fn kind_name(k: ItemKind) -> &'static str {
 }
 
 /// The last `limit` bytes of `s`, cut at a character boundary.
-fn tail(s: &str, limit: usize) -> String {
+pub(super) fn tail(s: &str, limit: usize) -> String {
     if s.len() <= limit {
         return s.to_string();
     }

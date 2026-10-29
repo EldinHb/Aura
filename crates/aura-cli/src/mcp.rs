@@ -2,6 +2,8 @@
 //! for every orchestrator session, whatever its agent, and it forwards each
 //! tool call to the daemon's `orchestrator.*` methods. A feature owner's
 //! server (`--feature-owner`) has the owner's tools too, which call `owner.*`.
+//! A worker on a feature owner's team gets a server of its own (`--worker`)
+//! with only the team's tools, which call `team.*`.
 //!
 //! It connects with the session token Aura made for its session (`--token`),
 //! not the daemon's own token: the daemon lets it act for that session only.
@@ -18,27 +20,39 @@ use tokio::sync::Mutex;
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// Whom the server's tools act for.
+#[derive(Debug, Clone)]
+pub enum Role {
+    /// An orchestrator; one that owns a feature gets the owner's tools too.
+    Orchestrator { id: String, feature_owner: bool },
+    /// A worker on a feature owner's team: the team's tools only.
+    Worker { id: String },
+}
+
 struct Server {
     data_dir: PathBuf,
+    /// The session the tools act for.
     orchestrator: String,
     /// The orchestrator owns a feature: it gets the owner's tools.
     feature_owner: bool,
-    /// The session token the daemon made for this orchestrator's tools.
+    /// The session is a worker on a feature owner's team.
+    worker: bool,
+    /// The session token the daemon made for this session's tools.
     token: String,
     client: Mutex<Option<RpcClient>>,
 }
 
-pub async fn run(
-    data_dir: PathBuf,
-    orchestrator: String,
-    feature_owner: bool,
-    token: String,
-) -> Result<()> {
+pub async fn run(data_dir: PathBuf, role: Role, token: String) -> Result<()> {
+    let (orchestrator, feature_owner, worker) = match role {
+        Role::Orchestrator { id, feature_owner } => (id, feature_owner, false),
+        Role::Worker { id } => (id, false, true),
+    };
     let server = Arc::new(Server {
         data_dir,
         orchestrator,
         feature_owner,
         token,
+        worker,
         client: Mutex::new(None),
     });
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
@@ -104,15 +118,19 @@ impl Server {
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "aura", "title": "Aura", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": if self.feature_owner {
-                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too."
+                    "instructions": if self.worker {
+                        "Work with your team in Aura: see who is on it, and ask a teammate or the feature owner a question. Answers come back as messages from Aura."
+                    } else if self.feature_owner {
+                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold written meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too."
                     } else {
                         "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too."
                     },
                 }))
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools(self.feature_owner) })),
+            "tools/list" => Ok(
+                json!({ "tools": if self.worker { worker_tools() } else { tools(self.feature_owner) } }),
+            ),
             "tools/call" => {
                 let name = params
                     .get("name")
@@ -174,6 +192,9 @@ impl Server {
     }
 
     async fn call(&self, tool: &str, a: &Value) -> Result<String> {
+        if self.worker {
+            return self.call_teammate(tool, a).await;
+        }
         let o = &self.orchestrator;
         match tool {
             "list_agents" => self.list_agents().await,
@@ -381,14 +402,58 @@ impl Server {
                 ))
             }
             "record_decision" => {
-                let d: Decision = serde_json::from_value(
+                let mut p = json!({ "owner": o, "decision": req(a, "decision")?, "rationale": req(a, "rationale")? });
+                if let Some(m) = opt(a, "meeting") {
+                    p["meeting"] = json!(m);
+                }
+                let d: Decision =
+                    serde_json::from_value(self.rpc("owner.record_decision", p).await?)?;
+                Ok(format!("Recorded decision `{}`.", d.id))
+            }
+            "hold_meeting" => {
+                let mut p =
+                    json!({ "owner": o, "topic": req(a, "topic")?, "agenda": req(a, "agenda")? });
+                for key in ["context", "cwd"] {
+                    if let Some(v) = opt(a, key) {
+                        p[key] = json!(v);
+                    }
+                }
+                for key in ["attendees", "guests"] {
+                    p[key] = json!(strings(a, key));
+                }
+                if let Some(t) = a.get("timeout_minutes").and_then(Value::as_u64) {
+                    p["timeout_minutes"] = json!(t);
+                }
+                let m: Meeting = serde_json::from_value(self.rpc("owner.hold_meeting", p).await?)?;
+                let names: Vec<String> = m
+                    .attendees
+                    .iter()
+                    .map(|a| match a.status {
+                        AttendeeStatus::Missing => format!(
+                            "{} (missing: {})",
+                            a.name,
+                            a.missing.as_deref().unwrap_or("no answer")
+                        ),
+                        _ if a.guest => format!("{} (`{}`, guest)", a.name, a.worker_id),
+                        _ => format!("{} (`{}`)", a.name, a.worker_id),
+                    })
+                    .collect();
+                let minutes = (m.deadline - m.started_at).num_minutes();
+                Ok(format!(
+                    "Meeting `{}` started with {}. Aura sends each the question and brings you every answer in one message that starts with `[Aura] Meeting notes`, at the latest in {minutes} minutes. End your turn now rather than wait.",
+                    m.id,
+                    names.join(", ")
+                ))
+            }
+            "reply_to_teammate" => {
+                let r: OneOnOne = serde_json::from_value(
                     self.rpc(
-                        "owner.record_decision",
-                        json!({ "owner": o, "decision": req(a, "decision")?, "rationale": req(a, "rationale")? }),
+                        "owner.reply_to_teammate",
+                        json!({ "owner": o, "question": req(a, "question")?, "answer": req(a, "answer")? }),
                     )
                     .await?,
                 )?;
-                Ok(format!("Recorded decision `{}`.", d.id))
+                Ok(format!("Sent your answer to {}.", r.from_name))
             }
             "checkpoint" => {
                 let r: CheckpointOutcome = serde_json::from_value(
@@ -450,6 +515,44 @@ impl Server {
                 let s: Status =
                     serde_json::from_value(self.rpc("owner.status", json!({ "owner": o })).await?)?;
                 Ok(aura_core::features::describe(&s.feature, &s.autonomy))
+            }
+            _ => bail!("unknown tool {tool}"),
+        }
+    }
+
+    /// A team member's tools.
+    async fn call_teammate(&self, tool: &str, a: &Value) -> Result<String> {
+        let w = &self.orchestrator;
+        match tool {
+            "list_team" => {
+                let v = self.rpc("team.list", json!({ "worker": w })).await?;
+                Ok(v.as_str().unwrap_or_default().to_string())
+            }
+            "ask_teammate" => {
+                let r: OneOnOne = serde_json::from_value(
+                    self.rpc(
+                        "team.ask",
+                        json!({ "worker": w, "to": req(a, "teammate")?, "question": req(a, "question")? }),
+                    )
+                    .await?,
+                )?;
+                Ok(format!(
+                    "Asked {} (question `{}`). It answers in its next turn and Aura brings you the answer in a message that starts with `[Aura] Answer from a teammate`. Go on with what does not depend on it, or end your turn.",
+                    r.to_name, r.id
+                ))
+            }
+            "ask_owner" => {
+                let r: OneOnOne = serde_json::from_value(
+                    self.rpc(
+                        "team.ask_owner",
+                        json!({ "worker": w, "question": req(a, "question")? }),
+                    )
+                    .await?,
+                )?;
+                Ok(format!(
+                    "Asked the feature owner (question `{}`). Aura brings you the answer in a message that starts with `[Aura] Answer from the feature owner`. Go on with what does not depend on it, or end your turn.",
+                    r.id
+                ))
             }
             _ => bail!("unknown tool {tool}"),
         }
@@ -523,6 +626,19 @@ fn req<'a>(a: &'a Value, key: &str) -> Result<&'a str> {
         .and_then(Value::as_str)
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| anyhow!("`{key}` is required"))
+}
+
+/// A list of strings argument; a single string is a list of one.
+fn strings(a: &Value, key: &str) -> Vec<String> {
+    match a.get(key) {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(one)) if !one.trim().is_empty() => vec![one.clone()],
+        _ => vec![],
+    }
 }
 
 /// An optional string argument, when given and not blank.
@@ -666,9 +782,73 @@ fn owner_tools() -> Value {
         },
         {
             "name": "feature_status",
-            "description": "The feature's status, autonomy level, team and the questions still open with the user, as Aura has them.",
+            "description": "The feature's status, autonomy level, team, the questions still open with the user, meetings collecting answers and teammates waiting on you, as Aura has them.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
+        },
+        {
+            "name": "hold_meeting",
+            "description": "Hold a written meeting: Aura sends every attendee your question at once, each answers in writing in its next turn, and you get all answers in one message from Aura. Returns at once: end your turn after calling it. For decisions that need several roles' views; every attendee costs a turn, so keep it to the two to four who matter.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "topic": { "type": "string", "description": "What the meeting is about, in a few words." },
+                    "agenda": { "type": "string", "description": "The question every attendee answers, clear and self-contained. Markdown." },
+                    "attendees": { "type": "array", "items": { "type": "string" }, "description": "Team members: session id, title or specialist id." },
+                    "guests": { "type": "array", "items": { "type": "string" }, "description": "Specialist ids to hire just for their input to this meeting. They join the team." },
+                    "context": { "type": "string", "description": "What the attendees need to know to answer: the options, constraints, files. They do not see your conversation." },
+                    "cwd": { "type": "string", "description": "Where guests work. Defaults to your folder; required for guests when you have none." },
+                    "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 120, "description": "How long to wait for answers. Default 20." },
+                },
+                "required": ["topic", "agenda"],
+            },
+        },
+        {
+            "name": "reply_to_teammate",
+            "description": "Answer a question a team member asked you with ask_owner. Aura passes the answer on; the member waits for it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "The question's id, such as `a3`, from the message that brought it." },
+                    "answer": { "type": "string", "description": "Your answer, brief. Markdown." },
+                },
+                "required": ["question", "answer"],
+            },
+        },
+    ])
+}
+
+/// A worker's tools when it is on a feature owner's team.
+fn worker_tools() -> Value {
+    json!([
+        {
+            "name": "list_team",
+            "description": "List your team: the feature owner and your teammates, with their roles and whether they are working.",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": { "readOnlyHint": true },
+        },
+        {
+            "name": "ask_teammate",
+            "description": "Ask a teammate a question, such as the designer about a state or the backend engineer about an API. It answers in its next turn and Aura brings you the answer as a message. Returns at once. Ask only what you cannot go on well without, and briefly.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "teammate": { "type": "string", "description": "The teammate's title, specialist id or session id, from list_team." },
+                    "question": { "type": "string", "description": "One clear question with the context it needs; the teammate does not see your conversation." },
+                },
+                "required": ["teammate", "question"],
+            },
+        },
+        {
+            "name": "ask_owner",
+            "description": "Ask the feature owner a question, for what only it can decide: scope, priorities, trade-offs between roles. Aura brings you its answer as a message. Returns at once.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "One clear question with the context it needs." },
+                },
+                "required": ["question"],
+            },
         },
     ])
 }
@@ -809,8 +989,14 @@ mod tests {
                 "checkpoint",
                 "propose_specialist",
                 "deliver_report",
-                "feature_status"
+                "feature_status",
+                "hold_meeting",
+                "reply_to_teammate"
             ]
+        );
+        assert_eq!(
+            names(&worker_tools()),
+            ["list_team", "ask_teammate", "ask_owner"]
         );
     }
 
@@ -821,10 +1007,43 @@ mod tests {
             orchestrator: "o".into(),
             feature_owner: false,
             token: "t".into(),
+            worker: false,
             client: Mutex::new(None),
         };
         let err = server.call("hire", &json!({})).await.unwrap_err();
         assert_eq!(err.to_string(), "unknown tool hire");
+        let err = server.call("ask_teammate", &json!({})).await.unwrap_err();
+        assert_eq!(err.to_string(), "unknown tool ask_teammate");
+    }
+
+    #[tokio::test]
+    async fn a_teammate_has_only_the_teams_tools() {
+        let server = Server {
+            data_dir: PathBuf::from("/nonexistent"),
+            orchestrator: "w".into(),
+            feature_owner: false,
+            worker: true,
+            token: "t".into(),
+            client: Mutex::new(None),
+        };
+        for tool in ["start_session", "hire", "hold_meeting"] {
+            let err = server.call(tool, &json!({})).await.unwrap_err();
+            assert_eq!(err.to_string(), format!("unknown tool {tool}"));
+        }
+        // Arguments are checked before the daemon is called.
+        let err = server
+            .call("ask_teammate", &json!({ "question": "x" }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "`teammate` is required");
+    }
+
+    #[test]
+    fn list_arguments_take_a_single_string_too() {
+        let a = json!({ "one": "tester", "many": ["a", "b"], "blank": " " });
+        assert_eq!(strings(&a, "one"), ["tester"]);
+        assert_eq!(strings(&a, "many"), ["a", "b"]);
+        assert!(strings(&a, "blank").is_empty() && strings(&a, "none").is_empty());
     }
 
     #[test]
