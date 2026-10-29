@@ -685,6 +685,7 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 
 /* Feature owners and their specialists. */
 .chip.specialist { border-color: var(--accent); color: var(--accent-2); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root[data-theme="light"] .chip.specialist { color: var(--accent); }
 .chip.feature-state.warn { border-color: var(--warn); color: var(--warn); }
 .chip.feature-state.ok { border-color: var(--ok); color: var(--ok); }
 .chip.recommended { border-color: var(--ok); color: var(--ok); }
@@ -714,6 +715,8 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 .specialists-tab .specialist-role { font-size: 11px; }
 .specialist-fields input, .specialist-fields textarea { width: 100%; }
 .autonomy-picker { display: flex; flex-direction: column; gap: 4px; }
+/* Inside a form field, its choices read as text, not as field labels. */
+.autonomy-picker label { font-size: inherit; color: inherit; text-transform: none; letter-spacing: normal; margin: 2px 0; }
 .autonomy-picker .autonomy-level { align-items: flex-start; }
 .autonomy-picker .autonomy-level input { margin-top: 3px; }
 .autonomy-picker .autonomy-checkpoints { display: flex; gap: 14px; padding-left: 22px; flex-wrap: wrap; }

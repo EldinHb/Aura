@@ -54,7 +54,7 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
           s.orchestrator && <span className="orchestrator-mark" role="img" aria-label="Orchestrator" title="Orchestrator: starts and directs the sessions under it" />
         )}
         {s.feature_owner && <FeatureChip ownerId={s.id} />}
-        {s.specialist_name && <span className="chip specialist" title={`Hired as ${s.specialist_name}`}>{s.specialist_name}</span>}
+        {s.specialist_name && s.specialist_name !== s.title && <span className="chip specialist" title={`Hired as ${s.specialist_name}`}>{s.specialist_name}</span>}
         {hidden.length > 0 && <HiddenWorkers hidden={hidden} />}
         <span className="where">
           {!s.worktree && folderOf(s) !== null && basename(s.cwd)}

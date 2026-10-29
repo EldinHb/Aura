@@ -404,7 +404,8 @@ it("shows only whole link chips that fit, then +N with the rest in its tooltip, 
 it("marks a feature owner, the role of each specialist under it and the decisions waiting on the user", () => {
   const list = [
     session("owner", "Dark mode", { orchestrator: true, feature_owner: true }),
-    session("ux", "UX designer", { orchestrator_id: "owner", specialist_id: "ux-designer", specialist_name: "UX designer" }),
+    session("ux", "Theme switch flow", { orchestrator_id: "owner", specialist_id: "ux-designer", specialist_name: "UX designer" }),
+    session("qa", "Tester (QA)", { orchestrator_id: "owner", specialist_id: "tester", specialist_name: "Tester (QA)" }),
     session("adhoc", "Scout", { orchestrator_id: "owner" }),
     session("lead", "Lead", { orchestrator: true }),
   ].map((s) => ({ ...s, group: "Work" }));
@@ -420,4 +421,5 @@ it("marks a feature owner, the role of each specialist under it and the decision
   expect(row("lead").querySelector("[aria-label='Orchestrator']")).toBeTruthy();
   expect(row("ux").querySelector(".chip.specialist")?.textContent).toBe("UX designer");
   expect(row("adhoc").querySelector(".chip.specialist")).toBeNull();
+  expect(row("qa").querySelector(".chip.specialist"), "a title that says the role needs no chip").toBeNull();
 });
