@@ -487,7 +487,8 @@ impl Manager {
         }
     }
 
-    fn orchestrator(&self, id: &str) -> Result<Session> {
+    /// The session `id`, when it is an orchestrator.
+    pub fn orchestrator(&self, id: &str) -> Result<Session> {
         let s = self.get_session(id)?;
         if !s.orchestrator {
             bail!("session {} is not an orchestrator", short(id));

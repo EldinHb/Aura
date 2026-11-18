@@ -27,7 +27,8 @@ export function normalizePull(pull: PullRequest): PullRequest {
 export const normalizeBranchPull = (pull: BranchPull | null): BranchPull | null =>
   pull && { ...pull, reviews: list(pull.reviews).map(review) };
 
-export const normalizePreReview = (r: PreReview): PreReview => ({ ...r, pull: normalizePull(r.pull), log_tail: list(r.log_tail) });
+/** Daemons up to 0.2.19 send no `source`; older ones no `agent`. */
+export const normalizePreReview = (r: PreReview): PreReview => ({ ...r, pull: normalizePull(r.pull), log_tail: list(r.log_tail), agent: r.agent ?? null, source: r.source ?? null });
 
 export function normalizeInbox(inbox: ReviewInbox): ReviewInbox {
   return {

@@ -18,6 +18,8 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
+mod reviews;
+
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Whom the server's tools act for.
@@ -121,9 +123,9 @@ impl Server {
                     "instructions": if self.worker {
                         "Work with your team in Aura: see who is on it, and ask a teammate or the feature owner a question. Answers come back as messages from Aura."
                     } else if self.feature_owner {
-                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too."
+                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them."
                     } else {
-                        "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too."
+                        "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them."
                     },
                 }))
             }
@@ -331,6 +333,10 @@ impl Server {
                         w.title, w.id
                     ),
                 })
+            }
+            _ if reviews::NAMES.contains(&tool) => {
+                let (method, p) = reviews::request(tool, o, a).expect("a review tool");
+                reviews::reply(tool, a, self.rpc(method, p).await?)
             }
             _ if self.feature_owner => self.call_owner(tool, a).await,
             _ => bail!("unknown tool {tool}"),
@@ -719,6 +725,9 @@ fn session_arg() -> Value {
 /// The tools of an orchestrator's server; a feature owner's has its own too.
 fn tools(feature_owner: bool) -> Value {
     let mut tools = orchestrator_tools();
+    if let Some(all) = tools.as_array_mut() {
+        all.extend(reviews::tools());
+    }
     if feature_owner {
         if let (Some(all), Value::Array(own)) = (tools.as_array_mut(), owner_tools()) {
             all.extend(own);
@@ -1069,14 +1078,24 @@ mod tests {
                 "wait_for_sessions",
                 "interrupt_session",
                 "stop_session",
-                "delete_session"
+                "delete_session",
+                "list_pull_requests",
+                "read_pull_review",
+                "create_review",
+                "update_review",
+                "add_review_comment",
+                "edit_review_comment",
+                "delete_review_comment",
+                "discard_review",
+                "start_pre_review",
+                "hide_pull_request"
             ]
         );
         let owner = tools(true);
         let owner = names(&owner);
-        assert_eq!(&owner[..10], names(&tools(false)).as_slice());
+        assert_eq!(&owner[..20], names(&tools(false)).as_slice());
         assert_eq!(
-            &owner[10..],
+            &owner[20..],
             [
                 "list_specialists",
                 "hire",
@@ -1113,6 +1132,20 @@ mod tests {
         assert_eq!(err.to_string(), "unknown tool hire");
         let err = server.call("ask_teammate", &json!({})).await.unwrap_err();
         assert_eq!(err.to_string(), "unknown tool ask_teammate");
+    }
+
+    #[tokio::test]
+    async fn a_teammate_cannot_record_reviews() {
+        let server = Server {
+            data_dir: PathBuf::from("/nonexistent"),
+            orchestrator: "w".into(),
+            feature_owner: false,
+            worker: true,
+            token: "t".into(),
+            client: Mutex::new(None),
+        };
+        let err = server.call("create_review", &json!({})).await.unwrap_err();
+        assert_eq!(err.to_string(), "unknown tool create_review");
     }
 
     #[tokio::test]

@@ -2,6 +2,7 @@
 pub mod changes;
 pub mod diff;
 pub mod follow;
+mod orchestrated;
 pub mod runner;
 pub mod watch;
 use anyhow::{bail, Context, Result};
@@ -533,6 +534,9 @@ impl ReviewService {
         Ok(result)
     }
     pub async fn handle(self: &Arc<Self>, method: &str, p: Value) -> Result<Option<Value>> {
+        if method.starts_with("orchestrator.reviews.") {
+            return self.handle_orchestrator(method, &p).await.map(Some);
+        }
         if !method.starts_with("reviews.")
             && !method.starts_with("pulls.")
             && method != "github.status"
@@ -568,33 +572,8 @@ impl ReviewService {
                 json!(self.snapshot())
             }
             "pulls.hide" | "pulls.restore" => {
-                let _g = self.gate.lock().await;
-                let account = required(&p, "account")?;
-                self.ensure_account(account).await?;
-                let id = required(&p, "id")?;
-                let hidden = method == "pulls.hide";
-                self.store.save_feature_record(
-                    &format!("hidden:{account}"),
-                    id,
-                    if hidden { "true" } else { "false" },
-                )?;
-                {
-                    let mut state = self.state.lock();
-                    let state = &mut *state;
-                    for pull in state
-                        .pulls
-                        .iter_mut()
-                        .chain(&mut state.reviewed)
-                        .chain(&mut state.mine)
-                    {
-                        if pull.id == id && pull.account == account {
-                            pull.hidden = hidden;
-                        }
-                    }
-                }
-                self.persist_inbox()?;
-                self.emit();
-                json!(self.snapshot())
+                let (account, id) = (required(&p, "account")?, required(&p, "id")?);
+                json!(self.hide(account, id, method == "pulls.hide").await?)
             }
             "pulls.get" => {
                 let pr = self.lookup(&p).await?;
@@ -755,7 +734,7 @@ impl ReviewService {
                 self.changed(&pr);
                 v
             }
-            "reviews.start" => json!(self.start(&p).await?),
+            "reviews.start" => json!(self.start(&p, true).await?),
             "reviews.get" | "reviews.diff" => {
                 let r = self.get(required(&p, "id")?)?;
                 if self.state.lock().account.as_deref() != Some(&r.pull.account) {
@@ -764,26 +743,18 @@ impl ReviewService {
                 json!(r)
             }
             "reviews.cancel" | "reviews.discard" => {
+                json!(
+                    self.close(required(&p, "id")?, method == "reviews.discard")
+                        .await?
+                )
+            }
+            "reviews.ready" => {
                 let id = required(&p, "id")?;
                 let r = self.get(id)?;
-                self.ensure_account(&r.pull.account).await?;
-                let updated = self.change(id, |r| {
-                    if matches!(r.status.as_str(), "submitted" | "submitting" | "uncertain") {
-                        bail!("This review cannot be discarded or cancelled");
-                    }
-                    r.status = if method == "reviews.discard" {
-                        "discarded"
-                    } else {
-                        "cancelled"
-                    }
-                    .into();
-                    r.phase = r.status.clone();
-                    Ok(())
-                })?;
-                if let Some(job) = self.jobs.lock().remove(id) {
-                    job.abort();
+                if self.state.lock().account.as_deref() != Some(&r.pull.account) {
+                    bail!("Account changed");
                 }
-                json!(updated)
+                json!(self.mark_ready(id)?)
             }
             "reviews.save" => {
                 let id = required(&p, "id")?;
@@ -792,61 +763,35 @@ impl ReviewService {
                     bail!("Account changed");
                 }
                 let mut result: ReviewResult = serde_json::from_value(p["result"].clone())?;
-                // Empty newly authored comments are allowed while drafting, but not in a submission.
-                if !matches!(
-                    result.verdict.as_str(),
-                    "approve" | "comment" | "request_changes"
-                ) || !matches!(result.risk.as_str(), "low" | "medium" | "high")
-                {
-                    bail!("Invalid verdict or risk");
-                }
-                let mut ids = std::collections::HashSet::new();
-                for c in &mut result.comments {
-                    if c.line == 0
-                        || c.path.is_empty()
-                        || !matches!(c.side.as_str(), "LEFT" | "RIGHT")
-                        || !matches!(
-                            c.severity.as_str(),
-                            "blocker" | "major" | "minor" | "nit" | "praise"
-                        )
-                    {
-                        bail!("Invalid finding location or severity");
-                    }
-                    if c.id.is_empty() {
-                        c.id = new_id();
-                    }
-                    if !ids.insert(c.id.clone()) {
-                        bail!("Duplicate finding ID");
-                    }
-                    if let Some(original) = r.result.comments.iter().find(|x| x.id == c.id) {
-                        c.user_authored = original.user_authored;
-                        c.rationale = original.rationale.clone();
-                        c.edited = original.edited
-                            || c.body != original.body
-                            || c.line != original.line
-                            || c.start_line != original.start_line
-                            || c.path != original.path
-                            || c.side != original.side
-                            || c.severity != original.severity;
-                    } else {
-                        c.user_authored = true;
-                        c.rationale = None;
-                        c.edited = true;
-                    }
-                }
-                diff::validate(&mut result.comments, &r.diff, false);
-                json!(self.change(id, |r| {
-                    if r.status != "ready" {
-                        bail!("Review is not editable");
-                    }
-                    if p["revision"].as_u64() != Some(r.revision as u64) {
-                        bail!("Review changed in another window. Reload before saving.");
-                    }
-                    r.result = result;
-                    r.revision += 1;
-                    r.submission = None;
-                    Ok(())
-                })?)
+                let revision = p["revision"]
+                    .as_u64()
+                    .context("This review changed since you opened it, in another window or by an orchestrator. Reload before saving.")?;
+                json!(
+                    self.save_draft(id, Some(revision as u32), Editor::User, |r| {
+                        // Empty newly authored comments are allowed while drafting, but not in a submission.
+                        for c in &mut result.comments {
+                            if let Some(original) = r.result.comments.iter().find(|x| x.id == c.id)
+                            {
+                                c.user_authored = original.user_authored;
+                                c.rationale = original.rationale.clone();
+                                c.edited = original.edited
+                                    || c.body != original.body
+                                    || c.line != original.line
+                                    || c.start_line != original.start_line
+                                    || c.path != original.path
+                                    || c.side != original.side
+                                    || c.severity != original.severity
+                                    // Deleting or restoring one is the user's say too.
+                                    || c.deleted != original.deleted;
+                            } else {
+                                c.user_authored = true;
+                                c.rationale = None;
+                                c.edited = true;
+                            }
+                        }
+                        Ok(result)
+                    })?
+                )
             }
             "reviews.preview" => {
                 let _g = self.gate.lock().await;
@@ -875,7 +820,9 @@ impl ReviewService {
         };
         Ok(Some(v))
     }
-    async fn start(self: &Arc<Self>, p: &Value) -> Result<PreReview> {
+    /// Queue Aura's own pre-review of a PR, or return the one already queued or running.
+    /// `remember` keeps `config` as the defaults the user's next pre-review starts from.
+    async fn start(self: &Arc<Self>, p: &Value, remember: bool) -> Result<PreReview> {
         let _guard = self.gate.lock().await;
         let pr = self.lookup(p).await?;
         if pr.state != "open" {
@@ -950,13 +897,16 @@ impl ReviewService {
             submitted_url: None,
             submission: None,
             agent: Some(agent),
+            source: None,
         };
         self.store
             .save_feature_record("reviews", &id, &serde_json::to_string(&review)?)?;
         {
             let mut s = self.state.lock();
             s.reviews.push(review.clone());
-            s.defaults = config;
+            if remember {
+                s.defaults = config;
+            }
         }
         self.persist_inbox()?;
         self.enqueue(id);
@@ -1015,25 +965,9 @@ impl ReviewService {
                     tokio::fs::remove_dir_all(&cwd).await?;
                 }
                 tokio::fs::create_dir_all(&cwd).await?;
-                let comparison = self
-                    .gh
-                    .request(
-                        "GET",
-                        &format!(
-                            "repos/{}/compare/{}...{}",
-                            r.pull.repo, r.pull.base_sha, r.pull.head_sha
-                        ),
-                        None,
-                    )
-                    .await?;
-                let base = comparison["merge_base_commit"]["sha"]
-                    .as_str()
-                    .context("GitHub did not return the comparison merge base")?
-                    .to_string();
+                let (diff, base) = self.compare(&r.pull, &r.pull.head_sha).await?;
                 (
-                    self.gh
-                        .diff(&r.pull.repo, &r.pull.base_sha, &r.pull.head_sha)
-                        .await?,
+                    diff,
                     base,
                     "diff-only",
                     Some(format!(
@@ -1137,6 +1071,117 @@ impl ReviewService {
             Ok(())
         })?;
         Ok(())
+    }
+    /// The PR's diff from its base to `head` as GitHub has it, and their merge base.
+    async fn compare(&self, pull: &PullRequest, head: &str) -> Result<(String, String)> {
+        let comparison = self
+            .gh
+            .request(
+                "GET",
+                &format!("repos/{}/compare/{}...{head}", pull.repo, pull.base_sha),
+                None,
+            )
+            .await?;
+        let base = comparison["merge_base_commit"]["sha"]
+            .as_str()
+            .context("GitHub did not return the comparison merge base")?
+            .to_string();
+        Ok((self.gh.diff(&pull.repo, &pull.base_sha, head).await?, base))
+    }
+    /// Save a new version of an editable draft. The user's editor and the orchestrator tools
+    /// both save through here: `edit` turns the draft into its new result, which is checked and
+    /// anchored to the reviewed diff; the revision goes up and an earlier preview lapses.
+    /// `revision`, when given, must be the draft's current one.
+    fn save_draft(
+        &self,
+        id: &str,
+        revision: Option<u32>,
+        by: Editor,
+        edit: impl FnOnce(&PreReview) -> Result<ReviewResult>,
+    ) -> Result<PreReview> {
+        self.change(id, |r| {
+            let editable = match by {
+                Editor::User => r.status == "ready",
+                Editor::Agent => matches!(r.status.as_str(), "ready" | "drafting"),
+            };
+            if !editable {
+                bail!("Review is not editable");
+            }
+            if revision.is_some_and(|n| n != r.revision) {
+                match by {
+                    Editor::User => bail!("This review changed since you opened it, in another window or by an orchestrator. Reload before saving."),
+                    Editor::Agent => bail!(
+                        "The review is at revision {} now, not {}: it changed since you read it. Read it again before changing it.",
+                        r.revision,
+                        revision.unwrap_or_default()
+                    ),
+                }
+            }
+            let mut result = edit(r)?;
+            check_result(&mut result)?;
+            diff::validate(&mut result.comments, &r.diff, false);
+            r.result = result;
+            r.revision += 1;
+            r.submission = None;
+            Ok(())
+        })
+    }
+    /// Hand a draft an orchestrator is still writing to the user: it becomes ready to edit and submit.
+    fn mark_ready(&self, id: &str) -> Result<PreReview> {
+        self.change(id, |r| {
+            match r.status.as_str() {
+                "drafting" => {}
+                "ready" => return Ok(()),
+                _ => bail!("Only a draft that is being written can be made ready"),
+            }
+            r.status = "ready".into();
+            r.phase = "done".into();
+            Ok(())
+        })
+    }
+    /// Discard a draft, or cancel a pre-review that has not finished. Nothing goes to GitHub.
+    async fn close(&self, id: &str, discard: bool) -> Result<PreReview> {
+        let r = self.get(id)?;
+        self.ensure_account(&r.pull.account).await?;
+        let updated = self.change(id, |r| {
+            if matches!(r.status.as_str(), "submitted" | "submitting" | "uncertain") {
+                bail!("This review cannot be discarded or cancelled");
+            }
+            r.status = if discard { "discarded" } else { "cancelled" }.into();
+            r.phase = r.status.clone();
+            Ok(())
+        })?;
+        if let Some(job) = self.jobs.lock().remove(id) {
+            job.abort();
+        }
+        Ok(updated)
+    }
+    /// Hide a PR from the inbox lists, or restore it.
+    async fn hide(&self, account: &str, id: &str, hidden: bool) -> Result<ReviewInbox> {
+        let _g = self.gate.lock().await;
+        self.ensure_account(account).await?;
+        self.store.save_feature_record(
+            &format!("hidden:{account}"),
+            id,
+            if hidden { "true" } else { "false" },
+        )?;
+        {
+            let mut state = self.state.lock();
+            let state = &mut *state;
+            for pull in state
+                .pulls
+                .iter_mut()
+                .chain(&mut state.reviewed)
+                .chain(&mut state.mine)
+            {
+                if pull.id == id && pull.account == account {
+                    pull.hidden = hidden;
+                }
+            }
+        }
+        self.persist_inbox()?;
+        self.emit();
+        Ok(self.snapshot())
     }
     async fn preview(&self, id: &str) -> Result<SubmissionPreview> {
         let r = self.get(id)?;
@@ -1257,6 +1302,46 @@ impl ReviewService {
             bail!("No matching review is visible yet. Check the PR and reconcile again; automatic retry is disabled to prevent duplicate reviews.")
         }
     }
+}
+/// Who changes a draft.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Editor {
+    /// The user, in Aura's review editor.
+    User,
+    /// An agent, through an orchestrator's review tools.
+    Agent,
+}
+/// A draft's verdict, risk and findings as the editor and the orchestrator tools may save them.
+/// New findings get an id.
+fn check_result(result: &mut ReviewResult) -> Result<()> {
+    if !matches!(
+        result.verdict.as_str(),
+        "approve" | "comment" | "request_changes"
+    ) || !matches!(result.risk.as_str(), "low" | "medium" | "high")
+        || result.confidence.is_some_and(|n| !(0.0..=1.0).contains(&n))
+    {
+        bail!("Invalid verdict or risk");
+    }
+    let mut ids = std::collections::HashSet::new();
+    for c in &mut result.comments {
+        if c.line == 0
+            || c.path.is_empty()
+            || !matches!(c.side.as_str(), "LEFT" | "RIGHT")
+            || !matches!(
+                c.severity.as_str(),
+                "blocker" | "major" | "minor" | "nit" | "praise"
+            )
+        {
+            bail!("Invalid finding location or severity");
+        }
+        if c.id.is_empty() {
+            c.id = new_id();
+        }
+        if !ids.insert(c.id.clone()) {
+            bail!("Duplicate finding ID");
+        }
+    }
+    Ok(())
 }
 fn required<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key]

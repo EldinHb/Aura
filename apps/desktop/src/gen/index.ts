@@ -71,6 +71,7 @@ export * from './ReviewComment';
 export * from './ReviewConfig';
 export * from './ReviewInbox';
 export * from './ReviewResult';
+export * from './ReviewSource';
 export * from './ReviewThread';
 export * from './SearchHit';
 export * from './Session';

@@ -16,6 +16,12 @@ export function agentLabel(review: PreReview): string {
   const model = chosen && a.model_id && chosen !== a.model_id ? `${chosen} (${a.model_id})` : a.model_id ?? chosen ?? "default model";
   return `${a.provider} · model ${model} · effort ${a.effort ?? "default"}`;
 }
+/** "Recorded by Lead from its worker Review 2730" for a draft an orchestrator recorded. */
+export function sourceLabel(review: Pick<PreReview, "source">): string | null {
+  const s = review.source;
+  if (!s) return null;
+  return `Recorded by ${s.orchestrator_title}${s.worker_title ? ` from its worker ${s.worker_title}` : ""}`;
+}
 export function ReviewEditor({ id }: { id: string }) {
   const [review, setReview] = useState<PreReview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,8 +52,10 @@ export function ReviewEditor({ id }: { id: string }) {
   const comment = (id: string, patch: Partial<ReviewComment>) => editDraft(review.id, { ...result, comments: result.comments.map((c) => c.id === id ? { ...c, ...patch, edited: true } : c) });
   const focusComment = (id: string) => { setFocus((s) => ({ id, seq: (s?.seq ?? 0) + 1 })); document.getElementById(`review-comment-${id}`)?.scrollIntoView({ block: "nearest" }); };
   const active = review.status === "queued" || review.status === "running";
+  const drafting = review.status === "drafting";
+  const source = sourceLabel(review);
   return <div className="pr-review-editor" data-keynav>
-    <header className="pr-toolbar"><button className="btn small" data-hint onClick={() => useReviews.setState({ reviewId: null })}>← Pull request</button><strong>Pre-review</strong><span className="chip">{review.status}</span><span className="pr-muted">{agentLabel(review)} · {new Date(review.created_at).toLocaleString()}</span>
+    <header className="pr-toolbar"><button className="btn small" data-hint onClick={() => useReviews.setState({ reviewId: null })}>← Pull request</button><strong>Pre-review</strong><span className="chip">{review.status}</span><span className="pr-muted">{agentLabel(review)}{source && ` · ${source}`} · {new Date(review.created_at).toLocaleString()}</span>
       {!active && <button className="btn small" data-hint onClick={() => startReview(review.pull, review)}>Pre-review again…</button>}</header>
     {error && <div className="pr-error" role="alert">{error}</div>}
     {active ? <div className="pr-progress"><h2>{review.status === "queued" ? "Waiting for an agent slot" : "Review in progress"}</h2><ol>{[["preparing", "Preparing"], ["cloning", "Fetching the branch"], ["running", "Agent reviewing"], ["validating", "Checking findings"]].map(([phase, label]) => <li key={phase} className={review.phase === phase ? "active" : ""}>{label}{review.phase === phase ? " …" : ""}</li>)}</ol><Elapsed since={review.created_at} /><pre className="pr-log">{review.log_tail.join("\n")}</pre><button className="btn" data-hint disabled={busy} onClick={() => void action("reviews.cancel")}>Cancel pre-review</button></div>
@@ -56,6 +64,7 @@ export function ReviewEditor({ id }: { id: string }) {
         <div className="pr-result-diff"><div className="pr-revision">Reviewed commit {review.reviewed_sha.slice(0, 10)} · {review.context_mode}</div><ReviewDiff diff={review.diff} comments={result.comments} focus={focus} onFocus={focusComment} onAdd={editable ? (path, line, side) => { const id = crypto.randomUUID(); editDraft(review.id, { ...result, comments: [...result.comments, { id, path, line, start_line: null, side, body: "", severity: "minor", rationale: null, valid: true, position_note: null, deleted: false, edited: false, user_authored: true }] }); focusComment(id); } : undefined} /></div>
         <aside className="pr-findings"><div className="pr-findings-scroll">
           {review.context_note && <p className="pr-warning">{review.context_note}</p>}
+          {drafting && <p className="pr-warning" role="status">{review.source?.orchestrator_title ?? "An orchestrator"} is still writing this review. It updates here as it changes; take it over to edit it now.</p>}
           {editable && <div className="pr-save-state" role="status">{draft?.error ? <><span className="pr-error">{draft.error} Your local edits are retained.</span><button className="btn small" data-hint onClick={() => void flushDraft(id).catch((e) => setError(String(e)))}>Retry save</button><button className="btn small" data-hint onClick={() => useStore.getState().openDialog({ kind: "confirm", title: "Reload saved review?", message: "Replace your local edits with the last saved version?", onConfirm: () => { reloadDraft(review); } })}>Reload saved version</button></> : draft?.saving ? "Saving…" : draft && draft.version !== draft.savedVersion ? "Unsaved changes" : "Saved"}</div>}
           <label className="pr-field">Summary<textarea aria-label="Summary" rows={7} disabled={!editable} value={result.summary} onChange={(e) => editDraft(id, { ...result, summary: e.target.value })} /></label>
           <div className="pr-form-row"><label>Verdict<select disabled={!editable} value={result.verdict} onChange={(e) => editDraft(id, { ...result, verdict: e.target.value })}><option value="approve">Approve</option><option value="comment">Comment</option><option value="request_changes">Request changes</option></select></label><label>Risk<select disabled={!editable} value={result.risk} onChange={(e) => editDraft(id, { ...result, risk: e.target.value })}>{["low", "medium", "high"].map((x) => <option key={x}>{x}</option>)}</select></label></div>
@@ -71,7 +80,7 @@ export function ReviewEditor({ id }: { id: string }) {
             {editable && <button className="btn small" data-hint onClick={() => comment(c.id, { deleted: !c.deleted })}>{c.deleted ? "Restore" : "Delete"}</button>}
           </article>)}
         </div><footer className="pr-submit-bar">
-          {editable ? <><button className="btn" data-hint disabled={busy} onClick={() => useStore.getState().openDialog({ kind: "confirm", title: "Discard pre-review?", message: "Nothing will be posted to GitHub.", onConfirm: () => { void action("reviews.discard"); } })}>Discard</button><button className="btn primary" data-hint disabled={busy || !!draft?.error} onClick={() => void preview()}>Submit to GitHub…</button></>
+          {editable || drafting ? <><button className="btn" data-hint disabled={busy} onClick={() => useStore.getState().openDialog({ kind: "confirm", title: "Discard pre-review?", message: "Nothing will be posted to GitHub.", onConfirm: () => { void action("reviews.discard"); } })}>Discard</button>{drafting ? <button className="btn primary" data-hint disabled={busy} onClick={() => void action("reviews.ready")}>Take over and edit</button> : <button className="btn primary" data-hint disabled={busy || !!draft?.error} onClick={() => void preview()}>Submit to GitHub…</button>}</>
             : review.status === "submitted" ? <><span>✓ Submitted to GitHub</span>{review.submitted_url && <ExternalLink href={review.submitted_url}>View review</ExternalLink>}</>
               : <><p className="pr-warning">{review.error ?? "Submitting…"}</p>{review.status === "uncertain" && <button className="btn" data-hint disabled={busy} onClick={() => void action("reviews.reconcile")}>Reconcile with GitHub</button>}</>}
         </footer></aside>

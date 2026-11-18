@@ -247,7 +247,11 @@ Aura. Aura hands it to Claude Code (`--mcp-config`, with the tools allowed), Cod
 (config override, with the tools approved) and ACP agents (`mcpServers`). The tools
 are `list_agents`, `list_projects`, `start_session`, `send_message`, `list_sessions`,
 `read_session`, `wait_for_sessions`, `interrupt_session`, `stop_session` and
-`delete_session`, and they only reach the orchestrator's own workers. A feature owner
+`delete_session`, and they only reach the orchestrator's own workers. Its review tools
+(`list_pull_requests`, `read_pull_review`, `create_review`, `update_review`,
+`add_review_comment`, `edit_review_comment`, `delete_review_comment`, `discard_review`,
+`start_pre_review` and `hide_pull_request`) work on your pull request list; see
+[Reviews from orchestrators](#reviews-from-orchestrators). A feature owner
 gets more, and so do the workers on its team (see below); a plain orchestrator has
 exactly these, and its workers get no tools. Each orchestrator's
 `aura mcp` connects to the daemon with a token of its own, which only lets it use that
@@ -605,6 +609,25 @@ The posted review ends with a line saying an AI agent drafted it and a person
 reviewed it, naming the agent, the model (with the exact model id when the agent
 reports it) and the effort. Each finding the agent wrote carries a short version of
 that line; findings you added yourself do not.
+
+### Reviews from orchestrators
+
+An orchestrator can put the reviews its workers did into your pull request list, so
+they reach you as pre-reviews do: `create_review` records one for a PR (`owner/repo#n`)
+with a verdict, a summary and findings on lines of the PR's diff, signed with the
+agent, model and effort of the worker named in `worker`. The PR shows it as
+**ready**, and the editor names the orchestrator and worker that recorded it. It can
+change what it recorded (`update_review`, `add_review_comment`, `edit_review_comment`,
+`delete_review_comment`), discard it, start Aura's own pre-review
+(`start_pre_review`), and hide or restore a PR (`hide_pull_request`), and it reads
+the list and every pre-review with `list_pull_requests` and `read_pull_review`. These
+go through the same checks, autosave revisions and live updates as the editor: what
+it changes shows at once, and if you have unsaved edits, saving them asks you to
+reload first rather than overwrite either side. A finding you wrote or edited is
+yours: the orchestrator cannot change or delete it. A review it records with
+`ready: false` shows as **drafting** and is read-only until it sets it ready, or
+you choose **Take over and edit**. Posting stays yours: no tool previews, submits
+or reconciles a review, and none comments on, edits or merges a PR on GitHub.
 
 ### Watching your own PRs for reviews
 

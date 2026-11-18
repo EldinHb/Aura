@@ -5,7 +5,7 @@ import { ExternalLink } from "../../components/ExternalLink";
 import { normalizeDetail, type ProjectField, type ProjectItem, type PullDetail } from "../../lib/pulls";
 import { Markdown } from "../../views/transcript/MarkdownView";
 import { ReviewDiff } from "./ReviewDiff";
-import { ReviewEditor } from "./ReviewEditor";
+import { agentLabel, ReviewEditor, sourceLabel } from "./ReviewEditor";
 import { PullSessions } from "./PullSessions";
 import { Avatar, Time, Timeline } from "./Timeline";
 import { commitCount } from "./conversation";
@@ -18,7 +18,7 @@ export function PullWorkspace() {
   const history = useStore((s) => s.reviewHistoryOpen);
   const reviewId = useReviews((s) => s.reviewId);
   const inbox = useReviews((s) => s.inbox);
-  if (history) return <div className="pr-workspace" data-keynav><header className="pr-toolbar"><h2>Review history</h2></header><div className="pr-history">{inbox?.reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => openPull(r.pull, r.id)}><strong>{r.pull.title}</strong><span>{r.pull.repo}#{r.pull.number} · {r.status} · {r.config.provider} · {new Date(r.created_at).toLocaleString()}</span></button>)}{!inbox?.reviews.length && <p className="pr-muted">No pre-reviews yet.</p>}</div></div>;
+  if (history) return <div className="pr-workspace" data-keynav><header className="pr-toolbar"><h2>Review history</h2></header><div className="pr-history">{inbox?.reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => openPull(r.pull, r.id)}><strong>{r.pull.title}</strong><span>{r.pull.repo}#{r.pull.number} · {r.status} · {agentLabel(r)}{sourceLabel(r) && ` · ${sourceLabel(r)}`} · {new Date(r.created_at).toLocaleString()}</span></button>)}{!inbox?.reviews.length && <p className="pr-muted">No pre-reviews yet.</p>}</div></div>;
   if (!selected) return null;
   if (reviewId) return <ReviewEditor key={reviewId} id={reviewId} />;
   return <PullDetailView key={`${selected.account}:${selected.id}`} pull={selected} />;
@@ -90,7 +90,7 @@ function PullDetailView({ pull: initial }: { pull: PullRequest }) {
         <label className="pr-field">Milestone{options ? <select value={pull.milestone ?? ""} disabled={busy} onChange={(e) => void mutate("pulls.update", { patch: { milestone: e.target.value ? Number(e.target.value) : null } })}><option value="">None</option>{pull.milestone && !options.milestones.some((m) => m.number === pull.milestone) && <option value={pull.milestone}>{pull.milestone_title || `#${pull.milestone}`}</option>}{options.milestones.map((m) => <option key={m.number} value={m.number}>{m.title}</option>)}</select> : <span>{pull.milestone ? pull.milestone_title || `#${pull.milestone}` : "None"}</span>}</label>
         {detail?.project_error && <p className="pr-muted">{detail.project_error}</p>}
         {detail?.projects.map((item) => <section key={item.id}><h3>{item.project.title}</h3>{item.fieldValues.filter((v) => v.field).map((value) => <ProjectFieldControl key={value.field!.id} value={value} disabled={busy || !item.project.viewerCanUpdate} item={item} mutate={mutate} />)}</section>)}
-        {!!reviews?.length && <><h3>Previous pre-reviews</h3>{reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => useReviews.setState({ reviewId: r.id })}>{r.status} · {new Date(r.created_at).toLocaleString()}</button>)}</>}
+        {!!reviews?.length && <><h3>Previous pre-reviews</h3>{reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => useReviews.setState({ reviewId: r.id })}>{r.status}{sourceLabel(r) && ` · ${sourceLabel(r)}`} · {new Date(r.created_at).toLocaleString()}</button>)}</>}
       </aside></div>}
   </div>;
 }

@@ -3,10 +3,16 @@ import type { PullRequest } from "./PullRequest";
 import type { ReviewAgent } from "./ReviewAgent";
 import type { ReviewConfig } from "./ReviewConfig";
 import type { ReviewResult } from "./ReviewResult";
+import type { ReviewSource } from "./ReviewSource";
 import type { SubmissionPreview } from "./SubmissionPreview";
 
 export type PreReview = { id: string, pull: PullRequest, config: ReviewConfig, instructions: string, status: string, phase: string, error: string | null, created_at: string, updated_at: string, revision: number, reviewed_sha: string, merge_base: string, context_mode: string, context_note: string | null, diff: string, log_tail: Array<string>, result: ReviewResult, submitted_url: string | null, submission: SubmissionPreview | null, 
 /**
  * The agent that wrote the draft. Missing on drafts from before Aura recorded it.
  */
-agent: ReviewAgent | null, };
+agent: ReviewAgent | null, 
+/**
+ * The orchestrator that recorded the draft through Aura's review tools; None for a
+ * draft Aura's own pre-review run wrote.
+ */
+source: ReviewSource | null, };

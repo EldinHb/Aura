@@ -3,6 +3,7 @@ import type { PullRequest } from "../../gen";
 import { useStore } from "../../state/store";
 import { useLoadPullSessionSources } from "../../state/pullSessions";
 import { PullSessionCount } from "./PullSessions";
+import { sourceLabel } from "./ReviewEditor";
 import { hidePull, isPullHidden, isRerequested, isStale, mergeStatus, openHistory, openPull, pullFilter, pullStatus, report, reviewerEntries, reviewRound, useReviews, visiblePulls } from "./state";
 
 export function ReviewSidebar() {
@@ -98,7 +99,7 @@ function PullRows({ pulls, kind, empty }: { pulls: PullRequest[]; kind: "request
             {mine && pull.unanswered_threads > 0 && <span className="chip err" title="Open review threads where someone else had the last word">{pull.unanswered_threads} unanswered</span>}
             {[...(mine ? [] : reviewRound(pull)), ...pullStatus(pull), ...mergeStatus(pull)].map((s) => <span key={s.label} className={`chip ${s.tone ?? ""}`}>{s.label}</span>)}
           </span>
-          {review && <span className={`chip ${review.status === "failed" ? "err" : ""}`}>{review.status}{earlier ? " · earlier round" : review.reviewed_sha && review.reviewed_sha !== pull.head_sha ? " · PR changed" : ""}</span>}
+          {review && <span className={`chip ${review.status === "failed" ? "err" : ""}`} title={sourceLabel(review) ?? undefined}>{review.status}{earlier ? " · earlier round" : review.reviewed_sha && review.reviewed_sha !== pull.head_sha ? " · PR changed" : ""}</span>}
         </button>
         <button className="btn small" data-hint title={pull.hidden ? "Restore PR" : "Hide PR"} onClick={() => void hidePull(pull, !pull.hidden).catch(report)}>{pull.hidden ? "↶" : "×"}</button>
       </div>;

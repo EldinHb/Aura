@@ -4,7 +4,7 @@ import type { RpcClient } from "../../lib/rpc";
 import type { ProviderInfo, Session } from "../../gen";
 import { defaultSettings, selectSelected, useStore } from "../../state/store";
 import { ReviewSettings } from "./ReviewSettings";
-import { ReviewSubmit } from "./ReviewEditor";
+import { ReviewEditor, ReviewSubmit } from "./ReviewEditor";
 import { ReviewSidebar } from "./ReviewSidebar";
 import { MergeCard } from "./PullWorkspace";
 import { editDraft, ensureDraft, flushDraft, openPull, pullFilter, pullFilterError, reviewStatus, useReviewDrafts, useReviews } from "./state";
@@ -190,4 +190,33 @@ it("labels mergeable PRs in the sidebar", () => {
   useReviews.setState({ inbox: { ...inboxFixture, pulls: [mergeable] } });
   render(<ReviewSidebar />);
   expect(screen.getByText("ready to merge")).toBeTruthy();
+});
+it("follows a review an orchestrator is writing as it changes, until the user takes it over", async () => {
+  const source = { orchestrator: "o1", orchestrator_title: "Lead", worker: "w1", worker_title: "Review 42" };
+  let review = { ...reviewFixture, status: "drafting", phase: "drafting", context_mode: "recorded", source, agent: { provider: "Codex", model: "gpt-5.5", model_id: null, effort: "high" } };
+  const listeners: ((method: string) => void)[] = [];
+  call.mockImplementation(async (method: string) => {
+    if (method === "reviews.ready") review = { ...review, status: "ready", phase: "done" };
+    return method === "reviews.get" || method === "reviews.ready" ? review : inboxFixture;
+  });
+  useStore.setState({ client: { call, models, onNotification: (f: (method: string) => void) => { listeners.push(f); return () => {}; }, onState: () => () => {} } as unknown as RpcClient });
+  render(<ReviewEditor id={review.id} />);
+  expect(await screen.findByText(/Lead is still writing this review/)).toBeTruthy();
+  expect(screen.getByText(/Codex · model gpt-5.5 · effort high · Recorded by Lead from its worker Review 42/)).toBeTruthy();
+  expect((screen.getByLabelText("Summary") as HTMLTextAreaElement).disabled).toBe(true);
+  expect(screen.queryByRole("button", { name: "Submit to GitHub…" })).toBeNull();
+  // The orchestrator changes it: the daemon says so, and the editor reads it again.
+  review = { ...review, revision: 1, result: { ...review.result, summary: "Written by the worker" } };
+  act(() => { for (const f of listeners) f("reviews.changed"); });
+  await waitFor(() => expect((screen.getByLabelText("Summary") as HTMLTextAreaElement).value).toBe("Written by the worker"));
+  fireEvent.click(screen.getByRole("button", { name: "Take over and edit" }));
+  await waitFor(() => expect(call).toHaveBeenCalledWith("reviews.ready", { id: review.id }));
+  await waitFor(() => expect((screen.getByLabelText("Summary") as HTMLTextAreaElement).disabled).toBe(false));
+  expect(screen.getByRole("button", { name: "Submit to GitHub…" })).toBeTruthy();
+});
+it("names the orchestrator that recorded a PR's pre-review on its chip", () => {
+  const recorded = { ...reviewFixture, source: { orchestrator: "o1", orchestrator_title: "Lead", worker: null, worker_title: null } };
+  useReviews.setState({ inbox: { ...inboxFixture, reviews: [recorded] } });
+  render(<ReviewSidebar />);
+  expect(screen.getByTitle("Recorded by Lead").textContent).toBe("ready");
 });

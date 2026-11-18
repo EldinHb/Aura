@@ -53,6 +53,7 @@ fn draft() -> PreReview {
         submitted_url: None,
         submission: None,
         agent: None,
+        source: None,
     }
 }
 fn claude_agent() -> ReviewAgent {
@@ -990,4 +991,464 @@ async fn refresh_puts_what_changed_in_the_inbox_once() {
     )
     .unwrap();
     assert!(after.iter().all(|e| e.read));
+}
+
+/// A service with an orchestrator, its Codex worker and a plain session, restored from the store.
+fn orchestrated(gh: Arc<MockGithub>, r: PreReview) -> (Arc<ReviewService>, String, String, String) {
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let session = |title: &str, provider, orchestrator, orchestrator_id: Option<String>| {
+        let mut s = Session::new(&CreateSessionOpts {
+            provider,
+            cwd: "/tmp".into(),
+            title: Some(title.into()),
+            orchestrator,
+            orchestrator_id,
+            model: Some("gpt-5.5".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        });
+        s.status = SessionStatus::Idle;
+        store.upsert_session(&s).unwrap();
+        s.id
+    };
+    let lead = session("Lead", ProviderKind::Claude, true, None);
+    let worker = session(
+        "Review 2730",
+        ProviderKind::Codex,
+        false,
+        Some(lead.clone()),
+    );
+    let plain = session("Plain", ProviderKind::Claude, false, None);
+    (service_with(store, gh, r), lead, worker, plain)
+}
+async fn call(svc: &Arc<ReviewService>, method: &str, p: Value) -> Result<Value> {
+    Ok(svc.handle(method, p).await?.expect("a review method"))
+}
+fn review_of(v: Value) -> PreReview {
+    serde_json::from_value(v).unwrap()
+}
+#[tokio::test]
+async fn an_orchestrator_records_a_review_ready_for_the_user_signed_by_its_worker() {
+    let gh = Arc::new(MockGithub::default());
+    let (svc, lead, _, _) = orchestrated(gh.clone(), draft());
+    let mut events = svc.events.subscribe();
+    let r = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.create",
+            json!({"orchestrator":lead,"pull":"o/r#1","worker":"Review 2730","verdict":"APPROVE",
+                "summary":"Looks right.","comments":[
+                    {"path":"test.rs","line":1,"severity":"nit","body":"Name this better."},
+                    {"path":"elsewhere.rs","line":9,"body":"Outside the diff."}]}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!((r.status.as_str(), r.phase.as_str()), ("ready", "done"));
+    assert_eq!(r.result.verdict, "approve");
+    assert_eq!(r.result.risk, "medium");
+    assert_eq!(r.reviewed_sha, "a".repeat(40));
+    assert_eq!(r.context_mode, "recorded");
+    assert_eq!(r.diff, DIFF);
+    let c = &r.result.comments;
+    assert_eq!(
+        (c[0].side.as_str(), c[0].severity.as_str()),
+        ("RIGHT", "nit")
+    );
+    assert!(c[0].valid && !c[0].user_authored && !c[0].edited && !c[0].id.is_empty());
+    assert!(!c[1].valid && c[1].position_note.is_some());
+    let source = r.source.clone().unwrap();
+    assert_eq!(
+        (
+            source.orchestrator_title.as_str(),
+            source.worker_title.as_deref()
+        ),
+        ("Lead", Some("Review 2730"))
+    );
+    assert_eq!(
+        r.agent.as_ref().unwrap().signature(),
+        "Codex · model gpt-5.5 · effort high"
+    );
+    assert_eq!(
+        events.recv().await.unwrap()["method"],
+        "reviews.changed",
+        "the app hears of it as of a change in its own editor"
+    );
+    let listed = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.list",
+            json!({"orchestrator":lead}),
+        )
+        .await
+        .unwrap()["reviews"][0]
+            .clone(),
+    );
+    assert_eq!(
+        (listed.id.as_str(), listed.diff.as_str()),
+        (r.id.as_str(), "")
+    );
+    assert!(svc
+        .store
+        .feature_records("reviews")
+        .unwrap()
+        .iter()
+        .any(|(id, _)| id == &r.id));
+    // Posting it stays the user's, through the same preview, signed by the worker's agent.
+    let preview = svc.preview(&r.id).await.unwrap();
+    assert_eq!(preview.event, "APPROVE");
+    assert_eq!(preview.comments.len(), 1);
+    assert!(preview.body.contains("Outside the diff."));
+    assert!(preview.body.contains("Codex · model gpt-5.5 · effort high"));
+    assert_eq!(gh.posts.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
+async fn orchestrator_edits_go_through_the_editors_checks_and_leave_the_users_findings_alone() {
+    let (svc, lead, _, _) = orchestrated(Arc::new(MockGithub::default()), draft());
+    let id = "review-1";
+    // The user adds a finding of their own in the editor.
+    let mut result = draft().result;
+    result.comments.push(ReviewComment {
+        id: "mine".into(),
+        path: "test.rs".into(),
+        line: 1,
+        side: "RIGHT".into(),
+        body: "My own note".into(),
+        severity: "minor".into(),
+        ..Default::default()
+    });
+    call(
+        &svc,
+        "reviews.save",
+        json!({"id":id,"revision":0,"result":result}),
+    )
+    .await
+    .unwrap();
+    let edited = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.edit_comment",
+            json!({"orchestrator":lead,"review":id,"comment":"c1","body":"Fix this, now","severity":"blocker"}),
+        )
+        .await
+        .unwrap(),
+    );
+    let c1 = &edited.result.comments[0];
+    assert_eq!(
+        (c1.body.as_str(), c1.severity.as_str()),
+        ("Fix this, now", "blocker")
+    );
+    assert!(!c1.edited, "an agent's change is not the user's edit");
+    assert_eq!(edited.revision, 2);
+    let err = call(
+        &svc,
+        "orchestrator.reviews.edit_comment",
+        json!({"orchestrator":lead,"review":id,"comment":"mine","body":"Mine now"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("leave it to them"), "{err}");
+    assert!(call(
+        &svc,
+        "orchestrator.reviews.delete_comment",
+        json!({"orchestrator":lead,"review":id,"comment":"mine"}),
+    )
+    .await
+    .is_err());
+    let deleted = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.delete_comment",
+            json!({"orchestrator":lead,"review":id,"comment":"c1"}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(deleted.result.comments[0].deleted);
+    let restored = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.delete_comment",
+            json!({"orchestrator":lead,"review":id,"comment":"c1","restore":true}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(!restored.result.comments[0].deleted);
+    assert!(call(
+        &svc,
+        "orchestrator.reviews.add_comment",
+        json!({"orchestrator":lead,"review":id,"path":"test.rs","line":1,"body":"x","severity":"style"}),
+    )
+    .await
+    .is_err());
+    let added = call(
+        &svc,
+        "orchestrator.reviews.add_comment",
+        json!({"orchestrator":lead,"review":id,"path":"test.rs","line":1,"side":"left","body":"Was this needed?"}),
+    )
+    .await
+    .unwrap();
+    let r = review_of(added["review"].clone());
+    let new = r
+        .result
+        .comments
+        .iter()
+        .find(|c| c.id == added["comment"])
+        .unwrap();
+    assert!(new.valid && new.side == "LEFT" && new.severity == "minor");
+    // A stale revision is refused rather than overwriting what changed since.
+    let err = call(
+        &svc,
+        "orchestrator.reviews.update",
+        json!({"orchestrator":lead,"review":id,"revision":1,"summary":"Stale"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Read it again"), "{err}");
+    // New findings replace the agent's, never the user's.
+    let r = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.update",
+            json!({"orchestrator":lead,"review":id,"revision":r.revision,"verdict":"request_changes","risk":"high",
+                "comments":[{"path":"test.rs","line":1,"severity":"major","body":"Replaced"}]}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(
+        r.result
+            .comments
+            .iter()
+            .map(|c| c.body.as_str())
+            .collect::<Vec<_>>(),
+        ["My own note", "Replaced"]
+    );
+    assert_eq!(
+        (r.result.verdict.as_str(), r.result.risk.as_str()),
+        ("request_changes", "high")
+    );
+    // The user's window, still at the revision they saved, is told to reload.
+    assert!(call(
+        &svc,
+        "reviews.save",
+        json!({"id":id,"revision":1,"result":result})
+    )
+    .await
+    .is_err());
+    // A finding of the agent's that the user deleted stays deleted.
+    let mut result = r.result.clone();
+    let replaced = result
+        .comments
+        .iter_mut()
+        .find(|c| c.body == "Replaced")
+        .unwrap();
+    replaced.deleted = true;
+    let replaced = replaced.id.clone();
+    let r = review_of(
+        call(
+            &svc,
+            "reviews.save",
+            json!({"id":id,"revision":r.revision,"result":result}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(r
+        .result
+        .comments
+        .iter()
+        .any(|c| c.id == replaced && c.deleted && c.edited));
+    assert!(call(
+        &svc,
+        "orchestrator.reviews.delete_comment",
+        json!({"orchestrator":lead,"review":id,"comment":replaced,"restore":true}),
+    )
+    .await
+    .is_err());
+}
+#[tokio::test]
+async fn a_draft_being_written_reaches_the_user_once_it_is_ready() {
+    let (svc, lead, _, _) = orchestrated(Arc::new(MockGithub::default()), draft());
+    let r = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.create",
+            json!({"orchestrator":lead,"repo":"o/r","number":1,"verdict":"comment","summary":"Started","ready":false}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(r.status, "drafting");
+    assert_eq!(
+        r.agent.as_ref().unwrap().provider,
+        "Claude Code",
+        "without a worker the orchestrator did the review"
+    );
+    assert!(
+        call(
+            &svc,
+            "reviews.save",
+            json!({"id":r.id,"revision":0,"result":r.result})
+        )
+        .await
+        .is_err(),
+        "the user's editor cannot save a draft still being written"
+    );
+    call(
+        &svc,
+        "orchestrator.reviews.add_comment",
+        json!({"orchestrator":lead,"review":r.id,"path":"test.rs","line":1,"body":"Second thought"}),
+    )
+    .await
+    .unwrap();
+    let ready = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.update",
+            json!({"orchestrator":lead,"review":r.id,"summary":"Done","ready":true}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(
+        (ready.status.as_str(), ready.result.summary.as_str()),
+        ("ready", "Done")
+    );
+    assert!(call(
+        &svc,
+        "orchestrator.reviews.update",
+        json!({"orchestrator":lead,"review":r.id,"ready":false}),
+    )
+    .await
+    .is_err());
+    // The user can take over a draft an orchestrator left unfinished.
+    let other = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.create",
+            json!({"orchestrator":lead,"pull":"o/r#1","verdict":"comment","summary":"Left","ready":false}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(
+        review_of(
+            call(&svc, "reviews.ready", json!({"id":other.id}))
+                .await
+                .unwrap()
+        )
+        .status,
+        "ready"
+    );
+    let discarded = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.discard",
+            json!({"orchestrator":lead,"review":other.id}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(discarded.status, "discarded");
+    assert!(call(
+        &svc,
+        "orchestrator.reviews.update",
+        json!({"orchestrator":lead,"review":other.id,"summary":"Too late"}),
+    )
+    .await
+    .is_err());
+}
+#[tokio::test]
+async fn only_an_orchestrator_reaches_the_review_tools_and_a_review_needs_content() {
+    let (svc, lead, worker, plain) = orchestrated(Arc::new(MockGithub::default()), draft());
+    for who in [plain.as_str(), worker.as_str(), "nobody"] {
+        assert!(call(
+            &svc,
+            "orchestrator.reviews.list",
+            json!({"orchestrator":who})
+        )
+        .await
+        .is_err());
+    }
+    assert!(call(&svc, "orchestrator.reviews.list", json!({}))
+        .await
+        .is_err());
+    let err = call(
+        &svc,
+        "orchestrator.reviews.create",
+        json!({"orchestrator":lead,"pull":"o/r#1","verdict":"approve"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("summary"), "{err}");
+    let err = call(
+        &svc,
+        "orchestrator.reviews.create",
+        json!({"orchestrator":lead,"pull":"o/r#1","verdict":"approve","summary":"x","worker":"Nobody"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("no worker"), "{err}");
+    let got = call(
+        &svc,
+        "orchestrator.reviews.get",
+        json!({"orchestrator":lead,"pull":"o/r#1"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(got["pull"]["id"], "o/r#1");
+    assert_eq!(got["reviews"][0]["id"], "review-1");
+    let full = review_of(
+        call(
+            &svc,
+            "orchestrator.reviews.get",
+            json!({"orchestrator":lead,"review":"review-1"}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(full.diff, DIFF, "a single review comes with its diff");
+}
+#[tokio::test]
+async fn an_orchestrator_starts_auras_own_pre_review_without_changing_the_users_defaults() {
+    let (svc, lead, _, _) = orchestrated(Arc::new(MockGithub::default()), draft());
+    let err = call(
+        &svc,
+        "orchestrator.reviews.start",
+        json!({"orchestrator":lead,"pull":"o/r#1","agent":"codex"}),
+    )
+    .await
+    .unwrap_err();
+    // No providers are installed in tests: the same refusal the user's dialog gets.
+    assert!(!err.to_string().contains("Unknown review method"), "{err}");
+    assert_eq!(svc.state.lock().defaults.provider, "codex");
+    let inbox = call(
+        &svc,
+        "orchestrator.reviews.hide",
+        json!({"orchestrator":lead,"pull":"o/r#1"}),
+    )
+    .await
+    .unwrap();
+    assert!(inbox.is_object());
+    assert_eq!(
+        svc.store
+            .feature_records("hidden:github.com:alice")
+            .unwrap(),
+        vec![("o/r#1".into(), "true".into())]
+    );
+    call(
+        &svc,
+        "orchestrator.reviews.hide",
+        json!({"orchestrator":lead,"pull":"o/r#1","hidden":false}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        svc.store
+            .feature_records("hidden:github.com:alice")
+            .unwrap(),
+        vec![("o/r#1".into(), "false".into())]
+    );
 }

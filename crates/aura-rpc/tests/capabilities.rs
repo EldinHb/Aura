@@ -344,3 +344,61 @@ async fn a_call_on_a_connection_the_daemon_closed_fails_at_once() {
     .expect("a call on a closed connection must not wait for its timeout");
     assert_eq!(late.unwrap_err().to_string(), "connection closed");
 }
+
+#[tokio::test]
+async fn an_orchestrators_review_tools_act_for_it_alone_and_leave_the_users_review_methods_to_the_user(
+) {
+    let (m, a, _b, plain) = sessions();
+    let dir = tempfile::tempdir().unwrap();
+    // Stands in for the daemon's review service: says which method reached it.
+    let ext: aura_rpc::server::ExtHandler = Arc::new(|method: String, _params: Value| {
+        Box::pin(async move {
+            Ok(
+                (method.starts_with("orchestrator.reviews.") || method.starts_with("reviews."))
+                    .then(|| json!(method)),
+            )
+        })
+    });
+    let server = RpcServer::start(m.clone(), dir.path(), Some(ext))
+        .await
+        .unwrap();
+    let lead = RpcClient::connect(server.info.port, &m.session_token(&plain))
+        .await
+        .unwrap();
+    assert_eq!(
+        lead.call(
+            "orchestrator.reviews.create",
+            json!({ "orchestrator": plain, "pull": "o/r#1", "verdict": "approve" })
+        )
+        .await
+        .unwrap(),
+        json!("orchestrator.reviews.create")
+    );
+    let e = err(
+        &lead,
+        "orchestrator.reviews.create",
+        json!({ "orchestrator": a, "pull": "o/r#1", "verdict": "approve" }),
+    )
+    .await;
+    assert!(e.contains("may only use that session's own tools"), "{e}");
+    for method in ["reviews.save", "reviews.submit", "reviews.preview"] {
+        let e = err(&lead, method, json!({ "id": "r1" })).await;
+        assert!(e.contains("not allowed"), "{method}: {e}");
+    }
+    let user = RpcClient::connect(server.info.port, &server.info.token)
+        .await
+        .unwrap();
+    let e = err(
+        &user,
+        "orchestrator.reviews.list",
+        json!({ "orchestrator": plain }),
+    )
+    .await;
+    assert!(e.contains("session token"), "{e}");
+    assert_eq!(
+        user.call("reviews.save", json!({ "id": "r1" }))
+            .await
+            .unwrap(),
+        json!("reviews.save")
+    );
+}

@@ -312,6 +312,20 @@ pub struct PreReview {
     /// The agent that wrote the draft. Missing on drafts from before Aura recorded it.
     #[serde(default)]
     pub agent: Option<ReviewAgent>,
+    /// The orchestrator that recorded the draft through Aura's review tools; None for a
+    /// draft Aura's own pre-review run wrote.
+    #[serde(default)]
+    pub source: Option<ReviewSource>,
+}
+/// An orchestrator session that recorded a pre-review, and the worker whose review it is.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewSource {
+    pub orchestrator: String,
+    pub orchestrator_title: String,
+    /// The worker session that did the review; None when the orchestrator did it itself.
+    pub worker: Option<String>,
+    pub worker_title: Option<String>,
 }
 /// Who wrote a pre-review; signed onto what Aura posts to GitHub.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
