@@ -15,6 +15,8 @@ pub mod process;
 pub mod prompts;
 pub mod provider;
 pub mod review;
+pub mod schedule;
+pub mod schedules;
 pub mod specialists;
 pub mod store;
 pub mod suggestions;
@@ -30,6 +32,11 @@ pub use meetings::{MeetingMode, MeetingSettings};
 pub use prompts::SystemPrompts;
 pub use provider::*;
 pub use review::*;
+pub use schedule::{
+    MissedRuns, RunResult, RunTrigger, Schedule, ScheduleSource, ScheduledRun, ScheduledTask,
+    TimeOfDay, Weekday,
+};
+pub use schedules::{Editor, ScheduleService, ScheduledTaskInput};
 pub use specialists::{Specialist, SpecialistInput, SpecialistScope};
 pub use store::*;
 pub use suggestions::{SuggestionEvidence, SuggestionSettings};

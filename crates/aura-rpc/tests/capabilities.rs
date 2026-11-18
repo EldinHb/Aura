@@ -402,3 +402,70 @@ async fn an_orchestrators_review_tools_act_for_it_alone_and_leave_the_users_revi
         json!("reviews.save")
     );
 }
+
+#[tokio::test]
+async fn an_orchestrators_schedule_tools_act_for_it_and_the_users_schedule_methods_stay_the_users()
+{
+    let (m, a, _b, plain) = sessions();
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
+    let schedules = ScheduleService::new(m.clone(), Arc::new(MemoryStore::default()), tx);
+    let svc = schedules.clone();
+    let ext: aura_rpc::server::ExtHandler = Arc::new(move |method: String, params: Value| {
+        let svc = svc.clone();
+        Box::pin(async move { svc.handle(&method, params).await })
+    });
+    let server = RpcServer::start(m.clone(), dir.path(), Some(ext))
+        .await
+        .unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let lead = RpcClient::connect(server.info.port, &m.session_token(&plain))
+        .await
+        .unwrap();
+    // Its own tools reach the scheduler: a list, and a task the scheduler
+    // itself turns down (this daemon has no agents to start).
+    assert_eq!(
+        lead.call(
+            "orchestrator.schedules.list",
+            json!({ "orchestrator": plain })
+        )
+        .await
+        .unwrap(),
+        json!([])
+    );
+    let e = err(
+        &lead,
+        "orchestrator.schedules.create",
+        json!({ "orchestrator": plain, "name": "Triage", "prompt": "triage", "agent": "claude", "cwd": cwd, "schedule": { "unit": "hours", "every": 1 } }),
+    )
+    .await;
+    assert!(e.contains("not an agent Aura can start here"), "{e}");
+    let task = json!({ "id": "t1" });
+    // Not for another orchestrator, and not the user's own methods.
+    let e = err(
+        &lead,
+        "orchestrator.schedules.list",
+        json!({ "orchestrator": a }),
+    )
+    .await;
+    assert!(e.contains("may only use that session's own tools"), "{e}");
+    for method in ["schedules.list", "schedules.update", "schedules.run"] {
+        let e = err(&lead, method, json!({ "id": task["id"] })).await;
+        assert!(e.contains("not allowed"), "{method}: {e}");
+    }
+    // The user's token cannot act as the orchestrator, and sees the task.
+    let user = RpcClient::connect(server.info.port, &server.info.token)
+        .await
+        .unwrap();
+    let e = err(
+        &user,
+        "orchestrator.schedules.list",
+        json!({ "orchestrator": plain }),
+    )
+    .await;
+    assert!(e.contains("session token"), "{e}");
+    assert_eq!(
+        user.call("schedules.list", json!({})).await.unwrap(),
+        json!([])
+    );
+}

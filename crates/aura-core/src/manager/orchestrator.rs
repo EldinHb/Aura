@@ -307,7 +307,7 @@ impl Manager {
     /// Whether the existing directory `dir` lies in the base directory of
     /// orchestrators, with `..` and links resolved. Only orchestrators without
     /// a folder work there, each in the one Aura made for it.
-    pub(super) fn in_orchestrator_dirs(&self, dir: &str) -> bool {
+    pub(crate) fn in_orchestrator_dirs(&self, dir: &str) -> bool {
         let base = canonical(&self.orchestrator_dirs());
         std::fs::canonicalize(dir).is_ok_and(|d| d.starts_with(base))
     }
@@ -1839,7 +1839,9 @@ pub fn describe_projects(projects: &[Project]) -> String {
     out
 }
 
-fn parse_agent(agent: &str) -> Result<(ProviderKind, Option<String>)> {
+/// An agent as tools and scheduled tasks name it (`claude`, `codex`, an ACP
+/// agent's id or `acp:<id>`): its provider, and the ACP agent if it is one.
+pub fn parse_agent(agent: &str) -> Result<(ProviderKind, Option<String>)> {
     let a = agent.trim();
     match a.to_lowercase().as_str() {
         "" => bail!("name the agent: `claude`, `codex`, or an ACP agent id from list_agents"),

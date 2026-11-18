@@ -1,6 +1,7 @@
 import { ReviewSettings } from "../features/reviews/ReviewSettings";
 import { ReviewSubmit } from "../features/reviews/ReviewEditor";
 import { WatchDialog } from "../features/watches/WatchDialog";
+import { SchedulesDialog } from "../features/schedules/SchedulesDialog";
 import { useEffect, useState } from "react";
 import { useStore } from "../state/store";
 import { Toasts } from "./Toasts";
@@ -45,6 +46,8 @@ function CurrentDialog() {
       return <SystemPromptDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "pr-watch":
       return <WatchDialog key={`${dialog.repo}#${dialog.number}`} target={{ repo: dialog.repo, number: dialog.number }} />;
+    case "schedules":
+      return <SchedulesDialog key={`${dialog.taskId ?? ""}-${dialog.create ? "new" : ""}`} taskId={dialog.taskId} create={dialog.create} />;
     case "git-cleanup":
       return <GitCleanupDialog key={`${dialog.cwd ?? ""}-${dialog.repo ?? ""}`} cwd={dialog.cwd} repo={dialog.repo} />;
     case "session-links":

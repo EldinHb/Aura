@@ -66,6 +66,10 @@ keyboard, while the agents keep working in the background.
   reviews and comments on your PRs go to its agent, which fixes and pushes, and
   you are told when they arrive and when the agent is done.
   See [Agents follow up on reviews](#agents-follow-up-on-reviews).
+- **Scheduled tasks.** Give Aura a prompt and a schedule (every N minutes, hours, days,
+  weeks on chosen days, or months on a day) and it starts a new session with that
+  prompt each time, also when the window is closed. See
+  [Scheduled tasks](#scheduled-tasks).
 - **An inbox for approvals and PR changes.** See every session waiting on you, and approve
   or decline with a single key. Changes on the pull requests you follow land there too;
   click one to open the PR. The top bar shows how many items it holds.
@@ -251,7 +255,11 @@ are `list_agents`, `list_projects`, `start_session`, `send_message`, `list_sessi
 (`list_pull_requests`, `read_pull_review`, `create_review`, `update_review`,
 `add_review_comment`, `edit_review_comment`, `delete_review_comment`, `discard_review`,
 `start_pre_review` and `hide_pull_request`) work on your pull request list; see
-[Reviews from orchestrators](#reviews-from-orchestrators). A feature owner
+[Reviews from orchestrators](#reviews-from-orchestrators). Its scheduled-task tools
+(`list_scheduled_tasks`, `read_scheduled_task_history`, `create_scheduled_task`,
+`update_scheduled_task`, `delete_scheduled_task`, `set_scheduled_task_enabled` and
+`run_scheduled_task`) manage your scheduled tasks; see
+[Scheduled tasks](#scheduled-tasks). A feature owner
 gets more, and so do the workers on its team (see below); a plain orchestrator has
 exactly these, and its workers get no tools. Each orchestrator's
 `aura mcp` connects to the daemon with a token of its own, which only lets it use that
@@ -266,6 +274,44 @@ agents apart from each other's tools, not from your account. ACP agents decide
 themselves whether to ask before an MCP tool call; if yours does, the requests show up
 as approvals like any other. Turning an orchestrator that has a folder back into a
 regular session leaves its workers as regular sessions.
+
+## Scheduled tasks
+
+A scheduled task is a prompt Aura starts a new session with on a schedule: a nightly
+dependency check, a Monday triage of new issues, a monthly report. Open **Scheduled
+tasks** from the line under the sessions in the sidebar, `⌘K` → Scheduled tasks…, or
+`Ctrl+Space s c`. The list shows each task's schedule, its next run and how its last
+run went; pick one to edit it, **Run now**, disable or delete it, and see its history.
+
+- **What it runs.** A name, the prompt, the agent, model, effort and permission mode
+  (chosen like in the new-session dialog), the folder or repository, optionally a new
+  git worktree per run on a branch of its own (`scheduled/<name>-<date>-<time>` unless
+  you set the start of the name), and optionally a sidebar group.
+- **When.** Every N minutes or hours (elapsed time, counted from when you save the
+  schedule), every N days at a time, every N weeks on the days you pick at a time, or
+  every N months on a day at a time. A day a month does not have (the 31st in April,
+  the 30th in February) runs on its last day. Times are your local time and follow
+  daylight saving time: a time the clock skips (02:30 when the clock jumps from 02:00
+  to 03:00) runs when it jumps, a time that comes twice runs once. The editor shows the
+  next runs before you save.
+- **Every run is a normal session.** It shows in the sidebar like any other, titled
+  with the task's name and the time, and the history links to it.
+- **The daemon runs them.** Tasks fire whether or not the app is open, and everything
+  is kept in Aura's database across restarts.
+- **No pile-ups.** While the session of the previous run is still working (or waits on
+  you), a run is skipped and recorded as skipped, unless the task allows overlapping
+  runs. Run now follows the same rule.
+- **Missed runs.** Runs that came due while Aura was not running, or the computer was
+  asleep, run once when it is back, however many went by, and the history says how many.
+  Set a task to skip them instead and the history records the skip.
+
+Orchestrators can manage your scheduled tasks with their tools (see
+[Orchestrators](#orchestrators)). They go through the same code as the app, and the
+window shows their changes as they happen. An orchestrator cannot choose permission
+or sandbox modes: a task it creates runs its own agent with its own modes, any other
+agent with the default, and when it changes what a task does (prompt, agent, model,
+effort, folder or worktree) the task's modes go back to those. The sessions a task
+starts are yours, not the orchestrator's workers.
 
 ## Feature owners & specialists
 

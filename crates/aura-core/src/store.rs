@@ -1,4 +1,5 @@
 use crate::event::Event;
+use crate::schedule::{ScheduledRun, ScheduledTask};
 use crate::types::*;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,9 @@ pub struct StoredEvent {
     pub ts: chrono::DateTime<chrono::Utc>,
     pub event: Event,
 }
+
+const SCHEDULED_TASKS: &str = "scheduled_tasks";
+const SCHEDULED_RUNS: &str = "scheduled_runs";
 
 /// Persistence boundary. Implemented by `aura-store` with SQLite; an in-memory
 /// implementation lives here for tests.
@@ -48,6 +52,45 @@ pub trait Store: Send + Sync {
             &format!("feature:{namespace}"),
             &serde_json::to_string(&records)?,
         )
+    }
+    /// Every scheduled task (see [`crate::schedule`]).
+    fn scheduled_tasks(&self) -> Result<Vec<ScheduledTask>> {
+        self.feature_records(SCHEDULED_TASKS)?
+            .into_iter()
+            .map(|(_, json)| Ok(serde_json::from_str(&json)?))
+            .collect()
+    }
+    fn save_scheduled_task(&self, task: &ScheduledTask) -> Result<()> {
+        self.save_feature_record(SCHEDULED_TASKS, &task.id, &serde_json::to_string(task)?)
+    }
+    /// Delete a task and its history.
+    fn delete_scheduled_task(&self, id: &str) -> Result<()> {
+        let runs = format!("{SCHEDULED_RUNS}:{id}");
+        for (key, _) in self.feature_records(&runs)? {
+            self.delete_feature_record(&runs, &key)?;
+        }
+        self.delete_feature_record(SCHEDULED_TASKS, id)
+    }
+    /// A task's history, latest first, at most `limit` entries.
+    fn scheduled_runs(&self, task_id: &str, limit: usize) -> Result<Vec<ScheduledRun>> {
+        let mut runs: Vec<ScheduledRun> = self
+            .feature_records(&format!("{SCHEDULED_RUNS}:{task_id}"))?
+            .into_iter()
+            .map(|(_, json)| serde_json::from_str(&json))
+            .collect::<Result<_, _>>()?;
+        runs.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| b.id.cmp(&a.id)));
+        runs.truncate(limit);
+        Ok(runs)
+    }
+    /// Add an entry to a task's history and keep only its latest `keep`.
+    fn add_scheduled_run(&self, run: &ScheduledRun, keep: usize) -> Result<()> {
+        let ns = format!("{SCHEDULED_RUNS}:{}", run.task_id);
+        self.save_feature_record(&ns, &run.id, &serde_json::to_string(run)?)?;
+        let all = self.scheduled_runs(&run.task_id, usize::MAX)?;
+        for old in all.iter().skip(keep) {
+            self.delete_feature_record(&ns, &old.id)?;
+        }
+        Ok(())
     }
     fn upsert_session(&self, session: &Session) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;

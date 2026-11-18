@@ -18,8 +18,8 @@ mod suggest;
 mod team;
 pub use features::{AskSpec, CheckpointOutcome, HireSpec, ReportSpec};
 pub use orchestrator::{
-    agent_line, describe_projects, describe_workers, report_message, Project, WaitResult,
-    WorkerReport, WorkerSpec,
+    agent_line, describe_projects, describe_workers, parse_agent, report_message, Project,
+    WaitResult, WorkerReport, WorkerSpec,
 };
 pub use suggest::SuggestionRun;
 pub use team::MeetingSpec;

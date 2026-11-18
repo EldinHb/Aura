@@ -2,6 +2,8 @@ import { PullWorkspace } from "./features/reviews/PullWorkspace";
 import { registerReviewCommands } from "./features/reviews/state";
 import { isHandlingReview, registerWatchCommands, useWatchSync } from "./features/watches/state";
 import { usePullChangeSync } from "./features/reviews/changes";
+import { registerScheduleCommands, useScheduleSync } from "./features/schedules/state";
+import "./features/schedules/schedules.css";
 import "./features/reviews/reviews.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
@@ -39,6 +41,7 @@ export default function App() {
   useWatchSync(windowMode !== "session");
   // Every window keeps the changes for its inbox count; only the main one announces them.
   usePullChangeSync(windowMode !== "session");
+  useScheduleSync();
   useDetectedLinksSync();
   useMarkViewedSeen();
   const inbox = useInboxCount();
@@ -78,7 +81,8 @@ export default function App() {
     const offCore = registerCoreCommands();
     const offReviews = registerReviewCommands();
     const offWatches = registerWatchCommands();
-    return () => { offCore(); offReviews(); offWatches(); };
+    const offSchedules = registerScheduleCommands();
+    return () => { offCore(); offReviews(); offWatches(); offSchedules(); };
   }, []);
 
   // Connect + subscribe.

@@ -1,7 +1,9 @@
 //! SQLite persistence for Aura (sessions, event log, FTS search, settings, scrollback).
 
 use anyhow::{Context, Result};
-use aura_core::{Event, ItemKind, SearchHit, Session, Store, StoredEvent};
+use aura_core::{
+    Event, ItemKind, ScheduledRun, ScheduledTask, SearchHit, Session, Store, StoredEvent,
+};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -53,6 +55,21 @@ const MIGRATIONS: &[&str] = &[
         namespace TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL,
         PRIMARY KEY(namespace, id)
     );"#,
+    // v3: scheduled tasks and their run history.
+    r#"
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS scheduled_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        at TEXT NOT NULL,
+        json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS scheduled_runs_task ON scheduled_runs(task_id, at DESC);
+    "#,
 ];
 
 pub struct SqliteStore {
@@ -131,6 +148,74 @@ fn parse_ts(s: &str) -> DateTime<Utc> {
 }
 
 impl Store for SqliteStore {
+    fn scheduled_tasks(&self) -> Result<Vec<ScheduledTask>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT json FROM scheduled_tasks ORDER BY created_at, id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            match serde_json::from_str::<ScheduledTask>(&row?) {
+                Ok(t) => out.push(t),
+                Err(e) => tracing::warn!("skipping unreadable scheduled task: {e}"),
+            }
+        }
+        Ok(out)
+    }
+    fn save_scheduled_task(&self, task: &ScheduledTask) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO scheduled_tasks (id, created_at, json) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+            params![
+                task.id,
+                task.created_at.to_rfc3339(),
+                serde_json::to_string(task)?
+            ],
+        )?;
+        Ok(())
+    }
+    fn delete_scheduled_task(&self, id: &str) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM scheduled_runs WHERE task_id = ?1", params![id])?;
+        tx.execute("DELETE FROM scheduled_tasks WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+    fn scheduled_runs(&self, task_id: &str, limit: usize) -> Result<Vec<ScheduledRun>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT json FROM scheduled_runs WHERE task_id = ?1 ORDER BY at DESC, id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![task_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |r| r.get::<_, String>(0),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            match serde_json::from_str::<ScheduledRun>(&row?) {
+                Ok(r) => out.push(r),
+                Err(e) => tracing::warn!("skipping unreadable scheduled run: {e}"),
+            }
+        }
+        Ok(out)
+    }
+    fn add_scheduled_run(&self, run: &ScheduledRun, keep: usize) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        // Fixed-width UTC times sort as text.
+        let at = run.at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+        tx.execute(
+            "INSERT OR REPLACE INTO scheduled_runs (id, task_id, at, json) VALUES (?1, ?2, ?3, ?4)",
+            params![run.id, run.task_id, at, serde_json::to_string(run)?],
+        )?;
+        tx.execute(
+            "DELETE FROM scheduled_runs WHERE task_id = ?1 AND id NOT IN (
+               SELECT id FROM scheduled_runs WHERE task_id = ?1 ORDER BY at DESC, id DESC LIMIT ?2)",
+            params![run.task_id, i64::try_from(keep).unwrap_or(i64::MAX)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
     fn feature_records(&self, namespace: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock();
         let mut stmt =
@@ -497,6 +582,107 @@ mod tests {
         assert_eq!(s.feature_records("other").unwrap().len(), 1);
     }
 
+    fn task(id: &str, at: DateTime<Utc>) -> ScheduledTask {
+        ScheduledTask {
+            id: id.into(),
+            name: format!("task {id}"),
+            prompt: "check the build".into(),
+            agent: "claude".into(),
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            permission_mode: None,
+            sandbox_mode: None,
+            cwd: "/tmp/repo".into(),
+            worktree: true,
+            branch_prefix: None,
+            group: Some("nightly".into()),
+            enabled: true,
+            schedule: aura_core::Schedule::Days {
+                every: 1,
+                at: "09:00".parse().unwrap(),
+            },
+            missed: aura_core::MissedRuns::RunOnce,
+            allow_overlap: false,
+            created_at: at,
+            updated_at: at,
+            anchor: at,
+            last_slot: None,
+            next_run: Some(at + chrono::Duration::hours(1)),
+            last_run: None,
+            created_by: None,
+        }
+    }
+
+    fn run(task_id: &str, n: i64, start: DateTime<Utc>) -> ScheduledRun {
+        ScheduledRun {
+            id: format!("{task_id}-{n}"),
+            task_id: task_id.into(),
+            at: start + chrono::Duration::minutes(n),
+            slot: None,
+            trigger: aura_core::RunTrigger::Schedule,
+            result: aura_core::RunResult::Started,
+            session_id: Some(format!("s{n}")),
+            session_title: None,
+            message: None,
+        }
+    }
+
+    #[test]
+    fn scheduled_tasks_and_their_history_are_kept_and_pruned() {
+        let s = SqliteStore::open_in_memory().unwrap();
+        let t0 = "2026-11-18T08:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut a = task("a", t0);
+        s.save_scheduled_task(&a).unwrap();
+        s.save_scheduled_task(&task("b", t0 + chrono::Duration::seconds(1)))
+            .unwrap();
+        a.enabled = false;
+        a.next_run = None;
+        s.save_scheduled_task(&a).unwrap();
+        let tasks = s.scheduled_tasks().unwrap();
+        assert_eq!(
+            tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"],
+            "in the order they were created"
+        );
+        assert_eq!(tasks[0], a, "saved again, not twice");
+
+        // Runs come back latest first; only the latest `keep` stay.
+        for n in 0..12 {
+            s.add_scheduled_run(&run("a", n, t0), 10).unwrap();
+        }
+        s.add_scheduled_run(&run("b", 0, t0), 10).unwrap();
+        let runs = s.scheduled_runs("a", 100).unwrap();
+        assert_eq!(runs.len(), 10);
+        assert_eq!(runs[0].id, "a-11");
+        assert_eq!(runs[9].id, "a-2");
+        assert_eq!(s.scheduled_runs("a", 3).unwrap().len(), 3);
+        assert_eq!(s.scheduled_runs("b", 100).unwrap().len(), 1);
+
+        // Deleting a task deletes its history, and nobody else's.
+        s.delete_scheduled_task("a").unwrap();
+        assert!(s.scheduled_runs("a", 100).unwrap().is_empty());
+        assert_eq!(s.scheduled_runs("b", 100).unwrap().len(), 1);
+        assert_eq!(s.scheduled_tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_in_memory_store_keeps_scheduled_tasks_the_same_way() {
+        let s = aura_core::MemoryStore::default();
+        let t0 = "2026-11-18T08:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        s.save_scheduled_task(&task("a", t0)).unwrap();
+        for n in 0..5 {
+            s.add_scheduled_run(&run("a", n, t0), 3).unwrap();
+        }
+        let runs = s.scheduled_runs("a", 100).unwrap();
+        assert_eq!(
+            runs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["a-4", "a-3", "a-2"]
+        );
+        s.delete_scheduled_task("a").unwrap();
+        assert!(s.scheduled_tasks().unwrap().is_empty());
+        assert!(s.scheduled_runs("a", 100).unwrap().is_empty());
+    }
+
     #[test]
     fn file_backed_persists_and_migrates() {
         let dir = tempfile::tempdir().unwrap();
@@ -511,6 +697,9 @@ mod tests {
             s.set_setting("theme", "dark").unwrap();
             s.append_event(&id, &msg(&id, ItemKind::AgentMessage, "persist me"))
                 .unwrap();
+            s.save_scheduled_task(&task("nightly", Utc::now())).unwrap();
+            s.add_scheduled_run(&run("nightly", 1, Utc::now()), 100)
+                .unwrap();
         }
         let s = SqliteStore::open(&path).unwrap();
         assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
@@ -518,5 +707,25 @@ mod tests {
         assert_eq!(s.get_setting("theme").unwrap(), Some("dark".into()));
         assert_eq!(s.events(&id, 0, 10).unwrap().len(), 1);
         assert_eq!(s.search("persist", 5).unwrap().len(), 1);
+        assert_eq!(s.scheduled_tasks().unwrap()[0].id, "nightly");
+        assert_eq!(s.scheduled_runs("nightly", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_database_from_before_scheduled_tasks_gains_their_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aura.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..2] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+        let s = SqliteStore::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 3);
+        assert!(s.scheduled_tasks().unwrap().is_empty());
+        s.save_scheduled_task(&task("a", Utc::now())).unwrap();
+        assert_eq!(s.scheduled_tasks().unwrap().len(), 1);
     }
 }

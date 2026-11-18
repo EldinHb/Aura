@@ -1,5 +1,6 @@
 import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
 import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
+import { ScheduleSidebar } from "../features/schedules/ScheduleSidebar";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, canReorder, isNestedWorker, orchestratorsOf, sectionOf, ORCHESTRATORS_SECTION, type AppState } from "../state/store";
 import { folderOf } from "../lib/sessionFolder";
@@ -396,6 +397,7 @@ export function Sidebar() {
         ))}
         {showArchived && <div className="section-title">showing archived</div>}
       </div>
+      <ScheduleSidebar />
       <ReviewSidebar />
     </div>
   );

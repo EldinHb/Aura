@@ -60,6 +60,7 @@ export type Dialog =
   | { kind: "system-prompt"; sessionId: string }
   | { kind: "session-links"; sessionId: string }
   | { kind: "pr-watch"; repo: string; number: number }
+  | { kind: "schedules"; taskId?: string; create?: boolean }
   /** Clean up local branches of the repository at `cwd`, or of the one whose GitHub remote is `repo`. */
   | { kind: "git-cleanup"; cwd?: string; repo?: string }
   | { kind: "group"; sessionId: string }

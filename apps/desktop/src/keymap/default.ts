@@ -59,6 +59,7 @@ export const defaultBindings: Binding[] = [
   { keys: "leader s m", command: "session.toggle-mode", label: "Toggle terminal/structured" },
   { keys: "leader s o", command: "session.open-window", label: "Open in window" },
   { keys: "leader s x", command: "session.restart", label: "Restart terminal" },
+  { keys: "leader s c", command: "schedules.open", label: "Scheduled tasks" },
   { keys: "leader m", command: "session.pick-model", label: "Model…" },
   { keys: "leader e", command: "session.pick-effort", label: "Effort…" },
   { keys: "leader p", command: "session.pick-permission", label: "Permission mode…" },

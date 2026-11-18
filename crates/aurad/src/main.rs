@@ -133,18 +133,27 @@ async fn main() -> Result<()> {
     watches.launch();
     // Review activity on a session's own PRs goes to that session's agent.
     let follows = aura_review::follow::FollowService::new(
-        store,
+        store.clone(),
         github.clone(),
         manager.clone(),
         reviews.events.clone(),
     )?;
     follows.launch();
+    // Scheduled tasks start their sessions from here, whether the app is open or not.
+    let schedules =
+        aura_core::ScheduleService::new(manager.clone(), store.clone(), reviews.events.clone());
+    schedules.launch();
     let service = reviews.clone();
+    let scheduler = schedules.clone();
     let ext: ExtHandler = Arc::new(move |method: String, params: Value| {
         let service = service.clone();
         let watches = watches.clone();
         let github = github.clone();
+        let scheduler = scheduler.clone();
         Box::pin(async move {
+            if let Some(result) = scheduler.handle(&method, params.clone()).await? {
+                return Ok(Some(result));
+            }
             if let Some(result) = service.handle(&method, params.clone()).await? {
                 return Ok(Some(result));
             }
@@ -187,6 +196,7 @@ async fn main() -> Result<()> {
     let mut rx = server.shutdown.subscribe();
     let _ = rx.recv().await;
     reviews.shutdown();
+    schedules.shutdown();
     manager.shutdown().await;
     // Only remove daemon.json if it is still ours. A newer daemon may have
     // taken over the file while this one was being shut down; deleting it then

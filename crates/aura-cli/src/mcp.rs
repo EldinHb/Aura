@@ -19,6 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 mod reviews;
+mod schedules;
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -123,9 +124,9 @@ impl Server {
                     "instructions": if self.worker {
                         "Work with your team in Aura: see who is on it, and ask a teammate or the feature owner a question. Answers come back as messages from Aura."
                     } else if self.feature_owner {
-                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them."
+                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them. Manage the user's scheduled tasks, which start a session with a prompt on a schedule."
                     } else {
-                        "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them."
+                        "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them. Manage the user's scheduled tasks, which start a session with a prompt on a schedule."
                     },
                 }))
             }
@@ -337,6 +338,10 @@ impl Server {
             _ if reviews::NAMES.contains(&tool) => {
                 let (method, p) = reviews::request(tool, o, a).expect("a review tool");
                 reviews::reply(tool, a, self.rpc(method, p).await?)
+            }
+            _ if schedules::NAMES.contains(&tool) => {
+                let (method, p) = schedules::request(tool, o, a).expect("a schedule tool");
+                schedules::reply(tool, self.rpc(method, p).await?)
             }
             _ if self.feature_owner => self.call_owner(tool, a).await,
             _ => bail!("unknown tool {tool}"),
@@ -727,6 +732,7 @@ fn tools(feature_owner: bool) -> Value {
     let mut tools = orchestrator_tools();
     if let Some(all) = tools.as_array_mut() {
         all.extend(reviews::tools());
+        all.extend(schedules::tools());
     }
     if feature_owner {
         if let (Some(all), Value::Array(own)) = (tools.as_array_mut(), owner_tools()) {
@@ -1088,14 +1094,21 @@ mod tests {
                 "delete_review_comment",
                 "discard_review",
                 "start_pre_review",
-                "hide_pull_request"
+                "hide_pull_request",
+                "list_scheduled_tasks",
+                "read_scheduled_task_history",
+                "create_scheduled_task",
+                "update_scheduled_task",
+                "delete_scheduled_task",
+                "set_scheduled_task_enabled",
+                "run_scheduled_task"
             ]
         );
         let owner = tools(true);
         let owner = names(&owner);
-        assert_eq!(&owner[..20], names(&tools(false)).as_slice());
+        assert_eq!(&owner[..27], names(&tools(false)).as_slice());
         assert_eq!(
-            &owner[20..],
+            &owner[27..],
             [
                 "list_specialists",
                 "hire",
@@ -1146,6 +1159,22 @@ mod tests {
         };
         let err = server.call("create_review", &json!({})).await.unwrap_err();
         assert_eq!(err.to_string(), "unknown tool create_review");
+    }
+
+    #[tokio::test]
+    async fn a_teammate_cannot_manage_scheduled_tasks() {
+        let server = Server {
+            data_dir: PathBuf::from("/nonexistent"),
+            orchestrator: "w".into(),
+            feature_owner: false,
+            worker: true,
+            token: "t".into(),
+            client: Mutex::new(None),
+        };
+        for tool in schedules::NAMES {
+            let err = server.call(tool, &json!({})).await.unwrap_err();
+            assert_eq!(err.to_string(), format!("unknown tool {tool}"));
+        }
     }
 
     #[tokio::test]

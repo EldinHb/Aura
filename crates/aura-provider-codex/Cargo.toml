@@ -15,7 +15,6 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
-futures = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
