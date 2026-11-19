@@ -74,6 +74,7 @@ export * from './ReviewInbox';
 export * from './ReviewResult';
 export * from './ReviewSource';
 export * from './ReviewThread';
+export * from './RunAs';
 export * from './RunResult';
 export * from './RunTrigger';
 export * from './Schedule';

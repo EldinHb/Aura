@@ -5,10 +5,12 @@ import { useStore } from "../../state/store";
 import { useGroups } from "../../state/groups";
 import { providerChoices } from "../../lib/acp";
 import { exactTime } from "../../lib/time";
-import type { ModelInfo, Project, ScheduledRun, ScheduledTask, Weekday } from "../../gen";
+import type { Autonomy, ModelInfo, Project, ScheduledRun, ScheduledTask, Weekday } from "../../gen";
+import { AutonomyPicker } from "../../components/AutonomyPicker";
+import { describeAutonomy } from "../../lib/features";
 import { openRunSession, schedules, useSchedules } from "./state";
 import {
-  describeSchedule, draftError, draftOfTask, formatWhen, inputOf, newDraft, RESULT_LABEL, scheduleError, scheduleOf,
+  describeSchedule, draftError, draftOfTask, folderless, formatWhen, inputOf, newDraft, orchestrates, RESULT_LABEL, RUN_AS, scheduleError, scheduleOf,
   TRIGGER_LABEL, UNITS, WEEKDAYS, type ScheduleDraft, type TaskDraft, type Unit,
 } from "./schedule";
 
@@ -65,6 +67,8 @@ export function SchedulesDialog({ taskId, create }: { taskId?: string; create?: 
                 <span className="schedule-row-body">
                   <span className="schedule-row-title">
                     <span className="grow">{t.name}</span>
+                    {t.run_as === "feature_owner" ? <span className="feature-owner-mark" role="img" aria-label="Runs as a feature owner" title="Runs as a feature owner" />
+                      : t.run_as === "orchestrator" && <span className="orchestrator-mark" role="img" aria-label="Runs as an orchestrator" title="Runs as an orchestrator" />}
                     {t.last_run && <span className={clsx("run-dot", t.last_run.result)} title={`Last run: ${RESULT_LABEL[t.last_run.result]}`} />}
                     {!t.enabled && <span className="chip">off</span>}
                   </span>
@@ -144,6 +148,11 @@ function TaskEditor({ task, onSaved }: { task: ScheduledTask | null; onSaved: (t
     return () => { cancelled = true; clearTimeout(t); };
   }, [client, draft.cwd]);
   const { names: groups } = useGroups();
+  // What a feature owner without an autonomy of its own follows.
+  const [globalAutonomy, setGlobalAutonomy] = useState<Autonomy | null>(null);
+  const owns = draft.run_as === "feature_owner";
+  useEffect(() => { if (owns) client?.autonomy().then(setGlobalAutonomy, () => {}); }, [client, owns]);
+  const noFolder = folderless(draft);
 
   // When it would run, as the daemon works it out.
   const schedule = useMemo(() => scheduleOf(draft.schedule), [draft.schedule]);
@@ -243,6 +252,34 @@ function TaskEditor({ task, onSaved }: { task: ScheduledTask | null; onSaved: (t
           {agents.length === 0 && <span className="dim">No agents detected.</span>}
         </div>
       </div>
+      <div className="field">
+        <label id="schedule-run-as-label">Each run starts</label>
+        <div className="radio-row" role="radiogroup" aria-labelledby="schedule-run-as-label">
+          {RUN_AS.map((r) => (
+            <button key={r.value} type="button" role="radio" aria-checked={draft.run_as === r.value} className={clsx("btn", draft.run_as === r.value && "primary")} data-command="schedules.run-as" title={r.help} onClick={() => set("run_as", r.value)}>
+              {r.value === "orchestrator" && <span className="orchestrator-mark" aria-hidden />}
+              {r.value === "feature_owner" && <span className="feature-owner-mark" aria-hidden />}
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <span className="dim schedule-note">{RUN_AS.find((r) => r.value === draft.run_as)!.help}{orchestrates(draft) ? " It gets the same instructions and tools as one you start by hand, and its workers are its own." : ""}</span>
+      </div>
+      {owns && (
+        <>
+          <div className="field">
+            <label htmlFor="schedule-goal">Feature goal</label>
+            <textarea id="schedule-goal" rows={3} value={draft.feature_goal} onChange={(e) => set("feature_goal", e.target.value)} placeholder="What should the feature do, for whom, and why?" />
+          </div>
+          <div className="field">
+            <label>
+              <input type="checkbox" checked={!!draft.autonomy} onChange={(e) => set("autonomy", e.target.checked ? (globalAutonomy ?? { level: "blocking_decisions", checkpoints: ["after_design", "before_implementation", "before_delivery"] }) : null)} style={{ marginRight: 6 }} />
+              Own autonomy for this feature {!draft.autonomy && globalAutonomy && <span className="dim">· otherwise {describeAutonomy(globalAutonomy)}, from Settings → Orchestrators</span>}
+            </label>
+            {draft.autonomy && <AutonomyPicker name="schedule-autonomy" value={draft.autonomy} onChange={(a) => set("autonomy", a)} />}
+          </div>
+        </>
+      )}
       {provider === "acp" ? (
         <p className="dim schedule-note">The ACP agent starts with its own default model and mode.</p>
       ) : (
@@ -284,16 +321,29 @@ function TaskEditor({ task, onSaved }: { task: ScheduledTask | null; onSaved: (t
         </div>
       )}
 
+      {noFolder ? (
+        <div className="field">
+          <label>Folder or repository</label>
+          <div className="no-folder">
+            <span className="dim">None: each run gets a directory of its own, and the {owns ? "feature owner" : "orchestrator"} names a folder for each worker.</span>
+            <button type="button" className="btn small" data-command="schedules.folder" onClick={() => set("no_folder", false)}>Use a folder</button>
+          </div>
+        </div>
+      ) : (
       <div className="field">
-        <label htmlFor="schedule-cwd">Folder or repository {repo && <span className="chip">⎇ git repo</span>}</label>
+        <label htmlFor="schedule-cwd">
+          Folder or repository {repo && <span className="chip">⎇ git repo</span>}
+          {orchestrates(draft) && <button type="button" className="btn small folder-toggle" data-command="schedules.folder" onClick={() => set("no_folder", true)}>No folder</button>}
+        </label>
         <input id="schedule-cwd" type="text" list="aura-projects-schedule" value={draft.cwd} onChange={(e) => set("cwd", e.target.value)} placeholder="/Users/you/Projects/app" spellCheck={false} autoComplete="off" />
         <datalist id="aura-projects-schedule">{projects.map((p) => <option key={p.path} value={p.path} />)}</datalist>
       </div>
-      <label className="check-row">
+      )}
+      {!noFolder && <label className="check-row">
         <input type="checkbox" checked={draft.worktree} disabled={!repo && !draft.worktree} onChange={(e) => set("worktree", e.target.checked)} />
         Each run in a new git worktree, on a branch of its own{!repo && !draft.worktree && <span className="dim"> (the folder is not a git repository)</span>}
-      </label>
-      {draft.worktree && (
+      </label>}
+      {draft.worktree && !noFolder && (
         <div className="field">
           <label htmlFor="schedule-branch">Branch name starts with</label>
           <input id="schedule-branch" type="text" value={draft.branch_prefix} onChange={(e) => set("branch_prefix", e.target.value.replace(/\s/g, "-"))} placeholder={`scheduled/${draft.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "task"}`} spellCheck={false} />

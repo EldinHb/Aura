@@ -8,7 +8,7 @@ const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
 const usage = (input: number, output: number, cost: number | null, used: number | null = null) => ({ input_tokens: input, output_tokens: output, cached_input_tokens: Math.round(input * 0.7), total_cost_usd: cost, context_window: used ? 200_000 : null, context_used: used, running_totals: false });
 
 function session(id: string, over: Partial<Session>): Session {
-  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-api", worktree: null, group: "acme", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(5), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, pulls: [], usage: usage(0, 0, null), ...over };
+  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-api", worktree: null, group: "acme", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(5), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, pulls: [], usage: usage(0, 0, null), ...over };
 }
 
 const ids = {
@@ -26,6 +26,8 @@ const sessions: Session[] = [
   session(ids.flaky, { title: "Fix flaky checkout test", provider: "acp", agent: "gemini", cwd: "/Users/sam/code/acme-web", status: "waiting_approval", pending_count: 1, attention: "waiting", last_activity: at(3), usage: usage(88_000, 4_200, null) }),
   session(ids.orch, { title: "Release 2.0 checklist", orchestrator: true, cwd: "/Users/sam/code/acme-web", status: "running", model: "claude-opus-5-5", last_activity: at(0), usage: usage(240_000, 12_000, 1.37) }),
   session(ids.docs, { title: "Update API reference docs", provider: "codex", cwd: "/Users/sam/code/acme-web", orchestrator_id: ids.orch, attention: "done", last_activity: at(0), usage: usage(64_000, 3_000, null) }),
+  // Runs of a scheduled task are on the sidebar's Scheduled tab, which marks what is new there.
+  session("7b0c1c9e-2f43-4c1a-9d5e-1a2b3c4d5e07", { title: "Nightly dependency check · Wed 02:00", scheduled_task_id: "task-nightly", scheduled_task_name: "Nightly dependency check", created_at: at(420), attention: "done", last_activity: at(400), usage: usage(31_000, 1_200, null) }),
   session(ids.dev, { title: "pnpm dev", provider: "terminal", mode: "terminal", command: ["pnpm", "dev"], status: "running", group: null, cwd: "/Users/sam/code/acme-web", last_activity: at(12) }),
 ];
 

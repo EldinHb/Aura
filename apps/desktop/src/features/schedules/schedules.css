@@ -52,3 +52,7 @@
 .schedule-sidebar .section-title { padding: 8px 0 8px 12px; flex-shrink: 0; }
 .schedule-sidebar .chip { flex-shrink: 0; }
 .schedule-sidebar-next { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; text-align: right; }
+.schedule-editor .no-folder { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 6px 0; }
+.schedule-editor .folder-toggle { margin-left: 8px; }
+.schedule-editor .radio-row .orchestrator-mark, .schedule-editor .radio-row .feature-owner-mark { display: inline-block; flex: none; }
+.schedule-row-title .orchestrator-mark, .schedule-row-title .feature-owner-mark { flex: none; }

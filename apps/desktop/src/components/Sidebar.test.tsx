@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Item, Session } from "../gen";
+import type { Item, ScheduledTask, Session } from "../gen";
+import { useSchedules } from "../features/schedules/state";
 import type { RpcClient } from "../lib/rpc";
 import { runCommand } from "../lib/commands";
-import { emptyTranscript, useStore } from "../state/store";
+import { emptyTranscript, selectListedSessions, useStore } from "../state/store";
 import { useDetectedLinksStore, useDetectedLinksSync, useLinkPreferencesStore } from "../state/sessionLinkPreferences";
 import { useGithubRepos } from "../state/githubRepos";
 import { setFeature, useFeatures } from "../state/features";
@@ -69,6 +70,7 @@ beforeEach(() => {
     sessions: { a: session("a", "Hours page"), b: session("b", "Other") },
     sessionOrder: ["a", "b"], transcripts: {}, sidebarFilter: "", showArchived: false,
     collapsedOrchestras: [], selectedId: null, sidebarCursor: null, prSelection: null, focus: "sidebar",
+    sidebarTab: "sessions", collapsedGroups: [],
   });
 });
 afterEach(cleanup);
@@ -422,4 +424,156 @@ it("marks a feature owner, the role of each specialist under it and the decision
   expect(row("ux").querySelector(".chip.specialist")?.textContent).toBe("UX designer");
   expect(row("adhoc").querySelector(".chip.specialist")).toBeNull();
   expect(row("qa").querySelector(".chip.specialist"), "a title that says the role needs no chip").toBeNull();
+});
+
+/**
+ * Sessions by hand in "Work" and ungrouped, and runs of two scheduled tasks:
+ * two of "Nightly" (n1 older than n2), and an orchestrator "Weekly" ran with a
+ * worker of its own, which goes with it.
+ */
+function scheduled() {
+  const list = [
+    session("a", "By hand"),
+    session("g1", "Grouped", { group: "Work" }),
+    session("g2", "Grouped too", { group: "Work", status: "running" }),
+    session("n1", "Nightly · Mon 09:00", { scheduled_task_id: "t1", scheduled_task_name: "Nightly", created_at: "2026-11-16T09:00:00Z" }),
+    session("n2", "Nightly · Tue 09:00", { scheduled_task_id: "t1", scheduled_task_name: "Nightly", created_at: "2026-11-17T09:00:00Z", pending_count: 2, attention: "waiting" }),
+    session("o", "Weekly · Mon 08:00", { scheduled_task_id: "t2", scheduled_task_name: "Weekly", orchestrator: true, created_at: "2026-11-16T08:00:00Z", status: "running" }),
+    session("ow", "Weekly's worker", { orchestrator_id: "o", created_at: "2026-11-16T08:05:00Z" }),
+  ];
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
+}
+const tab = (name: RegExp) => screen.getByRole("tab", { name });
+const heading = (label: string) => document.querySelector<HTMLButtonElement>(`.section-toggle[aria-label^="${label},"]`)!;
+
+it("lists the sessions scheduled tasks started on a tab of their own, by task, newest first", () => {
+  scheduled();
+  render(<Sidebar />);
+  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(tab(/^Sessions/).getAttribute("aria-selected")).toBe("true");
+  // The Scheduled tab says how many it lists, that one works, and what waits on the user there.
+  expect(tab(/^Scheduled/).textContent).toContain("4");
+  expect(tab(/^Scheduled/).querySelector(".badge")?.textContent).toBe("2");
+  expect(tab(/^Scheduled/).querySelector(".attention.waiting")).not.toBeNull();
+  expect(tab(/^Scheduled/).querySelector(".dot.pulse")).not.toBeNull();
+
+  fireEvent.click(tab(/^Scheduled/));
+  expect(tab(/^Scheduled/).getAttribute("aria-selected")).toBe("true");
+  expect(localStorage.getItem("aura.sidebar-tab.v1")).toBe("scheduled");
+  // The task that ran last first; its runs newest first; the worker under its orchestrator.
+  expect(rows()).toEqual(["n2", "n1", "o", "ow"]);
+  expect([...document.querySelectorAll(".section-label")].map((el) => el.textContent)).toEqual(["Nightly", "Weekly"]);
+  // Rows keep their role marks, and drop the task's name the heading already shows.
+  expect(document.querySelector('[data-session-id="o"] .orchestrator-mark')).not.toBeNull();
+  expect(document.querySelector('[data-session-id="n2"] .title')?.textContent).toBe("Tue 09:00");
+  // ⌘-numbers count this tab's rows; the Sessions tab now carries nothing waiting.
+  expect(document.querySelector('[data-session-id="n2"] kbd')?.textContent).toBe("1");
+  expect(tab(/^Sessions/).querySelector(".badge")).toBeNull();
+
+  // Another window switched back; this one follows.
+  localStorage.setItem("aura.sidebar-tab.v1", "sessions");
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "aura.sidebar-tab.v1" })); });
+  expect(rows()).toEqual(["a", "g1", "g2"]);
+});
+
+it("switches tabs with the arrow keys on the tabs and from the command, and shows the tab of a session selected elsewhere", () => {
+  scheduled();
+  render(<Sidebar />);
+  fireEvent.keyDown(tab(/^Sessions/), { key: "ArrowRight" });
+  expect(useStore.getState().sidebarTab).toBe("scheduled");
+  expect(document.activeElement).toBe(tab(/^Scheduled/));
+  fireEvent.keyDown(tab(/^Scheduled/), { key: "Home" });
+  expect(useStore.getState().sidebarTab).toBe("sessions");
+  press("sidebar.tab.next");
+  expect(useStore.getState().sidebarTab).toBe("scheduled");
+  // ⌘K, a notification or an orchestrator's link selects a session on the other tab.
+  act(() => useStore.getState().select("a"));
+  expect(useStore.getState().sidebarTab).toBe("sessions");
+  act(() => useStore.getState().select("ow"));
+  expect(useStore.getState().sidebarTab).toBe("scheduled");
+  expect(rows()).toContain("ow");
+});
+
+it("folds a section by its heading, says what is in it, and keeps that across a restart", () => {
+  scheduled();
+  render(<Sidebar />);
+  expect(heading("Work").getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(heading("Work"));
+  expect(rows()).toEqual(["a"]);
+  expect(heading("Work").getAttribute("aria-expanded")).toBe("false");
+  expect(heading("Work").querySelector(".section-count")?.textContent).toBe("2");
+  // One of them works.
+  expect(heading("Work").querySelector(".dot.pulse")).not.toBeNull();
+  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed-groups.v1")!)).toEqual(["sessions:Work"]);
+  act(() => useStore.setState({ collapsedGroups: [] }));
+  expect(rows()).toEqual(["a", "g1", "g2"]);
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "aura.sidebar-collapsed-groups.v1" })); });
+  expect(rows()).toEqual(["a"]);
+
+  // Each tab folds its own; a folded task shows what waits on the user in it.
+  fireEvent.click(tab(/^Scheduled/));
+  fireEvent.click(heading("Nightly"));
+  expect(rows()).toEqual(["o", "ow"]);
+  expect(heading("Nightly").querySelector(".badge")?.textContent).toBe("2");
+  expect(heading("Nightly").querySelector(".attention.waiting")).not.toBeNull();
+  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed-groups.v1")!)).toEqual(["sessions:Work", "scheduled:\u0000task:t1"]);
+  // A filter shows what matches in folded sections too.
+  act(() => useStore.setState({ sidebarFilter: "nightly" }));
+  expect(rows()).toEqual(["n2", "n1"]);
+  act(() => useStore.setState({ sidebarFilter: "" }));
+
+  // Selecting a session in a folded section, from ⌘K or a notification, unfolds it.
+  act(() => useStore.getState().select("g2"));
+  expect(useStore.getState().sidebarTab).toBe("sessions");
+  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(useStore.getState().collapsedGroups).toEqual(["scheduled:\u0000task:t1"]);
+});
+
+it("folds and unfolds sections with left and right, and steps past a folded one", () => {
+  scheduled();
+  render(<Sidebar />);
+  act(() => useStore.getState().select("g1"));
+  press("sidebar.nav.collapse");
+  expect(rows()).toEqual(["a"]);
+  // The cursor stays on its row; the heading stands in for it.
+  expect(useStore.getState().sidebarCursor).toBe("g1");
+  expect(heading("Work").closest(".section-heading")?.classList.contains("cursor")).toBe(true);
+  press("sidebar.nav.up");
+  expect(current()).toBe("a");
+  // Selecting by keyboard does not unfold what the cursor only passes.
+  expect(rows()).toEqual(["a"]);
+  act(() => useStore.getState().setSidebarCursor("g1"));
+  press("sidebar.nav.expand");
+  expect(rows()).toEqual(["a", "g1", "g2"]);
+  // On a focused heading, left and right fold and unfold that section.
+  act(() => heading("Work").focus());
+  press("sidebar.nav.collapse");
+  expect(heading("Work").getAttribute("aria-expanded")).toBe("false");
+  press("sidebar.nav.expand");
+  expect(heading("Work").getAttribute("aria-expanded")).toBe("true");
+  // The ungrouped sessions at the top have no heading, so nothing to fold.
+  act(() => { (document.activeElement as HTMLElement).blur(); useStore.getState().select("a"); });
+  press("sidebar.nav.collapse");
+  expect(rows()).toEqual(["a", "g1", "g2"]);
+});
+
+it("opens the scheduled task from its heading on the Scheduled tab", () => {
+  scheduled();
+  render(<Sidebar />);
+  fireEvent.click(tab(/^Scheduled/));
+  // Only tasks the app knows of get the button; a deleted task keeps its name.
+  expect(document.querySelector(".section-action")).toBeNull();
+  act(() => useSchedules.setState({ tasks: [{ id: "t2", name: "Weekly plan" } as ScheduledTask], loaded: true }));
+  expect([...document.querySelectorAll(".section-label")].map((el) => el.textContent)).toEqual(["Nightly", "Weekly plan"]);
+  fireEvent.click(screen.getByRole("button", { name: "Edit the scheduled task Weekly plan" }));
+  expect(useStore.getState().dialog).toEqual({ kind: "schedules", taskId: "t2", create: false });
+  act(() => useSchedules.setState({ tasks: [], loaded: false }));
+});
+
+it("lets ⌘K pick from both tabs, folded sections included", () => {
+  scheduled();
+  useStore.setState({ collapsedGroups: ["sessions:Work"] });
+  render(<Sidebar />);
+  expect(rows()).toEqual(["a"]);
+  expect(selectListedSessions(useStore.getState()).map((s) => s.id)).toEqual(["a", "g1", "g2", "n2", "n1", "o", "ow"]);
 });

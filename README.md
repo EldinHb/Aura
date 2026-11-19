@@ -33,7 +33,8 @@ tabs, some waiting on an approval you have not seen yet. Aura puts them in one p
 In short: you start sessions in Aura instead of in terminal tabs. The left side lists
 every session, grouped by project, with a badge on each one that is waiting for you
 and a dot on each one that finished, failed or asked you something since you last
-opened it.
+opened it. Click a group's heading to fold it; sessions scheduled tasks started have
+a Scheduled tab of their own.
 The middle shows what the selected agent is doing and lets you message it. The right
 side shows its model, permissions, token usage and actions. You switch between
 sessions, answer their questions and approve their commands without leaving the
@@ -287,6 +288,12 @@ run went; pick one to edit it, **Run now**, disable or delete it, and see its hi
   (chosen like in the new-session dialog), the folder or repository, optionally a new
   git worktree per run on a branch of its own (`scheduled/<name>-<date>-<time>` unless
   you set the start of the name), and optionally a sidebar group.
+- **Run as a session, an orchestrator or a feature owner.** Like in the new-session
+  dialog, each run can start an [orchestrator](#orchestrators) or a
+  [feature owner](#feature-owners--specialists) (with the feature's goal and, if you
+  like, its own autonomy). It gets the same instructions and tools as one you start by
+  hand, and the workers it starts are its own. An orchestrator or feature owner needs
+  no folder: each run gets a directory of its own.
 - **When.** Every N minutes or hours (elapsed time, counted from when you save the
   schedule), every N days at a time, every N weeks on the days you pick at a time, or
   every N months on a day at a time. A day a month does not have (the 31st in April,
@@ -294,13 +301,18 @@ run went; pick one to edit it, **Run now**, disable or delete it, and see its hi
   daylight saving time: a time the clock skips (02:30 when the clock jumps from 02:00
   to 03:00) runs when it jumps, a time that comes twice runs once. The editor shows the
   next runs before you save.
-- **Every run is a normal session.** It shows in the sidebar like any other, titled
-  with the task's name and the time, and the history links to it.
+- **Every run is a normal session, on the Scheduled tab.** The sidebar lists the runs
+  on a Scheduled tab next to Sessions, by task, newest first, with the same row
+  actions as any session. The tab shows how many runs it lists and whether one works,
+  and, while Sessions is shown, what waits on you there. A run is titled with the
+  task's name and the time, and the history links to it. Sessions scheduled tasks
+  started before this tab existed are moved there through the run history.
 - **The daemon runs them.** Tasks fire whether or not the app is open, and everything
   is kept in Aura's database across restarts.
 - **No pile-ups.** While the session of the previous run is still working (or waits on
   you), a run is skipped and recorded as skipped, unless the task allows overlapping
-  runs. Run now follows the same rule.
+  runs. Run now follows the same rule. A run as an orchestrator or feature owner
+  still works while one of its workers does, even when it is idle itself.
 - **Missed runs.** Runs that came due while Aura was not running, or the computer was
   asleep, run once when it is back, however many went by, and the history says how many.
   Set a task to skip them instead and the history records the skip.
@@ -310,8 +322,11 @@ Orchestrators can manage your scheduled tasks with their tools (see
 window shows their changes as they happen. An orchestrator cannot choose permission
 or sandbox modes: a task it creates runs its own agent with its own modes, any other
 agent with the default, and when it changes what a task does (prompt, agent, model,
-effort, folder or worktree) the task's modes go back to those. The sessions a task
-starts are yours, not the orchestrator's workers.
+effort, folder or worktree) the task's modes go back to those. An orchestrator can
+only schedule regular sessions, as those are all it can start itself: a task that runs
+as an orchestrator or feature owner is yours to set up, and an orchestrator can rename,
+reschedule, enable, disable, run or delete one but not change what it does. The
+sessions a task starts are yours, not the orchestrator's workers.
 
 ## Feature owners & specialists
 
@@ -517,7 +532,8 @@ Shortcuts are shown with macOS keys; use `Ctrl` for `⌘` on Windows and Linux.
 | `⌘1…9`, `⌘[` `⌘]` | Jump between sessions |
 | `Ctrl+H/J/K/L` | Move focus between sidebar, transcript, composer, inspector |
 | `j` `k` `gg` `G` `Enter` | Navigate lists and transcript items |
-| `←` `→` | In the sidebar: hide / show an orchestrator's workers, step between it and them |
+| `←` `→` | In the sidebar: hide / show an orchestrator's workers, step between it and them; on a group's first level, fold / unfold the group |
+| `t` | In the sidebar: switch between the Sessions and Scheduled tabs (also `Ctrl+Space s s`) |
 | `y` `Y` `n` `e` | Accept / accept for session / decline / edit the oldest pending approval |
 | `⌘I` | Inbox: approvals across all sessions and pull request changes |
 | `⌘T` | Toggle structured view and the provider's own TUI |

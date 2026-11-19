@@ -449,6 +449,36 @@ pub enum MissedRuns {
     Skip,
 }
 
+/// What the session a task starts is, like the choice in the new-session
+/// dialog.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunAs {
+    /// A regular session.
+    #[default]
+    Session,
+    /// An orchestrator: it gets Aura's orchestration tools and starts workers.
+    Orchestrator,
+    /// A feature owner: an orchestrator that owns one feature with a team.
+    FeatureOwner,
+}
+
+impl RunAs {
+    /// Whether the session orchestrates (a feature owner does too).
+    pub fn orchestrates(self) -> bool {
+        self != RunAs::Session
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RunAs::Session => "session",
+            RunAs::Orchestrator => "orchestrator",
+            RunAs::FeatureOwner => "feature owner",
+        }
+    }
+}
+
 /// Who created a task when it was not the user.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -471,8 +501,20 @@ pub struct ScheduledTask {
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
     pub sandbox_mode: Option<String>,
-    /// The folder or repository the sessions work in.
+    /// The folder or repository the sessions work in. Empty for an
+    /// orchestrator or feature owner without a folder: Aura makes each run a
+    /// directory of its own, as it does for one started by hand.
     pub cwd: String,
+    /// What the session is. Records from before roles default to a session.
+    #[serde(default)]
+    pub run_as: RunAs,
+    /// For a feature owner: what the feature is for.
+    #[serde(default)]
+    pub feature_goal: Option<String>,
+    /// For a feature owner: the feature's own autonomy. None follows the
+    /// setting for every feature owner.
+    #[serde(default)]
+    pub autonomy: Option<crate::autonomy::Autonomy>,
     /// Each run works in a new git worktree of `cwd`, on a branch of its own.
     #[serde(default)]
     pub worktree: bool,
@@ -996,6 +1038,9 @@ mod tests {
             permission_mode: None,
             sandbox_mode: None,
             cwd: "/tmp".into(),
+            run_as: RunAs::Session,
+            feature_goal: None,
+            autonomy: None,
             worktree: false,
             branch_prefix: None,
             group: None,

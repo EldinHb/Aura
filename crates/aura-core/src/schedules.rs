@@ -53,6 +53,18 @@ pub struct ScheduledTaskInput {
     pub sandbox_mode: Option<String>,
     #[ts(optional)]
     pub cwd: Option<String>,
+    /// What the session is: a session (the default), an orchestrator or a
+    /// feature owner. Only the user can choose anything but a session.
+    #[ts(optional)]
+    pub run_as: Option<RunAs>,
+    /// For a feature owner: what the feature is for.
+    #[ts(optional)]
+    pub feature_goal: Option<String>,
+    /// For a feature owner: its own autonomy; null follows the setting for
+    /// every feature owner. Missing leaves it as it is.
+    #[serde(deserialize_with = "present")]
+    #[ts(optional)]
+    pub autonomy: Option<Option<crate::autonomy::Autonomy>>,
     #[ts(optional)]
     pub worktree: Option<bool>,
     #[ts(optional)]
@@ -67,6 +79,15 @@ pub struct ScheduledTaskInput {
     pub missed: Option<MissedRuns>,
     #[ts(optional)]
     pub allow_overlap: Option<bool>,
+}
+
+/// A field that can be missing (`None`), null (`Some(None)`) or set.
+fn present<'de, D, T>(d: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// Who changes a task.
@@ -354,12 +375,9 @@ impl ScheduleService {
         }
         ids.into_iter().find_map(|id| {
             let s = self.manager.get_session(&id).ok()?;
-            let working = matches!(
-                s.status,
-                SessionStatus::Running
-                    | SessionStatus::WaitingApproval
-                    | SessionStatus::WaitingInput
-            );
+            // An orchestrator's run goes on while a worker of it works: the
+            // worker's report wakes the orchestrator up again.
+            let working = busy(&s) || (s.orchestrator && self.worker_busy(&s.id));
             // Just started: the agent may not have begun its turn yet.
             let starting = fresh.as_ref().is_some_and(|(f, at)| {
                 *f == id
@@ -369,6 +387,27 @@ impl ScheduleService {
             });
             (working || starting).then_some(s)
         })
+    }
+
+    /// Whether a worker of `orchestrator`, or of an orchestrator under it, is at work.
+    fn worker_busy(&self, orchestrator: &str) -> bool {
+        let all = self.manager.list_sessions();
+        let mut seen = HashSet::from([orchestrator.to_string()]);
+        let mut queue = vec![orchestrator.to_string()];
+        while let Some(o) = queue.pop() {
+            for w in all
+                .iter()
+                .filter(|w| w.orchestrator_id.as_deref() == Some(o.as_str()))
+            {
+                if busy(w) {
+                    return true;
+                }
+                if seen.insert(w.id.clone()) {
+                    queue.push(w.id.clone());
+                }
+            }
+        }
+        false
     }
 
     fn session_opts(&self, task: &ScheduledTask) -> CreateSessionOpts {
@@ -395,6 +434,13 @@ impl ScheduleService {
             sandbox_mode: task.sandbox_mode.clone(),
             worktree,
             initial_prompt: Some(task.prompt.clone()),
+            // The same flags the new-session dialog sends, so the session gets
+            // the role's prompt, tools and feature record the same way.
+            orchestrator: task.run_as.orchestrates(),
+            feature_owner: task.run_as == RunAs::FeatureOwner,
+            feature_goal: task.feature_goal.clone(),
+            autonomy: task.autonomy.clone(),
+            scheduled_task: Some((task.id.clone(), task.name.clone())),
             ..Default::default()
         }
     }
@@ -490,7 +536,14 @@ impl ScheduleService {
             effort: None,
             permission_mode: None,
             sandbox_mode: None,
-            cwd: required(&input.cwd, "cwd")?,
+            // An orchestrator or feature owner may have no folder; see validate.
+            cwd: match input.run_as.unwrap_or_default() {
+                RunAs::Session => required(&input.cwd, "cwd")?,
+                _ => String::new(),
+            },
+            run_as: RunAs::Session,
+            feature_goal: None,
+            autonomy: None,
             worktree: false,
             branch_prefix: None,
             group: None,
@@ -602,13 +655,18 @@ impl ScheduleService {
         if provider == ProviderKind::Acp && agent.as_deref().unwrap_or("").is_empty() {
             bail!("name the ACP agent");
         }
-        if !Path::new(&task.cwd).is_absolute() {
+        if task.cwd.is_empty() {
+            if !task.run_as.orchestrates() {
+                bail!("`cwd` is required: only an orchestrator or a feature owner can run without a folder");
+            }
+            if task.worktree {
+                bail!("an orchestrator without a folder cannot have a worktree; give it a folder or turn the worktree off");
+            }
+        } else if !Path::new(&task.cwd).is_absolute() {
             bail!("`cwd` must be an absolute path, not `{}`", task.cwd);
-        }
-        if !Path::new(&task.cwd).is_dir() {
+        } else if !Path::new(&task.cwd).is_dir() {
             bail!("`{}` is not a folder", task.cwd);
-        }
-        if self.manager.in_orchestrator_dirs(&task.cwd) {
+        } else if self.manager.in_orchestrator_dirs(&task.cwd) {
             bail!(
                 "`{}` is where Aura keeps the directories of orchestrators; sessions cannot work there",
                 task.cwd
@@ -724,7 +782,23 @@ fn apply(
     }
     required(&input.agent, "agent", &mut task.agent)?;
     if let Some(cwd) = text(&input.cwd) {
-        task.cwd = expand_home(&cwd);
+        task.cwd = if cwd.is_empty() {
+            cwd
+        } else {
+            expand_home(&cwd)
+        };
+    }
+    if let Some(r) = input.run_as {
+        task.run_as = r;
+    }
+    optional(&input.feature_goal, &mut task.feature_goal);
+    if let Some(a) = &input.autonomy {
+        task.autonomy = a.clone();
+    }
+    // Only a feature owner has a feature.
+    if task.run_as != RunAs::FeatureOwner {
+        task.feature_goal = None;
+        task.autonomy = None;
     }
     optional(&input.model, &mut task.model);
     optional(&input.effort, &mut task.effort);
@@ -754,6 +828,18 @@ fn apply(
             if input.permission_mode.is_some() || input.sandbox_mode.is_some() {
                 bail!("permission and sandbox modes of scheduled tasks are the user's to choose, in Aura");
             }
+            // It can start regular sessions only, so its tasks run nothing
+            // more: an orchestrator or feature owner is the user's to schedule.
+            if task.run_as != RunAs::Session && (creating || task.run_as != before.run_as) {
+                bail!(
+                    "only the user can schedule an orchestrator or a feature owner, in Aura; you can schedule a regular session (`run_as`: `session`)"
+                );
+            }
+            if input.autonomy.is_some()
+                || (input.feature_goal.is_some() && task.run_as == RunAs::Session)
+            {
+                bail!("`feature_goal` and `autonomy` are for a feature owner, which only the user can schedule");
+            }
             let what_it_does = |t: &ScheduledTask| {
                 (
                     t.prompt.clone(),
@@ -765,6 +851,21 @@ fn apply(
                     t.branch_prefix.clone(),
                 )
             };
+            // What a user's orchestrator or feature owner does stays the user's.
+            if before.run_as != RunAs::Session
+                && !creating
+                && (what_it_does(task) != what_it_does(&before)
+                    || task.feature_goal != before.feature_goal
+                    || task.run_as != before.run_as)
+            {
+                bail!(
+                    "this task runs as {}, which only the user can schedule; you can rename, reschedule, enable, disable, run or delete it, but not change what it does",
+                    match before.run_as {
+                        RunAs::FeatureOwner => "a feature owner",
+                        _ => "an orchestrator",
+                    }
+                );
+            }
             if creating || what_it_does(task) != what_it_does(&before) {
                 let (provider, agent) = parse_agent(&task.agent)?;
                 let same = provider == o.provider && agent == o.agent;
@@ -774,6 +875,14 @@ fn apply(
         }
     }
     Ok(())
+}
+
+/// Running, or waiting on the user.
+fn busy(s: &Session) -> bool {
+    matches!(
+        s.status,
+        SessionStatus::Running | SessionStatus::WaitingApproval | SessionStatus::WaitingInput
+    )
 }
 
 fn expand_home(dir: &str) -> String {

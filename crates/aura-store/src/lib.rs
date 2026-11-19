@@ -70,6 +70,26 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS scheduled_runs_task ON scheduled_runs(task_id, at DESC);
     "#,
+    // v4: tasks say what their session runs as (tasks from before ran plain
+    // sessions), and sessions say which task started them. Sessions started
+    // before that are found through the run history that links to them.
+    r#"
+    UPDATE scheduled_tasks SET json = json_set(json, '$.run_as', 'session')
+    WHERE json_valid(json) AND json_extract(json, '$.run_as') IS NULL;
+    UPDATE sessions
+    SET json = json_set(sessions.json, '$.scheduled_task_id', started.task_id, '$.scheduled_task_name', started.name)
+    FROM (
+        SELECT json_extract(r.json, '$.session_id') AS session_id, r.task_id AS task_id,
+               json_extract(t.json, '$.name') AS name
+        FROM scheduled_runs r JOIN scheduled_tasks t ON t.id = r.task_id
+        WHERE json_valid(r.json) AND json_valid(t.json)
+          AND json_extract(r.json, '$.result') = 'started'
+          AND json_extract(r.json, '$.session_id') IS NOT NULL
+        GROUP BY session_id
+    ) AS started
+    WHERE sessions.id = started.session_id AND json_valid(sessions.json)
+      AND json_extract(sessions.json, '$.scheduled_task_id') IS NULL;
+    "#,
 ];
 
 pub struct SqliteStore {
@@ -593,6 +613,9 @@ mod tests {
             permission_mode: None,
             sandbox_mode: None,
             cwd: "/tmp/repo".into(),
+            run_as: aura_core::RunAs::Session,
+            feature_goal: None,
+            autonomy: None,
             worktree: true,
             branch_prefix: None,
             group: Some("nightly".into()),
@@ -723,9 +746,84 @@ mod tests {
             conn.pragma_update(None, "user_version", 2).unwrap();
         }
         let s = SqliteStore::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 3);
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
         assert!(s.scheduled_tasks().unwrap().is_empty());
         s.save_scheduled_task(&task("a", Utc::now())).unwrap();
         assert_eq!(s.scheduled_tasks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tasks_from_before_roles_run_sessions_and_their_sessions_learn_their_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aura.db");
+        fn without(v: &impl serde::Serialize, keys: &[&str]) -> String {
+            let mut v = serde_json::to_value(v).unwrap();
+            for k in keys {
+                v.as_object_mut().unwrap().remove(*k);
+            }
+            v.to_string()
+        }
+        let (started, busy, own) = (session("/tmp/a"), session("/tmp/b"), session("/tmp/c"));
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..3] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 3).unwrap();
+            let old = ["scheduled_task_id", "scheduled_task_name"];
+            for s in [&started, &busy, &own] {
+                conn.execute(
+                    "INSERT INTO sessions (id, provider, created_at, last_activity, json) VALUES (?1, 'terminal', ?2, ?2, ?3)",
+                    params![s.id, s.created_at.to_rfc3339(), without(s, &old)],
+                )
+                .unwrap();
+            }
+            let t = task("nightly", Utc::now());
+            conn.execute(
+                "INSERT INTO scheduled_tasks (id, created_at, json) VALUES (?1, ?2, ?3)",
+                params![
+                    t.id,
+                    t.created_at.to_rfc3339(),
+                    without(&t, &["run_as", "feature_goal", "autonomy"])
+                ],
+            )
+            .unwrap();
+            // A run that started a session, and a skipped one that links to the
+            // session that was still busy, which is not the task's.
+            let mut first = run("nightly", 1, Utc::now());
+            first.session_id = Some(started.id.clone());
+            let mut skipped = run("nightly", 2, Utc::now());
+            skipped.result = aura_core::RunResult::Skipped;
+            skipped.session_id = Some(busy.id.clone());
+            for r in [first, skipped] {
+                conn.execute(
+                    "INSERT INTO scheduled_runs (id, task_id, at, json) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        r.id,
+                        r.task_id,
+                        r.at.to_rfc3339(),
+                        serde_json::to_string(&r).unwrap()
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        let s = SqliteStore::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        let task = &s.scheduled_tasks().unwrap()[0];
+        assert_eq!(task.run_as, aura_core::RunAs::Session);
+        assert_eq!(task.feature_goal, None);
+        let sessions = s.list_sessions().unwrap();
+        let by_id = |id: &str| sessions.iter().find(|s| s.id == id).unwrap().clone();
+        assert_eq!(
+            by_id(&started.id).scheduled_task_id.as_deref(),
+            Some("nightly")
+        );
+        assert_eq!(
+            by_id(&started.id).scheduled_task_name.as_deref(),
+            Some("task nightly")
+        );
+        assert_eq!(by_id(&busy.id).scheduled_task_id, None);
+        assert_eq!(by_id(&own.id).scheduled_task_id, None);
     }
 }

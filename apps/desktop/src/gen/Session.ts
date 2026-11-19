@@ -77,4 +77,13 @@ pulls: Array<string>,
  * Cleared by [`crate::Manager::mark_seen`]. A `Waiting` one also ends
  * once nothing waits any more, e.g. after an answer from the inbox.
  */
-attention: Attention | null, };
+attention: Attention | null, 
+/**
+ * The scheduled task that started this session, if one did. Set by the
+ * scheduler (see [`crate::schedules`]); kept after the task is deleted.
+ */
+scheduled_task_id: string | null, 
+/**
+ * That task's name when it started the session, for labels.
+ */
+scheduled_task_name: string | null, };

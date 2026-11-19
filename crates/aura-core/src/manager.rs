@@ -652,6 +652,8 @@ impl Manager {
                     feature_goal: feature.as_ref().map(|f| f.goal.clone()),
                     autonomy: feature.as_ref().and_then(|f| f.autonomy.clone()),
                     specialist: None,
+                    // The user forked it; no task started the fork.
+                    scheduled_task: None,
                 },
                 own_dir,
             )

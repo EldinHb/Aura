@@ -1,6 +1,6 @@
 import { useShallow } from "zustand/react/shallow";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { useStore, selectVisibleSessions } from "../state/store";
+import { useStore, selectListedSessions } from "../state/store";
 import { allCommands, listCommands, onCommandsChanged, runCommand, type Command } from "../lib/commands";
 import { currentCommandContext } from "../hooks/useCommandContext";
 import { getKeymap } from "../hooks/useKeyboard";
@@ -20,7 +20,8 @@ export function CommandPalette() {
   const open = useStore((s) => s.paletteOpen);
   const initialQuery = useStore((s) => s.paletteQuery);
   const setPalette = useStore((s) => s.setPalette);
-  const sessions = useStore(useShallow(selectVisibleSessions));
+  // Both sidebar tabs, folded sections included: picking one shows it.
+  const sessions = useStore(useShallow(selectListedSessions));
   const [query, setQuery] = useState(initialQuery);
   const [tick, setTick] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);

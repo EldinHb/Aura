@@ -33,8 +33,8 @@ pub use prompts::SystemPrompts;
 pub use provider::*;
 pub use review::*;
 pub use schedule::{
-    MissedRuns, RunResult, RunTrigger, Schedule, ScheduleSource, ScheduledRun, ScheduledTask,
-    TimeOfDay, Weekday,
+    MissedRuns, RunAs, RunResult, RunTrigger, Schedule, ScheduleSource, ScheduledRun,
+    ScheduledTask, TimeOfDay, Weekday,
 };
 pub use schedules::{Editor, ScheduleService, ScheduledTaskInput};
 pub use specialists::{Specialist, SpecialistInput, SpecialistScope};

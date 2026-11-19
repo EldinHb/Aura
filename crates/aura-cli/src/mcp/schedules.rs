@@ -4,7 +4,7 @@
 //! scheduled-tasks window. Permission and sandbox modes stay the user's.
 
 use anyhow::Result;
-use aura_core::{agent_line, RunResult, RunTrigger, ScheduledRun, ScheduledTask};
+use aura_core::{agent_line, RunAs, RunResult, RunTrigger, ScheduledRun, ScheduledTask};
 use chrono::{DateTime, Local, Utc};
 use serde_json::{json, Value};
 
@@ -145,9 +145,18 @@ pub fn describe_task(t: &ScheduledTask) -> String {
         out.push_str(&format!("- next run: {}\n", when(n)));
     }
     out.push_str(&format!(
-        "- starts {} in {}{}\n",
+        "- starts {}{} in {}{}\n",
+        match t.run_as {
+            RunAs::Session => String::new(),
+            RunAs::Orchestrator => "an orchestrator (the user's to set up), ".into(),
+            RunAs::FeatureOwner => "a feature owner (the user's to set up), ".into(),
+        },
         agent_line(&t.agent, t.model.as_deref(), t.effort.as_deref()),
-        t.cwd,
+        if t.cwd.is_empty() {
+            "a directory of its own, without a folder"
+        } else {
+            &t.cwd
+        },
         if t.worktree {
             format!(
                 ", each run in a new worktree on a branch starting `{}-`",
@@ -163,6 +172,9 @@ pub fn describe_task(t: &ScheduledTask) -> String {
             t.permission_mode.as_deref().unwrap_or("default"),
             t.sandbox_mode.as_deref().unwrap_or("default")
         ));
+    }
+    if let Some(goal) = &t.feature_goal {
+        out.push_str(&format!("- feature goal: {goal}\n"));
     }
     if let Some(g) = &t.group {
         out.push_str(&format!("- in sidebar group \"{g}\"\n"));
@@ -250,6 +262,8 @@ fn task_fields() -> serde_json::Map<String, Value> {
         "model": { "type": "string", "description": "Model id from list_agents. Empty: the agent's default." },
         "effort": { "type": "string", "description": "Reasoning effort from list_agents. Empty: the default." },
         "cwd": { "type": "string", "description": "Absolute path of the folder or repository the sessions work in; list_projects shows the ones Aura knows." },
+        "run_as": { "type": "string", "enum": ["session", "orchestrator", "feature_owner"], "description": "What each run's session is. You can schedule `session` (the default), a regular session like the workers you start; an orchestrator or a feature owner only the user can schedule, in Aura. A task the user set to run as one you can rename, reschedule, enable, disable, run or delete, but not change what it does." },
+        "feature_goal": { "type": "string", "description": "For a task that runs as a feature owner, which only the user can set up: what the feature is for." },
         "worktree": { "type": "boolean", "description": "Start each run in a new git worktree of `cwd`, on a branch of its own. Default false." },
         "branch_prefix": { "type": "string", "description": "Start of each run's branch name, which ends in the run's date and time. Default `scheduled/<name>`." },
         "group": { "type": "string", "description": "Sidebar group of the sessions it starts. Empty: none." },
@@ -289,7 +303,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "create_scheduled_task",
-            "description": "Create a scheduled task for the user: each time its schedule comes round, Aura starts a new session with `prompt`, which the user can open like any other. It runs whether or not the Aura window is open. The sessions are the user's, not your workers. You cannot choose permission or sandbox modes: a task that runs your own agent gets yours, others the agent's default, and the user can change them in Aura.",
+            "description": "Create a scheduled task for the user: each time its schedule comes round, Aura starts a new session with `prompt`, which the user can open like any other. It runs whether or not the Aura window is open. The sessions are the user's, not your workers. You cannot choose permission or sandbox modes: a task that runs your own agent gets yours, others the agent's default, and the user can change them in Aura. You can schedule regular sessions only, as you start them; an orchestrator or a feature owner is the user's to schedule.",
             "inputSchema": {
                 "type": "object",
                 "properties": create,
@@ -345,6 +359,9 @@ mod tests {
             permission_mode: None,
             sandbox_mode: Some("workspace-write".into()),
             cwd: "/repo".into(),
+            run_as: aura_core::RunAs::Session,
+            feature_goal: None,
+            autonomy: None,
             worktree: true,
             branch_prefix: None,
             group: Some("Chores".into()),
@@ -408,6 +425,31 @@ mod tests {
         ] {
             assert!(text.contains(want), "{want}\nin\n{text}");
         }
+    }
+
+    #[test]
+    fn a_task_that_runs_as_an_orchestrator_says_so() {
+        let mut t = task();
+        t.run_as = RunAs::FeatureOwner;
+        t.cwd = String::new();
+        t.worktree = false;
+        t.feature_goal = Some("A changelog".into());
+        let text = describe_task(&t);
+        assert!(
+            text.contains("starts a feature owner (the user's to set up), codex"),
+            "{text}"
+        );
+        assert!(
+            text.contains("in a directory of its own, without a folder"),
+            "{text}"
+        );
+        assert!(text.contains("- feature goal: A changelog"), "{text}");
+        let props = &tools()[2]["inputSchema"]["properties"];
+        assert_eq!(
+            props["run_as"]["enum"],
+            json!(["session", "orchestrator", "feature_owner"])
+        );
+        assert!(props.get("feature_goal").is_some());
     }
 
     #[test]

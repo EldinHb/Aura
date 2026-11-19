@@ -186,6 +186,13 @@ pub struct Session {
     /// once nothing waits any more, e.g. after an answer from the inbox.
     #[serde(default)]
     pub attention: Option<Attention>,
+    /// The scheduled task that started this session, if one did. Set by the
+    /// scheduler (see [`crate::schedules`]); kept after the task is deleted.
+    #[serde(default)]
+    pub scheduled_task_id: Option<String>,
+    /// That task's name when it started the session, for labels.
+    #[serde(default)]
+    pub scheduled_task_name: Option<String>,
     /// The complete system prompt Aura hands the agent when it starts: global,
     /// per-agent and per-session prompts with their placeholders filled in.
     /// Set by the manager just before `Provider::start`; never stored or sent.
@@ -637,6 +644,11 @@ pub struct CreateSessionOpts {
     #[serde(skip)]
     #[ts(skip)]
     pub specialist: Option<(String, String)>,
+    /// The scheduled task (id, name) that starts the session. Only the
+    /// scheduler sets it.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub scheduled_task: Option<(String, String)>,
 }
 
 impl Session {
@@ -687,6 +699,8 @@ impl Session {
             folderless: false,
             pulls: vec![],
             attention: None,
+            scheduled_task_id: opts.scheduled_task.as_ref().map(|(id, _)| id.clone()),
+            scheduled_task_name: opts.scheduled_task.as_ref().map(|(_, name)| name.clone()),
             instructions: None,
             mcp_servers: vec![],
         }

@@ -15,7 +15,7 @@ vi.hoisted(() => {
 
 const task = (over: Partial<ScheduledTask> = {}): ScheduledTask => ({
   id: "t1", name: "Nightly triage", prompt: "Triage new issues", agent: "claude", model: null, effort: null,
-  permission_mode: null, sandbox_mode: null, cwd: "/repo", worktree: false, branch_prefix: null, group: null, enabled: true,
+  permission_mode: null, sandbox_mode: null, cwd: "/repo", run_as: "session", feature_goal: null, autonomy: null, worktree: false, branch_prefix: null, group: null, enabled: true,
   schedule: { unit: "days", every: 1, at: "09:00" }, missed: "run_once", allow_overlap: false,
   created_at: "2026-11-18T08:00:00Z", updated_at: "2026-11-18T08:00:00Z", anchor: "2026-11-18T08:00:00Z",
   last_slot: null, next_run: "2026-11-19T08:00:00Z", last_run: null, created_by: null, ...over,
@@ -107,8 +107,24 @@ describe("schedules in words", () => {
     const t = task({ model: "opus", group: "Chores", worktree: true, branch_prefix: "chore/x" });
     expect(inputOf(draftOfTask(t))).toEqual({
       name: "Nightly triage", prompt: "Triage new issues", agent: "claude", model: "opus", effort: "", permission_mode: "", sandbox_mode: "",
-      cwd: "/repo", worktree: true, branch_prefix: "chore/x", group: "Chores", enabled: true, schedule: t.schedule, missed: "run_once", allow_overlap: false,
+      cwd: "/repo", worktree: true, run_as: "session", feature_goal: "", autonomy: null,
+      branch_prefix: "chore/x", group: "Chores", enabled: true, schedule: t.schedule, missed: "run_once", allow_overlap: false,
     });
+  });
+
+  it("carry what a run starts as, and leave out what only a feature owner has", () => {
+    const autonomy = { level: "checkpoints" as const, checkpoints: ["before_delivery" as const] };
+    const owner = task({ run_as: "feature_owner", cwd: "", feature_goal: "A changelog", autonomy });
+    const draft = draftOfTask(owner);
+    expect(draft.no_folder).toBe(true);
+    expect(inputOf(draft)).toMatchObject({ run_as: "feature_owner", cwd: "", worktree: false, feature_goal: "A changelog", autonomy });
+    expect(draftError(draft)).toBeNull();
+    // A session needs its folder back, and has no feature.
+    const plain = { ...draft, run_as: "session" as const };
+    expect(draftError(plain)).toBe("Pick the folder the sessions work in");
+    expect(inputOf({ ...plain, cwd: "/repo" })).toMatchObject({ run_as: "session", cwd: "/repo", feature_goal: "", autonomy: null });
+    // An orchestrator given a folder keeps it, with its worktree.
+    expect(inputOf({ ...draft, run_as: "orchestrator", no_folder: false, cwd: "/repo", worktree: true })).toMatchObject({ cwd: "/repo", worktree: true, feature_goal: "", autonomy: null });
   });
 
   it("show times relative to today in the user's clock", () => {

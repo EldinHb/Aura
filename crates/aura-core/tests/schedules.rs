@@ -272,6 +272,8 @@ async fn a_task_starts_a_normal_session_with_its_prompt_when_its_time_comes() {
         !s.orchestrator && s.orchestrator_id.is_none(),
         "a normal session"
     );
+    assert_eq!(s.scheduled_task_id.as_deref(), Some(t.id.as_str()));
+    assert_eq!(s.scheduled_task_name.as_deref(), Some("Nightly check"));
     assert_eq!(
         w.prompts.lock().clone(),
         [(s.id.clone(), "quick: check the build".to_string())]
@@ -902,4 +904,268 @@ async fn the_daemons_loop_fires_on_its_own() {
     }
     svc.shutdown();
     assert!(!prompts.lock().is_empty(), "the loop never fired");
+}
+
+#[tokio::test]
+async fn a_task_runs_as_an_orchestrator_or_a_feature_owner_like_one_started_by_hand() {
+    let w = World::new();
+    w.m.enable_orchestrator_dirs(w.dir.path().join("orchestrators"));
+    // A session needs a folder; an orchestrator does not, but then no worktree.
+    let e = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                cwd: None,
+                ..w.input("quick", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("`cwd` is required"), "{e}");
+    let e = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                cwd: None,
+                run_as: Some(RunAs::Orchestrator),
+                worktree: Some(true),
+                ..w.input("quick", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("cannot have a worktree"), "{e}");
+
+    let lead = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                cwd: None,
+                run_as: Some(RunAs::Orchestrator),
+                // Only a feature owner keeps these.
+                feature_goal: Some("ignored".into()),
+                ..w.input("quick: plan the week", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    assert_eq!(lead.run_as, RunAs::Orchestrator);
+    assert_eq!(
+        (lead.cwd.as_str(), lead.feature_goal.as_deref()),
+        ("", None)
+    );
+    let run = w.svc.run_now(&lead.id).await.unwrap();
+    assert_eq!(run.result, RunResult::Started, "{run:?}");
+    let o = w.m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    assert!(o.orchestrator && !o.feature_owner && o.folderless);
+    assert!(
+        o.cwd
+            .starts_with(&*w.dir.path().join("orchestrators").to_string_lossy()),
+        "its own directory, as by hand: {}",
+        o.cwd
+    );
+    assert_eq!(o.scheduled_task_id.as_deref(), Some(lead.id.as_str()));
+    settle().await;
+
+    // Its workers are its own, as usual.
+    let worker =
+        w.m.start_worker(
+            &o.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "a long job".into(),
+                cwd: Some(w.cwd()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(worker.orchestrator_id.as_deref(), Some(o.id.as_str()));
+    assert_eq!(
+        worker.scheduled_task_id, None,
+        "started by the orchestrator, not the task"
+    );
+    settle().await;
+    assert_eq!(w.m.get_session(&o.id).unwrap().status, SessionStatus::Idle);
+    assert_eq!(
+        w.m.get_session(&worker.id).unwrap().status,
+        SessionStatus::Running
+    );
+    // The orchestrator is idle, but its run goes on while a worker works.
+    w.to_next_run(&lead.id);
+    let next = w.svc.tick().await.unwrap().remove(0);
+    assert_eq!(next.result, RunResult::Skipped, "{next:?}");
+    assert_eq!(next.session_id.as_deref(), Some(o.id.as_str()));
+    // Once the worker is gone, the next run starts.
+    w.m.delete(&worker.id, false).await.unwrap();
+    assert_eq!(
+        w.svc.run_now(&lead.id).await.unwrap().result,
+        RunResult::Started
+    );
+
+    let autonomy = Autonomy {
+        level: AutonomyLevel::Checkpoints,
+        checkpoints: vec![Checkpoint::BeforeDelivery],
+    };
+    let owner = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                run_as: Some(RunAs::FeatureOwner),
+                feature_goal: Some("A weekly changelog for the users".into()),
+                autonomy: Some(Some(autonomy.clone())),
+                ..w.input("quick: write this week's changelog", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    assert_eq!(owner.cwd, w.cwd(), "a feature owner may keep a folder");
+    let run = w.svc.run_now(&owner.id).await.unwrap();
+    let f = w.m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    assert!(f.orchestrator && f.feature_owner && !f.folderless);
+    assert_eq!(f.cwd, w.cwd());
+    let feature = w.m.feature(&f.id).unwrap();
+    assert_eq!(feature.goal, "A weekly changelog for the users");
+    assert_eq!(feature.autonomy, Some(autonomy));
+    assert!(w
+        .prompts
+        .lock()
+        .iter()
+        .any(|(id, p)| *id == f.id && p == "quick: write this week's changelog"));
+
+    // Back to a session: the feature fields go, and a folder is needed again.
+    let e = w
+        .svc
+        .update(
+            &lead.id,
+            ScheduledTaskInput {
+                run_as: Some(RunAs::Session),
+                ..Default::default()
+            },
+            &Editor::User,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("`cwd` is required"), "{e}");
+    let plain = w
+        .svc
+        .update(
+            &owner.id,
+            ScheduledTaskInput {
+                run_as: Some(RunAs::Session),
+                ..Default::default()
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    assert_eq!((plain.feature_goal, plain.autonomy), (None, None));
+    // Null clears a feature owner's own autonomy; missing keeps it.
+    let t: ScheduledTaskInput = serde_json::from_value(json!({ "autonomy": null })).unwrap();
+    assert_eq!(t.autonomy, Some(None));
+    let t: ScheduledTaskInput = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(t.autonomy, None);
+}
+
+#[tokio::test]
+async fn an_orchestrator_schedules_only_what_it_could_start_itself() {
+    let w = World::new();
+    let lead = orchestrator(&w, None);
+    let o = json!(lead.id);
+    let schedule = json!({ "unit": "hours", "every": 1 });
+    for (extra, want) in [
+        (
+            json!({ "run_as": "orchestrator" }),
+            "only the user can schedule an orchestrator or a feature owner",
+        ),
+        (
+            json!({ "run_as": "feature_owner", "feature_goal": "x" }),
+            "only the user can schedule an orchestrator or a feature owner",
+        ),
+        (
+            json!({ "feature_goal": "x" }),
+            "`feature_goal` and `autonomy` are for a feature owner",
+        ),
+        (
+            json!({ "autonomy": null }),
+            "`feature_goal` and `autonomy` are for a feature owner",
+        ),
+    ] {
+        let mut p = json!({ "orchestrator": o, "name": "T", "prompt": "quick", "agent": "claude", "cwd": w.cwd(), "schedule": schedule });
+        p.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let e = w
+            .svc
+            .handle("orchestrator.schedules.create", p)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains(want), "{e}");
+    }
+    assert!(w.svc.list().unwrap().is_empty());
+    // A session it may schedule, saying so or not.
+    let ok = w
+        .svc
+        .handle(
+            "orchestrator.schedules.create",
+            json!({ "orchestrator": o, "name": "T", "prompt": "quick", "agent": "claude", "cwd": w.cwd(), "schedule": schedule, "run_as": "session" }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ok["run_as"], json!("session"));
+    // It cannot turn one into an orchestrator either.
+    let e = w
+        .svc
+        .handle(
+            "orchestrator.schedules.update",
+            json!({ "orchestrator": o, "id": ok["id"], "run_as": "orchestrator", "cwd": "" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("only the user can schedule"), "{e}");
+
+    // The user's orchestrator task: it may manage it, not change what it does.
+    let users = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                run_as: Some(RunAs::FeatureOwner),
+                feature_goal: Some("goal".into()),
+                ..w.input("quick", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    for change in [
+        json!({ "prompt": "something else" }),
+        json!({ "agent": "claude", "model": "opus" }),
+        json!({ "run_as": "session" }),
+        json!({ "feature_goal": "another goal" }),
+    ] {
+        let mut p = json!({ "orchestrator": o, "id": users.id });
+        p.as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        let e = w
+            .svc
+            .handle("orchestrator.schedules.update", p)
+            .await
+            .unwrap_err();
+        assert!(
+            e.to_string().contains("not change what it does")
+                || e.to_string().contains("only the user"),
+            "{change}: {e}"
+        );
+    }
+    let renamed = w
+        .svc
+        .handle(
+            "orchestrator.schedules.update",
+            json!({ "orchestrator": o, "id": users.id, "name": "Renamed", "schedule": { "unit": "hours", "every": 2 } }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renamed["name"], json!("Renamed"));
+    assert_eq!(renamed["run_as"], json!("feature_owner"));
+    assert_eq!(renamed["feature_goal"], json!("goal"));
 }

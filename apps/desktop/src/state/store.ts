@@ -45,6 +45,9 @@ export type Transcript = {
 
 export type FocusRegion = "sidebar" | "main" | "composer" | "inspector";
 
+/** The sidebar's two lists: sessions started by hand or by an orchestrator, and those scheduled tasks started. */
+export type SidebarTab = "sessions" | "scheduled";
+
 export type Dialog =
   | { kind: "review-settings"; pull: PullRequest; config?: ReviewConfig }
   | { kind: "review-submit"; preview: SubmissionPreview }
@@ -108,6 +111,10 @@ export type AppState = {
   sidebarCursor: string | null;
   /** Orchestrators whose workers the sidebar hides. Saved across restarts. */
   collapsedOrchestras: string[];
+  /** The sidebar tab shown. Saved across restarts. */
+  sidebarTab: SidebarTab;
+  /** Sidebar sections folded to their heading, by `groupKey`. Saved across restarts. */
+  collapsedGroups: string[];
   settings: UiSettings;
   // actions
   setClient: (c: RpcClient | null) => void;
@@ -142,6 +149,9 @@ export type AppState = {
   setCursorItem: (id: string | null) => void;
   setSidebarCursor: (id: string | null) => void;
   setOrchestraCollapsed: (id: string, collapsed: boolean) => void;
+  setSidebarTab: (tab: SidebarTab) => void;
+  /** Fold or unfold the section `section` of `tab` (see `groupKey`). */
+  setGroupCollapsed: (tab: SidebarTab, section: string, collapsed: boolean) => void;
   setSettings: (patch: Partial<UiSettings>) => void;
   setTurnDiff: (sessionId: string, diff: string) => void;
 };
@@ -302,6 +312,8 @@ function applyToTranscript(t: Transcript, ev: Event): Transcript {
 const ORDER_KEY = "aura.session-order.v1";
 const SETTINGS_KEY = "aura.settings.v1";
 const COLLAPSED_KEY = "aura.sidebar-collapsed.v1";
+const TAB_KEY = "aura.sidebar-tab.v1";
+const GROUPS_KEY = "aura.sidebar-collapsed-groups.v1";
 
 export const useStore = create<AppState>((set, get) => ({
   client: null,
@@ -329,6 +341,8 @@ export const useStore = create<AppState>((set, get) => ({
   cursorItemId: null,
   sidebarCursor: null,
   collapsedOrchestras: loadCollapsed(),
+  sidebarTab: loadTab(),
+  collapsedGroups: loadIds(GROUPS_KEY),
   settings: loadSettings(),
 
   setClient: (client) => set({ client }),
@@ -376,8 +390,19 @@ export const useStore = create<AppState>((set, get) => ({
       if (canReorder(list[from], list[i])) return get().moveSessionTo(id, list[i].id);
     }
   },
-  // Selecting a worker of a collapsed orchestrator, from a report or a link, opens its group.
-  select: (id) => set({ prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id, collapsedOrchestras: revealIn(get(), id) }),
+  // Selecting a worker of a collapsed orchestrator, from a report or a link, opens its group;
+  // a session on the other tab, or in a folded section, from ⌘K or a notification, shows its tab and section.
+  select: (id) => {
+    const st = get();
+    const s = id ? st.sessions[id] : undefined;
+    const tab = s ? tabOf(s, st.sessions) : st.sidebarTab;
+    const key = s ? groupKey(tab, sectionIn(s, st)) : null;
+    const groups = key && st.collapsedGroups.includes(key) ? saveIds(GROUPS_KEY, st.collapsedGroups.filter((g) => g !== key)) : st.collapsedGroups;
+    set({
+      prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id,
+      collapsedOrchestras: revealIn(st, id), collapsedGroups: groups, sidebarTab: tab === st.sidebarTab ? tab : saveTab(tab),
+    });
+  },
   ensureTranscript: (id) => {
     if (!get().transcripts[id]) set({ transcripts: { ...get().transcripts, [id]: emptyTranscript() } });
   },
@@ -459,6 +484,14 @@ export const useStore = create<AppState>((set, get) => ({
   setOrchestraCollapsed: (id, collapsed) => {
     const rest = get().collapsedOrchestras.filter((c) => c !== id);
     set({ collapsedOrchestras: saveCollapsed(collapsed ? [...rest, id] : rest) });
+  },
+  setSidebarTab: (tab) => {
+    if (tab !== get().sidebarTab) set({ sidebarTab: saveTab(tab), sidebarCursor: null });
+  },
+  setGroupCollapsed: (tab, section, collapsed) => {
+    const key = groupKey(tab, section);
+    const rest = get().collapsedGroups.filter((g) => g !== key);
+    set({ collapsedGroups: saveIds(GROUPS_KEY, collapsed ? [...rest, key] : rest) });
   },
   setSettings: (patch) => {
     const settings = { ...get().settings, ...patch };
@@ -550,11 +583,48 @@ function revealIn(st: AppState, id: string | null): string[] {
   return kept.length === st.collapsedOrchestras.length ? st.collapsedOrchestras : saveCollapsed(kept);
 }
 
-// Another window collapsed or expanded an orchestrator; follow it.
+// Another window collapsed or expanded an orchestrator or a section, or switched tabs; follow it.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
     if (e.key === COLLAPSED_KEY) useStore.setState({ collapsedOrchestras: loadCollapsed() });
+    if (e.key === GROUPS_KEY) useStore.setState({ collapsedGroups: loadIds(GROUPS_KEY) });
+    if (e.key === TAB_KEY) useStore.setState({ sidebarTab: loadTab() });
   });
+}
+
+function loadIds(key: string): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveIds(key: string, ids: string[]): string[] {
+  try {
+    localStorage.setItem(key, JSON.stringify(ids));
+  } catch {
+    /* ignore */
+  }
+  return ids;
+}
+
+function loadTab(): SidebarTab {
+  try {
+    return localStorage.getItem(TAB_KEY) === "scheduled" ? "scheduled" : "sessions";
+  } catch {
+    return "sessions";
+  }
+}
+
+function saveTab(tab: SidebarTab): SidebarTab {
+  try {
+    localStorage.setItem(TAB_KEY, tab);
+  } catch {
+    /* ignore */
+  }
+  return tab;
 }
 
 function loadSettings(): UiSettings {
@@ -587,6 +657,46 @@ function saveSettings(s: UiSettings) {
 
 /** Key of the sidebar section of the orchestrators that are in no group, with their workers. */
 export const ORCHESTRATORS_SECTION = "\u0000orchestrators";
+/** Start of the key of a section of the Scheduled tab: the sessions one task started. */
+export const TASK_SECTION = "\u0000task:";
+
+/** The key a folded section is saved under: the tab, then the section. */
+export function groupKey(tab: SidebarTab, section: string): string {
+  return `${tab}:${section}`;
+}
+
+/**
+ * The scheduled task that started `s`, or the orchestrator it works under:
+ * workers of a scheduled orchestrator go with it to the Scheduled tab.
+ */
+export function scheduledTaskOf(s: Session, sessions: Record<string, Session>): string | null {
+  const seen = new Set<string>();
+  for (let o: Session | undefined = s; o && !seen.has(o.id); o = o.orchestrator_id ? sessions[o.orchestrator_id] : undefined) {
+    if (o.scheduled_task_id) return o.scheduled_task_id;
+    seen.add(o.id);
+  }
+  return null;
+}
+
+/** The sidebar tab `s` is listed on. */
+export function tabOf(s: Session, sessions: Record<string, Session>): SidebarTab {
+  return scheduledTaskOf(s, sessions) ? "scheduled" : "sessions";
+}
+
+/** The section of `s` on its own tab. */
+function sectionIn(s: Session, st: AppState): string {
+  const task = scheduledTaskOf(s, st.sessions);
+  if (task) return TASK_SECTION + task;
+  return sectionOf(s, new Map(Object.entries(st.sessions)));
+}
+
+/**
+ * Whether a section has a heading, and so can be folded: every section but
+ * the ungrouped sessions at the top when no orchestrators section is above them.
+ */
+export function hasHeading(section: string, sections: string[]): boolean {
+  return section !== "" || sections.includes(ORCHESTRATORS_SECTION);
+}
 
 /**
  * The sidebar section of `s` among the `shown` sessions: a worker's is its
@@ -604,30 +714,48 @@ export function sectionOf(s: Session, shown: Map<string, Session>): string {
 }
 
 /**
- * The sidebar's sections, top to bottom: the orchestrators in no group, then
- * the other ungrouped sessions, then each group in the order its first session
- * appears. Within a section, pinned sessions come first, then the saved order.
- * Workers of a collapsed orchestrator are left out, unless `withCollapsed` or
- * a filter is set.
+ * The sections of a sidebar tab, top to bottom. On the Sessions tab: the
+ * orchestrators in no group, then the other ungrouped sessions, then each
+ * group in the order its first session appears; within a section, pinned
+ * sessions come first, then the saved order. On the Scheduled tab: a section
+ * per task, the one that ran last first, each with its newest session first.
+ * Workers of a collapsed orchestrator and the rows of a folded section are
+ * left out, unless `withCollapsed` or a filter is set; a folded section is
+ * then left out whole. `tab` null lists both tabs, Sessions first.
  */
-export function selectSessionSections(st: AppState, withCollapsed = false): [string, Session[]][] {
+export function selectSessionSections(st: AppState, withCollapsed = false, tab: SidebarTab | null = st.sidebarTab): [string, Session[]][] {
+  if (tab === null) return [...selectSessionSections(st, withCollapsed, "sessions"), ...selectSessionSections(st, withCollapsed, "scheduled")];
   const q = st.sidebarFilter.trim().toLowerCase();
   const shown: Session[] = [];
   for (const id of st.sessionOrder) {
     const s = st.sessions[id];
     if (!s || (!st.showArchived && s.archived)) continue;
-    if (q && !s.title.toLowerCase().includes(q) && !(folderOf(s) ?? "").toLowerCase().includes(q) && !(s.group ?? "").toLowerCase().includes(q)) continue;
+    if (tabOf(s, st.sessions) !== tab) continue;
+    if (q && !s.title.toLowerCase().includes(q) && !(folderOf(s) ?? "").toLowerCase().includes(q) && !(s.group ?? "").toLowerCase().includes(q) && !(s.scheduled_task_name ?? "").toLowerCase().includes(q)) continue;
     shown.push(s);
   }
-  const byId = new Map(shown.map((s) => [s.id, s]));
-  const sections = new Map<string, Session[]>([[ORCHESTRATORS_SECTION, []], ["", []]]);
-  for (const s of shown) {
-    const key = sectionOf(s, byId);
-    if (!sections.has(key)) sections.set(key, []);
-    sections.get(key)!.push(s);
+  const sections = new Map<string, Session[]>();
+  if (tab === "scheduled") {
+    // Newest first: the order the tasks started them in, not the saved order.
+    shown.sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
+    for (const s of shown) {
+      const key = TASK_SECTION + scheduledTaskOf(s, st.sessions);
+      if (!sections.has(key)) sections.set(key, []);
+      sections.get(key)!.push(s);
+    }
+  } else {
+    const byId = new Map(shown.map((s) => [s.id, s]));
+    sections.set(ORCHESTRATORS_SECTION, []).set("", []);
+    for (const s of shown) {
+      const key = sectionOf(s, byId);
+      if (!sections.has(key)) sections.set(key, []);
+      sections.get(key)!.push(s);
+    }
   }
+  const keys = [...sections].filter(([, list]) => list.length > 0).map(([g]) => g);
+  const folded = new Set(withCollapsed || q ? [] : st.collapsedGroups);
   return [...sections]
-    .filter(([, list]) => list.length > 0)
+    .filter(([g, list]) => list.length > 0 && !(hasHeading(g, keys) && folded.has(groupKey(tab, g))))
     .map(([g, list]) => {
       const rows = nestWorkers([...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)]);
       if (withCollapsed || q || st.collapsedOrchestras.length === 0) return [g, rows];
@@ -686,6 +814,33 @@ export function selectOrchestra(st: AppState, id: string): Session[] | null {
 /** Visible sessions in the order the sidebar shows them; ⌘1–9 index into this. */
 export function selectVisibleSessions(st: AppState): Session[] {
   return selectSessionSections(st).flatMap(([, list]) => list);
+}
+
+/**
+ * Every session the sidebar lists, on both tabs, folded away or not, in
+ * sidebar order: what ⌘K picks from. Picking one shows it (see `select`).
+ */
+export function selectListedSessions(st: AppState): Session[] {
+  return selectSessionSections(st, true, null).flatMap(([, list]) => list);
+}
+
+/**
+ * What the sessions on `tab` need from the user, for the tab's badge: their
+ * pending approvals and questions, and the most urgent attention marker.
+ */
+export function selectTabActivity(st: AppState, tab: SidebarTab, viewedId: string | null = null): { count: number; pending: number; working: number; attention: Session["attention"] } {
+  let count = 0, pending = 0, working = 0;
+  let attention: Session["attention"] = null;
+  const rank = (a: Session["attention"]) => (a === "waiting" ? 3 : a === "failed" ? 2 : a ? 1 : 0);
+  for (const s of Object.values(st.sessions)) {
+    if (s.archived || tabOf(s, st.sessions) !== tab) continue;
+    count++;
+    pending += s.pending_count;
+    if (s.status === "running") working++;
+    const a = s.id === viewedId ? null : s.attention;
+    if (rank(a) > rank(attention)) attention = a;
+  }
+  return { count, pending, working, attention };
 }
 
 export function selectPendingCount(st: AppState): number {
