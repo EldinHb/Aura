@@ -3,4 +3,10 @@
 /**
  * Written to `<data_dir>/daemon.json` so clients can find the daemon.
  */
-export type DaemonInfo = { port: number, token: string, pid: number, version: string, started_at: string, data_dir: string, };
+export type DaemonInfo = { port: number, token: string, pid: number, version: string, started_at: string, data_dir: string, 
+/**
+ * The daemon process's birth ([`aura_core::process::process_birth`]),
+ * which tells it apart from a later process with its pid whatever the
+ * clock did since. None from daemons before 0.2.24.
+ */
+birth: string | null, };

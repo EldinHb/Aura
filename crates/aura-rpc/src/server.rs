@@ -67,6 +67,7 @@ impl RpcServer {
             version: env!("CARGO_PKG_VERSION").to_string(),
             started_at: aura_core::now(),
             data_dir: data_dir.to_string_lossy().to_string(),
+            birth: aura_core::process::process_birth(std::process::id()),
         };
         write_daemon_info(data_dir, &info)?;
         let (shutdown, _) = broadcast::channel(1);

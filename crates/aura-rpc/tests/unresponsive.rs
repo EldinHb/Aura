@@ -12,6 +12,7 @@ fn info(pid: u32) -> DaemonInfo {
         version: "0".into(),
         started_at: chrono::Utc::now(),
         data_dir: String::new(),
+        birth: aura_core::process::process_birth(pid),
     }
 }
 

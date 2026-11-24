@@ -26,6 +26,11 @@ pub struct DaemonInfo {
     pub version: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub data_dir: String,
+    /// The daemon process's birth ([`aura_core::process::process_birth`]),
+    /// which tells it apart from a later process with its pid whatever the
+    /// clock did since. None from daemons before 0.2.24.
+    #[serde(default)]
+    pub birth: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,16 +267,27 @@ pub async fn stop_unresponsive_daemon_within(
 }
 
 /// Whether process `info.pid` is the daemon `info` describes: its executable
-/// is named exactly `aurad` (`aurad.exe` on Windows), and it started no later
-/// than the daemon wrote `daemon.json`. A pid that went to another process
-/// after the daemon exited fails the second test, a process that only
-/// happens to be named like it (`aurad-something`) the first.
+/// is named exactly `aurad` (`aurad.exe` on Windows), and it is the process
+/// that wrote `daemon.json`: its birth (see
+/// [`aura_core::process::process_birth`]) is the one recorded there. A pid
+/// that went to another process after the daemon exited fails the second
+/// test, a process that only happens to be named like it (`aurad-something`)
+/// the first.
+///
+/// A daemon before 0.2.24 recorded no birth. Then it must have started no
+/// later than its `started_at`, from its elapsed time; a clock set back or
+/// forward since can mislead that.
 pub fn is_daemon(info: &DaemonInfo) -> bool {
     let named = aura_core::process::process_name(info.pid).is_some_and(|n| is_daemon_name(&n));
-    // `ps` gives whole seconds, and the daemon writes daemon.json after it started.
-    named
-        && aura_core::process::process_started(info.pid)
-            .is_some_and(|t| t <= info.started_at + chrono::Duration::seconds(2))
+    if !named {
+        return false;
+    }
+    match &info.birth {
+        Some(birth) => aura_core::process::process_birth(info.pid).as_ref() == Some(birth),
+        // `ps` gives whole seconds, and the daemon writes daemon.json after it started.
+        None => aura_core::process::process_started(info.pid)
+            .is_some_and(|t| t <= info.started_at + chrono::Duration::seconds(2)),
+    }
 }
 
 /// Whether `exe` (a path, or the name alone) is the daemon's executable.
@@ -387,6 +403,8 @@ mod daemon_stop_tests {
             version: "0".into(),
             started_at,
             data_dir: dir.to_string_lossy().into_owned(),
+            // As a daemon before 0.2.24 wrote it.
+            birth: None,
         }
     }
 
@@ -514,6 +532,63 @@ mod daemon_stop_tests {
         assert!(!is_daemon_name("/usr/local/bin/aurad-aarch64-apple-darwin"));
         assert!(!is_daemon_name("aurad2"));
         assert!(!is_daemon_name("xaurad"));
+    }
+
+    #[tokio::test]
+    async fn the_daemon_is_known_by_its_birth_whatever_the_clock_did() {
+        let dir = tempfile::tempdir().unwrap();
+        let _held = lock_data_dir(dir.path()).unwrap().unwrap();
+        let mut daemon = named(dir.path(), "aurad", false);
+        let birth = aura_core::process::process_birth(daemon.id()).unwrap();
+        // The clock was set forward since: daemon.json's started_at lies
+        // before the daemon's start as now computed. Its birth still matches.
+        let forward = DaemonInfo {
+            birth: Some(birth.clone()),
+            ..info(
+                dir.path(),
+                daemon.id(),
+                chrono::Utc::now() - chrono::Duration::hours(1),
+            )
+        };
+        assert!(is_daemon(&forward));
+        // The clock was set back since: an old daemon.json's started_at lies
+        // in the future, and its pid went to another aurad. The birth differs.
+        let reused = DaemonInfo {
+            birth: Some(aura_core::process::process_birth(std::process::id()).unwrap()),
+            ..info(
+                dir.path(),
+                daemon.id(),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+        };
+        assert!(!is_daemon(&reused));
+        assert!(!stop(dir.path(), &reused).await);
+        assert!(alive(&mut daemon), "it got no signal");
+        // The real one is stopped.
+        assert!(
+            !stop(dir.path(), &forward).await,
+            "the test still holds the lock"
+        );
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+    }
+
+    #[tokio::test]
+    async fn the_daemon_records_its_birth_in_daemon_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = aura_core::Manager::new(
+            std::sync::Arc::new(aura_core::MemoryStore::default()),
+            vec![],
+            None,
+        );
+        let server = server::RpcServer::start(m, dir.path(), None).await.unwrap();
+        let written = read_daemon_info(dir.path()).unwrap();
+        assert_eq!(
+            written.birth,
+            aura_core::process::process_birth(std::process::id())
+        );
+        assert!(written.birth.is_some());
+        assert_eq!(server.info.birth, written.birth);
     }
 
     #[tokio::test]

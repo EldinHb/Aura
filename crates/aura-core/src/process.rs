@@ -68,6 +68,59 @@ pub fn process_name(pid: u32) -> Option<String> {
     }
 }
 
+/// What tells process `pid` apart from every other process that had or will
+/// have its pid: the start the system recorded for it when it was created,
+/// which no later change of the clock moves. macOS: `darwin:<sec>.<usec>`
+/// from `proc_pidinfo`; Linux: `linux:<boot id>:<start in clock ticks since
+/// boot>` from `/proc`. None when it does not run, cannot be read, or the
+/// system has no such record here.
+pub fn process_birth(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let pid = libc::c_int::try_from(pid).ok()?;
+        // SAFETY: proc_bsdinfo is plain data, so all zeroes is a valid value.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: the buffer is a proc_bsdinfo we own, of the size given.
+        let n = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        (n == size).then(|| {
+            format!(
+                "darwin:{}.{:06}",
+                info.pbi_start_tvsec, info.pbi_start_tvusec
+            )
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let ticks = linux_start_ticks(&stat)?;
+        let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+        Some(format!("linux:{}:{ticks}", boot.trim()))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Field 22 of a Linux `/proc/<pid>/stat` line: when the process started, in
+/// clock ticks since boot. The name in field 2 may hold spaces and
+/// parentheses, so fields are counted from its last `)`.
+pub fn linux_start_ticks(stat: &str) -> Option<u64> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    // `rest` starts at field 3.
+    rest.split_whitespace().nth(22 - 3)?.parse().ok()
+}
+
 /// When process `pid` started, to the second, if it runs. From its elapsed
 /// time, which `ps` gives the same way in every locale.
 pub fn process_started(pid: u32) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -265,6 +318,34 @@ mod tests {
         assert_eq!(parse_elapsed(""), None);
         assert_eq!(parse_elapsed("7"), None);
         assert_eq!(parse_elapsed("a:b"), None);
+    }
+
+    #[test]
+    fn the_start_is_read_from_a_linux_stat_line_whatever_the_name() {
+        let stat =
+            "4242 (a (b) c) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 10000 200";
+        assert_eq!(linux_start_ticks(stat), Some(987_654));
+        assert_eq!(linux_start_ticks("4242 (x) S 1"), None);
+        assert_eq!(linux_start_ticks("no parenthesis"), None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_process_birth_is_its_own_and_stays_the_same() {
+        let me = process_birth(std::process::id()).expect("this process");
+        assert_eq!(
+            process_birth(std::process::id()).as_deref(),
+            Some(me.as_str())
+        );
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let other = process_birth(child.id()).expect("the child");
+        assert_ne!(other, me);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(process_birth(child.id()), None, "gone");
     }
 
     #[cfg(unix)]
