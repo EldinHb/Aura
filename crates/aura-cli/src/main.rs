@@ -396,25 +396,16 @@ async fn daemon_cmd(data_dir: &std::path::Path, cmd: &DaemonCmd) -> Result<()> {
             let info = aura_rpc::read_daemon_info(data_dir).unwrap();
             println!("aurad started (pid {}, port {})", info.pid, info.port);
         }
-        DaemonCmd::Stop => match RpcClient::connect_from_dir(data_dir).await {
-            Ok(c) => {
-                let _ = c.call("daemon.shutdown", json!({})).await;
-                println!("stop requested");
+        DaemonCmd::Stop => match aura_rpc::stop_daemon(data_dir).await {
+            aura_rpc::DaemonStop::NotRunning => println!("daemon not running"),
+            aura_rpc::DaemonStop::Requested => println!("stop requested"),
+            // Running but not answering (out of open files, say): signalled.
+            aura_rpc::DaemonStop::Signalled { pid } => {
+                println!("aurad (pid {pid}) did not answer; stopped it")
             }
-            Err(_) => match aura_rpc::read_daemon_info(data_dir) {
-                // Running but not answering (out of open files, say): signal it.
-                Some(info) if !matches!(aura_rpc::lock_data_dir(data_dir), Ok(Some(_))) => {
-                    if aura_rpc::stop_unresponsive_daemon(data_dir, &info).await {
-                        println!("aurad (pid {}) did not answer; stopped it", info.pid);
-                    } else {
-                        anyhow::bail!(
-                            "aurad (pid {}) does not answer and could not be stopped",
-                            info.pid
-                        );
-                    }
-                }
-                _ => println!("daemon not running"),
-            },
+            aura_rpc::DaemonStop::Unstoppable { pid } => {
+                anyhow::bail!("aurad (pid {pid}) does not answer and could not be stopped")
+            }
         },
         DaemonCmd::Status => match RpcClient::connect_from_dir(data_dir).await {
             Ok(c) => {

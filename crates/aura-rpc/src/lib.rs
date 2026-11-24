@@ -132,6 +132,77 @@ pub fn daemon_info_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("daemon.json")
 }
 
+/// How long stopping the daemon waits for it to take the connection, and
+/// then to answer the shutdown request, before it is taken for unresponsive.
+pub const SHUTDOWN_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ask the daemon `info` describes to shut down, giving up when it does not
+/// take the connection, finish the handshake, or answer within `answer` each.
+pub async fn request_shutdown(
+    info: &DaemonInfo,
+    answer: std::time::Duration,
+) -> anyhow::Result<()> {
+    let c = client::RpcClient::connect_within(info.port, &info.token, answer).await?;
+    c.call_with_timeout("daemon.shutdown", serde_json::json!({}), answer)
+        .await?;
+    Ok(())
+}
+
+/// What [`stop_daemon`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonStop {
+    /// No daemon holds the data directory.
+    NotRunning,
+    /// The daemon took the shutdown request.
+    Requested,
+    /// It did not take the request in time, and was stopped by signals.
+    Signalled { pid: u32 },
+    /// It did not take the request, and signals did not stop it (or were not
+    /// sent: see [`is_daemon`]).
+    Unstoppable { pid: u32 },
+}
+
+/// Stop the daemon of `data_dir`, as `aura daemon stop` does: ask it, and
+/// when it does not answer in time (see [`request_shutdown`]) or the request
+/// fails, stop it with [`stop_unresponsive_daemon`].
+pub async fn stop_daemon(data_dir: &std::path::Path) -> DaemonStop {
+    stop_daemon_within(
+        data_dir,
+        SHUTDOWN_ANSWER_TIMEOUT,
+        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(5),
+    )
+    .await
+}
+
+/// [`stop_daemon`], waiting `answer` for the daemon to answer, and `term`
+/// and `kill` after each signal.
+pub async fn stop_daemon_within(
+    data_dir: &std::path::Path,
+    answer: std::time::Duration,
+    term: std::time::Duration,
+    kill: std::time::Duration,
+) -> DaemonStop {
+    let Some(info) = read_daemon_info(data_dir) else {
+        return DaemonStop::NotRunning;
+    };
+    let Err(e) = request_shutdown(&info, answer).await else {
+        return DaemonStop::Requested;
+    };
+    if matches!(lock_data_dir(data_dir), Ok(Some(_))) {
+        return DaemonStop::NotRunning;
+    }
+    tracing::warn!(
+        pid = info.pid,
+        "aurad did not take the shutdown request: {e:#}"
+    );
+    if stop_unresponsive_daemon_within(data_dir, &info, term, kill).await {
+        DaemonStop::Signalled { pid: info.pid }
+    } else {
+        DaemonStop::Unstoppable { pid: info.pid }
+    }
+}
+
 /// Stop the aurad that holds `data_dir` but does not answer, such as one that
 /// ran out of open files and cannot take a connection: SIGTERM, which it
 /// handles by stopping its sessions' agents and exiting, then SIGKILL after
@@ -331,6 +402,105 @@ mod daemon_stop_tests {
 
     fn alive(c: &mut Child) -> bool {
         c.try_wait().unwrap().is_none()
+    }
+
+    /// A port that takes TCP connections and never says a word, as an aurad
+    /// out of open files whose listener still accepts.
+    async fn silent_port() -> u16 {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut held = vec![];
+            while let Ok((c, _)) = l.accept().await {
+                held.push(c);
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_request_to_a_silent_daemon_gives_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let port = silent_port().await;
+        let info = DaemonInfo {
+            port,
+            ..info(dir.path(), 1, chrono::Utc::now())
+        };
+        let asked = tokio::time::timeout(
+            Duration::from_secs(5),
+            request_shutdown(&info, Duration::from_millis(300)),
+        )
+        .await
+        .expect("it gives up instead of hanging");
+        let e = asked.unwrap_err().to_string();
+        assert!(e.contains("did not answer"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn stopping_a_silent_daemon_falls_back_to_its_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        // Held by the test, as the stuck daemon would hold it.
+        let _held = lock_data_dir(dir.path()).unwrap().unwrap();
+        let mut daemon = named(dir.path(), "aurad", false);
+        let info = DaemonInfo {
+            port: silent_port().await,
+            ..info(
+                dir.path(),
+                daemon.id(),
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+            )
+        };
+        std::fs::write(
+            daemon_info_path(dir.path()),
+            serde_json::to_string(&info).unwrap(),
+        )
+        .unwrap();
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(10),
+            stop_daemon_within(
+                dir.path(),
+                Duration::from_millis(300),
+                Duration::from_millis(300),
+                Duration::from_millis(300),
+            ),
+        )
+        .await
+        .expect("it gives up on the request instead of hanging");
+        // The test keeps the lock, so the directory never comes free.
+        assert_eq!(stopped, DaemonStop::Unstoppable { pid: daemon.id() });
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            daemon.wait().unwrap().signal(),
+            Some(15),
+            "it was sent SIGTERM"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_without_a_daemon_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(stop_daemon(dir.path()).await, DaemonStop::NotRunning);
+        // A daemon.json left behind, with nothing holding the directory.
+        let info = info(dir.path(), 1, chrono::Utc::now());
+        std::fs::write(
+            daemon_info_path(dir.path()),
+            serde_json::to_string(&DaemonInfo {
+                port: silent_port().await,
+                ..info
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            stop_daemon_within(
+                dir.path(),
+                Duration::from_millis(200),
+                Duration::from_millis(200),
+                Duration::from_millis(200)
+            )
+            .await,
+            DaemonStop::NotRunning
+        );
     }
 
     #[test]

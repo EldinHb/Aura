@@ -36,10 +36,28 @@ pub fn version_mismatch(daemon: &str, client: &str) -> Option<String> {
     })
 }
 
+/// How long [`RpcClient::connect`] waits for the daemon to take the
+/// connection and finish the WebSocket handshake.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl RpcClient {
+    /// Connect to the daemon on `port`, giving up after [`CONNECT_TIMEOUT`]:
+    /// one that takes the TCP connection but never answers (out of open
+    /// files, say) would otherwise hang the caller for good.
     pub async fn connect(port: u16, token: &str) -> Result<Self> {
+        Self::connect_within(port, token, CONNECT_TIMEOUT).await
+    }
+
+    /// [`RpcClient::connect`], giving up after `timeout`.
+    pub async fn connect_within(
+        port: u16,
+        token: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
         let url = format!("ws://127.0.0.1:{port}/ws?token={token}");
-        let (ws, _) = tokio_tungstenite::connect_async(&url).await?;
+        let (ws, _) = tokio::time::timeout(timeout, tokio_tungstenite::connect_async(&url))
+            .await
+            .map_err(|_| anyhow!("aurad on port {port} did not answer within {timeout:?}"))??;
         let (mut sink, mut stream) = ws.split();
         let (out, mut out_rx) = mpsc::channel::<Message>(1024);
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>> = Default::default();

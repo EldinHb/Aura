@@ -153,12 +153,16 @@ fn replace_daemon(version: &str) -> bool {
 /// daemon spawned before then finds the lock taken and exits. Sessions keep
 /// their state and resume on the next daemon.
 async fn stop_daemon(dir: &Path, info: &aura_rpc::DaemonInfo) {
-    let Ok(c) = aura_rpc::client::RpcClient::connect(info.port, &info.token).await else {
-        // One that cannot take a connection (out of open files, say) still holds the data directory.
+    if let Err(e) = aura_rpc::request_shutdown(info, aura_rpc::SHUTDOWN_ANSWER_TIMEOUT).await {
+        // One that cannot take a connection or answer (out of open files,
+        // say) still holds the data directory.
+        tracing::warn!(
+            pid = info.pid,
+            "daemon did not take the shutdown request: {e:#}"
+        );
         aura_rpc::stop_unresponsive_daemon(dir, info).await;
         return;
-    };
-    let _ = c.call("daemon.shutdown", serde_json::json!({})).await;
+    }
     for _ in 0..150 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if !daemon_alive(info.port).await && matches!(aura_rpc::lock_data_dir(dir), Ok(Some(_))) {
