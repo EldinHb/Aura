@@ -68,6 +68,48 @@ pub fn process_name(pid: u32) -> Option<String> {
     }
 }
 
+/// When process `pid` started, to the second, if it runs. From its elapsed
+/// time, which `ps` gives the same way in every locale.
+pub fn process_started(pid: u32) -> Option<chrono::DateTime<chrono::Utc>> {
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "etime=", "-p", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let elapsed = parse_elapsed(String::from_utf8_lossy(&out.stdout).trim())?;
+        Some(chrono::Utc::now() - chrono::Duration::seconds(elapsed as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Seconds in `ps`'s elapsed time: `[[dd-]hh:]mm:ss`.
+pub fn parse_elapsed(s: &str) -> Option<u64> {
+    let (days, rest) = match s.split_once('-') {
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
+        None => (0, s),
+    };
+    let parts: Vec<u64> = rest
+        .split(':')
+        .map(|p| p.parse::<u64>().ok())
+        .collect::<Option<_>>()?;
+    let (h, m, sec) = match parts[..] {
+        [m, s] => (0, m, s),
+        [h, m, s] => (h, m, s),
+        _ => return None,
+    };
+    Some(((days * 24 + h) * 60 + m) * 60 + sec)
+}
+
 /// How many files Aura asks to keep open at most. Every live session holds
 /// about three pipes to its agent, and apps started from the macOS GUI get a
 /// soft limit of 256, which some 75 sessions use up; then spawning `gh` or
@@ -213,6 +255,25 @@ pub fn explain_out_of_files(e: anyhow::Error, what: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elapsed_times_are_read_in_every_form_ps_gives() {
+        assert_eq!(parse_elapsed("00:07"), Some(7));
+        assert_eq!(parse_elapsed("12:34"), Some(12 * 60 + 34));
+        assert_eq!(parse_elapsed("01:02:03"), Some(3723));
+        assert_eq!(parse_elapsed("2-01:02:03"), Some(2 * 86_400 + 3723));
+        assert_eq!(parse_elapsed(""), None);
+        assert_eq!(parse_elapsed("7"), None);
+        assert_eq!(parse_elapsed("a:b"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_process_started_before_now() {
+        let started = process_started(std::process::id()).unwrap();
+        assert!(started <= chrono::Utc::now());
+        assert!(process_started(u32::MAX / 2).is_none(), "no such process");
+    }
 
     #[test]
     fn the_target_stays_within_the_hard_and_the_per_process_limit() {
