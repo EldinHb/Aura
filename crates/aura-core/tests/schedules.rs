@@ -117,6 +117,10 @@ impl Provider for Fake {
         _fork: bool,
         sink: EventSink,
     ) -> anyhow::Result<Box<dyn Driver>> {
+        // A session titled "Broken …" cannot start its agent, as when aurad is out of files.
+        if session.title.starts_with("Broken") {
+            anyhow::bail!("spawn /bin/claude: Too many open files (os error 24)");
+        }
         Ok(Box::new(Agent {
             sink,
             session: session.id.clone(),
@@ -1403,4 +1407,227 @@ async fn sessions_by_hand_are_stopped_only_after_the_idle_timeout_which_can_be_o
         std::slice::from_ref(&s.id)
     );
     assert!(stopped(&w, &s.id));
+}
+
+fn broken(w: &World) -> ScheduledTask {
+    w.svc
+        .create(
+            ScheduledTaskInput {
+                name: Some("Broken round".into()),
+                group: Some("Tasks".into()),
+                ..w.input("quick: review", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_run_whose_agent_does_not_start_keeps_its_session_linked_both_ways() {
+    let w = World::new();
+    let t = broken(&w);
+    let run = w.svc.run_now(&t.id).await.unwrap();
+    assert_eq!(run.result, RunResult::Failed);
+    assert!(
+        run.message
+            .as_deref()
+            .unwrap()
+            .contains("Too many open files"),
+        "{run:?}"
+    );
+    // The entry links the session, which is on the task's tab with the error.
+    let id = run
+        .session_id
+        .clone()
+        .expect("the failed entry links its session");
+    let s = w.m.get_session(&id).unwrap();
+    assert_eq!(run.session_title.as_deref(), Some(s.title.as_str()));
+    assert_eq!(s.scheduled_task_id.as_deref(), Some(t.id.as_str()));
+    assert_eq!(s.scheduled_task_name.as_deref(), Some("Broken round"));
+    assert_eq!(s.status, SessionStatus::Error);
+    assert!(s.last_error.unwrap().contains("Too many open files"));
+    assert_eq!(s.attention, Some(Attention::Failed));
+    assert_eq!(w.svc.get(&t.id).unwrap().last_run, Some(run.clone()));
+    // It holds no agent, so there is nothing to release, and the sweep passes it by.
+    assert!(w.m.stop_idle_agents(past_grace()).await.is_empty());
+    assert!(!stopped(&w, &id));
+    // Nor does it count as running: the next run is tried.
+    w.to_next_run(&t.id);
+    let next = w.svc.tick().await.unwrap().remove(0);
+    assert_eq!(next.result, RunResult::Failed);
+    assert_ne!(next.session_id, Some(id));
+}
+
+#[tokio::test]
+async fn an_orchestrator_run_is_released_with_a_worker_that_failed_to_start() {
+    let w = World::new();
+    w.m.enable_orchestrator_dirs(w.dir.path().join("orchestrators"));
+    let t = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                cwd: None,
+                run_as: Some(RunAs::Orchestrator),
+                ..w.input("quick: plan", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    let o = w.svc.run_now(&t.id).await.unwrap().session_id.unwrap();
+    settle().await;
+    let e =
+        w.m.start_worker(
+            &o,
+            WorkerSpec {
+                agent: "claude".into(),
+                title: Some("Broken worker".into()),
+                prompt: "a long job".into(),
+                cwd: Some(w.cwd()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("Too many open files"), "{e}");
+    let worker =
+        w.m.list_sessions()
+            .into_iter()
+            .find(|s| s.orchestrator_id.as_deref() == Some(o.as_str()))
+            .unwrap();
+    assert_eq!(worker.status, SessionStatus::Error);
+    settle().await;
+    // The worker in error holds no agent and waits on nothing: the run goes.
+    assert_eq!(w.m.stop_idle_agents(past_grace()).await, [o]);
+}
+
+#[tokio::test]
+async fn sessions_of_failed_runs_from_before_are_linked_to_their_task_at_start() {
+    let store = Arc::new(MemoryStore::default());
+    let before = World::on(store.clone());
+    let t = broken(&before);
+    let run = before.svc.run_now(&t.id).await.unwrap();
+    let id = run.session_id.clone().unwrap();
+    // As 0.2.23 and before left them: no link either way.
+    let mut s = before.m.get_session(&id).unwrap();
+    s.scheduled_task_id = None;
+    s.scheduled_task_name = None;
+    s.created_at = run.at - Duration::milliseconds(300);
+    store.upsert_session(&s).unwrap();
+    store
+        .add_scheduled_run(
+            &ScheduledRun {
+                session_id: None,
+                session_title: None,
+                ..run.clone()
+            },
+            200,
+        )
+        .unwrap();
+    let mut t2 = before.svc.get(&t.id).unwrap();
+    t2.last_run.as_mut().unwrap().session_id = None;
+    store.save_scheduled_task(&t2).unwrap();
+    // Look-alikes that must stay as they are: made too early, in another group,
+    // and one by hand with another title.
+    let mut early = Session::new(&CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: before.cwd(),
+        title: Some(format!("{} · earlier", t.name)),
+        group: Some("Tasks".into()),
+        ..Default::default()
+    });
+    early.created_at = run.at - Duration::seconds(5);
+    let mut other_group = early.clone();
+    other_group.id = new_id();
+    other_group.group = Some("Elsewhere".into());
+    other_group.created_at = s.created_at;
+    let mut by_hand = early.clone();
+    by_hand.id = new_id();
+    by_hand.title = "Review the round".into();
+    by_hand.created_at = s.created_at;
+    for x in [&early, &other_group, &by_hand] {
+        store.upsert_session(x).unwrap();
+    }
+    before.svc.shutdown();
+
+    let w = World::on(store);
+    assert_eq!(w.svc.link_failed_runs().unwrap(), 1);
+    let s = w.m.get_session(&id).unwrap();
+    assert_eq!(s.scheduled_task_id.as_deref(), Some(t.id.as_str()));
+    assert_eq!(s.scheduled_task_name.as_deref(), Some("Broken round"));
+    let entry = &w.svc.runs(&t.id, 10).unwrap()[0];
+    assert_eq!(entry.session_id.as_deref(), Some(id.as_str()));
+    assert_eq!(
+        w.svc
+            .get(&t.id)
+            .unwrap()
+            .last_run
+            .unwrap()
+            .session_id
+            .as_deref(),
+        Some(id.as_str())
+    );
+    for x in [&early, &other_group, &by_hand] {
+        assert_eq!(w.m.get_session(&x.id).unwrap().scheduled_task_id, None);
+    }
+    // Once is enough.
+    assert_eq!(w.svc.link_failed_runs().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_tasks_history_is_cleared_whole_or_only_what_failed_or_was_skipped() {
+    let w = World::new();
+    let lead = orchestrator(&w, None);
+    let t = w.task("a long job", Schedule::Minutes { every: 10 });
+    let started = w.svc.run_now(&t.id).await.unwrap();
+    settle().await;
+    let skipped = w.svc.run_now(&t.id).await.unwrap();
+    assert_eq!(skipped.result, RunResult::Skipped);
+    let b = broken(&w);
+    w.svc.run_now(&b.id).await.unwrap();
+    w.svc.run_now(&b.id).await.unwrap();
+    w.svc.run_now(&t.id).await.unwrap(); // skipped again: the first still works
+    assert_eq!(w.svc.runs(&t.id, 10).unwrap().len(), 3);
+
+    // Only skipped entries go; the last run is the latest that is left.
+    assert_eq!(
+        w.svc.clear_history(&t.id, ClearHistory::Skipped).unwrap(),
+        2
+    );
+    let left = w.svc.runs(&t.id, 10).unwrap();
+    assert_eq!(left, std::slice::from_ref(&started));
+    assert_eq!(w.svc.get(&t.id).unwrap().last_run, Some(started.clone()));
+    // Through an orchestrator's tool, the same code: failed ones of the other task.
+    let v = w
+        .svc
+        .handle(
+            "orchestrator.schedules.clear_history",
+            json!({ "orchestrator": lead.id, "id": b.id, "only": "failed_and_skipped" }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(v["removed"], json!(2));
+    assert_eq!(v["task"]["last_run"], Value::Null);
+    let e = w
+        .svc
+        .handle(
+            "schedules.clear_history",
+            json!({ "id": t.id, "only": "everything" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("`only` is one of"), "{e}");
+    // All of it; the session the run started stays.
+    let v = w
+        .svc
+        .handle("schedules.clear_history", json!({ "id": t.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(v["removed"], json!(1));
+    assert!(w.svc.runs(&t.id, 10).unwrap().is_empty());
+    assert!(w
+        .m
+        .get_session(started.session_id.as_deref().unwrap())
+        .is_ok());
 }

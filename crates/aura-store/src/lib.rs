@@ -201,6 +201,18 @@ impl Store for SqliteStore {
         tx.commit()?;
         Ok(())
     }
+    fn delete_scheduled_runs(&self, task_id: &str, ids: &[String]) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        for id in ids {
+            tx.execute(
+                "DELETE FROM scheduled_runs WHERE task_id = ?1 AND id = ?2",
+                params![task_id, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     fn scheduled_runs(&self, task_id: &str, limit: usize) -> Result<Vec<ScheduledRun>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(

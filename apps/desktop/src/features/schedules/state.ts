@@ -6,7 +6,7 @@
  */
 import { useEffect } from "react";
 import { create } from "zustand";
-import type { Schedule, ScheduledRun, ScheduledTask, ScheduledTaskInput } from "../../gen";
+import type { ClearHistory, Schedule, ScheduledRun, ScheduledTask, ScheduledTaskInput } from "../../gen";
 import { registerCommands } from "../../lib/commands";
 import { setFocus } from "../../commands/core";
 import { useStore } from "../../state/store";
@@ -35,6 +35,7 @@ export const schedules = {
   setEnabled: (id: string, enabled: boolean) => rpc<ScheduledTask>("schedules.set_enabled", { id, enabled }),
   run: (id: string) => rpc<ScheduledRun>("schedules.run", { id }),
   runs: (id: string, limit = 50) => rpc<ScheduledRun[]>("schedules.runs", { id, limit }),
+  clearHistory: (id: string, only: ClearHistory) => rpc<{ removed: number; task: ScheduledTask }>("schedules.clear_history", { id, only }),
   preview: (schedule: Schedule, count = 3) => rpc<string[]>("schedules.preview", { schedule, count }),
 };
 

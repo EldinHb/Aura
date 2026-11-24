@@ -1101,14 +1101,15 @@ mod tests {
                 "update_scheduled_task",
                 "delete_scheduled_task",
                 "set_scheduled_task_enabled",
-                "run_scheduled_task"
+                "run_scheduled_task",
+                "clear_scheduled_task_history"
             ]
         );
         let owner = tools(true);
         let owner = names(&owner);
-        assert_eq!(&owner[..27], names(&tools(false)).as_slice());
+        assert_eq!(&owner[..28], names(&tools(false)).as_slice());
         assert_eq!(
-            &owner[27..],
+            &owner[28..],
             [
                 "list_specialists",
                 "hire",

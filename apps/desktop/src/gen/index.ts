@@ -15,6 +15,7 @@ export * from './Checkpoint';
 export * from './CheckpointRecord';
 export * from './CleanupReport';
 export * from './CleanupResult';
+export * from './ClearHistory';
 export * from './CreateSessionOpts';
 export * from './DaemonInfo';
 export * from './DecidedBy';

@@ -92,6 +92,14 @@ pub trait Store: Send + Sync {
         }
         Ok(())
     }
+    /// Delete these entries of a task's history.
+    fn delete_scheduled_runs(&self, task_id: &str, ids: &[String]) -> Result<()> {
+        let ns = format!("{SCHEDULED_RUNS}:{task_id}");
+        for id in ids {
+            self.delete_feature_record(&ns, id)?;
+        }
+        Ok(())
+    }
     fn upsert_session(&self, session: &Session) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;
     fn list_sessions(&self) -> Result<Vec<Session>>;

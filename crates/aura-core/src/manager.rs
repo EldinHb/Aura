@@ -63,6 +63,22 @@ struct Runtime {
     awaiting_turn: Option<std::time::Instant>,
 }
 
+/// A session was created but its agent did not start. The session is kept,
+/// in the error state; `session_id` says which. Reads as the cause.
+#[derive(Debug)]
+pub struct SessionStartFailed {
+    pub session_id: SessionId,
+    pub error: anyhow::Error,
+}
+
+impl std::fmt::Display for SessionStartFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for SessionStartFailed {}
+
 struct Inner {
     store: Arc<dyn Store>,
     providers: HashMap<ProviderKind, Arc<dyn Provider>>,
@@ -593,7 +609,13 @@ impl Manager {
             SessionMode::Structured => {
                 if let Err(e) = self.ensure_driver(&session.id, opts.fork).await {
                     self.set_error(&session.id, &e.to_string());
-                    return Err(e);
+                    // The session stays, with the error: say which, so a caller
+                    // (the scheduler) can point to it.
+                    return Err(SessionStartFailed {
+                        session_id: session.id.clone(),
+                        error: e,
+                    }
+                    .into());
                 }
                 if let Some(p) = opts.initial_prompt.filter(|p| !p.trim().is_empty()) {
                     self.send(
@@ -1004,6 +1026,19 @@ impl Manager {
         }
         self.unavailable(&s, "was stopped", true);
         Ok(())
+    }
+
+    /// Mark `id` as started by scheduled task `task_id` (named `task_name`),
+    /// for sessions from before sessions recorded it. Not activity.
+    pub fn link_scheduled_task(&self, id: &str, task_id: &str, task_name: &str) -> Result<Session> {
+        self.change_session(id, false, |s| {
+            if s.scheduled_task_id.is_some() {
+                return false;
+            }
+            s.scheduled_task_id = Some(task_id.to_string());
+            s.scheduled_task_name = Some(task_name.to_string());
+            true
+        })
     }
 
     /// Stop the process(es) behind a session but keep it (resumable).

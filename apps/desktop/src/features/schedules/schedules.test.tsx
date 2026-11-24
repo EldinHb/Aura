@@ -48,6 +48,12 @@ beforeEach(() => {
       case "schedules.set_enabled": { tasks = tasks.map((t) => t.id === params.id ? { ...t, enabled: params.enabled as boolean, next_run: params.enabled ? t.next_run : null } : t); return tasks[0]; }
       case "schedules.run": return run({ id: "r3", trigger: "manual", session_title: "Nightly triage · now" });
       case "schedules.delete": { const t = tasks[0]; tasks = []; return t; }
+      case "schedules.clear_history": {
+        const gone = runs.filter((r) => params.only === "all" || (params.only === "failed_and_skipped" ? r.result !== "started" : r.result === params.only));
+        runs = runs.filter((r) => !gone.includes(r));
+        notify("schedules.changed", { id: params.id });
+        return { removed: gone.length, task: tasks[0] };
+      }
       case "orchestrator.projects": return [{ path: "/repo", repo: true, groups: [], sessions: 1, last_used: "" }];
       case "group.list": return [];
       default: return null;
@@ -150,6 +156,28 @@ describe("the scheduled tasks window", () => {
     fireEvent.click(within(history).getByRole("button", { name: "Nightly triage · Wed 18 Nov 09:00" }));
     expect(useStore.getState().selectedId).toBe("s1");
     expect(useStore.getState().dialog.kind).toBe("none");
+  });
+
+  it("clears only the failed and skipped entries of the history, or all of it", async () => {
+    runs = [...runs, run({ id: "r4", result: "failed", session_id: "s9", session_title: "Nightly triage · Tue", message: "spawn claude: Too many open files" })];
+    render(<Synced><SchedulesDialog taskId="t1" /></Synced>);
+    const history = await screen.findByRole("region", { name: "Run history" });
+    await within(history).findByText("Skipped");
+    // A failed run links the session it made, deleted here.
+    expect(within(history).getByTitle("The session was deleted").textContent).toBe("Nightly triage · Tue");
+    fireEvent.click(within(history).getByRole("button", { name: "Clear history…" }));
+    const which = within(history).getByLabelText("Entries to clear") as HTMLSelectElement;
+    expect(which.value).toBe("failed_and_skipped");
+    expect([...which.options].map((o) => o.textContent)).toEqual(["Failed and skipped (2)", "Failed (1)", "Skipped (1)", "All entries (3)"]);
+    fireEvent.click(within(history).getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(call).toHaveBeenCalledWith("schedules.clear_history", { id: "t1", only: "failed_and_skipped" }));
+    await waitFor(() => expect(within(history).queryByText("Skipped")).toBeNull());
+    expect(within(history).getByText("Started")).toBeTruthy();
+    fireEvent.click(within(history).getByRole("button", { name: "Clear history…" }));
+    fireEvent.change(within(history).getByLabelText("Entries to clear"), { target: { value: "all" } });
+    fireEvent.click(within(history).getByRole("button", { name: "Clear" }));
+    await within(history).findByText("It has not run yet.");
+    expect(within(history).queryByRole("button", { name: "Clear history…" })).toBeNull();
   });
 
   it("creates a task with what the editor holds", async () => {

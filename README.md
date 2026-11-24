@@ -322,6 +322,11 @@ run went; pick one to edit it, **Run now**, disable or delete it, and see its hi
 - **Missed runs.** Runs that came due while Aura was not running, or the computer was
   asleep, run once when it is back, however many went by, and the history says how many.
   Set a task to skip them instead and the history records the skip.
+- **Failed runs.** A run whose agent cannot start (the CLI is missing, the computer is
+  out of resources) is recorded as failed. Its session stays on the Scheduled tab with
+  the error, and the history links to it.
+- **Clear history.** Clear a task's history in its editor, all of it or only the failed
+  and skipped runs. The sessions the runs started are kept.
 
 Orchestrators can manage your scheduled tasks with their tools (see
 [Orchestrators](#orchestrators)). They go through the same code as the app, and the

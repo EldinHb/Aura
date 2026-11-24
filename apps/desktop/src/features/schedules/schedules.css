@@ -56,3 +56,6 @@
 .schedule-editor .folder-toggle { margin-left: 8px; }
 .schedule-editor .radio-row .orchestrator-mark, .schedule-editor .radio-row .feature-owner-mark { display: inline-block; flex: none; }
 .schedule-row-title .orchestrator-mark, .schedule-row-title .feature-owner-mark { flex: none; }
+.schedule-history-head { display: flex; align-items: center; gap: 8px; }
+.schedule-clear { display: inline-flex; align-items: center; gap: 6px; }
+.schedule-clear select { font-size: 11.5px; padding-top: 2px; padding-bottom: 2px; }

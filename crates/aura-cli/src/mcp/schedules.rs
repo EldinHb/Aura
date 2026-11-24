@@ -17,6 +17,7 @@ pub const NAMES: &[&str] = &[
     "delete_scheduled_task",
     "set_scheduled_task_enabled",
     "run_scheduled_task",
+    "clear_scheduled_task_history",
 ];
 
 /// The daemon method a tool calls, and its parameters: the tool's own
@@ -30,6 +31,7 @@ pub fn request(tool: &str, o: &str, a: &Value) -> Option<(&'static str, Value)> 
         "delete_scheduled_task" => "orchestrator.schedules.delete",
         "set_scheduled_task_enabled" => "orchestrator.schedules.set_enabled",
         "run_scheduled_task" => "orchestrator.schedules.run",
+        "clear_scheduled_task_history" => "orchestrator.schedules.clear_history",
         _ => return None,
     };
     let mut p = match a {
@@ -100,6 +102,16 @@ pub fn reply(tool: &str, v: Value) -> Result<String> {
                 ),
                 _ => run_line(&r),
             }
+        }
+        "clear_scheduled_task_history" => {
+            let removed = v["removed"].as_u64().unwrap_or(0);
+            let t: ScheduledTask = serde_json::from_value(v["task"].clone())?;
+            format!(
+                "Removed {removed} {} from the history of \"{}\" (`{}`). The sessions its runs started are kept.",
+                if removed == 1 { "entry" } else { "entries" },
+                t.name,
+                t.id
+            )
         }
         _ => v.to_string(),
     })
@@ -339,6 +351,19 @@ pub fn tools() -> Vec<Value> {
             "description": "Run a scheduled task now, outside its schedule, which stays as it is. Like a scheduled run, it is skipped while the previous run's session is still working, unless the task allows overlapping runs.",
             "inputSchema": { "type": "object", "properties": { "id": id_arg() }, "required": ["id"] },
         }),
+        json!({
+            "name": "clear_scheduled_task_history",
+            "description": "Clear a scheduled task's history: all of it, or only the runs that failed or were skipped. The sessions its runs started are kept.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": id_arg(),
+                    "only": { "type": "string", "enum": ["failed", "skipped", "failed_and_skipped", "all"], "description": "Which entries to clear. Default `all`." },
+                },
+                "required": ["id"],
+            },
+            "annotations": { "destructiveHint": true },
+        }),
     ]
 }
 
@@ -450,6 +475,32 @@ mod tests {
             json!(["session", "orchestrator", "feature_owner"])
         );
         assert!(props.get("feature_goal").is_some());
+    }
+
+    #[test]
+    fn clearing_history_says_how_much_went() {
+        let (method, p) = request(
+            "clear_scheduled_task_history",
+            "o1",
+            &json!({ "id": "t1", "only": "failed" }),
+        )
+        .unwrap();
+        assert_eq!(method, "orchestrator.schedules.clear_history");
+        assert_eq!(
+            p,
+            json!({ "id": "t1", "only": "failed", "orchestrator": "o1" })
+        );
+        let text = reply(
+            "clear_scheduled_task_history",
+            json!({ "removed": 3, "task": task() }),
+        )
+        .unwrap();
+        assert_eq!(text, "Removed 3 entries from the history of \"Nightly triage\" (`t1`). The sessions its runs started are kept.");
+        let only = &tools()[7]["inputSchema"]["properties"]["only"]["enum"];
+        assert_eq!(
+            only,
+            &json!(["failed", "skipped", "failed_and_skipped", "all"])
+        );
     }
 
     #[test]

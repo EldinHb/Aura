@@ -5,7 +5,7 @@ import { useStore } from "../../state/store";
 import { useGroups } from "../../state/groups";
 import { providerChoices } from "../../lib/acp";
 import { exactTime } from "../../lib/time";
-import type { Autonomy, ModelInfo, Project, ScheduledRun, ScheduledTask, Weekday } from "../../gen";
+import type { Autonomy, ClearHistory, ModelInfo, Project, ScheduledRun, ScheduledTask, Weekday } from "../../gen";
 import { AutonomyPicker } from "../../components/AutonomyPicker";
 import { describeAutonomy } from "../../lib/features";
 import { openRunSession, schedules, useSchedules } from "./state";
@@ -435,9 +435,38 @@ function History({ task, sessionsById }: { task: ScheduledTask; sessionsById: Re
     schedules.runs(task.id, 50).then((r) => { if (!cancelled) { setRuns(r); setError(null); } }, (e) => !cancelled && setError(message(e)));
     return () => { cancelled = true; };
   }, [task.id, version]);
+  const toast = useStore((s) => s.toast);
+  const [clearing, setClearing] = useState(false);
+  const [only, setOnly] = useState<ClearHistory>("failed_and_skipped");
+  const clear = async () => {
+    try {
+      const { removed } = await schedules.clearHistory(task.id, only);
+      await useSchedules.getState().refresh();
+      toast(removed === 0 ? "Nothing to clear" : `Cleared ${removed} ${removed === 1 ? "entry" : "entries"}`);
+      setClearing(false);
+    } catch (e) { toast(message(e), "error"); }
+  };
+  const counts = { failed: runs?.filter((r) => r.result === "failed").length ?? 0, skipped: runs?.filter((r) => r.result === "skipped").length ?? 0 };
   return (
     <section className="schedule-history" aria-label="Run history">
-      <h4>History</h4>
+      <div className="schedule-history-head">
+        <h4>History</h4>
+        <span style={{ flex: 1 }} />
+        {runs && runs.length > 0 && (clearing ? (
+          <span className="schedule-clear" role="group" aria-label="Clear history">
+            <select aria-label="Entries to clear" value={only} onChange={(e) => setOnly(e.target.value as ClearHistory)}>
+              <option value="failed_and_skipped">Failed and skipped ({counts.failed + counts.skipped})</option>
+              <option value="failed">Failed ({counts.failed})</option>
+              <option value="skipped">Skipped ({counts.skipped})</option>
+              <option value="all">All entries ({runs.length})</option>
+            </select>
+            <button type="button" className="btn small danger" data-command="schedules.clear-history" onClick={() => void clear()}>Clear</button>
+            <button type="button" className="btn small" data-command="schedules.clear-history-cancel" onClick={() => setClearing(false)}>Cancel</button>
+          </span>
+        ) : (
+          <button type="button" className="btn small" data-command="schedules.clear-history" title="Remove entries from this history; the sessions runs started are kept" onClick={() => setClearing(true)}>Clear history…</button>
+        ))}
+      </div>
       {error && <p className="schedules-error">{error}</p>}
       {runs && runs.length === 0 && <p className="dim">It has not run yet.</p>}
       {runs && runs.length > 0 && (

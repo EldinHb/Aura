@@ -90,6 +90,29 @@ where
     Option::<T>::deserialize(d).map(Some)
 }
 
+/// Which entries of a task's history to clear.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ClearHistory {
+    Failed,
+    Skipped,
+    FailedAndSkipped,
+    #[default]
+    All,
+}
+
+impl ClearHistory {
+    pub fn clears(self, r: RunResult) -> bool {
+        match self {
+            ClearHistory::All => true,
+            ClearHistory::Failed => r == RunResult::Failed,
+            ClearHistory::Skipped => r == RunResult::Skipped,
+            ClearHistory::FailedAndSkipped => r != RunResult::Started,
+        }
+    }
+}
+
 /// Who changes a task.
 #[derive(Debug, Clone)]
 pub enum Editor {
@@ -165,6 +188,11 @@ impl ScheduleService {
         if let Err(e) = self.refresh_next_runs() {
             tracing::warn!("scheduled tasks: {e:#}");
         }
+        match self.link_failed_runs() {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("linked {n} session(s) of failed scheduled runs to their task"),
+            Err(e) => tracing::warn!("link sessions of failed scheduled runs: {e:#}"),
+        }
         let this = self.clone();
         tokio::spawn(async move {
             loop {
@@ -207,6 +235,78 @@ impl ScheduleService {
             runs.push(self.carry_out(fire).await);
         }
         Ok(runs)
+    }
+
+    /// Versions before 0.2.24 made a session for a run whose agent did not
+    /// start, but linked neither way: no task on the session, no session on
+    /// the failed entry. Link those that match one failed entry only: titled
+    /// with the task's name, in its group, made within a second before the
+    /// entry. Returns how many were linked.
+    pub fn link_failed_runs(&self) -> Result<usize> {
+        let sessions = self.manager.list_sessions();
+        let mut linked = 0;
+        for task in self.store.scheduled_tasks()? {
+            let prefix = format!("{} · ", task.name);
+            for mut run in self.store.scheduled_runs(&task.id, HISTORY_KEPT)? {
+                if run.result != RunResult::Failed || run.session_id.is_some() {
+                    continue;
+                }
+                let matching: Vec<&Session> = sessions
+                    .iter()
+                    .filter(|s| {
+                        s.scheduled_task_id.is_none()
+                            && s.title.starts_with(&prefix)
+                            && s.group == task.group
+                            && s.created_at <= run.at
+                            && run.at - s.created_at <= Duration::seconds(1)
+                    })
+                    .collect();
+                let [s] = matching[..] else {
+                    continue;
+                };
+                self.manager
+                    .link_scheduled_task(&s.id, &task.id, &task.name)?;
+                run.session_id = Some(s.id.clone());
+                run.session_title = Some(s.title.clone());
+                {
+                    let _guard = self.lock.lock();
+                    self.store.add_scheduled_run(&run, HISTORY_KEPT)?;
+                    if let Some(mut t) = self.find(&task.id)? {
+                        if t.last_run.as_ref().is_some_and(|l| l.id == run.id) {
+                            t.last_run = Some(run.clone());
+                            self.store.save_scheduled_task(&t)?;
+                        }
+                    }
+                }
+                linked += 1;
+            }
+        }
+        Ok(linked)
+    }
+
+    /// Clear a task's history, all of it or only the entries `which` names.
+    /// Returns how many were removed. The sessions runs started are kept.
+    pub fn clear_history(&self, id: &str, which: ClearHistory) -> Result<usize> {
+        let removed = {
+            let _guard = self.lock.lock();
+            let mut task = self.get(id)?;
+            let runs = self.store.scheduled_runs(id, usize::MAX)?;
+            let gone: Vec<String> = runs
+                .iter()
+                .filter(|r| which.clears(r.result))
+                .map(|r| r.id.clone())
+                .collect();
+            self.store.delete_scheduled_runs(id, &gone)?;
+            // The latest entry left is the last run now.
+            let last = runs.into_iter().find(|r| !gone.contains(&r.id));
+            if task.last_run != last {
+                task.last_run = last;
+                self.store.save_scheduled_task(&task)?;
+            }
+            gone.len()
+        };
+        self.changed(id);
+        Ok(removed)
     }
 
     fn soonest(&self) -> Option<DateTime<Utc>> {
@@ -353,7 +453,19 @@ impl ScheduleService {
                     Some(n) => format!("{e:#}\n{n}"),
                     None => format!("{e:#}"),
                 };
-                self.record(task, trigger, slot, RunResult::Failed, None, Some(message))
+                // The session was made but its agent did not start: it stays,
+                // in the error state, and the entry links to it.
+                let session = e
+                    .downcast_ref::<crate::manager::SessionStartFailed>()
+                    .and_then(|f| self.manager.get_session(&f.session_id).ok());
+                self.record(
+                    task,
+                    trigger,
+                    slot,
+                    RunResult::Failed,
+                    session.as_ref(),
+                    Some(message),
+                )
             }
         }
     }
@@ -733,6 +845,15 @@ impl ScheduleService {
                 json!(self.set_enabled(&id()?, enabled, &by)?)
             }
             "delete" => json!(self.delete(&id()?)?),
+            "clear_history" => {
+                let only: ClearHistory = match p.get("only") {
+                    Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+                        .context("`only` is one of failed, skipped, failed_and_skipped, all")?,
+                    _ => ClearHistory::All,
+                };
+                let removed = self.clear_history(&id()?, only)?;
+                json!({ "removed": removed, "task": self.get(&id()?)? })
+            }
             "run" => json!(self.run_now(&id()?).await?),
             "preview" => {
                 let schedule: Schedule = serde_json::from_value(
