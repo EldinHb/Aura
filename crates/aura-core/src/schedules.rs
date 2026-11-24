@@ -239,47 +239,70 @@ impl ScheduleService {
 
     /// Versions before 0.2.24 made a session for a run whose agent did not
     /// start, but linked neither way: no task on the session, no session on
-    /// the failed entry. Link those that match one failed entry only: titled
-    /// with the task's name, in its group, made within a second before the
-    /// entry. Returns how many were linked.
+    /// the failed entry. Link each such entry to its session where the match
+    /// is one to one: the only session titled with the task's name, in its
+    /// group, made within a second before the entry, and no other entry's
+    /// match. When it is not, both stay as they are. Returns how many were
+    /// linked.
+    ///
+    /// The session is linked before the entry. A session already linked to
+    /// the task that no entry links is still a match, so a pass that stopped
+    /// between the two is finished by the next.
     pub fn link_failed_runs(&self) -> Result<usize> {
         let sessions = self.manager.list_sessions();
-        let mut linked = 0;
+        let mut entries: Vec<(ScheduledTask, ScheduledRun)> = vec![];
+        // Sessions an entry already links, of any task.
+        let mut referenced: HashSet<String> = HashSet::new();
         for task in self.store.scheduled_tasks()? {
-            let prefix = format!("{} · ", task.name);
-            for mut run in self.store.scheduled_runs(&task.id, HISTORY_KEPT)? {
-                if run.result != RunResult::Failed || run.session_id.is_some() {
-                    continue;
+            for run in self.store.scheduled_runs(&task.id, HISTORY_KEPT)? {
+                match &run.session_id {
+                    Some(id) => {
+                        referenced.insert(id.clone());
+                    }
+                    None if run.result == RunResult::Failed => {
+                        entries.push((task.clone(), run));
+                    }
+                    None => {}
                 }
-                let matching: Vec<&Session> = sessions
+            }
+        }
+        let candidates: Vec<Vec<&Session>> = entries
+            .iter()
+            .map(|(task, run)| {
+                sessions
                     .iter()
-                    .filter(|s| {
-                        s.scheduled_task_id.is_none()
-                            && s.title.starts_with(&prefix)
-                            && s.group == task.group
-                            && s.created_at <= run.at
-                            && run.at - s.created_at <= Duration::seconds(1)
-                    })
-                    .collect();
-                let [s] = matching[..] else {
-                    continue;
-                };
-                self.manager
-                    .link_scheduled_task(&s.id, &task.id, &task.name)?;
-                run.session_id = Some(s.id.clone());
-                run.session_title = Some(s.title.clone());
-                {
-                    let _guard = self.lock.lock();
-                    self.store.add_scheduled_run(&run, HISTORY_KEPT)?;
-                    if let Some(mut t) = self.find(&task.id)? {
-                        if t.last_run.as_ref().is_some_and(|l| l.id == run.id) {
-                            t.last_run = Some(run.clone());
-                            self.store.save_scheduled_task(&t)?;
-                        }
+                    .filter(|s| failed_run_session(s, task, run, &referenced))
+                    .collect()
+            })
+            .collect();
+        // How many entries each session could be the session of.
+        let mut claims: HashMap<&str, usize> = HashMap::new();
+        for s in candidates.iter().flatten() {
+            *claims.entry(s.id.as_str()).or_default() += 1;
+        }
+        let mut linked = 0;
+        for ((task, mut run), matching) in entries.into_iter().zip(&candidates) {
+            let [s] = matching[..] else {
+                continue;
+            };
+            if claims.get(s.id.as_str()) != Some(&1) {
+                continue;
+            }
+            self.manager
+                .link_scheduled_task(&s.id, &task.id, &task.name)?;
+            run.session_id = Some(s.id.clone());
+            run.session_title = Some(s.title.clone());
+            {
+                let _guard = self.lock.lock();
+                self.store.add_scheduled_run(&run, HISTORY_KEPT)?;
+                if let Some(mut t) = self.find(&task.id)? {
+                    if t.last_run.as_ref().is_some_and(|l| l.id == run.id) {
+                        t.last_run = Some(run.clone());
+                        self.store.save_scheduled_task(&t)?;
                     }
                 }
-                linked += 1;
             }
+            linked += 1;
         }
         Ok(linked)
     }
@@ -1016,6 +1039,25 @@ fn apply(
         }
     }
     Ok(())
+}
+
+/// Whether `s` may be the session of `task`'s failed entry `run` (see
+/// [`ScheduleService::link_failed_runs`]): not linked to a task, or linked to
+/// this one by a pass that did not get to the entry, which no entry links.
+fn failed_run_session(
+    s: &Session,
+    task: &ScheduledTask,
+    run: &ScheduledRun,
+    referenced: &HashSet<String>,
+) -> bool {
+    let free = match s.scheduled_task_id.as_deref() {
+        None => true,
+        Some(t) => t == task.id && !referenced.contains(&s.id),
+    };
+    free && s.title.starts_with(&format!("{} · ", task.name))
+        && s.group == task.group
+        && s.created_at <= run.at
+        && run.at - s.created_at <= Duration::seconds(1)
 }
 
 fn expand_home(dir: &str) -> String {

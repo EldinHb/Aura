@@ -1825,6 +1825,84 @@ async fn sessions_of_failed_runs_from_before_are_linked_to_their_task_at_start()
     assert_eq!(w.svc.link_failed_runs().unwrap(), 0);
 }
 
+/// Make a failed run as 0.2.23 left it: neither its session nor its entry
+/// links the other. The session dates from `ago` before the entry.
+fn unlink(w: &World, store: &MemoryStore, run: &ScheduledRun, ago: Duration) -> Session {
+    let mut s = w.m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    s.scheduled_task_id = None;
+    s.scheduled_task_name = None;
+    s.created_at = run.at - ago;
+    store.upsert_session(&s).unwrap();
+    store
+        .add_scheduled_run(
+            &ScheduledRun {
+                session_id: None,
+                session_title: None,
+                ..run.clone()
+            },
+            200,
+        )
+        .unwrap();
+    s
+}
+
+#[tokio::test]
+async fn a_session_that_could_be_of_several_failed_runs_is_linked_to_none() {
+    let store = Arc::new(MemoryStore::default());
+    let before = World::on(store.clone());
+    let t = broken(&before);
+    let first = before.svc.run_now(&t.id).await.unwrap();
+    let second = before.svc.run_now(&t.id).await.unwrap();
+    let s = unlink(&before, &store, &first, Duration::milliseconds(300));
+    // The second run's session is gone, and its entry came right after the
+    // first: the one session left is within a second of both entries.
+    let gone = unlink(&before, &store, &second, Duration::milliseconds(300));
+    store.delete_session(&gone.id).unwrap();
+    store
+        .add_scheduled_run(
+            &ScheduledRun {
+                at: first.at + Duration::milliseconds(200),
+                session_id: None,
+                session_title: None,
+                ..second.clone()
+            },
+            200,
+        )
+        .unwrap();
+    before.svc.shutdown();
+
+    let w = World::on(store);
+    assert_eq!(w.svc.link_failed_runs().unwrap(), 0);
+    assert_eq!(w.m.get_session(&s.id).unwrap().scheduled_task_id, None);
+    assert!(w
+        .svc
+        .runs(&t.id, 10)
+        .unwrap()
+        .iter()
+        .all(|r| r.session_id.is_none()));
+}
+
+#[tokio::test]
+async fn a_link_interrupted_between_the_session_and_the_entry_is_finished_at_the_next_start() {
+    let store = Arc::new(MemoryStore::default());
+    let before = World::on(store.clone());
+    let t = broken(&before);
+    let run = before.svc.run_now(&t.id).await.unwrap();
+    let mut s = unlink(&before, &store, &run, Duration::milliseconds(300));
+    // A pass linked the session, then stopped before it linked the entry.
+    s.scheduled_task_id = Some(t.id.clone());
+    s.scheduled_task_name = Some(t.name.clone());
+    store.upsert_session(&s).unwrap();
+    before.svc.shutdown();
+
+    let w = World::on(store);
+    assert_eq!(w.svc.link_failed_runs().unwrap(), 1);
+    let entry = &w.svc.runs(&t.id, 10).unwrap()[0];
+    assert_eq!(entry.session_id.as_deref(), Some(s.id.as_str()));
+    assert_eq!(entry.session_title.as_deref(), Some(s.title.as_str()));
+    assert_eq!(w.svc.link_failed_runs().unwrap(), 0);
+}
+
 #[tokio::test]
 async fn a_tasks_history_is_cleared_whole_or_only_what_failed_or_was_skipped() {
     let w = World::new();
