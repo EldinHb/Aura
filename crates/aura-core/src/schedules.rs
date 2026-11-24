@@ -113,6 +113,17 @@ impl ClearHistory {
     }
 }
 
+/// How many entries a task's history holds, of each result: what each
+/// choice of [`ClearHistory`] would remove.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HistoryCounts {
+    pub started: u32,
+    pub failed: u32,
+    pub skipped: u32,
+    pub all: u32,
+}
+
 /// Who changes a task.
 #[derive(Debug, Clone)]
 pub enum Editor {
@@ -666,6 +677,22 @@ impl ScheduleService {
         self.store.scheduled_runs(id, limit)
     }
 
+    /// How many entries of each result the task's whole history holds, which
+    /// [`Self::clear_history`] removes from, not only the latest ones listed.
+    pub fn history_counts(&self, id: &str) -> Result<HistoryCounts> {
+        self.get(id)?;
+        let mut c = HistoryCounts::default();
+        for r in self.store.scheduled_runs(id, usize::MAX)? {
+            match r.result {
+                RunResult::Started => c.started += 1,
+                RunResult::Failed => c.failed += 1,
+                RunResult::Skipped => c.skipped += 1,
+            }
+            c.all += 1;
+        }
+        Ok(c)
+    }
+
     /// The next `count` run times of `schedule` if it were set now.
     pub fn preview(&self, schedule: &Schedule, count: usize) -> Result<Vec<DateTime<Utc>>> {
         schedule.validate()?;
@@ -878,6 +905,7 @@ impl ScheduleService {
                 let limit = p.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
                 json!(self.runs(&id()?, limit.min(HISTORY_KEPT))?)
             }
+            "history_counts" => json!(self.history_counts(&id()?)?),
             "create" => json!(self.create(input()?, &by)?),
             "update" => json!(self.update(&id()?, input()?, &by)?),
             "set_enabled" => {

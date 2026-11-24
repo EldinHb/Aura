@@ -41,7 +41,11 @@ beforeEach(() => {
   call.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     switch (method) {
       case "schedules.list": return tasks;
-      case "schedules.runs": return runs;
+      case "schedules.runs": return runs.slice(0, params.limit as number);
+      case "schedules.history_counts": {
+        const n = (result: string) => runs.filter((r) => r.result === result).length;
+        return { started: n("started"), failed: n("failed"), skipped: n("skipped"), all: runs.length };
+      }
       case "schedules.preview": return ["2026-11-19T08:00:00Z", "2026-11-20T08:00:00Z"];
       case "schedules.create": { const t = task({ id: "t2", name: params.name as string, prompt: params.prompt as string }); tasks = [...tasks, t]; return t; }
       case "schedules.update": { tasks = tasks.map((t) => t.id === params.id ? { ...t, ...(params as Partial<ScheduledTask>) } : t); return tasks.find((t) => t.id === params.id); }
@@ -178,6 +182,23 @@ describe("the scheduled tasks window", () => {
     fireEvent.click(within(history).getByRole("button", { name: "Clear" }));
     await within(history).findByText("It has not run yet.");
     expect(within(history).queryByRole("button", { name: "Clear history…" })).toBeNull();
+  });
+
+  it("counts what Clear history removes over the whole history, beyond the entries listed", async () => {
+    runs = [
+      run(),
+      ...Array.from({ length: 59 }, (_, i) => run({ id: `s${i}`, result: "skipped", session_id: null, session_title: null })),
+      run({ id: "f1", result: "failed", session_id: null, session_title: null }),
+      run({ id: "f2", result: "failed", session_id: null, session_title: null }),
+    ];
+    render(<Synced><SchedulesDialog taskId="t1" /></Synced>);
+    const history = await screen.findByRole("region", { name: "Run history" });
+    await within(history).findAllByText("Skipped");
+    // 50 entries listed, the failed ones not among them.
+    expect(within(history).getAllByRole("listitem")).toHaveLength(50);
+    fireEvent.click(within(history).getByRole("button", { name: "Clear history…" }));
+    const which = within(history).getByLabelText("Entries to clear") as HTMLSelectElement;
+    expect([...which.options].map((o) => o.textContent)).toEqual(["Failed and skipped (61)", "Failed (2)", "Skipped (59)", "All entries (62)"]);
   });
 
   it("creates a task with what the editor holds", async () => {

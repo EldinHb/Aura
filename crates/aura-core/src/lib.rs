@@ -37,7 +37,7 @@ pub use schedule::{
     MissedRuns, RunAs, RunResult, RunTrigger, Schedule, ScheduleSource, ScheduledRun,
     ScheduledTask, TimeOfDay, Weekday,
 };
-pub use schedules::{ClearHistory, Editor, ScheduleService, ScheduledTaskInput};
+pub use schedules::{ClearHistory, Editor, HistoryCounts, ScheduleService, ScheduledTaskInput};
 pub use specialists::{Specialist, SpecialistInput, SpecialistScope};
 pub use store::*;
 pub use suggestions::{SuggestionEvidence, SuggestionSettings};

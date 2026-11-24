@@ -32,6 +32,7 @@ export * from './FeatureStatus';
 export * from './FileStatus';
 export * from './Group';
 export * from './GroupRepo';
+export * from './HistoryCounts';
 export * from './ImageInput';
 export * from './Input';
 export * from './Item';

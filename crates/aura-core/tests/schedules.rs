@@ -1904,6 +1904,53 @@ async fn a_link_interrupted_between_the_session_and_the_entry_is_finished_at_the
 }
 
 #[tokio::test]
+async fn the_history_counts_cover_every_entry_kept_not_only_those_listed() {
+    let w = World::new();
+    let t = w.task("a long job", Schedule::Minutes { every: 10 });
+    assert_eq!(
+        w.svc.history_counts(&t.id).unwrap(),
+        HistoryCounts::default()
+    );
+    w.svc.run_now(&t.id).await.unwrap();
+    settle().await;
+    // The first still works: every run after it is skipped.
+    for _ in 0..70 {
+        assert_eq!(
+            w.svc.run_now(&t.id).await.unwrap().result,
+            RunResult::Skipped
+        );
+    }
+    assert_eq!(w.svc.runs(&t.id, 50).unwrap().len(), 50);
+    let want = HistoryCounts {
+        started: 1,
+        failed: 0,
+        skipped: 70,
+        all: 71,
+    };
+    assert_eq!(w.svc.history_counts(&t.id).unwrap(), want);
+    let got = w
+        .svc
+        .handle("schedules.history_counts", json!({ "id": t.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got, json!(want));
+    // What Clear removes is what the counts said.
+    assert_eq!(
+        w.svc.clear_history(&t.id, ClearHistory::Skipped).unwrap(),
+        70
+    );
+    assert_eq!(
+        w.svc.history_counts(&t.id).unwrap(),
+        HistoryCounts {
+            started: 1,
+            all: 1,
+            ..Default::default()
+        }
+    );
+}
+
+#[tokio::test]
 async fn a_tasks_history_is_cleared_whole_or_only_what_failed_or_was_skipped() {
     let w = World::new();
     let lead = orchestrator(&w, None);

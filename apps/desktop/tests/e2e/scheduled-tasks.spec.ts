@@ -43,6 +43,11 @@ async function mockDaemon(page: Page) {
           runs.unshift(r); t.last_run = r; result = r; changed(params.id); break;
         }
         case "schedules.runs": result = runs.filter((r) => r.task_id === params.id); break;
+        case "schedules.history_counts": {
+          const own = runs.filter((r) => r.task_id === params.id);
+          const n = (result: string) => own.filter((r) => r.result === result).length;
+          result = { started: n("started"), failed: n("failed"), skipped: n("skipped"), all: own.length }; break;
+        }
         case "autonomy.get": result = { level: "blocking_decisions", checkpoints: [] }; break;
         default:
           if (method.includes("history") || method.includes("commands") || method.includes("native") || method === "feature.list") result = [];
