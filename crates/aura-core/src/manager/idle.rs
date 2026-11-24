@@ -10,8 +10,9 @@
 //! - Any other session whose agents have all been quiet for the idle timeout
 //!   (the [`IDLE_STOP_KEY`] setting, in hours; 0 never) is stopped the same way.
 //!
-//! What waits on the user is never stopped, and an orchestrator is never
-//! stopped while a worker under it works, since the worker's report wakes it.
+//! What waits on the user (see [`Manager::waiting_on_user`]) is never
+//! stopped, and an orchestrator is never stopped while a worker under it
+//! works, since the worker's report wakes it.
 
 use super::*;
 use chrono::{DateTime, Duration, Utc};
@@ -138,10 +139,39 @@ impl Manager {
                 && rt
                     .awaiting_turn
                     .is_none_or(|at| at.elapsed() > AWAITING_TURN_LIMIT)
-                && rt.pending_approvals.is_empty()
-                && rt.pending_inputs.is_empty()
         });
-        rt_quiet && !self.has_undelivered(&s.id)
+        rt_quiet && !self.waiting_on_user(s) && !self.has_undelivered(&s.id)
+    }
+
+    /// Whether the session waits on the user: an approval or a question of
+    /// its agent, or, for a feature owner, a decision it put to the user or a
+    /// checkpoint review that is still open. A feature owner that asked ends
+    /// its turn and reads idle, with nothing pending at its agent, so its
+    /// status alone does not say it.
+    pub fn waiting_on_user(&self, s: &Session) -> bool {
+        if matches!(
+            s.status,
+            SessionStatus::WaitingApproval | SessionStatus::WaitingInput
+        ) {
+            return true;
+        }
+        let pending =
+            self.inner.runtimes.lock().get(&s.id).is_some_and(|rt| {
+                !rt.pending_approvals.is_empty() || !rt.pending_inputs.is_empty()
+            });
+        if pending {
+            return true;
+        }
+        s.feature_owner
+            && self.feature(&s.id).is_ok_and(|f| {
+                f.questions.iter().any(|q| q.open())
+                    || f.checkpoints.iter().any(|c| {
+                        c.approved.is_none()
+                            && c.question_id
+                                .as_deref()
+                                .is_some_and(|q| f.question(q).is_some_and(|q| q.open()))
+                    })
+            })
     }
 }
 

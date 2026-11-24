@@ -314,7 +314,8 @@ run went; pick one to edit it, **Run now**, disable or delete it, and see its hi
 - **Finished runs let go of their agent.** A minute after a run (and every worker of a
   run as an orchestrator) has finished and waits on nothing, Aura stops its agent
   process. The session and its history stay; a message resumes it. A run that waits
-  on you keeps its agent.
+  on you keeps its agent, also a feature owner with a decision or checkpoint review
+  open for you while its agent is idle.
 - **No pile-ups.** While the session of the previous run is still working (or waits on
   you), a run is skipped and recorded as skipped, unless the task allows overlapping
   runs. Run now follows the same rule. A run as an orchestrator or feature owner

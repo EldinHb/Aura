@@ -488,8 +488,9 @@ impl ScheduleService {
         ids.into_iter().find_map(|id| {
             let s = self.manager.get_session(&id).ok()?;
             // An orchestrator's run goes on while a worker of it works: the
-            // worker's report wakes the orchestrator up again.
-            let working = busy(&s) || (s.orchestrator && self.worker_busy(&s.id));
+            // worker's report wakes the orchestrator up again. One waiting on
+            // the user (a feature owner's open decision, say) goes on too.
+            let working = self.busy(&s) || (s.orchestrator && self.worker_busy(&s.id));
             // Just started: the agent may not have begun its turn yet.
             let starting = fresh.as_ref().is_some_and(|(f, at)| {
                 *f == id
@@ -499,6 +500,11 @@ impl ScheduleService {
             });
             (working || starting).then_some(s)
         })
+    }
+
+    /// Whether `s` works, or waits on the user to go on.
+    fn busy(&self, s: &Session) -> bool {
+        s.status == SessionStatus::Running || self.manager.waiting_on_user(s)
     }
 
     /// Whether a worker of `orchestrator`, or of an orchestrator under it, is at work.
@@ -511,7 +517,7 @@ impl ScheduleService {
                 .iter()
                 .filter(|w| w.orchestrator_id.as_deref() == Some(o.as_str()))
             {
-                if busy(w) {
+                if self.busy(w) {
                     return true;
                 }
                 if seen.insert(w.id.clone()) {
@@ -996,14 +1002,6 @@ fn apply(
         }
     }
     Ok(())
-}
-
-/// Running, or waiting on the user.
-fn busy(s: &Session) -> bool {
-    matches!(
-        s.status,
-        SessionStatus::Running | SessionStatus::WaitingApproval | SessionStatus::WaitingInput
-    )
 }
 
 fn expand_home(dir: &str) -> String {

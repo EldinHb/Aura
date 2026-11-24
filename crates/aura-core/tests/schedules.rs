@@ -1544,6 +1544,102 @@ async fn a_stopped_agent_exiting_late_leaves_the_agent_started_after_it_alone() 
     );
 }
 
+/// A feature owner task, every ten minutes, at checkpoint autonomy that
+/// stops before delivery; its first run started and its turn done.
+async fn owner_run(w: &World) -> (ScheduledTask, String) {
+    let t = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                run_as: Some(RunAs::FeatureOwner),
+                feature_goal: Some("A weekly changelog".into()),
+                autonomy: Some(Some(Autonomy {
+                    level: AutonomyLevel::Checkpoints,
+                    checkpoints: vec![Checkpoint::BeforeDelivery],
+                })),
+                ..w.input(
+                    "quick: write the changelog",
+                    Schedule::Minutes { every: 10 },
+                )
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    let o = w.svc.run_now(&t.id).await.unwrap().session_id.unwrap();
+    settle().await;
+    let s = w.m.get_session(&o).unwrap();
+    assert_eq!(s.status, SessionStatus::Idle);
+    assert!(!w.m.waiting_on_user(&s));
+    (t, o)
+}
+
+/// With the owner waiting on the user, its agent stays and the next run is
+/// skipped; once answered, it no longer waits.
+async fn waits_on_the_user(w: &World, t: &ScheduledTask, o: &str) {
+    let s = w.m.get_session(o).unwrap();
+    // Its turn ended and nothing is pending at its agent: only the feature says so.
+    assert_eq!(s.status, SessionStatus::Idle);
+    assert!(w.m.waiting_on_user(&s));
+    assert!(w
+        .m
+        .stop_idle_agents(Utc::now() + Duration::hours(1))
+        .await
+        .is_empty());
+    assert!(!stopped(w, o));
+    w.to_next_run(&t.id);
+    let next = w.svc.tick().await.unwrap().remove(0);
+    assert_eq!(next.result, RunResult::Skipped, "{next:?}");
+    assert_eq!(next.session_id.as_deref(), Some(o));
+}
+
+#[tokio::test]
+async fn a_feature_owner_run_with_an_open_decision_keeps_its_agent_and_blocks_the_next() {
+    let w = World::new();
+    let (t, o) = owner_run(&w).await;
+    let q =
+        w.m.ask_user(
+            &o,
+            AskSpec {
+                question: "Which audience?".into(),
+                options: vec![
+                    DecisionOption {
+                        label: "Users".into(),
+                        description: None,
+                    },
+                    DecisionOption {
+                        label: "Developers".into(),
+                        description: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    waits_on_the_user(&w, &t, &o).await;
+    w.m.answer_question(&o, &q.id, Some("Users".into()), String::new())
+        .unwrap();
+    assert!(!w.m.waiting_on_user(&w.m.get_session(&o).unwrap()));
+}
+
+#[tokio::test]
+async fn a_feature_owner_run_with_an_open_checkpoint_review_keeps_its_agent_and_blocks_the_next() {
+    let w = World::new();
+    let (t, o) = owner_run(&w).await;
+    let review =
+        w.m.checkpoint(
+            &o,
+            Checkpoint::BeforeDelivery,
+            "The changelog is in CHANGELOG.md",
+        )
+        .unwrap()
+        .review
+        .expect("the user reviews before delivery");
+    waits_on_the_user(&w, &t, &o).await;
+    w.m.answer_question(&o, &review.id, Some("Approve".into()), String::new())
+        .unwrap();
+    assert!(!w.m.waiting_on_user(&w.m.get_session(&o).unwrap()));
+}
+
 fn broken(w: &World) -> ScheduledTask {
     w.svc
         .create(
