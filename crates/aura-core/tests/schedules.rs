@@ -1640,6 +1640,27 @@ async fn a_feature_owner_run_with_an_open_checkpoint_review_keeps_its_agent_and_
     assert!(!w.m.waiting_on_user(&w.m.get_session(&o).unwrap()));
 }
 
+#[tokio::test]
+async fn clearing_the_history_after_a_restart_keeps_a_run_that_still_works_from_overlapping() {
+    let store = Arc::new(MemoryStore::default());
+    let before = World::on(store.clone());
+    let t = before.task("a long job", Schedule::Minutes { every: 10 });
+    let first = before.svc.run_now(&t.id).await.unwrap();
+    let id = first.session_id.unwrap();
+    // After a restart the run is resumed (a message, a worker's report)
+    // and works again; then the history is cleared.
+    let w = World::on(store);
+    w.m.send(&id, text("go on")).await.unwrap();
+    settle().await;
+    assert_eq!(w.m.get_session(&id).unwrap().status, SessionStatus::Running);
+    w.svc.clear_history(&t.id, ClearHistory::All).unwrap();
+    assert!(w.svc.runs(&t.id, 10).unwrap().is_empty());
+    w.to_next_run(&t.id);
+    let next = w.svc.tick().await.unwrap().remove(0);
+    assert_eq!(next.result, RunResult::Skipped, "{next:?}");
+    assert_eq!(next.session_id.as_deref(), Some(id.as_str()));
+}
+
 fn broken(w: &World) -> ScheduledTask {
     w.svc
         .create(

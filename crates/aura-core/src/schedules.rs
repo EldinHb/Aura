@@ -471,20 +471,34 @@ impl ScheduleService {
     }
 
     /// A session an earlier run of `task` started that is still at work.
+    /// Every run's session carries its task, so they are found through that
+    /// link: clearing the history must not hide a run that still works. The
+    /// history and the run just started add the sessions of before that link.
     fn working_session(&self, task: &ScheduledTask) -> Option<Session> {
         let now = self.now();
         let fresh = self.fresh.lock().get(&task.id).cloned();
-        let mut ids: Vec<String> = self
-            .store
-            .scheduled_runs(&task.id, 50)
-            .unwrap_or_default()
+        let mut linked: Vec<Session> = self
+            .manager
+            .list_sessions()
             .into_iter()
-            .filter(|r| r.result == RunResult::Started)
-            .filter_map(|r| r.session_id)
+            .filter(|s| s.scheduled_task_id.as_deref() == Some(task.id.as_str()))
             .collect();
+        // Newest first, as the history lists them.
+        linked.sort_by_key(|s| std::cmp::Reverse(s.created_at));
+        let mut ids: Vec<String> = linked.into_iter().map(|s| s.id).collect();
+        ids.extend(
+            self.store
+                .scheduled_runs(&task.id, 50)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.result == RunResult::Started)
+                .filter_map(|r| r.session_id),
+        );
         if let Some((id, _)) = &fresh {
             ids.push(id.clone());
         }
+        let mut seen = HashSet::new();
+        ids.retain(|id| seen.insert(id.clone()));
         ids.into_iter().find_map(|id| {
             let s = self.manager.get_session(&id).ok()?;
             // An orchestrator's run goes on while a worker of it works: the
