@@ -13,6 +13,8 @@ use tokio::sync::{broadcast, mpsc};
 
 mod attachments;
 mod features;
+#[cfg(test)]
+mod generation_tests;
 mod idle;
 pub use idle::{FINISHED_RUN_GRACE, IDLE_STOP_DEFAULT_HOURS, IDLE_STOP_KEY};
 mod orchestrator;
@@ -105,6 +107,11 @@ struct Inner {
     sink: mpsc::UnboundedSender<Sourced>,
     /// The generation the next driver started gets.
     next_generation: AtomicU64,
+    /// Held while an event is applied, from the check that its driver is
+    /// still the session's to its last effect, and while a session moves to
+    /// a new driver: an event of the old one is applied wholly before the
+    /// move (whose reset then clears what it left) or dropped after it.
+    applying: Mutex<()>,
     /// One per session: held while its agent is started, a message is handed
     /// to it, or it is stopped, so these never interleave (a stop that waits
     /// for the old process cannot meet a message starting a new one).
@@ -150,6 +157,7 @@ impl Manager {
             pty_out,
             sink,
             next_generation: AtomicU64::new(1),
+            applying: Mutex::new(()),
             gates: Mutex::new(HashMap::new()),
             groups: Mutex::new(()),
             features: Mutex::new(()),
@@ -1483,12 +1491,40 @@ impl Manager {
             s.native_id.is_some() && !fork && !self.inner.store.events(id, 0, 1)?.is_empty();
         let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
         {
-            let mut rts = self.inner.runtimes.lock();
-            let rt = rts.entry(id.to_string()).or_default();
-            rt.replaying = resuming;
-            rt.stopping = false;
-            // From here on, what an older driver still sends is stale.
-            rt.generation = generation;
+            let _applying = self.inner.applying.lock();
+            {
+                let mut rts = self.inner.runtimes.lock();
+                let rt = rts.entry(id.to_string()).or_default();
+                rt.replaying = resuming;
+                rt.stopping = false;
+                // From here on, what an older driver still sends is stale.
+                rt.generation = generation;
+                // What an older one's events left after it was stopped
+                // (an approval it asked for on its way out, say) is not
+                // the new one's.
+                rt.pending_approvals.clear();
+                rt.pending_inputs.clear();
+                rt.current_turn = None;
+                rt.live_items.clear();
+                rt.awaiting_turn = None;
+            }
+            let _ = self.change_session(id, false, |x| {
+                let waiting = matches!(
+                    x.status,
+                    SessionStatus::Running
+                        | SessionStatus::WaitingApproval
+                        | SessionStatus::WaitingInput
+                );
+                if waiting {
+                    x.status = SessionStatus::Idle;
+                }
+                if x.attention == Some(Attention::Waiting) {
+                    x.attention = None;
+                }
+                let changed = waiting || x.pending_count != 0;
+                x.pending_count = 0;
+                changed
+            });
         }
         let s = self.with_instructions(&s)?;
         let tx = self.inner.sink.clone();
@@ -1598,13 +1634,6 @@ impl Manager {
         let me = self.clone();
         tokio::spawn(async move {
             while let Some(Sourced { driver, event }) = rx.recv().await {
-                if me.stale(event.session_id(), driver) {
-                    tracing::debug!(
-                        "dropped an event of a replaced driver of session {}",
-                        event.session_id()
-                    );
-                    continue;
-                }
                 me.handle_event(event, driver);
             }
         });
@@ -1625,6 +1654,13 @@ impl Manager {
 
     fn handle_event(&self, mut ev: Event, driver: Option<u64>) {
         let sid = ev.session_id().to_string();
+        // Checked and applied under one lock, which a move to a new driver
+        // takes too: no effect of a replaced driver's event lands after it.
+        let _applying = self.inner.applying.lock();
+        if self.stale(&sid, driver) {
+            tracing::debug!("dropped an event of a replaced driver of session {sid}");
+            return;
+        }
         self.attach_staged(&mut ev);
         // Bookkeeping only: it must not touch the session row, which would
         // bump `last_activity` and reorder the sidebar.
@@ -1706,9 +1742,6 @@ impl Manager {
                 Event::UserInputResolved { request_id, .. } => {
                     rt.pending_inputs.remove(request_id);
                 }
-                // Checked again here, under the lock a new driver is stored
-                // under: one may have started since `stale` looked.
-                Event::ProcessExited { .. } if driver.is_some_and(|g| g != rt.generation) => {}
                 Event::ProcessExited { .. } => {
                     rt.driver = None;
                     rt.awaiting_turn = None;
