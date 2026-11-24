@@ -322,6 +322,9 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    // Launched from Finder the app gets a soft limit of 256 open files, and
+    // the aurad it starts inherits it; raise it first (aurad raises its own too).
+    aura_core::process::raise_open_file_limit();
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())

@@ -35,6 +35,11 @@ async fn main() -> Result<()> {
         .unwrap_or_else(aura_rpc::default_data_dir);
     std::fs::create_dir_all(&data_dir).with_context(|| format!("create {}", data_dir.display()))?;
     init_logging(&data_dir, args.foreground)?;
+    // Started from the GUI, aurad inherits macOS's soft limit of 256 open
+    // files, which some 75 live sessions use up with their pipes; then `gh`
+    // and `git` cannot be started. Raise it before anything is spawned. The
+    // agents, shells and tools it starts inherit the higher limit.
+    aura_core::process::raise_open_file_limit();
 
     // The desktop app is launched by Launch Services, which does not read the
     // user's shell profile, so aurad inherits a bare PATH. Fix it here, before

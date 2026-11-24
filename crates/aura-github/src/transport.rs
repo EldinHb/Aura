@@ -603,7 +603,17 @@ impl GhCli {
             if e.is_timeout() {
                 anyhow!("GitHub request timed out")
             } else {
-                anyhow!("GitHub request failed: {e}")
+                // The cause (refused, out of files) is in the sources, which Display leaves out.
+                let mut text = e.to_string();
+                let mut source = std::error::Error::source(&e);
+                while let Some(s) = source {
+                    text = format!("{text}: {s}");
+                    source = s.source();
+                }
+                aura_core::process::explain_out_of_files(
+                    anyhow!("GitHub request failed: {text}"),
+                    "reach GitHub",
+                )
             }
         })?;
         let status = response.status().as_u16();
@@ -725,6 +735,11 @@ fn graphql_failure(headers: &reqwest::header::HeaderMap, text: &str) -> Result<(
 /// gh's token for `host`, of `user` when given.
 async fn gh_token(host: &str, user: Option<&str>) -> Result<String> {
     let bin = aura_core::which::find_binary("gh", "AURA_GH_BIN", &[]).context(NO_GH)?;
+    gh_token_from(&bin, host, user).await
+}
+
+/// `gh auth token` of the GitHub CLI at `bin`.
+async fn gh_token_from(bin: &str, host: &str, user: Option<&str>) -> Result<String> {
     let mut cmd = Command::new(bin);
     cmd.args(["auth", "token", "--hostname", host]);
     if let Some(user) = user {
@@ -734,7 +749,9 @@ async fn gh_token(host: &str, user: Option<&str>) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (child, _group) = aura_core::process::spawn_job(&mut cmd).context("Start GitHub CLI")?;
+    let (child, _group) = aura_core::process::spawn_job(&mut cmd)
+        .context("Start GitHub CLI")
+        .map_err(|e| aura_core::process::explain_out_of_files(e, "start the GitHub CLI"))?;
     let output = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output())
         .await
         .context("GitHub CLI timed out")??;
@@ -891,6 +908,58 @@ impl Github for GhCli {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Open file descriptors of this process.
+    #[cfg(unix)]
+    fn open_fds() -> usize {
+        std::fs::read_dir("/dev/fd").unwrap().count()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn starting_the_github_cli_many_times_leaves_no_files_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("gh");
+        std::fs::write(&ok, "#!/bin/sh\necho gho_token\n").unwrap();
+        // One that fails, writing to stderr, and one that hangs past the timeout's reach is
+        // not needed: the timeout drops the child, which kill_on_drop ends.
+        let fails = dir.path().join("gh-fails");
+        std::fs::write(&fails, "#!/bin/sh\necho 'not logged in' >&2\nexit 1\n").unwrap();
+        for f in [&ok, &fails] {
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (ok, fails) = (
+            ok.to_string_lossy().into_owned(),
+            fails.to_string_lossy().into_owned(),
+        );
+        // Warm up: the runtime's own descriptors (its signal pipe for children) open on first use.
+        gh_token_from(&ok, "github.com", None).await.unwrap();
+        let before = open_fds();
+        for i in 0..200 {
+            if i % 4 == 0 {
+                assert!(gh_token_from(&fails, "github.com", Some("me"))
+                    .await
+                    .is_err());
+            } else {
+                assert_eq!(
+                    gh_token_from(&ok, "github.com", None).await.unwrap(),
+                    "gho_token"
+                );
+            }
+        }
+        // Many at once, as a busy watcher and the PR list do.
+        let all =
+            futures::future::join_all((0..50).map(|_| gh_token_from(&ok, "github.com", None)))
+                .await;
+        assert!(all.iter().all(|t| t.is_ok()));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let after = open_fds();
+        assert!(
+            after <= before + 2,
+            "{before} descriptors open before, {after} after 250 runs of gh"
+        );
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

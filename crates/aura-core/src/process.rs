@@ -31,3 +31,187 @@ pub fn spawn_job(command: &mut Command) -> Result<(Child, ProcessGroup)> {
     };
     Ok((child, group))
 }
+
+/// How many files Aura asks to keep open at most. Every live session holds
+/// about three pipes to its agent, and apps started from the macOS GUI get a
+/// soft limit of 256, which some 75 sessions use up; then spawning `gh` or
+/// `git` fails with "too many open files".
+pub const OPEN_FILES_WANTED: u64 = 65_536;
+
+/// Raise the soft limit on open files towards the hard limit, at most to
+/// [`OPEN_FILES_WANTED`] (and on macOS to `kern.maxfilesperproc`, as
+/// RLIM_INFINITY is refused there). Children inherit the new limit. Returns
+/// the old and new soft limits, which are the same when nothing changed;
+/// None where there is no such limit (Windows) or it cannot be read.
+// rlim_t is u64 on macOS and Linux, but not on every Unix.
+#[allow(clippy::useless_conversion)]
+pub fn raise_open_file_limit() -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes into the struct we own.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+            tracing::warn!(
+                "read the open-file limit: {}",
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        let old = u64::from(lim.rlim_cur);
+        let want = open_files_target(u64::from(lim.rlim_max), max_files_per_process());
+        if want <= old {
+            tracing::info!("open-file limit {old}, kept");
+            return Some((old, old));
+        }
+        lim.rlim_cur = want.try_into().unwrap_or(lim.rlim_max);
+        // SAFETY: setrlimit reads the struct we own; the soft limit stays at or below the hard one.
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+            tracing::warn!(
+                "raise the open-file limit from {old} to {want}: {}",
+                std::io::Error::last_os_error()
+            );
+            return Some((old, old));
+        }
+        tracing::info!("open-file limit raised from {old} to {want}");
+        Some((old, want))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// The soft limit to ask for: what Aura wants, within the hard limit and the
+/// system's limit per process.
+pub fn open_files_target(hard: u64, per_process: Option<u64>) -> u64 {
+    OPEN_FILES_WANTED
+        .min(hard)
+        .min(per_process.unwrap_or(u64::MAX))
+}
+
+#[cfg(target_os = "macos")]
+fn max_files_per_process() -> Option<u64> {
+    let mut value: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is NUL-terminated and the output buffer is an int of the size given.
+    let ok = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&mut value as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    (ok && value > 0).then_some(value as u64)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn max_files_per_process() -> Option<u64> {
+    None
+}
+
+/// The current soft limit on open files, where there is one.
+// rlim_t is u64 on macOS and Linux, but not on every Unix.
+#[allow(clippy::useless_conversion)]
+pub fn open_file_limit() -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes into the struct we own.
+        (unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0)
+            .then_some(u64::from(lim.rlim_cur))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Whether `e`, or an error it was caused by, is the process (EMFILE) or the
+/// system (ENFILE) running out of open files.
+pub fn is_out_of_files(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+            .is_some_and(out_of_files_code)
+    }) || e.chain().any(|c| {
+        // Some libraries keep only the text (reqwest's connect errors among them).
+        let s = c.to_string();
+        s.contains("Too many open files") || s.contains("os error 24")
+    })
+}
+
+fn out_of_files_code(code: i32) -> bool {
+    #[cfg(unix)]
+    {
+        code == libc::EMFILE || code == libc::ENFILE
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = code;
+        false
+    }
+}
+
+/// `e` with what it means when it is [`is_out_of_files`]: `what` (e.g. "start
+/// the GitHub CLI") failed because Aura has as many files open as it may.
+pub fn explain_out_of_files(e: anyhow::Error, what: &str) -> anyhow::Error {
+    if !is_out_of_files(&e) {
+        return e;
+    }
+    let limit = open_file_limit()
+        .map(|l| format!(" of {l}"))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "Could not {what}: Aura reached its open-file limit{limit} (too many open files). Each running session keeps a few files open; stop sessions you no longer need, or restart Aura, which raises the limit when it starts. ({e:#})"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_target_stays_within_the_hard_and_the_per_process_limit() {
+        assert_eq!(open_files_target(u64::MAX, None), OPEN_FILES_WANTED);
+        assert_eq!(open_files_target(u64::MAX, Some(24_576)), 24_576);
+        assert_eq!(open_files_target(4_096, Some(24_576)), 4_096);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_soft_limit_is_raised_and_never_lowered() {
+        let (old, new) = raise_open_file_limit().unwrap();
+        assert!(new >= old);
+        assert_eq!(open_file_limit(), Some(new));
+        // Again: nothing left to raise.
+        assert_eq!(raise_open_file_limit(), Some((new, new)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn running_out_of_files_is_told_apart_and_explained() {
+        let emfile = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EMFILE))
+            .context("Start GitHub CLI");
+        assert!(is_out_of_files(&emfile));
+        let text = explain_out_of_files(emfile, "start the GitHub CLI").to_string();
+        assert!(text.contains("open-file limit"), "{text}");
+        assert!(text.starts_with("Could not start the GitHub CLI"), "{text}");
+        let other = anyhow::anyhow!("gh: not logged in");
+        assert!(!is_out_of_files(&other));
+        assert_eq!(
+            explain_out_of_files(other, "x").to_string(),
+            "gh: not logged in"
+        );
+        assert!(is_out_of_files(&anyhow::anyhow!(
+            "error trying to connect: Too many open files (os error 24)"
+        )));
+    }
+}

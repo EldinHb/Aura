@@ -25,7 +25,8 @@ async fn output(mut command: Command) -> Result<String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let (child, _group) = aura_core::process::spawn_job(&mut command)?;
+    let (child, _group) = aura_core::process::spawn_job(&mut command)
+        .map_err(|e| aura_core::process::explain_out_of_files(e, "start git or the GitHub CLI"))?;
     let out = child.wait_with_output().await?;
     if !out.status.success() {
         bail!("{}", String::from_utf8_lossy(&out.stderr));
@@ -131,4 +132,37 @@ pub async fn prepare(p: &PullRequest, cwd: &Path) -> Result<(String, String)> {
     ]);
     let diff = output(cmd).await?;
     Ok((diff, base))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The git and gh runs of a pre-review leave nothing open, whether they succeed or fail.
+    #[tokio::test]
+    async fn finished_git_and_gh_runs_leave_no_files_open() {
+        let fds = || std::fs::read_dir("/dev/fd").unwrap().count();
+        let git = |args: &[&str]| {
+            let mut cmd = Command::new("git");
+            cmd.args(args);
+            cmd
+        };
+        output(git(&["--version"])).await.unwrap();
+        let before = fds();
+        for i in 0..150 {
+            if i % 3 == 0 {
+                assert!(output(git(&["no-such-command"])).await.is_err());
+            } else {
+                assert!(output(git(&["--version"]))
+                    .await
+                    .unwrap()
+                    .starts_with("git version"));
+            }
+        }
+        let after = fds();
+        assert!(
+            after <= before + 2,
+            "{before} descriptors open before, {after} after 150 runs"
+        );
+    }
 }

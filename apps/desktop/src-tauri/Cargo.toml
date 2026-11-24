@@ -25,6 +25,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-opener = "2"
 aura-rpc = { workspace = true }
+aura-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

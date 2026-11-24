@@ -366,6 +366,7 @@ name = "aura-desktop"
 version = "0.2.22"
 dependencies = [
  "anyhow",
+ "aura-core",
  "aura-rpc",
  "dirs 5.0.1",
  "notify-rust",
@@ -416,6 +417,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]

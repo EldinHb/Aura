@@ -141,6 +141,9 @@ enum DaemonCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // `aura daemon start` starts aurad from here, and `aura mcp` runs for as
+    // long as its orchestrator; both pass the limit on (see aurad).
+    aura_core::process::raise_open_file_limit();
     let data_dir = cli
         .data_dir
         .clone()

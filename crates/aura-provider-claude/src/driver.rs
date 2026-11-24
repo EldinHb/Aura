@@ -413,6 +413,50 @@ impl Drop for ClaudeDriver {
 mod tests {
     use super::*;
 
+    /// Sessions whose agent finished, and whose driver the manager then drops
+    /// (it does on `ProcessExited`), leave none of their pipes open.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn finished_agents_leave_no_pipes_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("claude");
+        // Says something on both pipes, then ends like a crashed or finished agent.
+        std::fs::write(&bin, "#!/bin/sh\necho '{}'\necho bye >&2\nexit 0\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = bin.to_string_lossy().into_owned();
+        let session = Session::new(&CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+        let fds = || std::fs::read_dir("/dev/fd").unwrap().count();
+        let run = || async {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let driver = ClaudeDriver::spawn(&bin, &session, false, tx, Default::default())
+                .await
+                .unwrap();
+            while let Some(ev) = rx.recv().await {
+                if matches!(ev, Event::ProcessExited { .. }) {
+                    break;
+                }
+            }
+            drop(driver);
+        };
+        run().await;
+        let before = fds();
+        for _ in 0..25 {
+            run().await;
+        }
+        // The stdout and stderr readers end with the pipes; give them a moment.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let after = fds();
+        assert!(
+            after <= before + 2,
+            "{before} descriptors open before, {after} after 25 agents"
+        );
+    }
+
     #[test]
     fn an_exit_aura_asked_for_is_no_failure_even_when_killed() {
         // Killed after the grace period of a stop: no exit code (a signal).
