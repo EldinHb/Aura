@@ -2766,6 +2766,68 @@ async fn an_orchestrator_that_cannot_be_deleted_keeps_its_workers() {
 }
 
 #[tokio::test]
+async fn a_message_while_the_first_agent_starts_waits_for_it_and_goes_to_it() {
+    let knobs: Knobs = Default::default();
+    let starts: Starts = Default::default();
+    let calls: Calls = Default::default();
+    let provider = Arc::new(FakeProvider {
+        calls: calls.clone(),
+        starts: starts.clone(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: knobs.clone(),
+    });
+    let m = Manager::new(Arc::new(MemoryStore::default()), vec![provider], None);
+    let dir = tempfile::tempdir().unwrap();
+    knobs.lock().slow_start = true;
+    let mut rx = m.subscribe();
+    let creating = {
+        let m = m.clone();
+        let cwd = dir.path().to_string_lossy().to_string();
+        tokio::spawn(async move {
+            m.create_session(CreateSessionOpts {
+                provider: ProviderKind::Claude,
+                cwd,
+                ..Default::default()
+            })
+            .await
+        })
+    };
+    // As soon as the session shows, while its agent still starts, a message comes.
+    let id = loop {
+        if let Event::SessionCreated { session } = rx.recv().await.unwrap() {
+            break session.id;
+        }
+    };
+    m.send(
+        &id,
+        Input {
+            text: "hi".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    creating.await.unwrap().unwrap();
+    wait_status(&m, &id, SessionStatus::Idle).await;
+    assert_eq!(starts.lock().len(), 1, "one agent, which took the message");
+    assert!(calls.lock().iter().any(|c| c == "send:hi"));
+    // Its events still count: the next message's turn shows.
+    knobs.lock().slow_start = false;
+    m.send(
+        &id,
+        Input {
+            text: "approve".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    wait_status(&m, &id, SessionStatus::WaitingApproval).await;
+    assert_eq!(starts.lock().len(), 1);
+}
+
+#[tokio::test]
 async fn an_agent_started_for_a_session_deleted_meanwhile_is_stopped() {
     let (m, calls, provider) = orchestrator_setup();
     let dir = tempfile::tempdir().unwrap();

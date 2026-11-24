@@ -66,6 +66,9 @@ struct Runtime {
     /// of an older one (a process stopped while a new one started) are
     /// dropped: its exit must not clear the new driver or its state.
     generation: u64,
+    /// The session is being deleted: an agent that finishes starting
+    /// meanwhile is stopped rather than kept.
+    deleting: bool,
 }
 
 /// An event on its way to the manager, with the driver it came from; none
@@ -611,6 +614,10 @@ impl Manager {
             session.command = Some(argv);
         }
         self.inner.store.upsert_session(&session)?;
+        // Held from before anyone can see the session until its first agent
+        // is in place: a message meanwhile waits for it, and goes to it,
+        // rather than start a second agent beside it.
+        let gate = self.gate(&session.id).await;
         self.inner
             .sessions
             .lock()
@@ -637,12 +644,15 @@ impl Manager {
 
         match session.mode {
             SessionMode::Terminal => {
+                drop(gate);
                 self.spawn_pty(&session.id).await?;
             }
             SessionMode::Structured => {
-                // No gate: nothing can have started an agent for a session
-                // this new, and a delete meanwhile is caught when it is kept.
-                if let Err(e) = self.ensure_driver(&session.id, opts.fork).await {
+                // A delete meanwhile waits for the gate; the agent sees the
+                // session is being deleted when it is kept, and stops.
+                let started = self.ensure_driver(&session.id, opts.fork).await;
+                drop(gate);
+                if let Err(e) = started {
                     self.set_error(&session.id, &e.to_string());
                     // The session stays, with the error: say which, so a caller
                     // (the scheduler) can point to it.
@@ -1252,7 +1262,11 @@ impl Manager {
         if self.get_session(&s.id).is_err() {
             return Ok(false);
         }
+        // An agent still starting (under the gate the stop waits for) stops
+        // itself instead of staying with a session about to go.
+        self.set_deleting(&s.id, true);
         if let Err(e) = self.stop(&s.id).await {
+            self.set_deleting(&s.id, false);
             return if self.get_session(&s.id).is_err() {
                 Ok(false)
             } else {
@@ -1268,6 +1282,8 @@ impl Manager {
             };
             if let Err(e) = self.inner.store.delete_session(&s.id) {
                 sessions.insert(s.id.clone(), gone);
+                drop(sessions);
+                self.set_deleting(&s.id, false);
                 return Err(e);
             }
         }
@@ -1291,6 +1307,12 @@ impl Manager {
             session_id: s.id.clone(),
         });
         Ok(true)
+    }
+
+    fn set_deleting(&self, id: &str, deleting: bool) {
+        if let Some(rt) = self.inner.runtimes.lock().get_mut(id) {
+            rt.deleting = deleting;
+        }
     }
 
     /// Switch between the structured view and the provider's own TUI. The
@@ -1483,17 +1505,26 @@ impl Manager {
         let kept = {
             let sessions = self.inner.sessions.lock();
             let mut rts = self.inner.runtimes.lock();
-            if sessions.contains_key(id) {
-                rts.entry(id.to_string()).or_default().driver = Some(driver.clone());
-                true
-            } else {
+            if !sessions.contains_key(id) {
                 rts.remove(id);
-                false
+                Err("the session was deleted while its agent started")
+            } else {
+                let rt = rts.entry(id.to_string()).or_default();
+                if rt.deleting {
+                    Err("the session was deleted while its agent started")
+                } else if rt.generation != generation {
+                    // Never under the gate; would leave the session with a
+                    // driver whose events all count as stale.
+                    Err("another agent was started for the session meanwhile")
+                } else {
+                    rt.driver = Some(driver.clone());
+                    Ok(())
+                }
             }
         };
-        if !kept {
+        if let Err(why) = kept {
             let _ = driver.stop().await;
-            bail!("the session was deleted while its agent started");
+            bail!("{why}");
         }
         let _ = self.update_session(id, |x| {
             if x.status == SessionStatus::Exited || x.status == SessionStatus::Error {
