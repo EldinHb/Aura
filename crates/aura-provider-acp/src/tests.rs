@@ -91,7 +91,8 @@ fn connect(
     mpsc::UnboundedReceiver<Event>,
 ) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let handle = tokio::spawn(async move { AcpDriver::connect(link, &spec(), &session, tx).await });
+    let handle =
+        tokio::spawn(async move { AcpDriver::connect(link, &spec(), &session, tx.into()).await });
     (handle, rx)
 }
 
@@ -637,7 +638,7 @@ async fn starting_an_uninstalled_agent_says_so() {
     let provider = AcpProvider::with_config(Some(config));
     let (tx, _rx) = mpsc::unbounded_channel();
     let err = provider
-        .start(&session(None, None), false, tx.clone())
+        .start(&session(None, None), false, tx.clone().into())
         .await
         .err()
         .unwrap()
@@ -646,14 +647,14 @@ async fn starting_an_uninstalled_agent_says_so() {
     let mut other = session(None, None);
     other.agent = Some("nope".into());
     assert!(provider
-        .start(&other, false, tx.clone())
+        .start(&other, false, tx.clone().into())
         .await
         .err()
         .unwrap()
         .to_string()
         .contains("unknown ACP agent `nope`"));
     assert!(provider
-        .start(&session(None, None), true, tx)
+        .start(&session(None, None), true, tx.into())
         .await
         .err()
         .unwrap()
@@ -689,7 +690,10 @@ async fn live_round_trip() {
     s.agent = Some("live".into());
     s.cwd = work.path().to_string_lossy().to_string();
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let driver = provider.start(&s, false, tx).await.expect("agent starts");
+    let driver = provider
+        .start(&s, false, tx.into())
+        .await
+        .expect("agent starts");
     driver
         .send(Input {
             text: "Reply with exactly the word pong and nothing else. Do not use any tools.".into(),

@@ -433,7 +433,7 @@ mod tests {
         let fds = || std::fs::read_dir("/dev/fd").unwrap().count();
         let run = || async {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            let driver = ClaudeDriver::spawn(&bin, &session, false, tx, Default::default())
+            let driver = ClaudeDriver::spawn(&bin, &session, false, tx.into(), Default::default())
                 .await
                 .unwrap();
             while let Some(ev) = rx.recv().await {

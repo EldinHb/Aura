@@ -1204,7 +1204,7 @@ mod tests {
             ..Default::default()
         };
         let session = Session::new(&opts);
-        let driver = provider.start(&session, false, tx).await.unwrap();
+        let driver = provider.start(&session, false, tx.into()).await.unwrap();
         driver
             .send(Input {
                 text: "Reply with exactly: pong".into(),

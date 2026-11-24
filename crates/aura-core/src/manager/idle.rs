@@ -101,11 +101,17 @@ impl Manager {
                 continue;
             }
             for m in tree.iter().filter(|m| live.contains(&m.id)) {
-                // Checked again: a message may have come in meanwhile.
-                if !self.get_session(&m.id).is_ok_and(|s| self.quiet(&s)) {
+                // Checked again under the session's gate, which a message
+                // holds until it is on its way: one may have come in
+                // meanwhile, and none can start an agent while this stops it.
+                let _gate = self.gate(&m.id).await;
+                let still = self
+                    .get_session(&m.id)
+                    .is_ok_and(|s| self.quiet(&s) && now - s.last_activity >= wait);
+                if !still {
                     break;
                 }
-                if self.stop(&m.id).await.is_ok() {
+                if self.stop_gated(&m.id).await.is_ok() {
                     stopped.push(m.id.clone());
                 }
             }

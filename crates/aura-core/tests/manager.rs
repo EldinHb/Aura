@@ -23,6 +23,8 @@ struct FakeDriver {
 struct Knob {
     /// The sink of the last driver started, for tests that send events in their own order.
     sink: Option<EventSink>,
+    /// The sink of the last driver started for each session.
+    sinks: std::collections::HashMap<String, EventSink>,
     /// `stop` ends with the process killed and this message, like Claude after its grace period.
     exit_on_stop: Option<String>,
     /// Starting an agent fails.
@@ -335,6 +337,10 @@ impl Provider for FakeProvider {
             });
         }
         self.knobs.lock().sink = Some(sink.clone());
+        self.knobs
+            .lock()
+            .sinks
+            .insert(session.id.clone(), sink.clone());
         Ok(Box::new(FakeDriver {
             sink,
             session_id: session.id.clone(),
@@ -5480,13 +5486,14 @@ async fn a_checkpoint_review_holds_meetings_but_not_one_on_ones() {
 
 // ------------------------------------------------- review fixes (phase 2)
 
-/// Push an event as if a session's agent sent it.
+/// Push an event as if its session's agent sent it.
 fn push(provider: &FakeProvider, ev: Event) {
     let sink = provider
         .knobs
         .lock()
-        .sink
-        .clone()
+        .sinks
+        .get(ev.session_id())
+        .cloned()
         .expect("an agent started");
     sink.send(ev).unwrap();
 }

@@ -7,6 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use aura_pty::{PtyHandle, PtySpec};
 use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
@@ -61,6 +62,17 @@ struct Runtime {
     /// A message went to the agent whose turn has not started yet: the
     /// session reads idle meanwhile, but is not (see `idle`).
     awaiting_turn: Option<std::time::Instant>,
+    /// The generation of the newest driver started for the session. Events
+    /// of an older one (a process stopped while a new one started) are
+    /// dropped: its exit must not clear the new driver or its state.
+    generation: u64,
+}
+
+/// An event on its way to the manager, with the driver it came from; none
+/// for the events the manager publishes itself.
+struct Sourced {
+    driver: Option<u64>,
+    event: Event,
 }
 
 /// A session was created but its agent did not start. The session is kept,
@@ -87,7 +99,13 @@ struct Inner {
     runtimes: Mutex<HashMap<SessionId, Runtime>>,
     events: broadcast::Sender<Event>,
     pty_out: broadcast::Sender<PtyChunk>,
-    sink: mpsc::UnboundedSender<Event>,
+    sink: mpsc::UnboundedSender<Sourced>,
+    /// The generation the next driver started gets.
+    next_generation: AtomicU64,
+    /// One per session: held while its agent is started, a message is handed
+    /// to it, or it is stopped, so these never interleave (a stop that waits
+    /// for the old process cannot meet a message starting a new one).
+    gates: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
     /// Serialises read-modify-write updates of the group registry.
     groups: Mutex<()>,
     /// Serialises read-modify-write updates of feature records.
@@ -128,6 +146,8 @@ impl Manager {
             events,
             pty_out,
             sink,
+            next_generation: AtomicU64::new(1),
+            gates: Mutex::new(HashMap::new()),
             groups: Mutex::new(()),
             features: Mutex::new(()),
             specialists: Mutex::new(()),
@@ -381,7 +401,20 @@ impl Manager {
             .map(|s| s.id)
             .collect();
         for id in idle {
-            let _ = self.stop(&id).await;
+            let _gate = self.gate(&id).await;
+            // Checked again: a message may have started a turn meanwhile.
+            let still_idle = self
+                .get_session(&id)
+                .is_ok_and(|s| s.status == SessionStatus::Idle)
+                && self
+                    .inner
+                    .runtimes
+                    .lock()
+                    .get(&id)
+                    .is_none_or(|rt| rt.current_turn.is_none() && rt.awaiting_turn.is_none());
+            if still_idle {
+                let _ = self.stop_gated(&id).await;
+            }
         }
     }
 
@@ -607,6 +640,8 @@ impl Manager {
                 self.spawn_pty(&session.id).await?;
             }
             SessionMode::Structured => {
+                // No gate: nothing can have started an agent for a session
+                // this new, and a delete meanwhile is caught when it is kept.
                 if let Err(e) = self.ensure_driver(&session.id, opts.fork).await {
                     self.set_error(&session.id, &e.to_string());
                     // The session stays, with the error: say which, so a caller
@@ -740,12 +775,19 @@ impl Manager {
                 self.pty_input(id, &data)
             }
             SessionMode::Structured => {
-                let driver = self.ensure_driver(id, false).await?;
+                let driver = {
+                    // Until the message is on its way, the agent is not
+                    // stopped under it: once `awaiting_turn` is set the
+                    // session no longer counts as quiet.
+                    let _gate = self.gate(id).await;
+                    let driver = self.ensure_driver(id, false).await?;
+                    if let Some(rt) = self.inner.runtimes.lock().get_mut(id) {
+                        rt.awaiting_turn = Some(std::time::Instant::now());
+                    }
+                    driver
+                };
                 self.stage_attachments(id, &input);
                 let staged = (!input.images.is_empty()).then(|| input.text.clone());
-                if let Some(rt) = self.inner.runtimes.lock().get_mut(id) {
-                    rt.awaiting_turn = Some(std::time::Instant::now());
-                }
                 let sent = driver.send(input).await;
                 if let (Err(_), Some(text)) = (&sent, staged) {
                     self.unstage(id, &text);
@@ -840,7 +882,10 @@ impl Manager {
         name: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let driver = self.ensure_driver(id, false).await?;
+        let driver = {
+            let _gate = self.gate(id).await;
+            self.ensure_driver(id, false).await?
+        };
         driver.action(name, params).await
     }
 
@@ -1044,6 +1089,25 @@ impl Manager {
     /// Stop the process(es) behind a session but keep it (resumable).
     pub async fn stop(&self, id: &str) -> Result<()> {
         let _ = self.get_session(id)?;
+        let _gate = self.gate(id).await;
+        self.stop_gated(id).await
+    }
+
+    /// The gate of a session, taken: see `Inner::gates`.
+    async fn gate(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let gate = self
+            .inner
+            .gates
+            .lock()
+            .entry(id.to_string())
+            .or_default()
+            .clone();
+        gate.lock_owned().await
+    }
+
+    /// [`Manager::stop`], with the session's gate already held.
+    async fn stop_gated(&self, id: &str) -> Result<()> {
+        let _ = self.get_session(id)?;
         // A stopped orchestrator is not started again by a note it has waiting.
         self.hold_notes(id);
         let (driver, pty) = {
@@ -1208,6 +1272,7 @@ impl Manager {
             }
         }
         self.inner.runtimes.lock().remove(&s.id);
+        self.inner.gates.lock().remove(&s.id);
         self.delete_attachments(&s.id);
         self.drop_reports(&s.id);
         // Its meetings and one-on-ones go on without it.
@@ -1256,7 +1321,8 @@ impl Manager {
                 if !provider.capabilities().structured {
                     bail!("provider has no structured mode");
                 }
-                self.stop(id).await?;
+                let _gate = self.gate(id).await;
+                self.stop_gated(id).await?;
                 self.update_session(id, |x| {
                     x.mode = SessionMode::Structured;
                     x.status = SessionStatus::Idle;
@@ -1377,6 +1443,8 @@ impl Manager {
             .and_then(|r| r.pty.clone())
     }
 
+    /// The session's driver, started when it has none. The caller holds the
+    /// session's gate, unless it just created the session.
     async fn ensure_driver(&self, id: &str, fork: bool) -> Result<Arc<dyn Driver>> {
         if let Some(d) = self.driver(id) {
             return Ok(d);
@@ -1391,15 +1459,25 @@ impl Manager {
         }
         let resuming =
             s.native_id.is_some() && !fork && !self.inner.store.events(id, 0, 1)?.is_empty();
+        let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
         {
             let mut rts = self.inner.runtimes.lock();
             let rt = rts.entry(id.to_string()).or_default();
             rt.replaying = resuming;
             rt.stopping = false;
+            // From here on, what an older driver still sends is stale.
+            rt.generation = generation;
         }
         let s = self.with_instructions(&s)?;
-        let driver: Arc<dyn Driver> =
-            Arc::from(provider.start(&s, fork, self.inner.sink.clone()).await?);
+        let tx = self.inner.sink.clone();
+        let sink = EventSink::new(move |event| {
+            tx.send(Sourced {
+                driver: Some(generation),
+                event,
+            })
+            .is_ok()
+        });
+        let driver: Arc<dyn Driver> = Arc::from(provider.start(&s, fork, sink).await?);
         // Deleted while its agent started (with its orchestrator, say): the
         // agent would run on with no session to stop it.
         let kept = {
@@ -1434,7 +1512,10 @@ impl Manager {
 
     /// Route an event through the same path drivers use (persist + state + broadcast).
     fn publish(&self, event: Event) {
-        let _ = self.inner.sink.send(event);
+        let _ = self.inner.sink.send(Sourced {
+            driver: None,
+            event,
+        });
     }
 
     fn set_error(&self, id: &str, msg: &str) {
@@ -1482,16 +1563,36 @@ impl Manager {
         Ok(updated)
     }
 
-    fn spawn_event_loop(&self, mut rx: mpsc::UnboundedReceiver<Event>) {
+    fn spawn_event_loop(&self, mut rx: mpsc::UnboundedReceiver<Sourced>) {
         let me = self.clone();
         tokio::spawn(async move {
-            while let Some(ev) = rx.recv().await {
-                me.handle_event(ev);
+            while let Some(Sourced { driver, event }) = rx.recv().await {
+                if me.stale(event.session_id(), driver) {
+                    tracing::debug!(
+                        "dropped an event of a replaced driver of session {}",
+                        event.session_id()
+                    );
+                    continue;
+                }
+                me.handle_event(event, driver);
             }
         });
     }
 
-    fn handle_event(&self, mut ev: Event) {
+    /// Whether an event of driver generation `driver` comes from a driver the
+    /// session has replaced since.
+    fn stale(&self, id: &str, driver: Option<u64>) -> bool {
+        let Some(g) = driver else {
+            return false;
+        };
+        self.inner
+            .runtimes
+            .lock()
+            .get(id)
+            .is_some_and(|rt| rt.generation != g)
+    }
+
+    fn handle_event(&self, mut ev: Event, driver: Option<u64>) {
         let sid = ev.session_id().to_string();
         self.attach_staged(&mut ev);
         // Bookkeeping only: it must not touch the session row, which would
@@ -1574,6 +1675,9 @@ impl Manager {
                 Event::UserInputResolved { request_id, .. } => {
                     rt.pending_inputs.remove(request_id);
                 }
+                // Checked again here, under the lock a new driver is stored
+                // under: one may have started since `stale` looked.
+                Event::ProcessExited { .. } if driver.is_some_and(|g| g != rt.generation) => {}
                 Event::ProcessExited { .. } => {
                     rt.driver = None;
                     rt.awaiting_turn = None;

@@ -11,12 +11,24 @@ use tokio::sync::broadcast;
 type Prompts = Arc<Mutex<Vec<(String, String)>>>;
 /// Sessions whose fake agent process was stopped.
 type Stops = Arc<Mutex<Vec<String>>>;
+/// Sessions whose fake agent was started, with the sink of each start.
+type Starts = Arc<Mutex<Vec<(String, EventSink)>>>;
+
+/// A stop that waits: the next agent stopped says so on `entered`, waits
+/// for `release`, and then exits, as a process that takes its time.
+#[derive(Default)]
+struct Hold {
+    armed: Mutex<bool>,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
 
 struct Agent {
     sink: EventSink,
     session: String,
     prompts: Prompts,
     stops: Stops,
+    hold: Arc<Hold>,
 }
 
 #[async_trait::async_trait]
@@ -80,6 +92,17 @@ impl Driver for Agent {
     }
     async fn stop(&self) -> anyhow::Result<()> {
         self.stops.lock().push(self.session.clone());
+        let held = std::mem::take(&mut *self.hold.armed.lock());
+        if held {
+            let released = self.hold.release.notified();
+            self.hold.entered.notify_one();
+            released.await;
+            let _ = self.sink.send(Event::ProcessExited {
+                session_id: self.session.clone(),
+                exit_code: Some(0),
+                message: None,
+            });
+        }
         Ok(())
     }
 }
@@ -87,6 +110,8 @@ impl Driver for Agent {
 struct Fake {
     prompts: Prompts,
     stops: Stops,
+    starts: Starts,
+    hold: Arc<Hold>,
 }
 
 #[async_trait::async_trait]
@@ -121,11 +146,13 @@ impl Provider for Fake {
         if session.title.starts_with("Broken") {
             anyhow::bail!("spawn /bin/claude: Too many open files (os error 24)");
         }
+        self.starts.lock().push((session.id.clone(), sink.clone()));
         Ok(Box::new(Agent {
             sink,
             session: session.id.clone(),
             prompts: self.prompts.clone(),
             stops: self.stops.clone(),
+            hold: self.hold.clone(),
         }))
     }
     fn terminal_command(&self, _: &Session) -> Vec<String> {
@@ -158,6 +185,8 @@ struct World {
     clock: Arc<Mutex<DateTime<Utc>>>,
     prompts: Prompts,
     stops: Stops,
+    starts: Starts,
+    hold: Arc<Hold>,
     events: broadcast::Receiver<Value>,
     dir: tempfile::TempDir,
 }
@@ -172,11 +201,15 @@ impl World {
         let dir = tempfile::tempdir().unwrap();
         let prompts: Prompts = Default::default();
         let stops: Stops = Default::default();
+        let starts: Starts = Default::default();
+        let hold: Arc<Hold> = Default::default();
         let m = Manager::new(
             store.clone(),
             vec![Arc::new(Fake {
                 prompts: prompts.clone(),
                 stops: stops.clone(),
+                starts: starts.clone(),
+                hold: hold.clone(),
             })],
             Some(Arc::new(Trees(dir.path().join("trees")))),
         );
@@ -195,6 +228,8 @@ impl World {
             clock,
             prompts,
             stops,
+            starts,
+            hold,
             events,
             dir,
         }
@@ -905,6 +940,8 @@ async fn the_daemons_loop_fires_on_its_own() {
         vec![Arc::new(Fake {
             prompts: prompts.clone(),
             stops: stops.clone(),
+            starts: Default::default(),
+            hold: Default::default(),
         })],
         None,
     );
@@ -1407,6 +1444,104 @@ async fn sessions_by_hand_are_stopped_only_after_the_idle_timeout_which_can_be_o
         std::slice::from_ref(&s.id)
     );
     assert!(stopped(&w, &s.id));
+}
+
+/// How many agents were started for session `id`.
+fn starts(w: &World, id: &str) -> usize {
+    w.starts.lock().iter().filter(|(s, _)| s == id).count()
+}
+
+/// A session started by hand, its first turn done.
+async fn by_hand(w: &World) -> Session {
+    let s =
+        w.m.create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: w.cwd(),
+            initial_prompt: Some("quick".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    settle().await;
+    s
+}
+
+fn text(t: &str) -> Input {
+    Input {
+        text: t.into(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_message_during_an_idle_stop_waits_for_it_and_starts_one_agent() {
+    let w = World::new();
+    let s = by_hand(&w).await;
+    assert_eq!(starts(&w, &s.id), 1);
+    // The sweep stops the agent, whose process takes its time to exit.
+    *w.hold.armed.lock() = true;
+    let entered = w.hold.entered.notified();
+    let m = w.m.clone();
+    let sweep =
+        tokio::spawn(async move { m.stop_idle_agents(Utc::now() + Duration::days(1)).await });
+    entered.await;
+    // Meanwhile a message comes in (from the user, or a worker's report).
+    let m = w.m.clone();
+    let id = s.id.clone();
+    let send = tokio::spawn(async move { m.send(&id, text("a long job")).await });
+    settle().await;
+    w.hold.release.notify_one();
+    assert_eq!(sweep.await.unwrap(), std::slice::from_ref(&s.id));
+    send.await.unwrap().unwrap();
+    settle().await;
+    // One new agent took the message and works on it; the old one's exit
+    // did not take it down.
+    assert_eq!(starts(&w, &s.id), 2);
+    assert_eq!(
+        w.m.get_session(&s.id).unwrap().status,
+        SessionStatus::Running
+    );
+    // The next message goes to that agent: no third one starts.
+    w.m.send(&s.id, text("and more")).await.unwrap();
+    settle().await;
+    assert_eq!(starts(&w, &s.id), 2);
+    assert_eq!(
+        w.stops.lock().iter().filter(|x| **x == s.id).count(),
+        1,
+        "only the first agent was stopped"
+    );
+}
+
+#[tokio::test]
+async fn a_stopped_agent_exiting_late_leaves_the_agent_started_after_it_alone() {
+    let w = World::new();
+    let s = by_hand(&w).await;
+    assert_eq!(
+        w.m.stop_idle_agents(Utc::now() + Duration::days(1)).await,
+        std::slice::from_ref(&s.id)
+    );
+    let old = w.starts.lock()[0].1.clone();
+    w.m.send(&s.id, text("a long job")).await.unwrap();
+    settle().await;
+    assert_eq!(starts(&w, &s.id), 2);
+    // Only now does the first process report its (killed) exit.
+    old.send(Event::ProcessExited {
+        session_id: s.id.clone(),
+        exit_code: None,
+        message: Some("killed after its grace period".into()),
+    })
+    .unwrap();
+    settle().await;
+    let now = w.m.get_session(&s.id).unwrap();
+    assert_eq!(now.status, SessionStatus::Running);
+    assert_eq!(now.last_error, None);
+    w.m.send(&s.id, text("and more")).await.unwrap();
+    settle().await;
+    assert_eq!(
+        starts(&w, &s.id),
+        2,
+        "the agent started after it still runs"
+    );
 }
 
 fn broken(w: &World) -> ScheduledTask {

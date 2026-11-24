@@ -2,9 +2,54 @@ use crate::event::Event;
 use crate::types::*;
 use anyhow::Result;
 use async_trait::async_trait;
+use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
 
-/// Where drivers publish normalized events. The manager consumes them.
-pub type EventSink = tokio::sync::mpsc::UnboundedSender<Event>;
+/// Where a driver publishes normalized events. The manager consumes them,
+/// and knows which of a session's drivers each came from: the events of a
+/// driver that was replaced cannot change the state of the one after it.
+#[derive(Clone)]
+pub struct EventSink(Arc<dyn Fn(Event) -> bool + Send + Sync>);
+
+/// The manager takes no more events: it is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SinkClosed;
+
+impl std::fmt::Display for SinkClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the event sink is closed")
+    }
+}
+
+impl std::error::Error for SinkClosed {}
+
+impl EventSink {
+    /// A sink that hands each event to `f`, which says whether it took it.
+    pub fn new(f: impl Fn(Event) -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    /// Publish `event`; an error when no one takes events any more.
+    pub fn send(&self, event: Event) -> std::result::Result<(), SinkClosed> {
+        if (self.0)(event) {
+            Ok(())
+        } else {
+            Err(SinkClosed)
+        }
+    }
+}
+
+impl From<UnboundedSender<Event>> for EventSink {
+    fn from(tx: UnboundedSender<Event>) -> Self {
+        Self::new(move |ev| tx.send(ev).is_ok())
+    }
+}
+
+impl std::fmt::Debug for EventSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EventSink")
+    }
+}
 
 /// A running structured session (one child process / one app-server thread).
 #[async_trait]

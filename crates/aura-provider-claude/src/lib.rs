@@ -653,7 +653,7 @@ mod tests {
         };
         let session = Session::new(&opts);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let driver = provider.start(&session, false, tx).await.unwrap();
+        let driver = provider.start(&session, false, tx.into()).await.unwrap();
         driver
             .send(Input {
                 text: "Reply with exactly: pong".into(),
