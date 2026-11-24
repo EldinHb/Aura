@@ -36,6 +36,14 @@ async fn holder(dir: &std::path::Path, name: &str) -> u32 {
 
 #[tokio::test]
 async fn an_aurad_that_does_not_answer_is_stopped() {
+    // In a process of its own: the other test here starts a process, whose
+    // child holds a copy of the lock's descriptor until it execs.
+    if !aura_core::test_support::in_own_process(concat!(
+        module_path!(),
+        "::an_aurad_that_does_not_answer_is_stopped"
+    )) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let pid = holder(dir.path(), "aurad").await;
     assert!(stop_unresponsive_daemon(dir.path(), &info(pid)).await);

@@ -323,6 +323,15 @@ mod lock_tests {
 
     #[test]
     fn second_holder_is_refused_and_lock_is_released_on_drop() {
+        // In a process of its own: a test that starts a process at the
+        // moment the lock is dropped leaves a copy of its descriptor, and
+        // with it the lock, in the child until that execs.
+        if !aura_core::test_support::in_own_process(concat!(
+            module_path!(),
+            "::second_holder_is_refused_and_lock_is_released_on_drop"
+        )) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let first = lock_data_dir(dir.path()).unwrap();
         assert!(first.is_some(), "first caller takes the lock");
