@@ -112,6 +112,148 @@ pub fn process_birth(pid: u32) -> Option<String> {
     }
 }
 
+/// Whether process `pid` holds an flock(2) lock on the file at `path`
+/// through one of its own descriptors, as aurad holds `daemon.lock` for as
+/// long as it runs. Only the holder answers true: a process that merely has
+/// the file open, or waits for the lock, does not. False when it cannot be
+/// told (another system, a process of another user).
+///
+/// macOS: the process's descriptors (`proc_pidinfo`/`proc_pidfdinfo`) for the
+/// file's device and inode, with `FHASLOCK` set on the open file (which
+/// macOS keeps until the descriptor closes, also after an explicit unlock;
+/// aurad holds its lock until it exits). Linux: an `FLOCK` line of
+/// `/proc/locks` with the pid, device and inode.
+pub fn holds_lock(pid: u32, path: &std::path::Path) -> bool {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            darwin::holds_lock(pid, meta.dev(), meta.ino())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            std::fs::read_to_string("/proc/locks")
+                .is_ok_and(|locks| flock_holders(&locks, meta.dev(), meta.ino()).contains(&pid))
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (pid, path);
+        false
+    }
+}
+
+/// The pids `/proc/locks` (Linux) says hold an flock lock on the file with
+/// device `dev` and inode `ino`. Lines with `->` wait for a lock, and do not
+/// count; devices are written `major:minor` in hex.
+pub fn flock_holders(locks: &str, dev: u64, ino: u64) -> Vec<u32> {
+    // glibc's gnu_dev_major/minor.
+    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+    locks
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split_whitespace().skip(1);
+            let kind = f.next()?;
+            if kind != "FLOCK" {
+                return None;
+            }
+            let (_advisory, _access) = (f.next()?, f.next()?);
+            let pid: u32 = f.next()?.parse().ok()?;
+            let mut file = f.next()?.split(':');
+            let maj = u64::from_str_radix(file.next()?, 16).ok()?;
+            let min = u64::from_str_radix(file.next()?, 16).ok()?;
+            let inode: u64 = file.next()?.parse().ok()?;
+            (maj == major && min == minor && inode == ino).then_some(pid)
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+mod darwin {
+    /// `struct proc_fileinfo` of <sys/proc_info.h>.
+    #[repr(C)]
+    struct ProcFileInfo {
+        fi_openflags: u32,
+        fi_status: u32,
+        fi_offset: libc::off_t,
+        fi_type: i32,
+        fi_guardflags: u32,
+    }
+
+    /// `struct vnode_fdinfowithpath` of <sys/proc_info.h>.
+    #[repr(C)]
+    struct VnodeFdInfoWithPath {
+        pfi: ProcFileInfo,
+        pvip: libc::vnode_info_path,
+    }
+
+    /// `PROC_PIDFDVNODEPATHINFO` of <sys/proc_info.h>.
+    const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
+    /// `FHASLOCK` of <sys/fcntl.h>: the open file holds an flock lock.
+    const FHASLOCK: u32 = 0x4000;
+
+    pub(super) fn holds_lock(pid: u32, dev: u64, ino: u64) -> bool {
+        let Ok(pid) = libc::c_int::try_from(pid) else {
+            return false;
+        };
+        // SAFETY: a null buffer asks for the size the list needs.
+        let need =
+            unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+        if need <= 0 {
+            return false;
+        }
+        let each = std::mem::size_of::<libc::proc_fdinfo>();
+        // Room for a few opened meanwhile.
+        let mut fds: Vec<libc::proc_fdinfo> = (0..need as usize / each + 16)
+            .map(|_| libc::proc_fdinfo {
+                proc_fd: 0,
+                proc_fdtype: 0,
+            })
+            .collect();
+        // SAFETY: the buffer is `fds`, of the size given.
+        let got = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDLISTFDS,
+                0,
+                fds.as_mut_ptr().cast(),
+                (fds.len() * each) as libc::c_int,
+            )
+        };
+        if got <= 0 {
+            return false;
+        }
+        fds.truncate(got as usize / each);
+        fds.iter()
+            .filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32)
+            .any(|fd| {
+                // SAFETY: plain data, for which all zeroes is a valid value.
+                let mut info: VnodeFdInfoWithPath = unsafe { std::mem::zeroed() };
+                let size = std::mem::size_of::<VnodeFdInfoWithPath>() as libc::c_int;
+                // SAFETY: the buffer is `info`, of the size given.
+                let n = unsafe {
+                    libc::proc_pidfdinfo(
+                        pid,
+                        fd.proc_fd,
+                        PROC_PIDFDVNODEPATHINFO,
+                        (&mut info as *mut VnodeFdInfoWithPath).cast(),
+                        size,
+                    )
+                };
+                let st = &info.pvip.vip_vi.vi_stat;
+                n == size
+                    && u64::from(st.vst_dev) == dev
+                    && st.vst_ino == ino
+                    && info.pfi.fi_openflags & FHASLOCK != 0
+            })
+    }
+}
+
 /// Field 22 of a Linux `/proc/<pid>/stat` line: when the process started, in
 /// clock ticks since boot. The name in field 2 may hold spaces and
 /// parentheses, so fields are counted from its last `)`.
@@ -119,48 +261,6 @@ pub fn linux_start_ticks(stat: &str) -> Option<u64> {
     let rest = &stat[stat.rfind(')')? + 1..];
     // `rest` starts at field 3.
     rest.split_whitespace().nth(22 - 3)?.parse().ok()
-}
-
-/// When process `pid` started, to the second, if it runs. From its elapsed
-/// time, which `ps` gives the same way in every locale.
-pub fn process_started(pid: u32) -> Option<chrono::DateTime<chrono::Utc>> {
-    #[cfg(unix)]
-    {
-        let out = std::process::Command::new("ps")
-            .args(["-o", "etime=", "-p", &pid.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let elapsed = parse_elapsed(String::from_utf8_lossy(&out.stdout).trim())?;
-        Some(chrono::Utc::now() - chrono::Duration::seconds(elapsed as i64))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        None
-    }
-}
-
-/// Seconds in `ps`'s elapsed time: `[[dd-]hh:]mm:ss`.
-pub fn parse_elapsed(s: &str) -> Option<u64> {
-    let (days, rest) = match s.split_once('-') {
-        Some((d, r)) => (d.parse::<u64>().ok()?, r),
-        None => (0, s),
-    };
-    let parts: Vec<u64> = rest
-        .split(':')
-        .map(|p| p.parse::<u64>().ok())
-        .collect::<Option<_>>()?;
-    let (h, m, sec) = match parts[..] {
-        [m, s] => (0, m, s),
-        [h, m, s] => (h, m, s),
-        _ => return None,
-    };
-    Some(((days * 24 + h) * 60 + m) * 60 + sec)
 }
 
 /// How many files Aura asks to keep open at most. Every live session holds
@@ -310,14 +410,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn elapsed_times_are_read_in_every_form_ps_gives() {
-        assert_eq!(parse_elapsed("00:07"), Some(7));
-        assert_eq!(parse_elapsed("12:34"), Some(12 * 60 + 34));
-        assert_eq!(parse_elapsed("01:02:03"), Some(3723));
-        assert_eq!(parse_elapsed("2-01:02:03"), Some(2 * 86_400 + 3723));
-        assert_eq!(parse_elapsed(""), None);
-        assert_eq!(parse_elapsed("7"), None);
-        assert_eq!(parse_elapsed("a:b"), None);
+    fn flock_holders_are_read_from_proc_locks_and_waiters_left_out() {
+        // dev 0x0801 (8:1), as stat gives it on Linux.
+        let locks = "1: FLOCK  ADVISORY  WRITE 4242 08:01:5678 0 EOF\n\
+                     1: -> FLOCK  ADVISORY  WRITE 4343 08:01:5678 0 EOF\n\
+                     2: POSIX  ADVISORY  WRITE 4444 08:01:5678 0 EOF\n\
+                     3: FLOCK  ADVISORY  WRITE 4545 08:01:9999 0 EOF\n\
+                     4: FLOCK  ADVISORY  WRITE 4646 08:02:5678 0 EOF\n";
+        assert_eq!(flock_holders(locks, 0x0801, 5678), [4242]);
+        // A large device number: major and minor split across the bits.
+        let dev = (0x103u64 << 8) | 0x2a | (0x1u64 << 20);
+        let line = "1: FLOCK  ADVISORY  WRITE 7 103:12a:42 0 EOF";
+        assert_eq!(flock_holders(line, dev, 42), [7]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn the_holder_of_a_lock_is_told_from_a_process_that_only_has_the_file_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.lock");
+        let held = std::fs::File::create(&path).unwrap();
+        let me = std::process::id();
+        assert!(!holds_lock(me, &path), "open, not locked");
+        held.try_lock().unwrap();
+        assert!(holds_lock(me, &path));
+        assert!(!holds_lock(me, &dir.path().join("other")), "another file");
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        assert!(!holds_lock(child.id(), &path), "another process");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        // Released the way aurad releases it: the descriptor closes.
+        drop(held);
+        assert!(!holds_lock(me, &path), "released");
     }
 
     #[test]
@@ -346,14 +473,6 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(process_birth(child.id()), None, "gone");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn this_process_started_before_now() {
-        let started = process_started(std::process::id()).unwrap();
-        assert!(started <= chrono::Utc::now());
-        assert!(process_started(u32::MAX / 2).is_none(), "no such process");
     }
 
     #[test]

@@ -151,8 +151,9 @@ fn replace_daemon(version: &str) -> bool {
 /// Ask the daemon to shut down and wait until it is gone: its port closed and
 /// its lock on the data dir released, after it has stopped its sessions. A new
 /// daemon spawned before then finds the lock taken and exits. Sessions keep
-/// their state and resume on the next daemon.
-async fn stop_daemon(dir: &Path, info: &aura_rpc::DaemonInfo) {
+/// their state and resume on the next daemon. An error when it does not
+/// answer and cannot be confirmed to be the daemon: the user must quit it.
+async fn stop_daemon(dir: &Path, info: &aura_rpc::DaemonInfo) -> Result<()> {
     if let Err(e) = aura_rpc::request_shutdown(info, aura_rpc::SHUTDOWN_ANSWER_TIMEOUT).await {
         // One that cannot take a connection or answer (out of open files,
         // say) still holds the data directory.
@@ -160,16 +161,27 @@ async fn stop_daemon(dir: &Path, info: &aura_rpc::DaemonInfo) {
             pid = info.pid,
             "daemon did not take the shutdown request: {e:#}"
         );
-        aura_rpc::stop_unresponsive_daemon(dir, info).await;
-        return;
+        return stop_unresponsive(dir, info).await;
     }
     for _ in 0..150 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if !daemon_alive(info.port).await && matches!(aura_rpc::lock_data_dir(dir), Ok(Some(_))) {
-            return;
+            return Ok(());
         }
     }
     tracing::warn!(pid = info.pid, "daemon did not stop within 15s");
+    Ok(())
+}
+
+/// Stop a daemon that holds `dir` but does not answer; an error naming its
+/// pid when it cannot be confirmed to be the daemon, so nothing was signalled.
+async fn stop_unresponsive(dir: &Path, info: &aura_rpc::DaemonInfo) -> Result<()> {
+    match aura_rpc::stop_unresponsive_daemon(dir, info).await {
+        aura_rpc::UnresponsiveStop::Unidentified => {
+            Err(anyhow!(aura_rpc::unidentified_message(info.pid)))
+        }
+        aura_rpc::UnresponsiveStop::Freed | aura_rpc::UnresponsiveStop::StillHeld => Ok(()),
+    }
 }
 
 async fn ensure_daemon() -> Result<Connection> {
@@ -184,11 +196,11 @@ async fn ensure_daemon() -> Result<Connection> {
                 return Ok(connection(info));
             }
             tracing::info!(daemon = %info.version, app = VERSION, "replacing a daemon of another version");
-            stop_daemon(&dir, &info).await;
+            stop_daemon(&dir, &info).await?;
         } else if held {
             // Alive yet unable to answer (out of open files, say), it would keep
             // the next one from starting.
-            aura_rpc::stop_unresponsive_daemon(&dir, &info).await;
+            stop_unresponsive(&dir, &info).await?;
         }
     }
     spawn_and_connect(&dir).await
@@ -218,7 +230,9 @@ async fn restart_daemon() -> Result<Connection, String> {
         let _guard = DAEMON_LOCK.lock().await;
         let dir = data_dir();
         if let Some(info) = aura_rpc::read_daemon_info(&dir) {
-            stop_daemon(&dir, &info).await;
+            stop_daemon(&dir, &info)
+                .await
+                .map_err(|e| format!("{e:#}"))?;
         }
     }
     ensure_daemon().await.map_err(|e| format!("{e:#}"))

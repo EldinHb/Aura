@@ -406,6 +406,9 @@ async fn daemon_cmd(data_dir: &std::path::Path, cmd: &DaemonCmd) -> Result<()> {
             aura_rpc::DaemonStop::Unstoppable { pid } => {
                 anyhow::bail!("aurad (pid {pid}) does not answer and could not be stopped")
             }
+            aura_rpc::DaemonStop::Unidentified { pid } => {
+                anyhow::bail!("{}", aura_rpc::unidentified_message(pid))
+            }
         },
         DaemonCmd::Status => match RpcClient::connect_from_dir(data_dir).await {
             Ok(c) => {

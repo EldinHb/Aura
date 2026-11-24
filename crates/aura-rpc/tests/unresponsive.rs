@@ -2,7 +2,7 @@
 //! files, say) is stopped, and nothing else is.
 #![cfg(unix)]
 
-use aura_rpc::{lock_data_dir, stop_unresponsive_daemon, DaemonInfo};
+use aura_rpc::{lock_data_dir, stop_unresponsive_daemon, DaemonInfo, UnresponsiveStop};
 
 fn info(pid: u32) -> DaemonInfo {
     DaemonInfo {
@@ -46,7 +46,10 @@ async fn an_aurad_that_does_not_answer_is_stopped() {
     }
     let dir = tempfile::tempdir().unwrap();
     let pid = holder(dir.path(), "aurad").await;
-    assert!(stop_unresponsive_daemon(dir.path(), &info(pid)).await);
+    assert_eq!(
+        stop_unresponsive_daemon(dir.path(), &info(pid)).await,
+        UnresponsiveStop::Freed
+    );
     assert!(
         lock_data_dir(dir.path()).unwrap().is_some(),
         "the directory is free"
@@ -61,7 +64,10 @@ async fn an_aurad_that_does_not_answer_is_stopped() {
 async fn another_process_is_never_signalled() {
     let dir = tempfile::tempdir().unwrap();
     let pid = holder(dir.path(), "something-else").await;
-    assert!(!stop_unresponsive_daemon(dir.path(), &info(pid)).await);
+    assert_eq!(
+        stop_unresponsive_daemon(dir.path(), &info(pid)).await,
+        UnresponsiveStop::Unidentified
+    );
     assert!(
         aura_core::process::process_name(pid).is_some(),
         "left running"
@@ -72,5 +78,8 @@ async fn another_process_is_never_signalled() {
 #[tokio::test]
 async fn a_free_directory_needs_nothing_stopped() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(stop_unresponsive_daemon(dir.path(), &info(u32::MAX)).await);
+    assert_eq!(
+        stop_unresponsive_daemon(dir.path(), &info(u32::MAX)).await,
+        UnresponsiveStop::Freed
+    );
 }

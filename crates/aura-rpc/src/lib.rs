@@ -162,9 +162,12 @@ pub enum DaemonStop {
     Requested,
     /// It did not take the request in time, and was stopped by signals.
     Signalled { pid: u32 },
-    /// It did not take the request, and signals did not stop it (or were not
-    /// sent: see [`is_daemon`]).
+    /// It did not take the request, and signals did not stop it.
     Unstoppable { pid: u32 },
+    /// It did not take the request, and `pid` could not be confirmed to be
+    /// it (see [`is_daemon`]), so nothing was signalled; see
+    /// [`unidentified_message`].
+    Unidentified { pid: u32 },
 }
 
 /// Stop the daemon of `data_dir`, as `aura daemon stop` does: ask it, and
@@ -201,19 +204,42 @@ pub async fn stop_daemon_within(
         pid = info.pid,
         "aurad did not take the shutdown request: {e:#}"
     );
-    if stop_unresponsive_daemon_within(data_dir, &info, term, kill).await {
-        DaemonStop::Signalled { pid: info.pid }
-    } else {
-        DaemonStop::Unstoppable { pid: info.pid }
+    match stop_unresponsive_daemon_within(data_dir, &info, term, kill).await {
+        UnresponsiveStop::Freed => DaemonStop::Signalled { pid: info.pid },
+        UnresponsiveStop::StillHeld => DaemonStop::Unstoppable { pid: info.pid },
+        UnresponsiveStop::Unidentified => DaemonStop::Unidentified { pid: info.pid },
     }
+}
+
+/// What [`stop_unresponsive_daemon`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnresponsiveStop {
+    /// The data directory is free: it was, or the daemon stopped.
+    Freed,
+    /// The daemon was signalled, and still holds the data directory.
+    StillHeld,
+    /// The pid of daemon.json could not be confirmed to be the daemon (see
+    /// [`is_daemon`]): nothing was signalled, and it holds the directory.
+    Unidentified,
+}
+
+/// What to tell the user when the aurad holding the data directory does not
+/// answer and pid `pid` cannot be confirmed to be it.
+pub fn unidentified_message(pid: u32) -> String {
+    format!(
+        "aurad does not answer, and Aura cannot confirm that process {pid} from daemon.json is that daemon, so it sent it no signal. If process {pid} is aurad, quit it by hand (kill {pid}) and start Aura again."
+    )
 }
 
 /// Stop the aurad that holds `data_dir` but does not answer, such as one that
 /// ran out of open files and cannot take a connection: SIGTERM, which it
 /// handles by stopping its sessions' agents and exiting, then SIGKILL after
 /// 15 s. Only the daemon `info` describes is signalled (see [`is_daemon`]),
-/// checked again before each signal. True once the data directory is free.
-pub async fn stop_unresponsive_daemon(data_dir: &std::path::Path, info: &DaemonInfo) -> bool {
+/// checked again before each signal.
+pub async fn stop_unresponsive_daemon(
+    data_dir: &std::path::Path,
+    info: &DaemonInfo,
+) -> UnresponsiveStop {
     stop_unresponsive_daemon_within(
         data_dir,
         info,
@@ -230,21 +256,33 @@ pub async fn stop_unresponsive_daemon_within(
     info: &DaemonInfo,
     term: std::time::Duration,
     kill: std::time::Duration,
-) -> bool {
+) -> UnresponsiveStop {
     let free = || matches!(lock_data_dir(data_dir), Ok(Some(_)));
+    let outcome = |free: bool| {
+        if free {
+            UnresponsiveStop::Freed
+        } else {
+            UnresponsiveStop::StillHeld
+        }
+    };
     if free() {
-        return true;
+        return UnresponsiveStop::Freed;
     }
     let tick = std::time::Duration::from_millis(100);
     for (force, wait) in [(false, term), (true, kill)] {
         // Checked before each signal: the daemon may have exited meanwhile
         // and its pid gone to another process.
-        if !is_daemon(info) {
+        if !is_daemon(data_dir, info) {
+            // Before SIGKILL: SIGTERM went to the daemon, which has gone
+            // since (or its pid to another process).
+            if force || free() {
+                return outcome(free());
+            }
             tracing::warn!(
                 pid = info.pid,
-                "not signalled: no longer the aurad of daemon.json"
+                "not signalled: not confirmed to be the aurad holding the data directory"
             );
-            return free();
+            return UnresponsiveStop::Unidentified;
         }
         if force {
             tracing::warn!(pid = info.pid, "aurad did not stop in time; killing it");
@@ -252,41 +290,42 @@ pub async fn stop_unresponsive_daemon_within(
             tracing::warn!(pid = info.pid, "aurad does not answer; asking it to stop");
         }
         if !aura_core::process::terminate(info.pid, force) {
-            return free();
+            return outcome(free());
         }
         let mut waited = std::time::Duration::ZERO;
         while waited < wait {
             tokio::time::sleep(tick).await;
             waited += tick;
             if free() {
-                return true;
+                return UnresponsiveStop::Freed;
             }
         }
     }
-    free()
+    outcome(free())
 }
 
-/// Whether process `info.pid` is the daemon `info` describes: its executable
-/// is named exactly `aurad` (`aurad.exe` on Windows), and it is the process
-/// that wrote `daemon.json`: its birth (see
-/// [`aura_core::process::process_birth`]) is the one recorded there. A pid
-/// that went to another process after the daemon exited fails the second
-/// test, a process that only happens to be named like it (`aurad-something`)
-/// the first.
+/// Whether process `info.pid` is the daemon `info` describes, holding
+/// `data_dir`: its executable is named exactly `aurad` (`aurad.exe` on
+/// Windows), and
 ///
-/// A daemon before 0.2.24 recorded no birth. Then it must have started no
-/// later than its `started_at`, from its elapsed time; a clock set back or
-/// forward since can mislead that.
-pub fn is_daemon(info: &DaemonInfo) -> bool {
+/// - its birth (see [`aura_core::process::process_birth`]) is the one
+///   daemon.json recorded, which no other process with its pid, earlier or
+///   later, has;
+/// - or, for a daemon before 0.2.24 that recorded none, it holds the lock on
+///   the data directory's `daemon.lock` itself (see
+///   [`aura_core::process::holds_lock`]). The clock is no help here: a clock
+///   set back makes an old `started_at` look later than a newer process.
+///
+/// Otherwise it is not confirmed, and is not signalled. A process only named
+/// like it (`aurad-something`) fails the name.
+pub fn is_daemon(data_dir: &std::path::Path, info: &DaemonInfo) -> bool {
     let named = aura_core::process::process_name(info.pid).is_some_and(|n| is_daemon_name(&n));
     if !named {
         return false;
     }
     match &info.birth {
         Some(birth) => aura_core::process::process_birth(info.pid).as_ref() == Some(birth),
-        // `ps` gives whole seconds, and the daemon writes daemon.json after it started.
-        None => aura_core::process::process_started(info.pid)
-            .is_some_and(|t| t <= info.started_at + chrono::Duration::seconds(2)),
+        None => aura_core::process::holds_lock(info.pid, &data_dir.join("daemon.lock")),
     }
 }
 
@@ -417,7 +456,7 @@ mod daemon_stop_tests {
         }
     }
 
-    async fn stop(dir: &std::path::Path, info: &DaemonInfo) -> bool {
+    async fn stop(dir: &std::path::Path, info: &DaemonInfo) -> UnresponsiveStop {
         stop_unresponsive_daemon_within(
             dir,
             info,
@@ -429,6 +468,46 @@ mod daemon_stop_tests {
 
     fn alive(c: &mut Child) -> bool {
         c.try_wait().unwrap().is_none()
+    }
+
+    /// Not a test: what `legacy_daemon` runs, standing in for an aurad of
+    /// 0.2.23 that holds its data directory's lock and answers nothing.
+    #[test]
+    #[ignore]
+    fn legacy_daemon_stand_in() {
+        let Some(dir) = std::env::var_os("AURA_STAND_IN_DIR") else {
+            return;
+        };
+        let _lock = lock_data_dir(std::path::Path::new(&dir))
+            .unwrap()
+            .expect("the data directory's lock");
+        std::thread::sleep(Duration::from_secs(30));
+    }
+
+    /// A process named `aurad` (this test binary, through a link of that
+    /// name) that holds `dir`'s lock itself, as an aurad does.
+    fn legacy_daemon(dir: &std::path::Path) -> Child {
+        let exe = dir.join("aurad");
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &exe).unwrap();
+        let child = Command::new(&exe)
+            .args([
+                "daemon_stop_tests::legacy_daemon_stand_in",
+                "--exact",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("AURA_STAND_IN_DIR", dir)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let lock = dir.join("daemon.lock");
+        for _ in 0..250 {
+            if aura_core::process::holds_lock(child.id(), &lock) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child
     }
 
     /// A port that takes TCP connections and never says a word, as an aurad
@@ -471,6 +550,7 @@ mod daemon_stop_tests {
         let mut daemon = named(dir.path(), "aurad", false);
         let info = DaemonInfo {
             port: silent_port().await,
+            birth: aura_core::process::process_birth(daemon.id()),
             ..info(
                 dir.path(),
                 daemon.id(),
@@ -559,7 +639,7 @@ mod daemon_stop_tests {
                 chrono::Utc::now() - chrono::Duration::hours(1),
             )
         };
-        assert!(is_daemon(&forward));
+        assert!(is_daemon(dir.path(), &forward));
         // The clock was set back since: an old daemon.json's started_at lies
         // in the future, and its pid went to another aurad. The birth differs.
         let reused = DaemonInfo {
@@ -570,13 +650,16 @@ mod daemon_stop_tests {
                 chrono::Utc::now() + chrono::Duration::hours(1),
             )
         };
-        assert!(!is_daemon(&reused));
-        assert!(!stop(dir.path(), &reused).await);
+        assert!(!is_daemon(dir.path(), &reused));
+        assert_eq!(
+            stop(dir.path(), &reused).await,
+            UnresponsiveStop::Unidentified
+        );
         assert!(alive(&mut daemon), "it got no signal");
-        // The real one is stopped.
-        assert!(
-            !stop(dir.path(), &forward).await,
-            "the test still holds the lock"
+        // The real one is stopped (the test still holds the lock).
+        assert_eq!(
+            stop(dir.path(), &forward).await,
+            UnresponsiveStop::StillHeld
         );
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(daemon.wait().unwrap().signal(), Some(15));
@@ -605,34 +688,84 @@ mod daemon_stop_tests {
         let dir = tempfile::tempdir().unwrap();
         let _held = lock_data_dir(dir.path()).unwrap().unwrap();
         let mut other = named(dir.path(), "aurad-unrelated", false);
-        let info = info(
-            dir.path(),
-            other.id(),
-            chrono::Utc::now() + chrono::Duration::minutes(1),
+        let info = DaemonInfo {
+            birth: aura_core::process::process_birth(other.id()),
+            ..info(
+                dir.path(),
+                other.id(),
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+            )
+        };
+        assert!(!is_daemon(dir.path(), &info));
+        assert_eq!(
+            stop(dir.path(), &info).await,
+            UnresponsiveStop::Unidentified
         );
-        assert!(!is_daemon(&info));
-        assert!(!stop(dir.path(), &info).await);
         assert!(alive(&mut other), "it got no signal");
         other.kill().unwrap();
         other.wait().unwrap();
     }
 
     #[tokio::test]
-    async fn a_pid_reused_after_the_daemon_wrote_daemon_json_is_left_alone() {
+    async fn legacy_metadata_and_a_newer_aurad_at_its_pid_that_does_not_hold_the_lock_get_no_signal(
+    ) {
         let dir = tempfile::tempdir().unwrap();
+        // The lock is held (by the test), but not by the process at the pid.
         let _held = lock_data_dir(dir.path()).unwrap().unwrap();
         let mut later = named(dir.path(), "aurad", false);
-        // The daemon of daemon.json started an hour ago; this one just now.
+        // daemon.json as 0.2.23 wrote it, no birth; the clock was set back
+        // since, so its started_at lies after this newer process's start.
         let info = info(
             dir.path(),
             later.id(),
-            chrono::Utc::now() - chrono::Duration::hours(1),
+            chrono::Utc::now() + chrono::Duration::hours(1),
         );
-        assert!(!is_daemon(&info));
-        assert!(!stop(dir.path(), &info).await);
+        assert!(!is_daemon(dir.path(), &info));
+        assert_eq!(
+            stop(dir.path(), &info).await,
+            UnresponsiveStop::Unidentified
+        );
         assert!(alive(&mut later), "it got no signal");
+        let said = unidentified_message(later.id());
+        assert!(said.contains(&format!("kill {}", later.id())), "{said}");
         later.kill().unwrap();
         later.wait().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stuck_legacy_daemon_that_holds_the_lock_is_stopped_on_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut daemon = legacy_daemon(dir.path());
+        // daemon.json as 0.2.23 wrote it, no birth, with the clock set
+        // forward since; the daemon takes connections and never answers.
+        let info = DaemonInfo {
+            port: silent_port().await,
+            ..info(
+                dir.path(),
+                daemon.id(),
+                chrono::Utc::now() - chrono::Duration::hours(1),
+            )
+        };
+        std::fs::write(
+            daemon_info_path(dir.path()),
+            serde_json::to_string(&info).unwrap(),
+        )
+        .unwrap();
+        assert!(is_daemon(dir.path(), &info), "it holds the lock itself");
+        let stopped = stop_daemon_within(
+            dir.path(),
+            Duration::from_millis(300),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(stopped, DaemonStop::Signalled { pid: daemon.id() });
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(daemon.wait().unwrap().signal(), Some(15));
+        assert!(
+            lock_data_dir(dir.path()).unwrap().is_some(),
+            "the directory is free"
+        );
     }
 
     #[tokio::test]
@@ -641,14 +774,18 @@ mod daemon_stop_tests {
         // Held by the test: the fake daemon never frees the directory.
         let _held = lock_data_dir(dir.path()).unwrap().unwrap();
         let mut daemon = named(dir.path(), "aurad", true);
-        let info = info(
-            dir.path(),
-            daemon.id(),
-            chrono::Utc::now() + chrono::Duration::minutes(1),
-        );
-        assert!(is_daemon(&info));
-        assert!(
-            !stop(dir.path(), &info).await,
+        let info = DaemonInfo {
+            birth: aura_core::process::process_birth(daemon.id()),
+            ..info(
+                dir.path(),
+                daemon.id(),
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+            )
+        };
+        assert!(is_daemon(dir.path(), &info));
+        assert_eq!(
+            stop(dir.path(), &info).await,
+            UnresponsiveStop::StillHeld,
             "the test still holds the lock"
         );
         let status = daemon.wait().unwrap();
