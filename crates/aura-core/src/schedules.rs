@@ -204,6 +204,11 @@ impl ScheduleService {
             Ok(n) => tracing::info!("linked {n} session(s) of failed scheduled runs to their task"),
             Err(e) => tracing::warn!("link sessions of failed scheduled runs: {e:#}"),
         }
+        match self.repair_last_runs() {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("brought the last run of {n} scheduled task(s) up to date"),
+            Err(e) => tracing::warn!("check the last runs of scheduled tasks: {e:#}"),
+        }
         let this = self.clone();
         tokio::spawn(async move {
             loop {
@@ -316,6 +321,37 @@ impl ScheduleService {
             linked += 1;
         }
         Ok(linked)
+    }
+
+    /// Make each task's `last_run` the newest entry of its history, as it is
+    /// stored. An entry and its task are saved one after the other, so a
+    /// daemon that stopped between the two (recording a run, linking a
+    /// failed run's session, clearing the history) left the task behind its
+    /// history. Returns how many tasks changed.
+    ///
+    /// The newest entry replaces `last_run` when it is later, or when
+    /// `last_run` is no longer in the history; otherwise `last_run` takes
+    /// its own entry as stored. No history, no last run.
+    pub fn repair_last_runs(&self) -> Result<usize> {
+        let _guard = self.lock.lock();
+        let mut repaired = 0;
+        for mut task in self.store.scheduled_tasks()? {
+            let runs = self.store.scheduled_runs(&task.id, HISTORY_KEPT)?;
+            let want = match (&task.last_run, runs.first()) {
+                (_, None) => None,
+                (None, Some(newest)) => Some(newest.clone()),
+                (Some(last), Some(newest)) => match runs.iter().find(|r| r.id == last.id) {
+                    Some(own) if newest.at <= own.at => Some(own.clone()),
+                    _ => Some(newest.clone()),
+                },
+            };
+            if task.last_run != want {
+                task.last_run = want;
+                self.store.save_scheduled_task(&task)?;
+                repaired += 1;
+            }
+        }
+        Ok(repaired)
     }
 
     /// Clear a task's history, all of it or only the entries `which` names.

@@ -1951,6 +1951,48 @@ async fn the_history_counts_cover_every_entry_kept_not_only_those_listed() {
 }
 
 #[tokio::test]
+async fn a_last_run_left_behind_its_history_by_a_stop_is_brought_up_to_date_at_start() {
+    let store = Arc::new(MemoryStore::default());
+    let before = World::on(store.clone());
+    // Linking: the entry got its session, the daemon stopped before the task did.
+    let linked = broken(&before);
+    let run = before.svc.run_now(&linked.id).await.unwrap();
+    let mut stale = before.svc.get(&linked.id).unwrap();
+    stale.last_run.as_mut().unwrap().session_id = None;
+    stale.last_run.as_mut().unwrap().session_title = None;
+    store.save_scheduled_task(&stale).unwrap();
+    // Recording: a newer entry is in the history, the task still names the one before.
+    let recorded = before.task("quick", Schedule::Minutes { every: 10 });
+    let first = before.svc.run_now(&recorded.id).await.unwrap();
+    before.advance(Duration::minutes(1));
+    settle().await;
+    let second = before.svc.run_now(&recorded.id).await.unwrap();
+    let mut behind = before.svc.get(&recorded.id).unwrap();
+    behind.last_run = Some(first);
+    store.save_scheduled_task(&behind).unwrap();
+    // Clearing: the history is empty, the task still has a last run.
+    let cleared = before.task("quick", every_hour());
+    before.svc.run_now(&cleared.id).await.unwrap();
+    let gone = before.svc.get(&cleared.id).unwrap();
+    store
+        .delete_scheduled_runs(&cleared.id, &[gone.last_run.as_ref().unwrap().id.clone()])
+        .unwrap();
+    store.save_scheduled_task(&gone).unwrap();
+    before.svc.shutdown();
+
+    let w = World::on(store);
+    // The failed entry already has its session: linking has nothing to do.
+    assert_eq!(w.svc.link_failed_runs().unwrap(), 0);
+    // What the daemon does when it starts.
+    w.svc.launch();
+    w.svc.shutdown();
+    assert_eq!(w.svc.get(&linked.id).unwrap().last_run, Some(run));
+    assert_eq!(w.svc.get(&recorded.id).unwrap().last_run, Some(second));
+    assert_eq!(w.svc.get(&cleared.id).unwrap().last_run, None);
+    assert_eq!(w.svc.repair_last_runs().unwrap(), 0, "once is enough");
+}
+
+#[tokio::test]
 async fn a_tasks_history_is_cleared_whole_or_only_what_failed_or_was_skipped() {
     let w = World::new();
     let lead = orchestrator(&w, None);
