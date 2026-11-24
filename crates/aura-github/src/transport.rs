@@ -918,6 +918,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn starting_the_github_cli_many_times_leaves_no_files_open() {
+        // Counted in a process of its own: other tests open files meanwhile.
+        if !aura_core::test_support::in_own_process(concat!(
+            module_path!(),
+            "::starting_the_github_cli_many_times_leaves_no_files_open"
+        )) {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let ok = dir.path().join("gh");

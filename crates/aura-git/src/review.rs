@@ -141,6 +141,13 @@ mod tests {
     /// The git and gh runs of a pre-review leave nothing open, whether they succeed or fail.
     #[tokio::test]
     async fn finished_git_and_gh_runs_leave_no_files_open() {
+        // Counted in a process of its own: other tests open files meanwhile.
+        if !aura_core::test_support::in_own_process(concat!(
+            module_path!(),
+            "::finished_git_and_gh_runs_leave_no_files_open"
+        )) {
+            return;
+        }
         let fds = || std::fs::read_dir("/dev/fd").unwrap().count();
         let git = |args: &[&str]| {
             let mut cmd = Command::new("git");

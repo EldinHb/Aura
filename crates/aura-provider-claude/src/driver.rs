@@ -418,6 +418,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn finished_agents_leave_no_pipes_open() {
+        // Counted in a process of its own: other tests open files meanwhile.
+        if !aura_core::test_support::in_own_process(concat!(
+            module_path!(),
+            "::finished_agents_leave_no_pipes_open"
+        )) {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("claude");

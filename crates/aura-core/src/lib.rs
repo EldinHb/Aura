@@ -20,6 +20,7 @@ pub mod schedules;
 pub mod specialists;
 pub mod store;
 pub mod suggestions;
+pub mod test_support;
 pub mod types;
 pub mod which;
 
