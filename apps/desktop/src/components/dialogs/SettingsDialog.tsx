@@ -69,6 +69,37 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
 
 // ------------------------------------------------------------------ general
 
+/** Daemon setting: hours after which an idle session's agent process is stopped (aura-core `IDLE_STOP_KEY`). */
+export const IDLE_STOP_KEY = "agents.idle_stop_hours";
+export const IDLE_STOP_DEFAULT_HOURS = 6;
+
+/**
+ * When the daemon stops the agent of a session nobody uses: the session and
+ * its history stay, and the next message starts the agent again. Finished
+ * runs of scheduled tasks stop a minute after they end, whatever this says.
+ */
+function IdleAgentsField() {
+  const client = useStore((s) => s.client);
+  const toast = useStore((s) => s.toast);
+  const [hours, setHours] = useState<string>("");
+  useEffect(() => {
+    client?.getSetting(IDLE_STOP_KEY).then((v) => setHours(v ?? String(IDLE_STOP_DEFAULT_HOURS)), () => setHours(String(IDLE_STOP_DEFAULT_HOURS)));
+  }, [client]);
+  const save = (value: string) => {
+    const n = Math.max(0, Math.min(24 * 30, Math.floor(Number(value))));
+    if (!client || !Number.isFinite(n)) return;
+    setHours(String(n));
+    client.setSetting(IDLE_STOP_KEY, String(n)).catch((e: unknown) => toast(`Could not save: ${e instanceof Error ? e.message : String(e)}`, "error"));
+  };
+  return (
+    <div className="field">
+      <label htmlFor="idle-agents">Stop idle agents after (hours, 0 never)</label>
+      <input id="idle-agents" type="number" min={0} max={720} value={hours} onChange={(e) => setHours(e.target.value)} onBlur={(e) => save(e.target.value)} />
+      <span className="dim" style={{ fontSize: 11 }}>An idle session's agent process is stopped after this long; the session stays and your next message starts it again. Nothing that works or waits on you is stopped. Finished runs of scheduled tasks stop a minute after they end.</span>
+    </div>
+  );
+}
+
 function GeneralTab() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
@@ -131,6 +162,7 @@ function GeneralTab() {
           ))}
         </select>
       </div>
+      <IdleAgentsField />
       <div className="field">
         <label>Default directory</label>
         <input type="text" value={settings.defaultCwd} placeholder="~/Projects" onChange={(e) => set("defaultCwd", e.target.value)} />

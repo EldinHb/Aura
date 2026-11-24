@@ -9,11 +9,14 @@ use tokio::sync::broadcast;
 
 /// Prompts the fake agent got, by session.
 type Prompts = Arc<Mutex<Vec<(String, String)>>>;
+/// Sessions whose fake agent process was stopped.
+type Stops = Arc<Mutex<Vec<String>>>;
 
 struct Agent {
     sink: EventSink,
     session: String,
     prompts: Prompts,
+    stops: Stops,
 }
 
 #[async_trait::async_trait]
@@ -35,8 +38,23 @@ impl Driver for Agent {
             session_id: self.session.clone(),
             turn: turn.clone(),
         });
-        // A prompt with "quick" finishes at once; others keep working.
-        if input.text.contains("quick") {
+        // A prompt with "ask" asks the user a question and waits.
+        if input.text.contains("ask") {
+            let _ = self.sink.send(Event::UserInputRequested {
+                session_id: self.session.clone(),
+                request: UserInputRequest {
+                    id: new_id(),
+                    session_id: self.session.clone(),
+                    turn_id: Some(turn.id.clone()),
+                    item_id: None,
+                    questions: vec![],
+                    created_at: now(),
+                },
+            });
+        }
+        // A prompt with "quick" finishes at once, as an orchestrator's turn
+        // on a worker report does; others keep working.
+        if input.text.contains("quick") || input.text.contains("Worker report") {
             let _ = self.sink.send(Event::TurnCompleted {
                 session_id: self.session.clone(),
                 turn: Turn {
@@ -61,12 +79,14 @@ impl Driver for Agent {
         Ok(())
     }
     async fn stop(&self) -> anyhow::Result<()> {
+        self.stops.lock().push(self.session.clone());
         Ok(())
     }
 }
 
 struct Fake {
     prompts: Prompts,
+    stops: Stops,
 }
 
 #[async_trait::async_trait]
@@ -101,6 +121,7 @@ impl Provider for Fake {
             sink,
             session: session.id.clone(),
             prompts: self.prompts.clone(),
+            stops: self.stops.clone(),
         }))
     }
     fn terminal_command(&self, _: &Session) -> Vec<String> {
@@ -132,6 +153,7 @@ struct World {
     svc: Arc<ScheduleService>,
     clock: Arc<Mutex<DateTime<Utc>>>,
     prompts: Prompts,
+    stops: Stops,
     events: broadcast::Receiver<Value>,
     dir: tempfile::TempDir,
 }
@@ -145,10 +167,12 @@ impl World {
     fn on(store: Arc<MemoryStore>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let prompts: Prompts = Default::default();
+        let stops: Stops = Default::default();
         let m = Manager::new(
             store.clone(),
             vec![Arc::new(Fake {
                 prompts: prompts.clone(),
+                stops: stops.clone(),
             })],
             Some(Arc::new(Trees(dir.path().join("trees")))),
         );
@@ -166,6 +190,7 @@ impl World {
             svc,
             clock,
             prompts,
+            stops,
             events,
             dir,
         }
@@ -870,10 +895,12 @@ async fn the_daemons_loop_fires_on_its_own() {
     let store = Arc::new(MemoryStore::default());
     let dir = tempfile::tempdir().unwrap();
     let prompts: Prompts = Default::default();
+    let stops: Stops = Default::default();
     let m = Manager::new(
         store.clone(),
         vec![Arc::new(Fake {
             prompts: prompts.clone(),
+            stops: stops.clone(),
         })],
         None,
     );
@@ -1168,4 +1195,212 @@ async fn an_orchestrator_schedules_only_what_it_could_start_itself() {
     assert_eq!(renamed["name"], json!("Renamed"));
     assert_eq!(renamed["run_as"], json!("feature_owner"));
     assert_eq!(renamed["feature_goal"], json!("goal"));
+}
+
+/// Whether the session's agent was stopped.
+fn stopped(w: &World, id: &str) -> bool {
+    w.stops.lock().iter().any(|s| s == id)
+}
+
+fn past_grace() -> DateTime<Utc> {
+    Utc::now() + FINISHED_RUN_GRACE + Duration::seconds(1)
+}
+
+#[tokio::test]
+async fn a_finished_run_releases_its_agent_and_one_waiting_on_the_user_keeps_it() {
+    let w = World::new();
+    let done = w
+        .svc
+        .run_now(&w.task("quick: check", every_hour()).id)
+        .await
+        .unwrap();
+    let asks = w
+        .svc
+        .run_now(&w.task("ask: which branch?", every_hour()).id)
+        .await
+        .unwrap();
+    let works = w
+        .svc
+        .run_now(&w.task("a long job", every_hour()).id)
+        .await
+        .unwrap();
+    settle().await;
+    let (done, asks, works) = (
+        done.session_id.unwrap(),
+        asks.session_id.unwrap(),
+        works.session_id.unwrap(),
+    );
+    assert_eq!(w.m.get_session(&done).unwrap().status, SessionStatus::Idle);
+    assert_eq!(
+        w.m.get_session(&asks).unwrap().status,
+        SessionStatus::WaitingInput
+    );
+    // Within the grace period nothing is stopped.
+    assert!(w.m.stop_idle_agents(Utc::now()).await.is_empty());
+    // After it, the finished run's agent goes; the session and its history stay.
+    assert_eq!(
+        w.m.stop_idle_agents(past_grace()).await,
+        std::slice::from_ref(&done)
+    );
+    assert!(stopped(&w, &done) && !stopped(&w, &asks) && !stopped(&w, &works));
+    let s = w.m.get_session(&done).unwrap();
+    assert_eq!(s.status, SessionStatus::Idle);
+    assert_eq!(
+        s.attention,
+        Some(Attention::Done),
+        "still news for the user"
+    );
+    // Nothing more to stop: the others work or wait on the user, also hours later.
+    assert!(w
+        .m
+        .stop_idle_agents(Utc::now() + Duration::hours(1))
+        .await
+        .is_empty());
+    // A new message resumes it, and its next end releases it again.
+    w.m.send(
+        &done,
+        Input {
+            text: "quick: and again".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    settle().await;
+    assert_eq!(
+        w.prompts
+            .lock()
+            .iter()
+            .filter(|(id, _)| *id == done)
+            .count(),
+        2
+    );
+    assert_eq!(w.m.stop_idle_agents(past_grace()).await, [done]);
+}
+
+#[tokio::test]
+async fn a_released_run_no_longer_counts_as_running_for_the_next() {
+    let w = World::new();
+    let t = w.task("quick", Schedule::Minutes { every: 10 });
+    let first = w.svc.run_now(&t.id).await.unwrap();
+    settle().await;
+    w.m.stop_idle_agents(past_grace()).await;
+    assert!(stopped(&w, first.session_id.as_deref().unwrap()));
+    w.to_next_run(&t.id);
+    assert_eq!(
+        w.svc.tick().await.unwrap().remove(0).result,
+        RunResult::Started
+    );
+}
+
+#[tokio::test]
+async fn an_orchestrator_run_is_released_once_it_and_all_its_workers_are_quiet() {
+    let w = World::new();
+    w.m.enable_orchestrator_dirs(w.dir.path().join("orchestrators"));
+    let t = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                cwd: None,
+                run_as: Some(RunAs::Orchestrator),
+                ..w.input("quick: plan", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    let o = w.svc.run_now(&t.id).await.unwrap().session_id.unwrap();
+    settle().await;
+    let worker =
+        w.m.start_worker(
+            &o,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "a long job".into(),
+                cwd: Some(w.cwd()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    settle().await;
+    // The orchestrator is idle, but its worker works: neither is stopped.
+    assert_eq!(w.m.get_session(&o).unwrap().status, SessionStatus::Idle);
+    assert!(w.m.stop_idle_agents(past_grace()).await.is_empty());
+    // The worker asks the user something: still nothing.
+    w.m.interrupt(&worker.id).await.unwrap();
+    w.m.send(
+        &worker.id,
+        Input {
+            text: "ask: may I push?".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    settle().await;
+    assert!(w.m.stop_idle_agents(past_grace()).await.is_empty());
+    assert!(!stopped(&w, &o) && !stopped(&w, &worker.id));
+    // A second worker finishes at once and is quiet, but stays with its orchestra.
+    let quick =
+        w.m.start_worker(
+            &o,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "quick: lint".into(),
+                cwd: Some(w.cwd()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    settle().await;
+    assert!(w.m.stop_idle_agents(past_grace()).await.is_empty());
+    // Once the asking worker is gone and every report is in, the whole run goes.
+    w.m.delete(&worker.id, false).await.unwrap();
+    settle().await;
+    let mut released = w.m.stop_idle_agents(Utc::now() + Duration::hours(1)).await;
+    released.sort();
+    let mut want = vec![o.clone(), quick.id.clone()];
+    want.sort();
+    assert_eq!(released, want);
+}
+
+#[tokio::test]
+async fn sessions_by_hand_are_stopped_only_after_the_idle_timeout_which_can_be_off() {
+    let w = World::new();
+    let s =
+        w.m.create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: w.cwd(),
+            initial_prompt: Some("quick".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    settle().await;
+    let now = Utc::now();
+    assert_eq!(w.m.idle_stop_hours(), IDLE_STOP_DEFAULT_HOURS);
+    // A session started by hand keeps its agent well past a run's grace period.
+    assert!(w
+        .m
+        .stop_idle_agents(now + Duration::hours(1))
+        .await
+        .is_empty());
+    w.store.set_setting(IDLE_STOP_KEY, "0").unwrap();
+    assert!(w
+        .m
+        .stop_idle_agents(now + Duration::days(30))
+        .await
+        .is_empty());
+    w.store.set_setting(IDLE_STOP_KEY, "2").unwrap();
+    assert!(w
+        .m
+        .stop_idle_agents(now + Duration::minutes(119))
+        .await
+        .is_empty());
+    assert_eq!(
+        w.m.stop_idle_agents(now + Duration::minutes(121)).await,
+        std::slice::from_ref(&s.id)
+    );
+    assert!(stopped(&w, &s.id));
 }

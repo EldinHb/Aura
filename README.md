@@ -42,7 +42,9 @@ keyboard, while the agents keep working in the background.
 
 - **Sessions outlive the window.** Agents run in a background daemon (`aurad`), the
   way tmux keeps shells alive. Close Aura, reopen it, and every session is where you
-  left it: output, history and pending approvals included.
+  left it: output, history and pending approvals included. An agent idle for 6 hours
+  (Settings → General) has its process stopped; the session stays, and your next
+  message starts it again.
 - **One transcript for every agent.** Claude Code and Codex sessions are shown in the
   same structured view: messages, reasoning, tool calls, command output, file changes,
   approvals, questions and token usage. The work behind each reply (reasoning, tool
@@ -309,6 +311,10 @@ run went; pick one to edit it, **Run now**, disable or delete it, and see its hi
   started before this tab existed are moved there through the run history.
 - **The daemon runs them.** Tasks fire whether or not the app is open, and everything
   is kept in Aura's database across restarts.
+- **Finished runs let go of their agent.** A minute after a run (and every worker of a
+  run as an orchestrator) has finished and waits on nothing, Aura stops its agent
+  process. The session and its history stay; a message resumes it. A run that waits
+  on you keeps its agent.
 - **No pile-ups.** While the session of the previous run is still working (or waits on
   you), a run is skipped and recorded as skipped, unless the task allows overlapping
   runs. Run now follows the same rule. A run as an orchestrator or feature owner

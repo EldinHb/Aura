@@ -118,6 +118,9 @@ async fn main() -> Result<()> {
         _ => tracing::warn!("`aura` not found next to aurad; orchestrators will have no tools"),
     }
     let restored = manager.restore()?;
+    // Restored sessions start no agent; agents started from now on that are
+    // no longer needed (finished scheduled runs, sessions idle for hours) are stopped.
+    manager.launch_idle_sweep();
     tracing::info!(restored, "sessions restored");
 
     // One client for every loop: they share gh's token, the caches and the rate limit.

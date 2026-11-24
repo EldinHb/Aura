@@ -12,6 +12,8 @@ use tokio::sync::{broadcast, mpsc};
 
 mod attachments;
 mod features;
+mod idle;
+pub use idle::{FINISHED_RUN_GRACE, IDLE_STOP_DEFAULT_HOURS, IDLE_STOP_KEY};
 mod orchestrator;
 mod specialists;
 mod suggest;
@@ -56,6 +58,9 @@ struct Runtime {
     /// not a failure, even when a provider had to kill it. Reset when a new
     /// process starts.
     stopping: bool,
+    /// A message went to the agent whose turn has not started yet: the
+    /// session reads idle meanwhile, but is not (see `idle`).
+    awaiting_turn: Option<std::time::Instant>,
 }
 
 struct Inner {
@@ -716,9 +721,17 @@ impl Manager {
                 let driver = self.ensure_driver(id, false).await?;
                 self.stage_attachments(id, &input);
                 let staged = (!input.images.is_empty()).then(|| input.text.clone());
+                if let Some(rt) = self.inner.runtimes.lock().get_mut(id) {
+                    rt.awaiting_turn = Some(std::time::Instant::now());
+                }
                 let sent = driver.send(input).await;
                 if let (Err(_), Some(text)) = (&sent, staged) {
                     self.unstage(id, &text);
+                }
+                if sent.is_err() {
+                    if let Some(rt) = self.inner.runtimes.lock().get_mut(id) {
+                        rt.awaiting_turn = None;
+                    }
                 }
                 sent
             }
@@ -1493,7 +1506,10 @@ impl Manager {
             let mut rts = self.inner.runtimes.lock();
             let rt = rts.entry(sid.clone()).or_default();
             match &ev {
-                Event::TurnStarted { turn, .. } => rt.current_turn = Some(turn.clone()),
+                Event::TurnStarted { turn, .. } => {
+                    rt.current_turn = Some(turn.clone());
+                    rt.awaiting_turn = None;
+                }
                 Event::TurnCompleted { .. } => {
                     rt.current_turn = None;
                     rt.live_items.clear();
@@ -1525,6 +1541,7 @@ impl Manager {
                 }
                 Event::ProcessExited { .. } => {
                     rt.driver = None;
+                    rt.awaiting_turn = None;
                     rt.pending_approvals.clear();
                     rt.pending_inputs.clear();
                     rt.current_turn = None;

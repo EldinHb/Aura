@@ -401,7 +401,20 @@ async fn daemon_cmd(data_dir: &std::path::Path, cmd: &DaemonCmd) -> Result<()> {
                 let _ = c.call("daemon.shutdown", json!({})).await;
                 println!("stop requested");
             }
-            Err(_) => println!("daemon not running"),
+            Err(_) => match aura_rpc::read_daemon_info(data_dir) {
+                // Running but not answering (out of open files, say): signal it.
+                Some(info) if !matches!(aura_rpc::lock_data_dir(data_dir), Ok(Some(_))) => {
+                    if aura_rpc::stop_unresponsive_daemon(data_dir, &info).await {
+                        println!("aurad (pid {}) did not answer; stopped it", info.pid);
+                    } else {
+                        anyhow::bail!(
+                            "aurad (pid {}) does not answer and could not be stopped",
+                            info.pid
+                        );
+                    }
+                }
+                _ => println!("daemon not running"),
+            },
         },
         DaemonCmd::Status => match RpcClient::connect_from_dir(data_dir).await {
             Ok(c) => {

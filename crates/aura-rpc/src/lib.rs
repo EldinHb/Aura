@@ -132,6 +132,42 @@ pub fn daemon_info_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("daemon.json")
 }
 
+/// Stop the aurad that holds `data_dir` but does not answer, such as one that
+/// ran out of open files and cannot take a connection: SIGTERM, which it
+/// handles by stopping its sessions' agents and exiting, then SIGKILL after
+/// 15 s. Only a process named aurad, with the pid its daemon.json gives, is
+/// signalled. True once the data directory is free.
+pub async fn stop_unresponsive_daemon(data_dir: &std::path::Path, info: &DaemonInfo) -> bool {
+    let free = || matches!(lock_data_dir(data_dir), Ok(Some(_)));
+    if free() {
+        return true;
+    }
+    let is_aurad = aura_core::process::process_name(info.pid).is_some_and(|n| {
+        std::path::Path::new(&n)
+            .file_name()
+            .is_some_and(|f| f.to_string_lossy().starts_with("aurad"))
+    });
+    if !is_aurad {
+        return false;
+    }
+    tracing::warn!(pid = info.pid, "aurad does not answer; asking it to stop");
+    for force in [false, true] {
+        if !aura_core::process::terminate(info.pid, force) {
+            return free();
+        }
+        for _ in 0..if force { 50 } else { 150 } {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if free() {
+                return true;
+            }
+        }
+        if !force {
+            tracing::warn!(pid = info.pid, "aurad did not stop within 15s; killing it");
+        }
+    }
+    free()
+}
+
 pub fn read_daemon_info(data_dir: &std::path::Path) -> Option<DaemonInfo> {
     let s = std::fs::read_to_string(daemon_info_path(data_dir)).ok()?;
     serde_json::from_str(&s).ok()

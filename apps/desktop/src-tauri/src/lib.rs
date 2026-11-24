@@ -80,6 +80,18 @@ async fn daemon_alive(port: u16) -> bool {
     }
 }
 
+/// Whether the daemon answers within `tries` health checks a second apart,
+/// so a busy one is not taken for a dead one.
+async fn answers_within(port: u16, tries: u32) -> bool {
+    for _ in 0..tries {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if daemon_alive(port).await {
+            return true;
+        }
+    }
+    false
+}
+
 fn spawn_daemon(dir: &Path) -> Result<()> {
     let bin = find_daemon_binary().ok_or_else(|| anyhow!("aurad binary not found"))?;
     let mut cmd = std::process::Command::new(&bin);
@@ -142,6 +154,8 @@ fn replace_daemon(version: &str) -> bool {
 /// their state and resume on the next daemon.
 async fn stop_daemon(dir: &Path, info: &aura_rpc::DaemonInfo) {
     let Ok(c) = aura_rpc::client::RpcClient::connect(info.port, &info.token).await else {
+        // One that cannot take a connection (out of open files, say) still holds the data directory.
+        aura_rpc::stop_unresponsive_daemon(dir, info).await;
         return;
     };
     let _ = c.call("daemon.shutdown", serde_json::json!({})).await;
@@ -159,12 +173,18 @@ async fn ensure_daemon() -> Result<Connection> {
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
     if let Some(info) = aura_rpc::read_daemon_info(&dir) {
-        if daemon_alive(info.port).await {
+        // A daemon holds the data directory (dropping the lock at once releases it).
+        let held = !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_)));
+        if daemon_alive(info.port).await || (held && answers_within(info.port, 5).await) {
             if !replace_daemon(&info.version) {
                 return Ok(connection(info));
             }
             tracing::info!(daemon = %info.version, app = VERSION, "replacing a daemon of another version");
             stop_daemon(&dir, &info).await;
+        } else if held {
+            // Alive yet unable to answer (out of open files, say), it would keep
+            // the next one from starting.
+            aura_rpc::stop_unresponsive_daemon(&dir, &info).await;
         }
     }
     spawn_and_connect(&dir).await

@@ -32,6 +32,42 @@ pub fn spawn_job(command: &mut Command) -> Result<(Child, ProcessGroup)> {
     Ok((child, group))
 }
 
+/// Ask process `pid` to stop (SIGTERM), or make it (SIGKILL when `force`).
+/// False where that is not possible (Windows) or the process is gone.
+pub fn terminate(pid: u32, force: bool) -> bool {
+    #[cfg(unix)]
+    {
+        let sig = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // SAFETY: a plain kill(2) on a positive pid.
+        pid > 1 && unsafe { libc::kill(pid as libc::pid_t, sig) } == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, force);
+        false
+    }
+}
+
+/// The executable name of process `pid`, if it runs.
+pub fn process_name(pid: u32) -> Option<String> {
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !name.is_empty()).then_some(name)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// How many files Aura asks to keep open at most. Every live session holds
 /// about three pipes to its agent, and apps started from the macOS GUI get a
 /// soft limit of 256, which some 75 sessions use up; then spawning `gh` or

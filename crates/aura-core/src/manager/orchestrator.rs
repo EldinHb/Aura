@@ -1409,6 +1409,22 @@ impl Manager {
         }
     }
 
+    /// Whether a message from Aura is on its way to the session: a note or a
+    /// worker report waiting, or one sent whose turn has not started.
+    pub(super) fn is_shutting_down(&self) -> bool {
+        self.inner.orchestration.lock().shutting_down
+    }
+
+    pub(super) fn has_undelivered(&self, id: &str) -> bool {
+        let st = self.inner.orchestration.lock();
+        st.notes.get(id).is_some_and(|n| !n.is_empty())
+            || st.queued.get(id).is_some_and(|q| !q.is_empty())
+            || st.delivering.contains(id)
+            || st.unacked.contains_key(id)
+            || st.dispatched.contains(id)
+            || st.answer_next.contains_key(id)
+    }
+
     /// Hold a session's notes until its agent works again, whether or not
     /// any wait now, so one that comes later does not start it either.
     pub(super) fn hold_all_notes(&self, id: &str) {
