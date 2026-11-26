@@ -62,7 +62,7 @@ export const slots = {
   newSessionField: new Registry<Comp<{ cwd: string | null; onChange(c: { prompt?: string; data?: unknown } | null): void }>>(),
   inboxRenderer: new Registry<Comp<{ item: InboxItem }> & { open?(item: InboxItem): void }>(),
   transcriptLinks: new Registry<{ detect(text: string, session: Session): TranscriptLink[] }>(),
-  view: new Registry<Comp<{ props: unknown; close(): void }> & { title: string }>(),
+  view: new Registry<Comp<{ props: unknown; close(): void; active?: boolean }> & { title: string }>(),
   dialog: new Registry<Comp<{ props: unknown; close(): void }>>(),
   keybinding: new Registry<{ binding: Binding }>(),
   keyGroup: new Registry<{ prefix: string; label: string }>(),

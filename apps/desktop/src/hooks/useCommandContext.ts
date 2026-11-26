@@ -65,5 +65,7 @@ export function currentCommandContext(): CommandContext {
     pending: pending || selectPendingCount(st) > 0 ? Math.max(pending, s ? 0 : selectPendingCount(st)) : 0,
     running: s?.status === "running",
     isMac,
+    hasTabs: st.tabs.length > 0,
+    previewTab: !!st.tabs.find((t) => t.key === st.activeTab)?.preview,
   };
 }

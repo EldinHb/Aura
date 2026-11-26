@@ -7,6 +7,7 @@ import { useStore } from "../state/store";
 import { base64ToBytes } from "../lib/rpc";
 import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
+import { useTabActive } from "../components/tabActive";
 
 /**
  * Embedded terminal for a PTY-backed session. Attaches on mount, replays the
@@ -20,6 +21,14 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
   const fontSize = useStore((s) => s.settings.fontSize);
   const setFocus = useStore((s) => s.setFocus);
   const leader = useStore((s) => s.settings.leader);
+  const active = useTabActive();
+  const resizeRef = useRef<() => void>(() => {});
+  // Shown again: fit the window as it is now, which may have changed while the tab was hidden.
+  useEffect(() => {
+    if (!active) return;
+    const frame = requestAnimationFrame(() => resizeRef.current());
+    return () => cancelAnimationFrame(frame);
+  }, [active]);
 
   useEffect(() => {
     if (!ref.current || !client) return;
@@ -72,8 +81,10 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
       return true;
     });
 
+    const wrap = ref.current;
     const resize = () => {
-      if (disposed) return;
+      // Not while its tab is hidden: a terminal measured at no size would shrink the shell to nothing.
+      if (disposed || wrap.clientWidth === 0 || wrap.clientHeight === 0 || wrap.closest("[data-tab-pane][hidden]")) return;
       try {
         fit.fit();
         client.ptyResize(sessionId, term.cols, term.rows).catch(() => {});
@@ -81,6 +92,7 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
         /* not visible yet */
       }
     };
+    resizeRef.current = resize;
     const ro = new ResizeObserver(() => resize());
     ro.observe(ref.current);
 

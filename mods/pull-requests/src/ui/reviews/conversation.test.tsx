@@ -155,6 +155,6 @@ it("lists every pre-review in the review history and opens one on its PR", () =>
   render(<HistoryPage />);
   expect(useNav.getState().history).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: /Handle empty responses/ }));
-  expect(fake.view()).toEqual({ id: "pull", props: { pull: pullFixture } });
+  expect(fake.view()).toEqual({ id: "pull", props: expect.objectContaining({ pull: pullFixture }) });
   expect(useNav.getState().reviewId).toBe("review-fixture");
 });

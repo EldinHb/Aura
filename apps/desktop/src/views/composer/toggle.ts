@@ -4,5 +4,6 @@ import { useStore } from "../../state/store";
 export function toggleRichComposer(refocus: boolean) {
   const { settings, setSettings } = useStore.getState();
   setSettings({ composerRich: !settings.composerRich });
-  if (refocus) requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-region="composer"] [data-autofocus]')?.focus());
+  // The box of the tab shown: the other tabs' boxes stay mounted, hidden.
+  if (refocus) requestAnimationFrame(() => [...document.querySelectorAll<HTMLElement>('[data-region="composer"] [data-autofocus]')].find((el) => !el.closest("[data-tab-pane][hidden]"))?.focus());
 }

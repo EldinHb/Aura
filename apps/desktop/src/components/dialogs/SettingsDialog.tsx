@@ -11,6 +11,7 @@ import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
 import { ModSettingsTab, ModsSettings, useModSettingsTabs } from "../../mods/ModsSettings";
+import { MAX_SOUND_FILE, SOUND_CHOICES, playSound } from "../../lib/sound";
 import { SpecialistsTab } from "./SpecialistsTab";
 import { AutonomyPicker } from "../AutonomyPicker";
 
@@ -106,6 +107,82 @@ function IdleAgentsField() {
   );
 }
 
+/** The sound played when a session goes from working to waiting for you. */
+function WaitingSoundField() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const toast = useStore((s) => s.toast);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const test = (patch: Partial<UiSettings> = {}) => {
+    const s = { ...settings, ...patch };
+    playSound(s.waitingSound, s.waitingSoundVolume, s.waitingSoundFile);
+  };
+  const pick = (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > MAX_SOUND_FILE) {
+      toast(`${file.name} is larger than ${MAX_SOUND_FILE / 1024 / 1024} MB; pick a shorter sound`, "error");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const patch = { waitingSound: "custom" as const, waitingSoundFile: String(reader.result) };
+      setSettings(patch);
+      test(patch);
+    };
+    reader.onerror = () => toast(`Could not read ${file.name}`, "error");
+    reader.readAsDataURL(file);
+  };
+  return (
+    <div className="field wide">
+      <label htmlFor="waiting-sound">Sound when a session starts waiting for you</label>
+      <div className="row-controls">
+        <select
+          id="waiting-sound"
+          value={settings.waitingSound}
+          onChange={(e) => {
+            const waitingSound = e.target.value as UiSettings["waitingSound"];
+            if (waitingSound === "custom" && !settings.waitingSoundFile) {
+              fileInput.current?.click();
+              return;
+            }
+            setSettings({ waitingSound });
+            test({ waitingSound });
+          }}
+        >
+          {SOUND_CHOICES.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          aria-label="Volume"
+          title={`Volume ${Math.round(settings.waitingSoundVolume * 100)}%`}
+          value={settings.waitingSoundVolume}
+          disabled={settings.waitingSound === "none"}
+          onChange={(e) => setSettings({ waitingSoundVolume: Number(e.target.value) })}
+          onPointerUp={() => test()}
+        />
+        <button type="button" className="btn small" data-hint disabled={settings.waitingSound === "none"} onClick={() => test()}>
+          Play
+        </button>
+        <button type="button" className="btn small" data-hint onClick={() => fileInput.current?.click()}>
+          {settings.waitingSoundFile ? "Other file…" : "Choose file…"}
+        </button>
+        <input ref={fileInput} type="file" accept="audio/*" hidden onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ""; }} />
+      </div>
+      <label className="check-row">
+        <input type="checkbox" checked={settings.waitingSoundWhenViewing} onChange={(e) => setSettings({ waitingSoundWhenViewing: e.target.checked })} /> Also for the session
+        on screen while Aura is in front
+      </label>
+    </div>
+  );
+}
+
 function GeneralTab() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
@@ -161,6 +238,7 @@ function GeneralTab() {
         </select>
       </div>
       <IdleAgentsField />
+      <WaitingSoundField />
       <div className="field">
         <label>Default directory</label>
         <input type="text" value={settings.defaultCwd} placeholder="~/Projects" onChange={(e) => set("defaultCwd", e.target.value)} />

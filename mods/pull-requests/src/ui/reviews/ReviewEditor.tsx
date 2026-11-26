@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { PreReview, ReviewComment, SubmissionPreview } from "@aura/github-client";
 import { ctx, rpc } from "../ctx";
 import { ExternalLink, Modal } from "../host";
-import { DIALOG_REVIEW_SUBMIT, trackDialog, useNav } from "../nav";
+import { DIALOG_REVIEW_SUBMIT, showReview, trackDialog } from "../nav";
 import { normalizePreReview } from "../pulls";
 import { ReviewDiff } from "./ReviewDiff";
 import { editDraft, ensureDraft, flushDraft, reloadDraft, startReview, useReviewDrafts, useReviews } from "./state";
@@ -56,7 +56,7 @@ export function ReviewEditor({ id }: { id: string }) {
   const drafting = review.status === "drafting";
   const source = sourceLabel(review);
   return <div className="pr-review-editor" data-keynav>
-    <header className="pr-toolbar"><button className="btn small" data-hint onClick={() => useNav.setState({ reviewId: null })}>← Pull request</button><strong>Pre-review</strong><span className="chip">{review.status}</span><span className="pr-muted">{agentLabel(review)}{source && ` · ${source}`} · {new Date(review.created_at).toLocaleString()}</span>
+    <header className="pr-toolbar"><button className="btn small" data-hint onClick={() => showReview(null)}>← Pull request</button><strong>Pre-review</strong><span className="chip">{review.status}</span><span className="pr-muted">{agentLabel(review)}{source && ` · ${source}`} · {new Date(review.created_at).toLocaleString()}</span>
       {!active && <button className="btn small" data-hint onClick={() => startReview(review.pull, review)}>Pre-review again…</button>}</header>
     {error && <div className="pr-error" role="alert">{error}</div>}
     {active ? <div className="pr-progress"><h2>{review.status === "queued" ? "Waiting for an agent slot" : "Review in progress"}</h2><ol>{[["preparing", "Preparing"], ["cloning", "Fetching the branch"], ["running", "Agent reviewing"], ["validating", "Checking findings"]].map(([phase, label]) => <li key={phase} className={review.phase === phase ? "active" : ""}>{label}{review.phase === phase ? " …" : ""}</li>)}</ol><Elapsed since={review.created_at} /><pre className="pr-log">{review.log_tail.join("\n")}</pre><button className="btn" data-hint disabled={busy} onClick={() => void action("reviews.cancel")}>Cancel pre-review</button></div>

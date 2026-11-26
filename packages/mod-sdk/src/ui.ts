@@ -71,8 +71,14 @@ export interface NewSessionFieldProps {
 
 export interface ViewProps<P = any> {
   props: P;
-  /** Closes the view and returns to the selected session. */
+  /** Closes the view's tab. */
   close(): void;
+  /**
+   * Whether the view's tab is the one shown. Views stay mounted while another
+   * tab shows (so they keep their state); a view that drives shared state should
+   * only do so while active.
+   */
+  active?: boolean;
 }
 
 export interface DialogProps<P = any> {

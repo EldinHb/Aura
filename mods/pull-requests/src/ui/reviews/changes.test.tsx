@@ -52,7 +52,7 @@ it("renders an unread pull request change in the inbox and opens the PR, marking
   expect(screen.getByText("bob pushed 2 commits · alice approved")).toBeTruthy();
   expect(screen.getByText("review requested")).toBeTruthy();
   openInboxItem(item(change()));
-  await waitFor(() => expect(fake.view()).toEqual({ id: VIEW_PULL, props: { pull: pullFixture } }));
+  await waitFor(() => expect(fake.view()).toEqual({ id: VIEW_PULL, props: expect.objectContaining({ pull: pullFixture }) }));
   expect(useNav.getState().reviewId).toBe(null);
   expect(fake.rpc).toHaveBeenCalledWith("pulls.changes.read", { ids: ["change-1"] });
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import clsx from "clsx";
 import type { SlashCommand } from "../gen";
 import { useStore } from "../state/store";
+import { sessionTabKey } from "../state/tabs";
 import { setFocus } from "../commands/core";
 import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
@@ -236,6 +237,8 @@ export function Composer({ sessionId }: { sessionId: string }) {
     }
     const message = { text, images };
     updateDraft(sessionId, (draft) => ({ text: "", start: 0, end: 0, richSelection: false, images: [], sending: draft.sending + 1 }));
+    // A session written to stays open in its tab rather than as a preview.
+    useStore.getState().keepTab(sessionTabKey(sessionId));
     setHistIdx(null);
     setPop({ kind: "none" });
     const outbox = outboxes.get(sessionId) ?? { last: Promise.resolve(), waiting: 0, failed: [] };

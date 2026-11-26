@@ -113,19 +113,22 @@ export function NewSessionModFields({ cwd, onChange }: { cwd: string | null; onC
   );
 }
 
-/** The open mod view in the main area, or null when none is open or its mod is gone. */
-export function ModMainView() {
-  const view = useStore((s) => s.modView);
-  const close = useStore((s) => s.closeModView);
+/** A mod's view in its main-area tab, or a placeholder while its mod is not loaded; `active` while its tab is the one shown. */
+export function ModView({ modId, viewId, props, close, active }: { modId: string; viewId: string; props: unknown; close: () => void; active: boolean }) {
   const views = useSlot(slots.view);
-  if (!view) return null;
-  const v = views.find((x) => x.modId === view.modId && x.key === `${view.modId}:${view.id}`);
+  const v = views.find((x) => x.modId === modId && x.key === `${modId}:${viewId}`);
   if (!v) return <div className="empty">This view is not available: its mod is not loaded.</div>;
   return (
     <ModPiece entry={v}>
-      <v.component props={view.props} close={close} />
+      <v.component props={props} close={close} active={active} />
     </ModPiece>
   );
+}
+
+/** The registered title of a mod's view, or null when its mod is not loaded. */
+export function useModViewTitle(modId: string, viewId: string): string | null {
+  const views = useSlot(slots.view);
+  return views.find((x) => x.modId === modId && x.key === `${modId}:${viewId}`)?.title ?? null;
 }
 
 export function useModViewOpen(): boolean {

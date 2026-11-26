@@ -122,7 +122,8 @@ it("does not clear a session hidden behind a mod's view", () => {
 it("marks the hidden-workers chip of a collapsed orchestrator with the most urgent kind under it", () => {
   useStore.setState({
     sessions: {
-      lead: session("lead", { orchestrator: true }),
+      // All waiting, so the orchestra shares a section and its workers can be folded under it.
+      lead: session("lead", { orchestrator: true, attention: "done" }),
       w1: session("w1", { orchestrator_id: "lead", attention: "done" }),
       w2: session("w2", { orchestrator_id: "lead", attention: "waiting", pending_count: 1 }),
     },

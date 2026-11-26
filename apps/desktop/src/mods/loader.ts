@@ -209,7 +209,8 @@ async function load(info: ModInfo) {
   const src = await client().call<{ js: string | null; css: string | null; version: string }>("mods.ui_source", { id: info.id });
   const old = loaded.get(info.id);
   if (old && old.js === src.js && old.css === src.css) return;
-  if (old) unload(info.id);
+  // A new version takes over the old one's tabs.
+  if (old) unload(info.id, false);
   if (!src.js) return;
   const disposers: Array<() => void> = [];
   const track = (d: () => void) => {
@@ -265,14 +266,14 @@ async function load(info: ModInfo) {
   }
 }
 
-function unload(id: string) {
+/** `closeTabs`: the mod's tabs close too, unless it is being reloaded. */
+function unload(id: string, closeTabs = true) {
   const l = loaded.get(id);
   if (!l) return;
   l.dispose();
   loaded.delete(id);
   settingListeners.delete(id);
-  const v = useStore.getState().modView;
-  if (v?.modId === id) useStore.getState().closeModView();
+  if (closeTabs) useStore.getState().closeModTabs(id);
   const d = useStore.getState().dialog;
   if (d.kind === "mod" && d.modId === id) useStore.getState().closeDialog();
   useMods.setState({ loaded: [...loaded.keys()] });

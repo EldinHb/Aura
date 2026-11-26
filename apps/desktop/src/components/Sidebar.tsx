@@ -2,7 +2,7 @@ import { SessionRowModChips, SidebarModSections } from "../mods/Slots";
 import { ScheduleSidebar } from "../features/schedules/ScheduleSidebar";
 import { openSchedules, useSchedules } from "../features/schedules/state";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, selectTabActivity, canReorder, groupKey, hasHeading, isNestedWorker, orchestratorsOf, ORCHESTRATORS_SECTION, TASK_SECTION, type AppState, type SidebarTab } from "../state/store";
+import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, selectTabActivity, canReorder, groupKey, hasHeading, isNestedWorker, orchestratorsOf, ORCHESTRATORS_SECTION, TASK_SECTION, STATE_SECTION, CATEGORY_LABEL, type AppState, type SessionCategory, type SidebarTab } from "../state/store";
 import { folderOf } from "../lib/sessionFolder";
 import type { Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
@@ -52,7 +52,9 @@ function sidebarCurrent(st: AppState, sessions: Session[]): Session | undefined 
  * and model with its effort, which give way first. An orchestrator without a folder has none
  * of the folder's. Then the session's issues and PRs.
  */
-function SessionRowDetails({ session: s, selected, hidden }: { session: Session; selected: boolean; hidden: Session[] }) {
+function SessionRowDetails({ session: s, selected, hidden, nested }: { session: Session; selected: boolean; hidden: Session[]; nested: boolean }) {
+  // A worker listed away from its orchestrator (they are in different states) says whose it is.
+  const lead = useStore((st) => (!nested && s.orchestrator_id ? st.sessions[s.orchestrator_id]?.title ?? null : null));
   const { git } = useSessionBranch(s, selected);
   const branch = (git && branchName(git)) ?? s.worktree?.branch;
   const agent = s.agent ?? s.provider;
@@ -69,6 +71,8 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
         {s.feature_owner && <FeatureChip ownerId={s.id} />}
         {s.specialist_name && s.specialist_name !== s.title && <span className="chip specialist" title={`Hired as ${s.specialist_name}`}>{s.specialist_name}</span>}
         {hidden.length > 0 && <HiddenWorkers hidden={hidden} />}
+        {lead && <span className="chip lead" title={`Works for ${lead}`}>↳ {lead}</span>}
+        {s.group && <span className="chip group" title={`Group: ${s.group}`}>{s.group}</span>}
         <span className="where">
           {!s.worktree && folderOf(s) !== null && basename(s.cwd)}
           {branch && `${s.worktree || folderOf(s) === null ? "" : " · "}⎇ ${branch}`}
@@ -392,6 +396,7 @@ export function Sidebar() {
 
   const marked = cursor ?? selectedId;
   const label = (group: string, list: Session[]) => {
+    if (group.startsWith(STATE_SECTION)) return CATEGORY_LABEL[group.slice(STATE_SECTION.length) as SessionCategory] ?? group;
     if (group === ORCHESTRATORS_SECTION) return "Orchestrators";
     if (group.startsWith(TASK_SECTION)) {
       const id = group.slice(TASK_SECTION.length);
@@ -439,7 +444,7 @@ export function Sidebar() {
           const folded = !filter && collapsedGroups.includes(groupKey(tab, group));
           const task = group.startsWith(TASK_SECTION) ? group.slice(TASK_SECTION.length) : null;
           return (
-          <div key={group || "__none"} role="group" aria-label={hasHeading(group, keys) ? name : undefined}>
+          <div key={group || "__none"} role="group" className={group.startsWith(STATE_SECTION) ? `state-section ${group.slice(STATE_SECTION.length)}` : undefined} aria-label={hasHeading(group, keys) ? name : undefined}>
             {/* Below the orchestrators, the other ungrouped sessions need a heading of their own. */}
             {hasHeading(group, keys) && (
               <SectionHeading tab={tab} section={group} label={name} list={list} folded={folded} current={folded && list.some((s) => s.id === marked)} viewedId={viewedId}>
@@ -511,7 +516,7 @@ export function Sidebar() {
                       {idx < 9 && <kbd>{idx + 1}</kbd>}
                       <span className="age">{relTime(s.last_activity)}</span>
                     </div>
-                    <SessionRowDetails session={s} selected={s.id === selectedId} hidden={hidden} />
+                    <SessionRowDetails session={s} selected={s.id === selectedId} hidden={hidden} nested={isNestedWorker(s, list)} />
                   </div>
                 </div>
               );

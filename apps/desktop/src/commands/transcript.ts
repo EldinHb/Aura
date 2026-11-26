@@ -4,6 +4,7 @@
  */
 import { registerCommands, runCommand } from "../lib/commands";
 import { useStore } from "../state/store";
+import { sessionTabKey } from "../state/tabs";
 import { requestEditApproval } from "../views/transcript/ApprovalCard";
 import { toggleRichComposer } from "../views/composer/toggle";
 
@@ -19,6 +20,10 @@ export type TranscriptHandle = {
 let handle: TranscriptHandle | null = null;
 export function setTranscriptHandle(h: TranscriptHandle | null) {
   handle = h;
+}
+/** Drop `h` if it is still the handle (another tab's transcript may have taken over). */
+export function clearTranscriptHandle(h: TranscriptHandle) {
+  if (handle === h) handle = null;
 }
 
 function st() {
@@ -55,7 +60,9 @@ export function registerTranscriptCommands() {
         if (st().focus === "sidebar") {
           const id = st().sidebarCursor ?? st().selectedId;
           if (id) {
+            // Enter on a row keeps its tab open; moving through the rows only previews.
             st().select(id);
+            void runCommand("tab.keep", sessionTabKey(id));
             void import("./core").then((m) => m.setFocus("main"));
           }
           return;

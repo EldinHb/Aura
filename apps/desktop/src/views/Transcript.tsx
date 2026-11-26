@@ -3,7 +3,8 @@ import clsx from "clsx";
 import type { Item, Turn } from "../gen";
 import { useStore } from "../state/store";
 import { sessionProviderLabel } from "../lib/acp";
-import { registerTranscriptCommands, setTranscriptHandle } from "../commands/transcript";
+import { clearTranscriptHandle, registerTranscriptCommands, setTranscriptHandle, type TranscriptHandle } from "../commands/transcript";
+import { useTabActive } from "../components/tabActive";
 import { ItemRow } from "./transcript/ItemRow";
 import { ApprovalCard } from "./transcript/ApprovalCard";
 import { UserInputCard } from "./transcript/UserInputCard";
@@ -174,8 +175,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     setAtBottom(true);
   }, []);
 
+  // The keyboard drives the transcript of the tab shown; the others stay mounted, hidden.
+  const active = useTabActive();
   useEffect(() => {
-    setTranscriptHandle({
+    if (!active) return;
+    const h: TranscriptHandle = {
       visibleIds: () => navigable,
       toggle,
       expand: (id) => setExpanded((e) => ({ ...e, [id]: true })),
@@ -193,9 +197,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         await navigator.clipboard.writeText(text);
         toast("Copied");
       },
-    });
-    return () => setTranscriptHandle(null);
-  }, [navigable, toggle, scrollToBottom, t, toast, rows]);
+    };
+    setTranscriptHandle(h);
+    return () => clearTranscriptHandle(h);
+  }, [active, navigable, toggle, scrollToBottom, t, toast, rows]);
 
   // sticky bottom
   const count = rows.length;
@@ -217,7 +222,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
 
   // scroll cursor into view
   useEffect(() => {
-    if (!cursorKey) return;
+    if (!cursorKey || !active) return;
     // Move the cursor itself onto the row, so j/k continue from there.
     if (cursorKey !== useStore.getState().cursorItemId) setCursorItem(cursorKey);
     const sel = cursorKey.startsWith("approval:")
@@ -232,7 +237,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       el.scrollIntoView({ block: "nearest" });
       if (cursorKey.startsWith("input:")) el.focus();
     }
-  }, [cursorKey, setCursorItem]);
+  }, [cursorKey, setCursorItem, active]);
 
   const onCursor = useCallback((id: string) => setCursorItem(id), [setCursorItem]);
 

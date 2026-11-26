@@ -3,7 +3,7 @@ import type { ViewProps } from "@aura/mod-sdk/ui";
 import type { PullRequest } from "@aura/github-client";
 import { rpc } from "../ctx";
 import { ExternalLink, Markdown, useStore } from "../host";
-import { openPull, useNav } from "../nav";
+import { openPull, pullKey, showReview, useNav } from "../nav";
 import { normalizeDetail, type ProjectField, type ProjectItem, type PullDetail } from "../pulls";
 import { usePrSettings } from "../settings";
 import { ReviewDiff } from "./ReviewDiff";
@@ -13,21 +13,21 @@ import { Avatar, Time, Timeline } from "./Timeline";
 import { commitCount } from "./conversation";
 import { isRerequested, pullStatus, startReview, useReviews } from "./state";
 
-const pullKey = (pull: Pick<PullRequest, "account" | "id">) => `${pull.account}:${pull.id}`;
 type Options = { labels: { name: string }[]; assignees: { login: string }[]; milestones: { number: number; title: string }[] };
 
 /** The "pull" view: a PR's page, or the pre-review of it that is open. Formerly core's `prSelection` main view. */
-export function PullPage({ props }: ViewProps<{ pull: PullRequest }>) {
+export function PullPage({ props, active }: ViewProps<{ pull: PullRequest }> & { active?: boolean }) {
   const pull = props?.pull ?? null;
-  const reviewId = useNav((s) => s.reviewId);
   const key = pull && pullKey(pull);
-  // While it shows, the sidebar marks its PR and the PR commands act on it.
+  // Each PR tab shows its own pre-review, whichever tab is in front.
+  const reviewId = useNav((s) => (key ? s.reviewOf[key] ?? null : null));
+  const shown = active !== false;
+  // While its tab is in front, the sidebar marks its PR and the PR commands act on it.
   useEffect(() => {
-    if (!pull) return;
-    const shown = useNav.getState().pull;
-    if (!shown || pullKey(shown) !== key) useNav.setState({ pull, history: false, reviewId: null });
+    if (!pull || !shown) return;
+    useNav.setState((s) => ({ pull, history: false, reviewId: s.reviewOf[key!] ?? null }));
     return () => { const open = useNav.getState().pull; if (open && pullKey(open) === key) useNav.setState({ pull: null, reviewId: null }); };
-  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, shown]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!pull) return null;
   if (reviewId) return <ReviewEditor key={reviewId} id={reviewId} />;
   return <PullDetailView key={`${pull.account}:${pull.id}`} pull={pull} />;
@@ -111,7 +111,7 @@ function PullDetailView({ pull: initial }: { pull: PullRequest }) {
         <label className="pr-field">Milestone{options ? <select value={pull.milestone ?? ""} disabled={busy} onChange={(e) => void mutate("pulls.update", { patch: { milestone: e.target.value ? Number(e.target.value) : null } })}><option value="">None</option>{pull.milestone && !options.milestones.some((m) => m.number === pull.milestone) && <option value={pull.milestone}>{pull.milestone_title || `#${pull.milestone}`}</option>}{options.milestones.map((m) => <option key={m.number} value={m.number}>{m.title}</option>)}</select> : <span>{pull.milestone ? pull.milestone_title || `#${pull.milestone}` : "None"}</span>}</label>
         {detail?.project_error && <p className="pr-muted">{detail.project_error}</p>}
         {detail?.projects.map((item) => <section key={item.id}><h3>{item.project.title}</h3>{item.fieldValues.filter((v) => v.field).map((value) => <ProjectFieldControl key={value.field!.id} value={value} disabled={busy || !item.project.viewerCanUpdate} item={item} mutate={mutate} />)}</section>)}
-        {!!reviews?.length && <><h3>Previous pre-reviews</h3>{reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => useNav.setState({ reviewId: r.id })}>{r.status}{sourceLabel(r) && ` · ${sourceLabel(r)}`} · {new Date(r.created_at).toLocaleString()}</button>)}</>}
+        {!!reviews?.length && <><h3>Previous pre-reviews</h3>{reviews.map((r) => <button key={r.id} className="pr-history-row" data-hint onClick={() => showReview(r.id)}>{r.status}{sourceLabel(r) && ` · ${sourceLabel(r)}`} · {new Date(r.created_at).toLocaleString()}</button>)}</>}
       </aside></div>}
   </div>;
 }

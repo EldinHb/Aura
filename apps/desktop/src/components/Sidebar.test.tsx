@@ -264,7 +264,7 @@ it("navigates from the orchestrator when the selected worker was collapsed away 
 
 it("shows the session's agent, orchestrator mark and hidden workers on the second line, the title alone on the first", () => {
   orchestras();
-  useStore.setState({ collapsedOrchestras: ["o1"], sessions: { ...useStore.getState().sessions, w3: session("w3", "Worker 3", { group: "Work", orchestrator_id: "w2", pending_count: 1 }) } });
+  useStore.setState({ collapsedOrchestras: ["o1"], sessions: { ...useStore.getState().sessions, w3: session("w3", "Worker 3", { group: "Work", orchestrator_id: "w2" }) } });
   render(<Sidebar />);
   const row = document.querySelector('[data-session-id="o1"]')!;
   expect(row.querySelector(".title")?.textContent).toBe("Lead");
@@ -272,42 +272,45 @@ it("shows the session's agent, orchestrator mark and hidden workers on the secon
   expect(row.querySelector(".sub [aria-label=Orchestrator]")).toBeTruthy();
   const workers = row.querySelector(".sub .workers")!;
   expect(workers.textContent).toBe("+3");
-  // A hidden worker waits on the user.
-  expect(workers.classList.contains("warn")).toBe(true);
   expect(workers.getAttribute("title")).toBe("Worker 1\nWorker 2\nWorker 3");
   expect(document.querySelector('[data-session-id="p"] [aria-label=Orchestrator]')).toBeNull();
 });
 
-it("lists orchestrators in no group in their own section above the other sessions, with their workers under them", () => {
+it("lists sessions by state: waiting for you, working, idle; workers under their orchestrator while they share a state", () => {
   const list = [
     session("p", "Plain"),
-    session("o", "Chat", { orchestrator: true, folderless: true, cwd: "/data/orchestrators/o" }),
-    session("w", "Worker", { orchestrator_id: "o", cwd: "/work/repo" }),
+    session("o", "Chat", { orchestrator: true, folderless: true, cwd: "/data/orchestrators/o", status: "running" }),
+    session("w", "Worker", { orchestrator_id: "o", cwd: "/work/repo", status: "running" }),
+    session("done", "Worker done", { orchestrator_id: "o", attention: "done" }),
     session("g", "Grouped", { group: "G" }),
-    session("og", "Grouped lead", { group: "G", orchestrator: true }),
-    session("gw", "Grouped worker", { group: "G", orchestrator_id: "og" }),
-    session("old", "Lead with a folder", { orchestrator: true }),
+    session("ask", "Asks", { pending_count: 1 }),
   ];
   useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
   render(<Sidebar />);
-  expect(rows()).toEqual(["o", "w", "old", "p", "g", "og", "gw"]);
-  expect([...document.querySelectorAll(".section-title")].map((el) => el.textContent)).toEqual(["Orchestrators", "Sessions", "G"]);
+  expect(rows()).toEqual(["done", "ask", "o", "w", "p", "g"]);
+  expect([...document.querySelectorAll(".section-label")].map((el) => el.textContent)).toEqual(["Waiting for you", "Working", "Idle"]);
   expect(document.querySelector('[data-session-id="w"]')?.classList.contains("worker")).toBe(true);
-  // A plain session cannot be moved in among them, nor they out.
+  // A worker away from its orchestrator says whose it is; a group shows on the row.
+  expect(document.querySelector('[data-session-id="done"] .chip.lead')?.textContent).toBe("↳ Chat");
+  expect(document.querySelector('[data-session-id="w"] .chip.lead')).toBeNull();
+  expect(document.querySelector('[data-session-id="g"] .chip.group')?.textContent).toBe("G");
+  // Sessions move only within their state.
   act(() => useStore.getState().moveSessionTo("p", "o"));
-  act(() => useStore.getState().moveSessionTo("old", "p"));
-  expect(rows()).toEqual(["o", "w", "old", "p", "g", "og", "gw"]);
-  act(() => useStore.getState().moveSessionTo("old", "o"));
-  expect(rows()).toEqual(["old", "o", "w", "p", "g", "og", "gw"]);
+  expect(rows()).toEqual(["done", "ask", "o", "w", "p", "g"]);
+  act(() => useStore.getState().moveSessionTo("g", "p"));
+  expect(rows()).toEqual(["done", "ask", "o", "w", "g", "p"]);
+  // A session that starts working moves up to Working.
+  act(() => useStore.getState().upsertSession({ ...useStore.getState().sessions.p, status: "running" }));
+  // It keeps its place in the saved order: above the orchestra.
+  expect(rows()).toEqual(["done", "ask", "p", "o", "w", "g"]);
 });
 
-it("gives the ungrouped sessions no heading while there is no orchestrators section", () => {
+it("leaves out a state no session is in", () => {
   orchestras();
   const sessions = { ...useStore.getState().sessions, p: session("p", "Plain") };
   useStore.setState({ sessions });
   render(<Sidebar />);
-  expect([...document.querySelectorAll(".section-title")].map((el) => el.textContent)).toEqual(["Work"]);
-  expect(rows()[0]).toBe("p");
+  expect([...document.querySelectorAll(".section-label")].map((el) => el.textContent)).toEqual(["Idle"]);
 });
 
 it("shows no folder for an orchestrator that belongs to none, and its workers' folders", () => {
@@ -374,7 +377,7 @@ const heading = (label: string) => document.querySelector<HTMLButtonElement>(`.s
 it("lists the sessions scheduled tasks started on a tab of their own, by task, newest first", () => {
   scheduled();
   render(<Sidebar />);
-  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(rows()).toEqual(["g2", "a", "g1"]);
   expect(tab(/^Sessions/).getAttribute("aria-selected")).toBe("true");
   // The Scheduled tab says how many it lists, that one works, and what waits on the user there.
   expect(tab(/^Scheduled/).textContent).toContain("4");
@@ -398,7 +401,7 @@ it("lists the sessions scheduled tasks started on a tab of their own, by task, n
   // Another window switched back; this one follows.
   localStorage.setItem("aura.sidebar-tab.v1", "sessions");
   act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "aura.sidebar-tab.v1" })); });
-  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(rows()).toEqual(["g2", "a", "g1"]);
 });
 
 it("switches tabs with the arrow keys on the tabs and from the command, and shows the tab of a session selected elsewhere", () => {
@@ -422,18 +425,16 @@ it("switches tabs with the arrow keys on the tabs and from the command, and show
 it("folds a section by its heading, says what is in it, and keeps that across a restart", () => {
   scheduled();
   render(<Sidebar />);
-  expect(heading("Work").getAttribute("aria-expanded")).toBe("true");
-  fireEvent.click(heading("Work"));
-  expect(rows()).toEqual(["a"]);
-  expect(heading("Work").getAttribute("aria-expanded")).toBe("false");
-  expect(heading("Work").querySelector(".section-count")?.textContent).toBe("2");
-  // One of them works.
-  expect(heading("Work").querySelector(".dot.pulse")).not.toBeNull();
-  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed-groups.v1")!)).toEqual(["sessions:Work"]);
+  expect(heading("Idle").getAttribute("aria-expanded")).toBe("true");
+  fireEvent.click(heading("Idle"));
+  expect(rows()).toEqual(["g2"]);
+  expect(heading("Idle").getAttribute("aria-expanded")).toBe("false");
+  expect(heading("Idle").querySelector(".section-count")?.textContent).toBe("2");
+  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed-groups.v1")!)).toEqual(["sessions:\u0000state:idle"]);
   act(() => useStore.setState({ collapsedGroups: [] }));
-  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(rows()).toEqual(["g2", "a", "g1"]);
   act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "aura.sidebar-collapsed-groups.v1" })); });
-  expect(rows()).toEqual(["a"]);
+  expect(rows()).toEqual(["g2"]);
 
   // Each tab folds its own; a folded task shows what waits on the user in it.
   fireEvent.click(tab(/^Scheduled/));
@@ -441,16 +442,16 @@ it("folds a section by its heading, says what is in it, and keeps that across a 
   expect(rows()).toEqual(["o", "ow"]);
   expect(heading("Nightly").querySelector(".badge")?.textContent).toBe("2");
   expect(heading("Nightly").querySelector(".attention.waiting")).not.toBeNull();
-  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed-groups.v1")!)).toEqual(["sessions:Work", "scheduled:\u0000task:t1"]);
+  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed-groups.v1")!)).toEqual(["sessions:\u0000state:idle", "scheduled:\u0000task:t1"]);
   // A filter shows what matches in folded sections too.
   act(() => useStore.setState({ sidebarFilter: "nightly" }));
   expect(rows()).toEqual(["n2", "n1"]);
   act(() => useStore.setState({ sidebarFilter: "" }));
 
   // Selecting a session in a folded section, from ⌘K or a notification, unfolds it.
-  act(() => useStore.getState().select("g2"));
+  act(() => useStore.getState().select("g1"));
   expect(useStore.getState().sidebarTab).toBe("sessions");
-  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(rows()).toEqual(["g2", "a", "g1"]);
   expect(useStore.getState().collapsedGroups).toEqual(["scheduled:\u0000task:t1"]);
 });
 
@@ -459,27 +460,23 @@ it("folds and unfolds sections with left and right, and steps past a folded one"
   render(<Sidebar />);
   act(() => useStore.getState().select("g1"));
   press("sidebar.nav.collapse");
-  expect(rows()).toEqual(["a"]);
+  expect(rows()).toEqual(["g2"]);
   // The cursor stays on its row; the heading stands in for it.
   expect(useStore.getState().sidebarCursor).toBe("g1");
-  expect(heading("Work").closest(".section-heading")?.classList.contains("cursor")).toBe(true);
+  expect(heading("Idle").closest(".section-heading")?.classList.contains("cursor")).toBe(true);
   press("sidebar.nav.up");
-  expect(current()).toBe("a");
+  expect(current()).toBe("g2");
   // Selecting by keyboard does not unfold what the cursor only passes.
-  expect(rows()).toEqual(["a"]);
+  expect(rows()).toEqual(["g2"]);
   act(() => useStore.getState().setSidebarCursor("g1"));
   press("sidebar.nav.expand");
-  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(rows()).toEqual(["g2", "a", "g1"]);
   // On a focused heading, left and right fold and unfold that section.
-  act(() => heading("Work").focus());
+  act(() => heading("Idle").focus());
   press("sidebar.nav.collapse");
-  expect(heading("Work").getAttribute("aria-expanded")).toBe("false");
+  expect(heading("Idle").getAttribute("aria-expanded")).toBe("false");
   press("sidebar.nav.expand");
-  expect(heading("Work").getAttribute("aria-expanded")).toBe("true");
-  // The ungrouped sessions at the top have no heading, so nothing to fold.
-  act(() => { (document.activeElement as HTMLElement).blur(); useStore.getState().select("a"); });
-  press("sidebar.nav.collapse");
-  expect(rows()).toEqual(["a", "g1", "g2"]);
+  expect(heading("Idle").getAttribute("aria-expanded")).toBe("true");
 });
 
 it("opens the scheduled task from its heading on the Scheduled tab", () => {
@@ -497,8 +494,8 @@ it("opens the scheduled task from its heading on the Scheduled tab", () => {
 
 it("lets ⌘K pick from both tabs, folded sections included", () => {
   scheduled();
-  useStore.setState({ collapsedGroups: ["sessions:Work"] });
+  useStore.setState({ collapsedGroups: ["sessions:\u0000state:idle"] });
   render(<Sidebar />);
-  expect(rows()).toEqual(["a"]);
-  expect(selectListedSessions(useStore.getState()).map((s) => s.id)).toEqual(["a", "g1", "g2", "n2", "n1", "o", "ow"]);
+  expect(rows()).toEqual(["g2"]);
+  expect(selectListedSessions(useStore.getState()).map((s) => s.id)).toEqual(["g2", "a", "g1", "n2", "n1", "o", "ow"]);
 });

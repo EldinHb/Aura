@@ -1,7 +1,11 @@
 import { registerScheduleCommands, useScheduleSync } from "./features/schedules/state";
 import "./features/schedules/schedules.css";
 import { useModLoader } from "./mods/loader";
-import { ModMainView } from "./mods/Slots";
+import { useWaitingSound } from "./state/waitingSound";
+import { ModView } from "./mods/Slots";
+import { MainTabs, TabPane } from "./components/MainTabs";
+import { registerTabCommands } from "./commands/tabs";
+import type { Tab } from "./state/tabs";
 import { slots } from "./mods/registry";
 import "./mods/mods.css";
 import { useEffect } from "react";
@@ -37,18 +41,19 @@ export default function App() {
   useKeyboard();
   // Mods' interfaces: loaded once connected, followed as they change.
   useModLoader();
+  // A sound when a session goes from working to waiting for you; the main window plays it.
+  useWaitingSound(windowMode !== "session");
   useScheduleSync();
   useMarkViewedSeen();
   const inbox = useInboxCount();
   const connection = useStore((s) => s.connection);
   const connectionError = useStore((s) => s.connectionError);
   const selected = useStore(selectSelected);
-  const session = useStore((s) => s.selectedId ? s.sessions[s.selectedId] : null);
-  // An orchestrator showing its threads with its workers rather than its chat.
-  const threads = useWorkerThreads((s) => (session?.orchestrator ? s.views[session.id]?.tab === "workers" : false));
-  // A feature owner showing its team, which the user opened.
-  const team = useWorkerThreads((s) => (session?.feature_owner ? s.views[session.id]?.tab === "team" : false));
-  // A mod's view (a pull request, say) in place of the selected session.
+  // The main area's tabs: sessions and mods' views (a pull request, say), each kept open in its own.
+  const tabs = useStore((s) => s.tabs);
+  const activeTab = useStore((s) => s.activeTab);
+  // A detached window shows its one session, without a tab strip.
+  const shownTabs = windowMode === "session" ? tabs.filter((t) => t.key === activeTab) : tabs;
   const modViewOpen = useStore((s) => s.modView !== null);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
   const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !modViewOpen;
@@ -75,8 +80,9 @@ export default function App() {
     setCommandErrorHandler((msg) => useStore.getState().toast(msg, "error"));
     registerGitCommands();
     const offCore = registerCoreCommands();
+    const offTabs = registerTabCommands();
     const offSchedules = registerScheduleCommands();
-    return () => { offCore(); offSchedules(); };
+    return () => { offCore(); offTabs(); offSchedules(); };
   }, []);
 
   // Connect + subscribe.
@@ -184,15 +190,19 @@ export default function App() {
       <div className={clsx("body", sidebarCollapsed && "no-sidebar", !inspectorOpen && "no-inspector")}>
         {!sidebarCollapsed && <Sidebar />}
         <div className={clsx("region main", (focus === "main" || focus === "composer") && "focused")} data-region="main" tabIndex={-1}>
-          {modViewOpen && <ModMainView />}
-          <div className="session-workspace" hidden={modViewOpen}>
-          {connection !== "open" && !session ? (
+          {windowMode !== "session" && <MainTabs />}
+          {shownTabs.map((tab) => (
+            <TabPane key={tab.key} tabKey={tab.key} active={tab.key === activeTab}>
+              <TabContent tab={tab} active={tab.key === activeTab} />
+            </TabPane>
+          ))}
+          {!shownTabs.some((t) => t.key === activeTab) && (connection !== "open" ? (
             <div className="empty">
               <h2>{connection === "connecting" ? "Connecting to the Aura daemon…" : "Not connected"}</h2>
               {connectionError && <code>{connectionError}</code>}
               {connection === "closed" && <span>Start it with <code>aura daemon start</code>, then reload with <kbd>⌘R</kbd>.</span>}
             </div>
-          ) : !session ? (
+          ) : (
             <div className="empty">
               <h2>Aura</h2>
               <div className="hint">
@@ -202,22 +212,38 @@ export default function App() {
                 <span><kbd>?</kbd> help</span>
               </div>
             </div>
-          ) : session.mode === "terminal" ? (
-            <TerminalView key={session.id} sessionId={session.id} />
-          ) : (
-            <>
-              {session.orchestrator && <OrchestratorTabs orchestratorId={session.id} />}
-              {team ? <TeamView key={`t-${session.id}`} ownerId={session.id} /> : threads ? <WorkerThreads key={`w-${session.id}`} orchestratorId={session.id} /> : <Transcript key={session.id} sessionId={session.id} />}
-              <Composer key={`c-${session.id}`} sessionId={session.id} />
-            </>
-          )}
-          </div>
+          ))}
         </div>
         {inspectorOpen && <Inspector sessionId={selectedId} />}
       </div>
       <StatusBar />
       <Overlays />
     </div>
+  );
+}
+
+/** What a main-area tab shows. */
+function TabContent({ tab, active }: { tab: Tab; active: boolean }) {
+  const closeTab = useStore((s) => s.closeTab);
+  if (tab.kind === "session") return <SessionPane sessionId={tab.sessionId} />;
+  return <ModView modId={tab.modId} viewId={tab.viewId} props={tab.props} close={() => closeTab(tab.key)} active={active} />;
+}
+
+/** A session's tab: its terminal, or its transcript (or an orchestrator's threads, a feature owner's team) and composer. */
+function SessionPane({ sessionId }: { sessionId: string }) {
+  const session = useStore((s) => s.sessions[sessionId]);
+  // An orchestrator showing its threads with its workers rather than its chat.
+  const threads = useWorkerThreads((s) => (session?.orchestrator ? s.views[session.id]?.tab === "workers" : false));
+  // A feature owner showing its team, which the user opened.
+  const team = useWorkerThreads((s) => (session?.feature_owner ? s.views[session.id]?.tab === "team" : false));
+  if (!session) return <div className="empty"><span>Loading session…</span></div>;
+  if (session.mode === "terminal") return <TerminalView key={session.id} sessionId={session.id} />;
+  return (
+    <>
+      {session.orchestrator && <OrchestratorTabs orchestratorId={session.id} />}
+      {team ? <TeamView key={`t-${session.id}`} ownerId={session.id} /> : threads ? <WorkerThreads key={`w-${session.id}`} orchestratorId={session.id} /> : <Transcript key={session.id} sessionId={session.id} />}
+      <Composer key={`c-${session.id}`} sessionId={session.id} />
+    </>
   );
 }
 

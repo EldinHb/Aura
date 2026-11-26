@@ -21,6 +21,8 @@ const normalizeSession = (session: Session): Session => ({ ...session, attention
 import { folderOf } from "../lib/sessionFolder";
 import { planContent, type SessionPlan } from "../views/sessionPlans";
 import { dropFeature, setFeature, setRoleSuggestions } from "./features";
+import * as T from "./tabs";
+import type { Tab, TabTarget } from "./tabs";
 
 export type Notice = { id: string; level: "info" | "warn" | "error"; message: string; ts: number };
 
@@ -42,6 +44,8 @@ export type Transcript = {
 };
 
 export type ModView = { modId: string; id: string; props?: unknown };
+
+export type WaitingSound = "chime" | "bell" | "pop" | "soft" | "custom" | "none";
 
 export type FocusRegion = "sidebar" | "main" | "composer" | "inspector";
 
@@ -87,9 +91,21 @@ export type AppState = {
   providers: ProviderInfo[];
   sessions: Record<string, Session>;
   sessionOrder: string[];
+  /**
+   * The session on screen: the active tab's when it is a session tab. Kept while a
+   * mod tab is active (the last session shown), null when no tab is active.
+   */
   selectedId: string | null;
-  /** A mod's main-area view, shown instead of the selected session. */
+  /** A mod's main-area view, shown instead of the selected session: the active tab's when it is a mod tab. */
   modView: ModView | null;
+  /** The main area's tabs, left to right (see state/tabs.ts). Saved across restarts. */
+  tabs: Tab[];
+  /** Key of the tab shown, null when none is. */
+  activeTab: string | null;
+  /** Tab keys, least recently active first; the tab cap closes from the front. */
+  recentTabs: string[];
+  /** Tabs the user closed, the latest last, for `reopenClosedTab`. */
+  closedTabs: Tab[];
   transcripts: Record<string, Transcript>;
   // ui
   focus: FocusRegion;
@@ -125,7 +141,26 @@ export type AppState = {
   moveSessionTo: (id: string, targetId: string) => void;
   /** Move a session one row up (-1) or down (1) within its group. */
   moveSessionBy: (id: string, delta: -1 | 1) => void;
+  /** Show session `id` in its tab, opened as a preview tab if it has none; null shows no tab. */
   select: (id: string | null) => void;
+  /** Show `target` in its tab; a new one is a preview tab unless `preview` is false. */
+  openTab: (target: TabTarget, opts?: { preview?: boolean }) => void;
+  activateTab: (key: string) => void;
+  /** Close the tab `key`, by default the active one. */
+  closeTab: (key?: string) => void;
+  /** Make the tab `key` (by default the active one) a normal tab rather than a preview. */
+  keepTab: (key?: string) => void;
+  reopenClosedTab: () => void;
+  /** Activate the tab `delta` places right (left when negative), wrapping around. */
+  cycleTab: (delta: number) => void;
+  /** Activate tab `n`, counting from 1; 9 is the last. */
+  goToTab: (n: number) => void;
+  /** Move the tab `key` to position `index`. */
+  moveTab: (key: string, index: number) => void;
+  /** Close every tab of mod `modId` (it unloaded). */
+  closeModTabs: (modId: string) => void;
+  /** Put back the tabs saved at the last run (see `TABS_KEY`); done once sessions are loaded. */
+  restoreTabs: () => void;
   applyEvent: (ev: Event) => void;
   loadHistory: (id: string, events: StoredEvent[]) => void;
   ensureTranscript: (id: string) => void;
@@ -170,6 +205,14 @@ export type UiSettings = {
   /** The message box formats markdown as you type; off, it is a plain markdown textbox. */
   composerRich: boolean;
   summonShortcut: string;
+  /** Played when a session goes from working to waiting for you; "custom" plays `waitingSoundFile`. */
+  waitingSound: WaitingSound;
+  /** 0 to 1. */
+  waitingSoundVolume: number;
+  /** A data: URL of the user's own sound. */
+  waitingSoundFile: string | null;
+  /** Also while Aura is in front and the session is the one on screen. */
+  waitingSoundWhenViewing: boolean;
 };
 
 export const defaultSettings: UiSettings = {
@@ -185,6 +228,10 @@ export const defaultSettings: UiSettings = {
   showReasoning: true,
   composerRich: true,
   summonShortcut: "CmdOrCtrl+Shift+A",
+  waitingSound: "chime",
+  waitingSoundVolume: 0.6,
+  waitingSoundFile: null,
+  waitingSoundWhenViewing: false,
 };
 
 export function emptyTranscript(): Transcript {
@@ -303,6 +350,35 @@ const COLLAPSED_KEY = "aura.sidebar-collapsed.v1";
 const TAB_KEY = "aura.sidebar-tab.v1";
 const GROUPS_KEY = "aura.sidebar-collapsed-groups.v1";
 
+/** A detached single-session window (`?window=session`): one tab, never saved, so it leaves the main window's tabs alone. */
+const detachedWindow = typeof location !== "undefined" && new URLSearchParams(location.search).get("window") === "session";
+/** The saved tabs come back once, when the sessions first load; until then nothing overwrites them. */
+let tabsRestorePending = !detachedWindow;
+
+function tabsOf(st: AppState): T.TabsState {
+  return { tabs: st.tabs, activeTab: st.activeTab, recentTabs: st.recentTabs, closedTabs: st.closedTabs };
+}
+
+/**
+ * The store fields for tabs `next`. When the tab shown changes, `selectedId` /
+ * `modView` follow it: a session tab selects its session, a mod tab opens its view
+ * (the last session stays selected underneath), no tab selects nothing.
+ */
+function tabsPatch(st: AppState, next: T.TabsState): Partial<AppState> {
+  if (detachedWindow) next = { ...next, tabs: next.tabs.filter((t) => t.key === next.activeTab), recentTabs: [], closedTabs: [] };
+  const patch: Partial<AppState> = { tabs: next.tabs, activeTab: next.activeTab, recentTabs: next.recentTabs, closedTabs: next.closedTabs };
+  const before = st.tabs.find((t) => t.key === st.activeTab);
+  const after = next.tabs.find((t) => t.key === next.activeTab);
+  if (before !== after) {
+    if (!after) Object.assign(patch, { selectedId: null, modView: null });
+    else if (after.kind === "session") Object.assign(patch, { selectedId: after.sessionId, modView: null, sidebarCursor: after.sessionId });
+    else Object.assign(patch, { modView: { modId: after.modId, id: after.viewId, props: after.props } });
+    if (before?.key !== after?.key) patch.cursorItemId = null;
+  }
+  if (!detachedWindow && !tabsRestorePending && (next.tabs !== st.tabs || next.activeTab !== st.activeTab)) T.saveTabs(next);
+  return patch;
+}
+
 export const useStore = create<AppState>((set, get) => ({
   client: null,
   connection: "closed",
@@ -313,6 +389,10 @@ export const useStore = create<AppState>((set, get) => ({
   sessionOrder: loadOrder(),
   selectedId: null,
   modView: null,
+  tabs: [],
+  activeTab: null,
+  recentTabs: [],
+  closedTabs: [],
   transcripts: {},
   focus: "sidebar",
   paletteOpen: false,
@@ -343,19 +423,34 @@ export const useStore = create<AppState>((set, get) => ({
       sessionOrder: saveOrder(mergeOrder(get().sessionOrder, list)),
       collapsedOrchestras: saveCollapsed(get().collapsedOrchestras.filter((c) => sessions[c])),
     });
+    if (tabsRestorePending) get().restoreTabs();
+    // Tabs of sessions deleted while Aura was away close.
+    const st = get();
+    const cur = tabsOf(st);
+    const next = T.dropTabs(cur, (t) => t.kind === "session" && !sessions[t.sessionId]);
+    if (next !== cur) set(tabsPatch(st, next));
   },
   upsertSession: (s) => {
+    const prev = get().sessions[s.id];
     const sessions = { ...get().sessions, [s.id]: normalizeSession(s) };
     const order = get().sessionOrder;
     set(order.includes(s.id) ? { sessions } : { sessions, sessionOrder: saveOrder([...order, s.id]) });
+    // Archiving a session closes its tab.
+    if (prev && !prev.archived && s.archived) {
+      const st = get();
+      set(tabsPatch(st, T.dropTabs(tabsOf(st), (t) => t.kind === "session" && t.sessionId === s.id)));
+    }
   },
   removeSession: (id) => {
-    const { [id]: _gone, ...sessions } = get().sessions;
+    const st = get();
+    const { [id]: _gone, ...sessions } = st.sessions;
     void _gone;
-    const { [id]: _t, ...transcripts } = get().transcripts;
+    const { [id]: _t, ...transcripts } = st.transcripts;
     void _t;
-    const selectedId = get().selectedId === id ? null : get().selectedId;
-    set({ sessions, transcripts, selectedId, sessionOrder: saveOrder(get().sessionOrder.filter((o) => o !== id)) });
+    // Its tab closes, and the tab next to it shows.
+    const tabs = tabsPatch(st, T.dropTabs(tabsOf(st), (t) => t.kind === "session" && t.sessionId === id));
+    const selectedId = "selectedId" in tabs ? tabs.selectedId : st.selectedId === id ? null : st.selectedId;
+    set({ ...tabs, sessions, transcripts, selectedId, sessionOrder: saveOrder(st.sessionOrder.filter((o) => o !== id)) });
   },
   moveSessionTo: (id, targetId) => {
     const st = get();
@@ -385,10 +480,61 @@ export const useStore = create<AppState>((set, get) => ({
     const tab = s ? tabOf(s, st.sessions) : st.sidebarTab;
     const key = s ? groupKey(tab, sectionIn(s, st)) : null;
     const groups = key && st.collapsedGroups.includes(key) ? saveIds(GROUPS_KEY, st.collapsedGroups.filter((g) => g !== key)) : st.collapsedGroups;
+    // Its tab shows, opened as a preview tab when it has none (see state/tabs.ts).
+    const tabs = id ? T.openTab(tabsOf(st), { kind: "session", sessionId: id }, true) : T.activateTab(tabsOf(st), null);
     set({
+      ...tabsPatch(st, tabs),
       modView: null, selectedId: id, cursorItemId: null, sidebarCursor: id,
       collapsedOrchestras: revealIn(st, id), collapsedGroups: groups, sidebarTab: tab === st.sidebarTab ? tab : saveTab(tab),
     });
+  },
+  openTab: (target, opts) => {
+    if (target.kind === "session" && opts?.preview !== false) return get().select(target.sessionId);
+    const st = get();
+    set(tabsPatch(st, T.openTab(tabsOf(st), target, opts?.preview ?? true)));
+    if (target.kind === "session") get().select(target.sessionId);
+  },
+  activateTab: (key) => {
+    const st = get();
+    const tab = st.tabs.find((t) => t.key === key);
+    // A session tab shows the way `select` shows it, unfolding its place in the sidebar.
+    if (tab?.kind === "session") return get().select(tab.sessionId);
+    set(tabsPatch(st, T.activateTab(tabsOf(st), key)));
+  },
+  closeTab: (key) => {
+    const st = get();
+    set(tabsPatch(st, T.closeTab(tabsOf(st), key ?? st.activeTab)));
+  },
+  keepTab: (key) => {
+    const st = get();
+    set(tabsPatch(st, T.keepTab(tabsOf(st), key ?? st.activeTab)));
+  },
+  reopenClosedTab: () => {
+    const st = get();
+    set(tabsPatch(st, T.reopenTab(tabsOf(st), (t) => t.kind !== "session" || !!st.sessions[t.sessionId])));
+  },
+  cycleTab: (delta) => {
+    const next = T.cycleTab(tabsOf(get()), delta);
+    if (next.activeTab) get().activateTab(next.activeTab);
+  },
+  goToTab: (n) => {
+    const next = T.nthTab(tabsOf(get()), n);
+    if (next.activeTab) get().activateTab(next.activeTab);
+  },
+  moveTab: (key, index) => {
+    const st = get();
+    set(tabsPatch(st, T.moveTab(tabsOf(st), key, index)));
+  },
+  closeModTabs: (modId) => {
+    const st = get();
+    set(tabsPatch(st, T.dropTabs(tabsOf(st), (t) => t.kind === "mod" && t.modId === modId)));
+  },
+  restoreTabs: () => {
+    if (detachedWindow) return;
+    tabsRestorePending = false;
+    const saved = T.loadSavedTabs();
+    const st = get();
+    if (saved) set(tabsPatch(st, T.restoreTabs(tabsOf(st), saved, (id) => !!st.sessions[id])));
   },
   ensureTranscript: (id) => {
     if (!get().transcripts[id]) set({ transcripts: { ...get().transcripts, [id]: emptyTranscript() } });
@@ -456,8 +602,18 @@ export const useStore = create<AppState>((set, get) => ({
   setHintMode: (hintMode) => set({ hintMode }),
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: { kind: "none" } }),
-  openModView: (modView) => set({ modView }),
-  closeModView: () => set({ modView: null }),
+  // A mod's view opens in its own tab (a preview tab when new); the same view with the same props finds its tab.
+  openModView: (v) => {
+    const st = get();
+    set({ ...tabsPatch(st, T.openTab(tabsOf(st), { kind: "mod", modId: v.modId, viewId: v.id, props: v.props }, true)), modView: v });
+  },
+  // Closes the mod tab shown.
+  closeModView: () => {
+    const st = get();
+    const active = st.tabs.find((t) => t.key === st.activeTab);
+    if (active?.kind === "mod") set(tabsPatch(st, T.closeTab(tabsOf(st), active.key)));
+    else set({ modView: null });
+  },
   toast: (message, level = "info") => {
     const id = toastId++;
     set({ toasts: [...get().toasts, { id, level, message }] });
@@ -513,8 +669,7 @@ export function mergeOrder(order: string[], list: Session[]): string[] {
  * and workers among the workers of the same orchestrator.
  */
 export function canReorder(a: Session, b: Session): boolean {
-  const ownSection = (s: Session) => !!s.orchestrator && !s.group && !s.orchestrator_id;
-  return (a.group ?? "") === (b.group ?? "") && a.pinned === b.pinned && (a.orchestrator_id ?? null) === (b.orchestrator_id ?? null) && ownSection(a) === ownSection(b);
+  return categoryOf(a) === categoryOf(b) && a.pinned === b.pinned && (a.orchestrator_id ?? null) === (b.orchestrator_id ?? null);
 }
 
 function loadOrder(): string[] {
@@ -648,6 +803,25 @@ function saveSettings(s: UiSettings) {
 export const ORCHESTRATORS_SECTION = "\u0000orchestrators";
 /** Start of the key of a section of the Scheduled tab: the sessions one task started. */
 export const TASK_SECTION = "\u0000task:";
+/** Start of the key of a section of the Sessions tab: the sessions in one state (see `categoryOf`). */
+export const STATE_SECTION = "\u0000state:";
+
+/**
+ * Where a session stands for the user, which sorts the Sessions tab:
+ * - `waiting`: it needs the user — a question or approval is open, or its work
+ *   finished (or failed) and the user has not looked since;
+ * - `working`: its agent is busy (a worker under an orchestrator counts on its own);
+ * - `idle`: nothing is going on and nothing is new.
+ */
+export type SessionCategory = "waiting" | "working" | "idle";
+export const CATEGORIES: SessionCategory[] = ["waiting", "working", "idle"];
+export const CATEGORY_LABEL: Record<SessionCategory, string> = { waiting: "Waiting for you", working: "Working", idle: "Idle" };
+
+export function categoryOf(s: Pick<Session, "status" | "attention" | "pending_count">): SessionCategory {
+  if (s.pending_count > 0 || s.status === "waiting_approval" || s.status === "waiting_input" || s.attention) return "waiting";
+  if (s.status === "running") return "working";
+  return "idle";
+}
 
 /** The key a folded section is saved under: the tab, then the section. */
 export function groupKey(tab: SidebarTab, section: string): string {
@@ -676,7 +850,7 @@ export function tabOf(s: Session, sessions: Record<string, Session>): SidebarTab
 function sectionIn(s: Session, st: AppState): string {
   const task = scheduledTaskOf(s, st.sessions);
   if (task) return TASK_SECTION + task;
-  return sectionOf(s, new Map(Object.entries(st.sessions)));
+  return STATE_SECTION + categoryOf(s);
 }
 
 /**
@@ -733,13 +907,10 @@ export function selectSessionSections(st: AppState, withCollapsed = false, tab: 
       sections.get(key)!.push(s);
     }
   } else {
-    const byId = new Map(shown.map((s) => [s.id, s]));
-    sections.set(ORCHESTRATORS_SECTION, []).set("", []);
-    for (const s of shown) {
-      const key = sectionOf(s, byId);
-      if (!sections.has(key)) sections.set(key, []);
-      sections.get(key)!.push(s);
-    }
+    // By state: what waits on the user, what works, what is idle. A worker
+    // stays under its orchestrator only while both are in the same state.
+    for (const c of CATEGORIES) sections.set(STATE_SECTION + c, []);
+    for (const s of shown) sections.get(STATE_SECTION + categoryOf(s))!.push(s);
   }
   const keys = [...sections].filter(([, list]) => list.length > 0).map(([g]) => g);
   const folded = new Set(withCollapsed || q ? [] : st.collapsedGroups);

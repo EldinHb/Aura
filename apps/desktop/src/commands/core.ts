@@ -26,12 +26,19 @@ function selected() {
   return s;
 }
 
+/** The first `selector` match that is not in a hidden main-area tab. */
+export function shownElement<E extends Element = HTMLElement>(selector: string, root: ParentNode = document): E | null {
+  return [...root.querySelectorAll<E>(selector)].find((e) => !e.closest("[data-tab-pane][hidden]")) ?? null;
+}
+
 export function focusRegionEl(region: string) {
-  const el = document.querySelector<HTMLElement>(`[data-region="${region}"]`);
-  if (!el) return;
+  const regionEl = shownElement(`[data-region="${region}"]`);
+  if (!regionEl) return;
+  // In the main area, the tab shown; the others stay mounted, hidden.
+  const el = (region === "main" ? regionEl.querySelector<HTMLElement>("[data-tab-pane]:not([hidden])") : null) ?? regionEl;
   // A question waiting on the user takes the keyboard before the transcript does.
-  const target = (region === "main" ? el.querySelector<HTMLElement>("[data-input-id]") : null) ?? el.querySelector<HTMLElement>("[data-autofocus]") ?? el;
-  if (region === "main" && st().sessions[st().selectedId ?? ""]?.mode === "terminal") {
+  const target = (region === "main" ? shownElement("[data-input-id]", el) : null) ?? shownElement("[data-autofocus]", el) ?? regionEl;
+  if (region === "main" && selectSelected(st())?.mode === "terminal") {
     const xt = el.querySelector<HTMLElement>(".xterm-helper-textarea");
     if (xt) {
       xt.focus();

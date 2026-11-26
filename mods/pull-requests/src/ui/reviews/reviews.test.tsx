@@ -52,13 +52,13 @@ it("sends the confirmed replacement prompt, model and effort, then opens the pre
   fireEvent.click(screen.getByRole("button", { name: "Start pre-review" }));
   await waitFor(() => expect(fake.rpc).toHaveBeenCalledWith("reviews.start", expect.objectContaining({ config: expect.objectContaining({ prompt_mode: "replace", prompt: "Check edge cases", model: "review-model", effort: "high" }) })));
   await waitFor(() => expect(close).toHaveBeenCalled());
-  expect(fake.view()).toEqual({ id: VIEW_PULL, props: { pull: pullFixture } });
+  expect(fake.view()).toEqual({ id: VIEW_PULL, props: expect.objectContaining({ pull: pullFixture }) });
   expect(useNav.getState().reviewId).toBe(reviewFixture.id);
 });
 
 it("opens a PR as the mod's view, marks it while it shows and forgets it when it closes", () => {
   openPull(pullFixture);
-  expect(fake.view()).toEqual({ id: VIEW_PULL, props: { pull: pullFixture } });
+  expect(fake.view()).toEqual({ id: VIEW_PULL, props: expect.objectContaining({ pull: pullFixture }) });
   expect(useStore.getState().focus).toBe("main");
   fake.rpc.mockImplementation(() => new Promise(() => {}));
   const { unmount } = render(<><ReviewSidebar /><PullPage props={{ pull: pullFixture }} close={() => {}} /></>);

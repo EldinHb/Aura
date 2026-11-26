@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session } from "../gen";
-import { ORCHESTRATORS_SECTION, selectSessionSections, selectVisibleSessions, useStore } from "./store";
+import { STATE_SECTION, selectSessionSections, selectVisibleSessions, useStore } from "./store";
 
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false, pending_count: 0,
@@ -24,10 +24,13 @@ describe("session order", () => {
     expect(visible()).toEqual(["a", "b", "c"]);
   });
 
-  it("does not reorder on activity", () => {
+  it("does not reorder on activity within a state", () => {
     useStore.getState().setSessions([session("a"), session("b")]);
-    useStore.getState().upsertSession(session("b", { last_activity: "2026-10-01T00:00:00Z", status: "running" }));
+    useStore.getState().upsertSession(session("b", { last_activity: "2026-10-01T00:00:00Z" }));
     expect(visible()).toEqual(["a", "b"]);
+    // Starting to work moves it to the Working section, above the idle ones.
+    useStore.getState().upsertSession(session("b", { status: "running" }));
+    expect(visible()).toEqual(["b", "a"]);
   });
 
   it("keeps the saved order across a reload and drops removed sessions", () => {
@@ -39,17 +42,17 @@ describe("session order", () => {
     expect(visible()).toEqual(["c", "a"]);
   });
 
-  it("moves up and down only within the same group", () => {
-    useStore.getState().setSessions([session("a"), session("b", { group: "x" }), session("c", { group: "x" }), session("d")]);
-    // Ungrouped first, then groups; the displayed order is the ⌘-number order.
-    expect(visible()).toEqual(["a", "d", "b", "c"]);
-    useStore.getState().moveSessionBy("b", -1);
-    expect(visible()).toEqual(["a", "d", "b", "c"]);
-    useStore.getState().moveSessionTo("a", "b");
-    expect(visible()).toEqual(["a", "d", "b", "c"]);
+  it("moves up and down only within the same state", () => {
+    useStore.getState().setSessions([session("a"), session("b", { status: "running" }), session("c", { status: "running" }), session("d")]);
+    // Working first, then idle; the displayed order is the ⌘-number order.
+    expect(visible()).toEqual(["b", "c", "a", "d"]);
+    useStore.getState().moveSessionBy("a", -1);
+    expect(visible()).toEqual(["b", "c", "a", "d"]);
+    useStore.getState().moveSessionTo("a", "c");
+    expect(visible()).toEqual(["b", "c", "a", "d"]);
     useStore.getState().moveSessionBy("c", -1);
     useStore.getState().moveSessionBy("a", 1);
-    expect(visible()).toEqual(["d", "a", "c", "b"]);
+    expect(visible()).toEqual(["c", "b", "d", "a"]);
   });
 
   it("puts a new group below the existing ones", () => {
@@ -76,7 +79,7 @@ describe("session order", () => {
     expect(visible()).toEqual(["b", "a", "d", "c", "e"]);
   });
 
-  it("puts orchestrators in no group first, in a section of their own with their workers", () => {
+  it("groups no longer make sections: every idle session is in one", () => {
     useStore.getState().setSessions([
       session("a"),
       session("b", { orchestrator: true }),
@@ -84,12 +87,8 @@ describe("session order", () => {
       session("d", { group: "g", orchestrator: true }),
       session("e", { orchestrator_id: "d" }),
     ]);
-    // A worker in another group than its orchestrator's stays in its own.
-    expect(useStore.getState().sessions.e.group).toBeNull();
     expect(selectSessionSections(useStore.getState()).map(([key, list]) => [key, list.map((s) => s.id)])).toEqual([
-      [ORCHESTRATORS_SECTION, ["b", "c"]],
-      ["", ["a", "e"]],
-      ["g", ["d"]],
+      [STATE_SECTION + "idle", ["a", "b", "c", "d", "e"]],
     ]);
   });
 

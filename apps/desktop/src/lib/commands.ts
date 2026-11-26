@@ -30,6 +30,10 @@ export type CommandContext = {
   pending: number;
   running: boolean;
   isMac: boolean;
+  /** The main area has a tab open. */
+  hasTabs?: boolean;
+  /** The tab shown is a preview tab. */
+  previewTab?: boolean;
 };
 
 export type Command = {
@@ -108,7 +112,7 @@ export function setCommandErrorHandler(h: (msg: string) => void) {
  *   mode:terminal      ctx.mode === "terminal"
  *   provider:claude    ctx.provider === "claude"
  *   pending            ctx.pending > 0
- *   hasSelection, hasFolder, orchestrator, featureOwner, worker, modeLocked, running, terminalFocused, inputFocused, dialogOpen, widgetFocused, paletteOpen
+ *   hasSelection, hasFolder, orchestrator, featureOwner, worker, modeLocked, running, terminalFocused, inputFocused, dialogOpen, widgetFocused, paletteOpen, hasTabs, previewTab
  *   focus:sidebar|main  alternatives with |
  */
 export function evaluateWhen(expr: string | undefined, ctx: CommandContext): boolean {
