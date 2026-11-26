@@ -319,7 +319,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aura-cli"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "aura-core",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "aura-core"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "aura-desktop"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "aura-core",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "aura-git"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "aura-github"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "aura-provider-acp"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "aura-provider-claude"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "aura-provider-codex"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "aura-pty"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "bytes",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "aura-review"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "aura-rpc"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "aura-store"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "aura-terminal"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "aurad"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "anyhow",
  "aura-core",
