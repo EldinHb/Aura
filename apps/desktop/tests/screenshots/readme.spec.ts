@@ -151,7 +151,7 @@ async function mockDaemon(page: Page) {
         case "git.branch_status": result = null; break;
         case "git.status": case "git.diff_stat": case "git.log": case "git.worktrees": case "git.branches": result = []; break;
         default:
-          if (/history|commands|native|list|candidates/.test(method)) result = [];
+          if (/history|commands|native|list|candidates|inbox/.test(method)) result = [];
       }
       socket.send(JSON.stringify({ id, result }));
     });
@@ -171,6 +171,33 @@ test("overview", async ({ page }) => {
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${OUT}/overview.png` });
 });
+
+// The look in both themes: the main window, the command palette and a dialog. Not README shots.
+const DESIGN = process.env.SHOTS ?? "test-results/design";
+for (const theme of ["dark", "light"] as const) {
+  test(`design ${theme}`, async ({ page }) => {
+    await page.addInitScript((t) => localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: t })), theme);
+    await open(page, ids.rate);
+    await expect(page.getByText("Each plan now gets its own limiter", { exact: false })).toBeVisible();
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: `${DESIGN}/${theme}-overview.png` });
+    await page.locator('[data-region="sidebar"]').focus();
+    await page.keyboard.press("ControlOrMeta+Shift+P");
+    await expect(page.locator(".palette")).toBeVisible();
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: `${DESIGN}/${theme}-palette.png` });
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("ControlOrMeta+n");
+    await expect(page.locator(".modal")).toBeVisible();
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: `${DESIGN}/${theme}-new-session.png` });
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("ControlOrMeta+Comma");
+    await expect(page.locator(".settings-modal")).toBeVisible();
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: `${DESIGN}/${theme}-settings.png` });
+  });
+}
 
 test("question", async ({ page }) => {
   await open(page, ids.billing);

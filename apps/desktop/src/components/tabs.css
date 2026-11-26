@@ -1,13 +1,15 @@
-/* The main area's tab strip and tab panes (components/MainTabs.tsx). Plain on purpose: restyled later. */
+/* The main area's tab strip and tab panes (components/MainTabs.tsx): browser-like pills,
+   the active one tonal; a tab's close button shows on hover, on keyboard focus and on the active tab. */
 
 .main-tabs {
   flex: none;
   display: flex;
-  align-items: stretch;
-  gap: 1px;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
   overflow-x: auto;
   scrollbar-width: none;
-  background: var(--bg-elev);
+  background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 .main-tabs::-webkit-scrollbar { display: none; }
@@ -15,28 +17,34 @@
 .main-tab {
   flex: 0 1 200px;
   min-width: 90px;
+  height: 32px;
   display: flex;
   align-items: center;
-  border-right: 1px solid var(--border);
+  border-radius: var(--shape-full);
   color: var(--fg-muted);
   position: relative;
+  transition: background-color 0.12s, color 0.12s;
 }
-.main-tab:hover { background: var(--bg-hover); }
-.main-tab.active { background: var(--bg); color: var(--fg); }
-.main-tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
+.main-tab:hover { background: var(--hover-layer); color: var(--fg); }
+.main-tab.active { background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-weight: 500; }
+.main-tab.active:hover { background: color-mix(in srgb, var(--md-on-secondary-container) 6%, var(--md-secondary-container)); }
 .main-tab.preview .main-tab-title { font-style: italic; }
 .main-tab.dragging { opacity: 0.5; }
-.main-tab.drop-target { box-shadow: inset 2px 0 0 var(--accent); }
+.main-tab.drop-target { box-shadow: inset 2px 0 0 var(--md-primary); }
+/* Keyboard focus on the label rings the whole pill. */
+.main-tab:has(> .main-tab-label:focus-visible) { box-shadow: var(--focus-ring); }
 
 .main-tab-label {
   flex: 1;
   min-width: 0;
+  height: 100%;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 4px 6px 10px;
+  gap: 8px;
+  padding: 0 4px 0 14px;
   background: none;
   border: none;
+  border-radius: var(--shape-full);
   color: inherit;
   font: inherit;
   text-align: left;
@@ -47,27 +55,30 @@
 
 .main-tab-close {
   flex: none;
-  width: 20px;
-  height: 20px;
-  margin-right: 4px;
+  width: 22px;
+  height: 22px;
+  margin-right: 5px;
   display: grid;
   place-items: center;
   padding: 0;
   border: none;
-  border-radius: calc(var(--radius) / 2);
+  border-radius: var(--shape-full);
   background: none;
-  color: var(--fg-muted);
+  color: inherit;
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
+  transition: opacity 0.12s, background-color 0.12s;
 }
 .main-tab:hover .main-tab-close,
 .main-tab.active .main-tab-close,
+.main-tab:focus-within .main-tab-close,
 .main-tab-close:focus-visible { opacity: 1; }
-.main-tab-close:hover { background: var(--bg-elev2); color: var(--fg); }
-.main-tab-label:focus-visible,
-.main-tab-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.main-tab-close:hover { background: var(--hover-layer); }
+.main-tab-label:focus-visible { outline: none; box-shadow: none; }
+@supports not selector(:has(*)) { .main-tab-label:focus-visible { box-shadow: var(--focus-ring); } }
+.main-tab-close:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--shape-full); }
 
 /* Every open tab stays mounted; a hidden one keeps its layout (and so its scroll
    positions) but is neither drawn nor laid out again until it shows. */

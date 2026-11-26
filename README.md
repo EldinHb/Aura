@@ -97,6 +97,17 @@ keyboard, while the agents keep working in the background.
 
 ### A quick tour
 
+The sidebar sorts your sessions by where they stand: **Waiting for you** (an agent
+asks something, wants an approval, or finished and you have not looked yet),
+**Working**, and **Idle**. When a session goes from working to waiting for you, Aura
+plays a sound — pick one, use your own file, or turn it off in Settings → General.
+
+Every session and page you open gets a **tab** in the main area, like a browser, so
+you can keep several things open without losing your place: `Ctrl+Tab` / `Ctrl+⇧Tab`
+switch, `Alt+1…9` jump, `⌘W` closes, `⌘⇧T` reopens. Moving through the sidebar with
+the keyboard opens a preview tab (in italics) that the next one replaces; it stays
+once you write in it, press `Enter` on its row, or double-click its tab.
+
 When an agent needs a decision, its question appears in the transcript and the
 session is marked as waiting. Pick options with `1`–`9`, move between questions with
 `←` `→` or `Tab`, and press `Enter` to send.
@@ -227,9 +238,9 @@ dialog, or turn an existing session into one with **Orchestrate** in the inspect
   can be read and rewritten there; your own rules, preferred agents and models, and
   agents and models never to use come on top and take precedence. Aura refuses to
   start a worker with one you forbade. With the load balancer off, nothing changes.
-- **Workers are normal sessions.** Orchestrators in no group have their own
-  **Orchestrators** section at the top of the sidebar; workers show up indented under
-  their orchestrator, in its section. Open one to read along, message it, approve its
+- **Workers are normal sessions.** They show up indented under their orchestrator
+  while both are in the same state (working, say); a worker in another state is listed
+  in its own section and names its orchestrator. Open one to read along, message it, approve its
   commands, or switch it to the agent's TUI. The chevron on the orchestrator (or `←`
   / `→` in the sidebar) hides and shows its workers; Aura remembers that per
   orchestrator. In the sidebar, `j` / `k` step over the workers of other
@@ -544,7 +555,9 @@ Shortcuts are shown with macOS keys; use `Ctrl` for `⌘` on Windows and Linux.
 | `⌘1…9`, `⌘[` `⌘]` | Jump between sessions |
 | `Ctrl+H/J/K/L` | Move focus between sidebar, transcript, composer, inspector |
 | `j` `k` `gg` `G` `Enter` | Navigate lists and transcript items |
-| `←` `→` | In the sidebar: hide / show an orchestrator's workers, step between it and them; on a group's first level, fold / unfold the group |
+| `←` `→` | In the sidebar: hide / show an orchestrator's workers, step between it and them; on a section's heading, fold / unfold it |
+| `Ctrl+Tab` `Ctrl+⇧Tab`, `Alt+1…9` | Next / previous tab, jump to a tab |
+| `⌘W` / `⌘⇧T` | Close the tab / reopen the last closed one |
 | `t` | In the sidebar: switch between the Sessions and Scheduled tabs (also `Ctrl+Space s s`) |
 | `y` `Y` `n` `e` | Accept / accept for session / decline / edit the oldest pending approval |
 | `⌘I` | Inbox: approvals across all sessions and pull request changes |

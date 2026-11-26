@@ -7,7 +7,7 @@
 .session-row .links > * { flex-shrink: 0; }
 .session-row .links > .overflow { position: absolute; visibility: hidden; }
 .session-row .links .links-more { padding: 0 5px; font-size: 10px; line-height: 14px; color: var(--fg-muted); }
-:root[data-theme="light"] .session-row .links { color: #0e8a76; }
+:root[data-theme="light"] .session-row .links { color: var(--accent-2); }
 
 /* A branch's pull request. */
 .pull-label.ok { color: var(--ok); }
@@ -27,14 +27,14 @@
 .issue-head .radio-row { flex-wrap: nowrap; }
 .issue-list { max-height: 180px; }
 .issue-empty { padding: 6px 10px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
-.issue-picked { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.issue-picked { display: flex; gap: 8px; align-items: center; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: var(--shape-md, 6px); }
 .issue-picked .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The links dialog. */
 .link-list { display: flex; flex-direction: column; gap: 4px; border: 0; padding: 0; margin: 0 0 10px; min-width: 0; }
 .link-list-head { display: flex; align-items: center; justify-content: space-between; }
-.link-list-head .label { font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.link-list-head .label { font-size: 12px; font-weight: 500; color: var(--fg-muted); }
 .link-list-head .check-row { margin: 0; font-size: 12px; }
-.link-list-row { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.link-list-row { display: flex; gap: 8px; align-items: center; padding: 6px 12px; border: 1px solid var(--border-strong); border-radius: var(--shape-md, 6px); }
 .link-list-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .link-list-row input.grow { border: 0; padding: 2px 0; background: transparent; }
