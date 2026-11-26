@@ -1,0 +1,14 @@
+{
+  "id": "github",
+  "name": "GitHub",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "GitHub account and API client, issue picker, issue and PR links on sessions, and PR state next to a branch.",
+  "author": "Aura",
+  "permissions": {
+    "process": ["gh", "git"],
+    "net": ["api.github.com", "github.com", "*.githubusercontent.com"],
+    "sessions": "read",
+    "git": true
+  }
+}

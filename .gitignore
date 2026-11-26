@@ -8,3 +8,5 @@ apps/desktop/src-tauri/target
 bindings/
 *.tsbuildinfo
 .aura-worktrees/
+node_modules/
+mods/*/dist/

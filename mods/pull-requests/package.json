@@ -1,0 +1,22 @@
+{
+  "name": "@aura-mods/pull-requests",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "aura-mod build .",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@aura/mod-sdk": "workspace:*",
+    "@types/react": "^19",
+    "clsx": "^2",
+    "jsdom": "^26",
+    "react": "^19",
+    "typescript": "^5.6",
+    "vite": "^6",
+    "vitest": "^3",
+    "zustand": "^5"
+  }
+}

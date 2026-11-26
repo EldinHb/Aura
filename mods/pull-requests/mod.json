@@ -1,0 +1,17 @@
+{
+  "id": "pull-requests",
+  "name": "Pull requests",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Pull request inbox and pages, AI pre-reviews in isolated worktrees, reviewer watches, and agents that follow up on review activity.",
+  "author": "Aura",
+  "dependsOn": { "github": "^1" },
+  "permissions": {
+    "process": ["gh", "git"],
+    "sessions": "write",
+    "git": true,
+    "agents": true,
+    "orchestratorTools": true,
+    "mods": ["github"]
+  }
+}

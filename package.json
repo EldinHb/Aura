@@ -1,0 +1,16 @@
+{
+  "name": "aura-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mods:build": "node packages/mod-sdk/cli.mjs build mods/github mods/pull-requests",
+    "mods:test": "pnpm --filter \"./mods/*\" test",
+    "mods:typecheck": "pnpm --filter \"./mods/*\" typecheck"
+  },
+  "packageManager": "pnpm@10.34.9",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

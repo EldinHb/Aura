@@ -6,7 +6,9 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  apps/desktop:
     dependencies:
       '@tauri-apps/api':
         specifier: ^2
@@ -165,6 +167,72 @@ importers:
       vitest:
         specifier: ^3
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.3)(jsdom@26.1.0)
+
+  mods/github:
+    devDependencies:
+      '@aura/mod-sdk':
+        specifier: workspace:*
+        version: link:../../packages/mod-sdk
+      '@types/react':
+        specifier: ^19
+        version: 19.3.0
+      clsx:
+        specifier: ^2
+        version: 2.1.1
+      jsdom:
+        specifier: ^26
+        version: 26.1.0
+      react:
+        specifier: ^19
+        version: 19.3.0
+      typescript:
+        specifier: ^5.6
+        version: 5.9.3
+      vite:
+        specifier: ^6
+        version: 6.4.3(@types/node@22.20.3)
+      vitest:
+        specifier: ^3
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.3)(jsdom@26.1.0)
+      zustand:
+        specifier: ^5
+        version: 5.0.15(@types/react@19.3.0)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0))
+
+  mods/pull-requests:
+    devDependencies:
+      '@aura/mod-sdk':
+        specifier: workspace:*
+        version: link:../../packages/mod-sdk
+      '@types/react':
+        specifier: ^19
+        version: 19.3.0
+      clsx:
+        specifier: ^2
+        version: 2.1.1
+      jsdom:
+        specifier: ^26
+        version: 26.1.0
+      react:
+        specifier: ^19
+        version: 19.3.0
+      typescript:
+        specifier: ^5.6
+        version: 5.9.3
+      vite:
+        specifier: ^6
+        version: 6.4.3(@types/node@22.20.3)
+      vitest:
+        specifier: ^3
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.3)(jsdom@26.1.0)
+      zustand:
+        specifier: ^5
+        version: 5.0.15(@types/react@19.3.0)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0))
+
+  packages/mod-sdk:
+    dependencies:
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
 
 packages:
 

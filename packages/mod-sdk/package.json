@@ -1,0 +1,18 @@
+{
+  "name": "@aura/mod-sdk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Types, build tool and test host for Aura mods",
+  "bin": { "aura-mod": "./cli.mjs" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./daemon": "./src/daemon.ts",
+    "./ui": "./src/ui.ts",
+    "./testing": "./src/testing.ts",
+    "./build": "./build.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
