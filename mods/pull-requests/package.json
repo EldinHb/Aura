@@ -9,6 +9,7 @@
     "typecheck": "tsc -p ."
   },
   "devDependencies": {
+    "@aura/github-client": "workspace:*",
     "@aura/mod-sdk": "workspace:*",
     "@types/react": "^19",
     "clsx": "^2",

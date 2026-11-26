@@ -1,0 +1,16 @@
+{
+  "name": "@aura/github-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub reads and writes shared by Aura's bundled mods (former crates/aura-github)",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "typescript": "^5.6",
+    "vitest": "^3"
+  }
+}
