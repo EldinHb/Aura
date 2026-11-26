@@ -8,7 +8,7 @@
   "permissions": {
     "process": ["gh", "git"],
     "net": ["api.github.com", "github.com", "*.githubusercontent.com"],
-    "sessions": "read",
+    "sessions": "write",
     "git": true
   }
 }
