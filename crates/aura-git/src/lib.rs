@@ -14,10 +14,9 @@ const WORKTREES_DIR: &str = ".aura-worktrees";
 
 /// Run `git -C <cwd> <args>`; Ok(stdout) on success, Err with stderr otherwise.
 pub(crate) fn git(cwd: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    let out = aura_core::process::hide_window(&mut cmd)
         .output()
         .with_context(|| format!("failed to run git {}", args.join(" ")))?;
     if !out.status.success() {
@@ -33,10 +32,9 @@ pub(crate) fn git(cwd: &str, args: &[&str]) -> Result<String> {
 
 /// Like [`git`] but tolerates a non-zero exit code listed in `ok_codes`.
 pub(crate) fn git_allow(cwd: &str, args: &[&str], ok_codes: &[i32]) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    let out = aura_core::process::hide_window(&mut cmd)
         .output()
         .with_context(|| format!("failed to run git {}", args.join(" ")))?;
     let code = out.status.code().unwrap_or(-1);

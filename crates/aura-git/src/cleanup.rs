@@ -182,12 +182,14 @@ fn fetch_prune(root: &str) -> Result<()> {
     if git_allow(root, &["remote"], &[])?.trim().is_empty() {
         return Ok(());
     }
-    let mut child = Command::new("git")
+    let mut fetch = Command::new("git");
+    fetch
         .args(["-C", root, "fetch", "--all", "--prune", "--quiet"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = aura_core::process::hide_window(&mut fetch)
         .spawn()
         .context("failed to run git fetch")?;
     let started = Instant::now();

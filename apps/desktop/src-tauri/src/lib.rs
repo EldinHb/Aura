@@ -115,7 +115,11 @@ fn spawn_daemon(dir: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x00000008 | 0x00000200);
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP. Not DETACHED_PROCESS: a
+        // daemon with no console makes Windows open a new console window for
+        // every console program it starts (git, gh, claude). With a hidden
+        // console that children inherit, none of them show a window.
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
     }
     cmd.spawn()
         .with_context(|| format!("spawn {}", bin.display()))?;

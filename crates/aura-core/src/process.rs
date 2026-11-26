@@ -2,6 +2,32 @@
 use anyhow::Result;
 use tokio::process::{Child, Command};
 
+/// Windows `CREATE_NO_WINDOW`: run a console program without a console window.
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Keep a child from opening a console window. `aurad` and the desktop app have
+/// no console of their own, so on Windows every console program they start
+/// (`git`, `gh`, `claude`, `--version` probes) would otherwise flash a terminal
+/// window and steal focus. No-op elsewhere.
+pub fn hide_window(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// [`hide_window`] for a tokio command.
+pub fn hide_window_tokio(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 pub struct ProcessGroup {
     id: u32,
 }
@@ -15,9 +41,9 @@ impl Drop for ProcessGroup {
         }
         #[cfg(windows)]
         {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &self.id.to_string(), "/T", "/F"])
-                .spawn();
+            let mut cmd = std::process::Command::new("taskkill");
+            cmd.args(["/PID", &self.id.to_string(), "/T", "/F"]);
+            let _ = hide_window(&mut cmd).spawn();
         }
     }
 }
@@ -25,6 +51,7 @@ pub fn spawn_job(command: &mut Command) -> Result<(Child, ProcessGroup)> {
     #[cfg(unix)]
     command.process_group(0);
     command.kill_on_drop(true);
+    hide_window_tokio(command);
     let child = command.spawn()?;
     let group = ProcessGroup {
         id: child.id().expect("new child has a process ID"),

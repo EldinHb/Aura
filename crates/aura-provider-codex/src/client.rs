@@ -48,6 +48,7 @@ impl Client {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        aura_core::process::hide_window_tokio(&mut cmd);
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawn {binary} app-server"))?;

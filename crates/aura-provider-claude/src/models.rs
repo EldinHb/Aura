@@ -40,6 +40,7 @@ async fn fetch_inner(binary: &str) -> Result<Vec<ModelInfo>> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     cmd.kill_on_drop(true);
+    aura_core::process::hide_window_tokio(&mut cmd);
     let mut child = cmd.spawn().with_context(|| format!("spawn {binary}"))?;
     let mut stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;

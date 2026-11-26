@@ -14,9 +14,12 @@ pub fn find_binary(name: &str, env_override: &str, extra: &[PathBuf]) -> Option<
             return Some(p);
         }
     }
+    let names = executable_names(name);
+    let in_dir = |d: &PathBuf| -> Vec<PathBuf> { names.iter().map(|n| d.join(n)).collect() };
+
     let mut candidates: Vec<PathBuf> = vec![];
     if let Ok(path) = std::env::var("PATH") {
-        candidates.extend(std::env::split_paths(&path).map(|d| d.join(name)));
+        candidates.extend(std::env::split_paths(&path).flat_map(|d| in_dir(&d)));
     }
     candidates.extend(extra.iter().cloned());
     if let Some(home) = dirs::home_dir() {
@@ -28,7 +31,7 @@ pub fn find_binary(name: &str, env_override: &str, extra: &[PathBuf]) -> Option<
             ".cargo/bin",
             ".nix-profile/bin",
         ] {
-            candidates.push(home.join(rel).join(name));
+            candidates.extend(in_dir(&home.join(rel)));
         }
     }
     for dir in [
@@ -36,12 +39,54 @@ pub fn find_binary(name: &str, env_override: &str, extra: &[PathBuf]) -> Option<
         "/usr/local/bin",
         "/run/current-system/sw/bin",
     ] {
-        candidates.push(PathBuf::from(dir).join(name));
+        candidates.extend(in_dir(&PathBuf::from(dir)));
+    }
+    for dir in windows_install_dirs() {
+        candidates.extend(in_dir(&dir));
     }
     candidates
         .into_iter()
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().to_string())
+}
+
+/// The file names `name` can go by. On Windows a bare `claude` or `gh` is
+/// really `claude.exe` / `gh.exe` (or an npm `.cmd` shim), so those spellings
+/// are tried; elsewhere it is just `name`.
+fn executable_names(name: &str) -> Vec<String> {
+    if !cfg!(windows) || std::path::Path::new(name).extension().is_some() {
+        return vec![name.to_string()];
+    }
+    // `.exe` first: it is a real program, `.cmd` is a shim around one.
+    vec![format!("{name}.exe"), format!("{name}.cmd"), name.to_string()]
+}
+
+/// Where Windows tools such as the GitHub CLI install to, searched even when
+/// this process's `PATH` predates the install (an app started from a shortcut
+/// or before the installer ran never sees the updated `PATH`).
+fn windows_install_dirs() -> Vec<PathBuf> {
+    if !cfg!(windows) {
+        return vec![];
+    }
+    let mut out = vec![];
+    for var in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+        if let Some(pf) = std::env::var_os(var) {
+            let pf = PathBuf::from(pf);
+            out.push(pf.join("GitHub CLI"));
+            out.push(pf.join("Git").join("cmd"));
+            out.push(pf.join("nodejs"));
+        }
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        out.push(local.join("Programs").join("GitHub CLI"));
+        out.push(local.join("Microsoft").join("WinGet").join("Links"));
+        out.push(local.join("Volta").join("bin"));
+    }
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        out.push(PathBuf::from(appdata).join("npm"));
+    }
+    out
 }
 
 /// How long a detection result is trusted before the CLI is probed again.
@@ -182,10 +227,9 @@ fn detect_with(
 }
 
 fn read_version(binary: &str, parse_version: fn(&str) -> Option<String>) -> Option<String> {
-    let out = std::process::Command::new(binary)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(binary);
+    cmd.arg("--version");
+    let out = crate::process::hide_window(&mut cmd).output().ok()?;
     if !out.status.success() {
         return None;
     }
