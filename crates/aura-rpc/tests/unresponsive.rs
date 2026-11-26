@@ -21,10 +21,22 @@ fn info(pid: u32) -> DaemonInfo {
 async fn holder(dir: &std::path::Path, name: &str) -> u32 {
     let bin = dir.join(name);
     std::fs::copy("/bin/sleep", &bin).unwrap();
-    let mut child = tokio::process::Command::new(&bin)
-        .arg("60")
-        .spawn()
-        .unwrap();
+    // Executing a file just written can fail with "text file busy" while another
+    // test thread forks with it still open (ETXTBSY); try again briefly.
+    let mut child = None;
+    for _ in 0..50 {
+        match tokio::process::Command::new(&bin).arg("60").spawn() {
+            Ok(c) => {
+                child = Some(c);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("start {}: {e}", bin.display()),
+        }
+    }
+    let mut child = child.expect("the copied sleep never became executable");
     let pid = child.id().unwrap();
     let lock = lock_data_dir(dir).unwrap().expect("lock");
     tokio::spawn(async move {
