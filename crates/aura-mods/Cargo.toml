@@ -1,0 +1,29 @@
+[package]
+name = "aura-mods"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aura-core = { workspace = true }
+aura-git = { workspace = true }
+rquickjs = { version = "0.14", default-features = false, features = ["loader", "bindgen"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+base64 = "0.22"
+semver = "1"
+futures = { workspace = true }
+tempfile = { workspace = true }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

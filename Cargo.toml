@@ -12,6 +12,7 @@ members = [
   "crates/aura-github",
   "crates/aura-review",
   "crates/aura-terminal",
+  "crates/aura-mods",
   "crates/aurad",
   "crates/aura-cli",
   "apps/desktop/src-tauri",
@@ -34,6 +35,7 @@ aura-github = { path = "crates/aura-github" }
 aura-review = { path = "crates/aura-review" }
 aura-git = { path = "crates/aura-git" }
 aura-terminal = { path = "crates/aura-terminal" }
+aura-mods = { path = "crates/aura-mods" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
