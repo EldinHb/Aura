@@ -1,0 +1,15 @@
+/* Aura's own styles for mod slots and the Mods settings page. */
+.mod-error { color: var(--err); font-size: 11.5px; white-space: pre-wrap; padding: 4px 8px; }
+pre.mod-error { margin: 4px 0; max-height: 160px; overflow: auto; }
+.mods-settings { display: flex; flex-direction: column; gap: 10px; }
+.mod-card { display: flex; flex-direction: column; gap: 6px; align-items: stretch; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); }
+.mod-card-head { display: flex; align-items: center; gap: 8px; }
+.mod-card-head .chip.ok { color: var(--ok); }
+.mod-card-head .chip.err { color: var(--err); }
+.mod-card-head .chip.warn { color: var(--warn); }
+.mod-perms { margin: 0; padding-left: 18px; font-size: 12px; color: var(--fg-muted); }
+.mod-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.mod-settings { display: flex; flex-direction: column; gap: 6px; }
+.mod-setting { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.mod-log { max-height: 220px; overflow: auto; font-size: 11px; background: var(--bg-elev2); padding: 6px; border-radius: 4px; white-space: pre-wrap; }
+.mod-dir { font-size: 11px; font-family: var(--mono); }

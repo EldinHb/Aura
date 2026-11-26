@@ -4,18 +4,14 @@ import { useStore } from "../state/store";
 import { setFocus } from "../commands/core";
 import { runCommand } from "../lib/commands";
 import { fmtTokens, fmtUsd, relTime, truncate } from "./transcript/format";
-import { SessionLinks } from "./SessionLinks";
-import { useSessionLinkPreferences } from "../state/sessionLinkPreferences";
-import { useGithubRepo } from "../state/githubRepos";
 import { PlanSection } from "./PlanSection";
 import { acpSessionInfo } from "../lib/acp";
-import { WatchSection } from "../features/watches/WatchSection";
-import { selectedSessionLinks, sessionLinks } from "./issueLinks";
 import { useMemo } from "react";
 import { folderOf } from "../lib/sessionFolder";
 import { statusClass } from "../lib/sessionStatus";
 import { openWorkerThread } from "../state/workerThreads";
 import { FeatureSection } from "./FeatureSection";
+import { InspectorModSections } from "../mods/Slots";
 
 function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boolean; title?: string }) {
   return (
@@ -185,21 +181,13 @@ function ProviderSection({ s, info }: { s: Session; info: Record<string, unknown
 }
 
 export function Inspector({ sessionId }: { sessionId: string | null }) {
-  const linkPreferences = useSessionLinkPreferences(sessionId);
   const s = useStore((st) => (sessionId ? st.sessions[sessionId] : null));
   const t = useStore((st) => (sessionId ? st.transcripts[sessionId] : null));
-  const repo = useGithubRepo(s ? folderOf(s) ?? undefined : undefined);
   const focus = useStore((st) => st.focus);
   const caps = useStore((st) => st.providers.find((p) => p.kind === s?.provider)?.capabilities);
   const openDialog = useStore((st) => st.openDialog);
   const setCursorItem = useStore((st) => st.setCursorItem);
 
-  const prs = useMemo(() => {
-    if (!s || !linkPreferences) return [];
-    return selectedSessionLinks(sessionLinks(t?.items ?? {}, s.title, repo), linkPreferences.preferences)
-      .filter((l) => l.kind === "PR")
-      .map((l) => ({ repo: l.repo, number: Number(l.number) }));
-  }, [s, t?.items, repo, linkPreferences]);
 
   const jump = (key: string) => {
     setCursorItem(key);
@@ -212,10 +200,8 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
       {!s && <div className="empty" style={{ padding: 20 }}><span className="dim">No session selected</span></div>}
       {s && (
         <>
-          <SessionLinks items={t?.items ?? {}} title={s.title} repo={repo} preferences={linkPreferences?.preferences}
-            loading={!linkPreferences} error={linkPreferences?.error}
-            onEdit={() => openDialog({ kind: "session-links", sessionId: s.id })} />
-          {prs.map((pr) => <WatchSection key={`${pr.repo}#${pr.number}`} target={pr} showTarget={prs.length > 1} />)}
+          {/* Mods' sections: issue and PR links, reviewer watches, … */}
+          <InspectorModSections session={s} />
           <PlanSection sessionId={s.id} />
           <OrchestrationSection s={s} />
           {s.feature_owner && <FeatureSection s={s} />}

@@ -13,5 +13,8 @@
     "agents": true,
     "orchestratorTools": true,
     "mods": ["github"]
-  }
+  },
+  "settings": [
+    { "key": "pullChangesMuted", "type": "string[]", "label": "PR changes not shown in the inbox", "default": [] }
+  ]
 }

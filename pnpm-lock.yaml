@@ -248,6 +248,10 @@ importers:
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
+    devDependencies:
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
 
 packages:
 

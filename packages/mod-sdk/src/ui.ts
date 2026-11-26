@@ -12,7 +12,8 @@ import type { ComponentType } from "react";
 import type { Json } from "./daemon";
 import type { Session } from "./core";
 
-export type Disposer = () => void;
+import type { Disposer } from "./daemon";
+export type { Disposer };
 
 export interface CommandDef {
   /** Prefixed with "<modId>." automatically unless it already is. */
@@ -146,6 +147,10 @@ export interface UiApi {
   activeView(): { id: string; props: any } | null;
   openDialog(id: string, props?: unknown): void;
 
+  /** Which window this UI half runs in: the main one, or a detached session window. Announce things from "main" only. */
+  readonly window: "main" | "session";
+  /** A desktop notification; clicking it calls `onNotificationClick` with `target`. */
+  notify(title: string, body?: string, target?: Json): void;
   toast(message: string, level?: "info" | "warn" | "error"): void;
   confirm(opts: { title: string; message: string; danger?: boolean }): Promise<boolean>;
   /** Called when the user clicks a notification this mod sent with a `target`. */

@@ -3,6 +3,7 @@ import { formatKeys } from "../lib/keymap";
 import { isMac, fmtTokens } from "../lib/platform";
 import { StatusBarBranch } from "./BranchStatus";
 import { useShortcut } from "../hooks/useKeyboard";
+import { StatusBarModItems } from "../mods/Slots";
 
 export function StatusBar() {
   const connection = useStore((s) => s.connection);
@@ -34,6 +35,7 @@ export function StatusBar() {
         </span>
       )}
       {s && <StatusBarBranch session={s} />}
+      <StatusBarModItems />
       <span className="spacer" />
       <span>focus: {focus}</span>
       <span>

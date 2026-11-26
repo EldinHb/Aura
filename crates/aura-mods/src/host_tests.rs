@@ -312,3 +312,40 @@ async fn ui_source_is_served_for_running_mods() {
     assert_eq!(src["version"], "1.2.3");
     let _ = h.inner();
 }
+
+#[tokio::test]
+async fn files_stay_inside_the_mods_data_folder() {
+    let s = setup(
+        &[(
+            "files",
+            json!({}),
+            r#"export default (aura) => {
+                aura.rpc.handle("roundtrip", async () => {
+                  await aura.fs.writeText("a/b.txt", "hi");
+                  const text = await aura.fs.readText("a/b.txt");
+                  await aura.fs.rename("a", "c");
+                  const listed = await aura.fs.list("c");
+                  const gone = await aura.fs.exists("a/b.txt");
+                  await aura.fs.remove("c");
+                  return {text, listed, gone, after: await aura.fs.exists("c")};
+                });
+                aura.rpc.handle("escape", async (p) => {
+                  try { await aura.fs.readText(p.path); return "read"; } catch (e) { return e.code; }
+                });
+                aura.rpc.handle("cancelNothing", () => aura.agents.cancel("x").catch((e) => e.code));
+            }"#,
+        )],
+        &[],
+    )
+    .await;
+    let h = &s.host;
+    assert_eq!(
+        call(h, "mod.files.roundtrip", json!({})).await.unwrap(),
+        json!({"text": "hi", "listed": [{"name": "b.txt", "dir": false}], "gone": false, "after": false})
+    );
+    assert_eq!(call(h, "mod.files.escape", json!({"path": "../../secret"})).await.unwrap(), json!("permission_denied"));
+    let outside = if cfg!(windows) { r"C:\Windows\win.ini" } else { "/etc/passwd" };
+    assert_eq!(call(h, "mod.files.escape", json!({"path": outside})).await.unwrap(), json!("permission_denied"));
+    // Cancelling needs the agents permission.
+    assert_eq!(call(h, "mod.files.cancelNothing", json!({})).await.unwrap(), json!("permission_denied"));
+}

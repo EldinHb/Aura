@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { ModalC } from "../ModalC";
 import { useStore } from "../../state/store";
-import type { Approval, ApprovalOption, PullChange, UserInputRequest } from "../../gen";
+import type { Approval, ApprovalOption, UserInputRequest } from "../../gen";
 import { relTime } from "../../lib/platform";
 import { setFocus } from "../../commands/core";
-import { describeEvents, markChangesRead, openPullChange, shownEvents, unreadChanges, usePullChanges } from "../../features/reviews/changes";
+import { useModInbox } from "../../mods/inbox";
+import { slots, useSlot, type InboxItem } from "../../mods/registry";
+import { ModPiece } from "../../mods/Slots";
 import clsx from "clsx";
 
 type SessionRow = { kind: "approval"; a: Approval } | { kind: "input"; r: UserInputRequest };
-type Row = SessionRow | { kind: "pull"; c: PullChange };
+/** What a mod put in the inbox (`aura.inbox.set`). */
+type Row = SessionRow | { kind: "mod"; modId: string; item: InboxItem };
 
 function rowId(r: Row): string {
-  return r.kind === "approval" ? `a:${r.a.id}` : r.kind === "input" ? `i:${r.r.id}` : `p:${r.c.id}`;
+  return r.kind === "approval" ? `a:${r.a.id}` : r.kind === "input" ? `i:${r.r.id}` : `m:${r.modId}:${r.item.id}`;
 }
 function rowSession(r: SessionRow): string {
   return r.kind === "approval" ? r.a.session_id : r.r.session_id;
@@ -19,7 +22,6 @@ function rowSession(r: SessionRow): string {
 function rowTime(r: SessionRow): string {
   return r.kind === "approval" ? r.a.created_at : r.r.created_at;
 }
-const ROLES: Record<string, string> = { authored: "your PR", requested: "review requested", reviewed: "you reviewed", linked: "linked" };
 
 export function InboxDialog() {
   const client = useStore((s) => s.client);
@@ -28,8 +30,8 @@ export function InboxDialog() {
   const select = useStore((s) => s.select);
   const closeDialog = useStore((s) => s.closeDialog);
   const toast = useStore((s) => s.toast);
-  const muted = useStore((s) => s.settings.pullChangesMuted);
-  const changes = usePullChanges((s) => s.changes);
+  const modItems = useModInbox((s) => s.items);
+  const renderers = useSlot(slots.inboxRenderer);
   const [fetched, setFetched] = useState<{ approvals: Approval[]; inputs: UserInputRequest[] }>({ approvals: [], inputs: [] });
   const [idx, setIdx] = useState(0);
   const [resolved, setResolved] = useState<Set<string>>(new Set());
@@ -39,7 +41,6 @@ export function InboxDialog() {
       ?.pending()
       .then(setFetched)
       .catch(() => {});
-    void usePullChanges.getState().refresh();
   }, [client]);
 
   const rows: Row[] = useMemo(() => {
@@ -66,16 +67,19 @@ export function InboxDialog() {
         return true;
       })
       .sort((x, y) => rowTime(x).localeCompare(rowTime(y)));
-    // What waits on you first, then what changed on your pull requests, the latest first.
-    return [...waiting, ...unreadChanges(changes, muted).map((c): Row => ({ kind: "pull", c }))];
-  }, [fetched, transcripts, resolved, changes, muted]);
+    // What waits on you first, then what mods report (unread), the latest first.
+    const fromMods: Row[] = modItems
+      .flatMap(({ modId, items }) => items.filter((i) => i.unread).map((item): Row => ({ kind: "mod", modId, item })))
+      .sort((x, y) => (x.kind === "mod" && y.kind === "mod" ? y.item.at.localeCompare(x.item.at) : 0));
+    return [...waiting, ...fromMods];
+  }, [fetched, transcripts, resolved, modItems]);
 
   useEffect(() => {
     if (idx >= rows.length) setIdx(Math.max(0, rows.length - 1));
   }, [rows.length, idx]);
 
   const respond = async (row: Row, option: ApprovalOption) => {
-    if (!client || row.kind === "pull") return;
+    if (!client || row.kind === "mod") return;
     // A question is answered on its card; from here it can only be dismissed.
     if (row.kind === "input" && option !== "decline") return;
     try {
@@ -88,7 +92,7 @@ export function InboxDialog() {
   };
 
   const acceptAllInSession = async (row: Row) => {
-    if (!client || row.kind === "pull") return;
+    if (!client || row.kind === "mod") return;
     const sid = rowSession(row);
     const list = rows.filter((r): r is Extract<Row, { kind: "approval" }> => r.kind === "approval" && r.a.session_id === sid && r.a.kind === "command");
     for (const r of list) await respond(r, "accept");
@@ -97,7 +101,7 @@ export function InboxDialog() {
 
   const jump = (row: Row) => {
     closeDialog();
-    if (row.kind === "pull") void openPullChange(row.c);
+    if (row.kind === "mod") renderers.find((r) => r.modId === row.modId)?.open?.(row.item);
     else select(rowSession(row));
     setFocus("main");
   };
@@ -112,7 +116,6 @@ export function InboxDialog() {
     else if (k === "Y" && row) void respond(row, "accept_for_session");
     else if (k === "n" && row) void respond(row, "decline");
     else if (k === "a" && row) void acceptAllInSession(row);
-    else if (k === "x" && row?.kind === "pull") void markChangesRead([row.c.id]);
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -125,7 +128,7 @@ export function InboxDialog() {
           <span>Inbox</span>
           <span style={{ flex: 1 }} />
           <span className="dim" style={{ fontWeight: 400, color: "var(--fg-dim)", fontSize: 11 }}>
-            <kbd>y</kbd> accept <kbd>Y</kbd> for session <kbd>n</kbd> decline / dismiss question <kbd>a</kbd> accept all cmds <kbd>x</kbd> mark PR read <kbd>↩</kbd> open
+            <kbd>y</kbd> accept <kbd>Y</kbd> for session <kbd>n</kbd> decline / dismiss question <kbd>a</kbd> accept all cmds <kbd>↩</kbd> open
           </span>
         </>
       }
@@ -139,18 +142,24 @@ export function InboxDialog() {
           </div>
         )}
         {rows.map((row, i) => {
-          if (row.kind === "pull") {
-            const c = row.c;
+          if (row.kind === "mod") {
+            const renderer = renderers.find((r) => r.modId === row.modId);
             return (
-              <button key={rowId(row)} type="button" data-hint className={clsx("list-item inbox-row", i === idx && "active")} onClick={() => jump(row)} title="Open the pull request">
-                <span className="chip">PR</span>
-                <span className="inbox-kind chip">{ROLES[c.role] ?? "pull request"}</span>
-                <span className="grow">
-                  <div className="inbox-title">{c.title || `${c.repo}#${c.number}`}</div>
-                  <div className="dim mono inbox-sub">{c.repo}#{c.number}</div>
-                  <div className="dim inbox-sub">{describeEvents(shownEvents(c, muted))}</div>
-                </span>
-                <span className="dim">{relTime(c.created_at)}</span>
+              <button key={rowId(row)} type="button" data-hint className={clsx("list-item inbox-row", i === idx && "active")} onClick={() => jump(row)}>
+                {renderer ? (
+                  <ModPiece entry={renderer}>
+                    <renderer.component item={row.item} />
+                  </ModPiece>
+                ) : (
+                  <>
+                    <span className="chip">{row.modId}</span>
+                    <span className="grow">
+                      <div className="inbox-title">{row.item.title}</div>
+                      {row.item.detail && <div className="dim inbox-sub">{row.item.detail}</div>}
+                    </span>
+                  </>
+                )}
+                <span className="dim">{relTime(row.item.at)}</span>
               </button>
             );
           }

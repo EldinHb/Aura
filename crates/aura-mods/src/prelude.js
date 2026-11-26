@@ -302,7 +302,17 @@
       currentBranch: (cwd) => call("git.currentBranch", { cwd }),
       remotes: (cwd) => call("git.remotes", { cwd }),
       branchStatus: (cwd) => call("git.branchStatus", { cwd }),
-      run: (cwd, args, opts) => call("git.run", { cwd, args, okCodes: (opts && opts.okCodes) || [], timeoutMs: opts && opts.timeoutMs }),
+      run: (cwd, args, opts) =>
+        call("git.run", { cwd, args, okCodes: (opts && opts.okCodes) || [], timeoutMs: opts && opts.timeoutMs, env: opts && opts.env, stdin: opts && opts.stdin }),
+    },
+    fs: {
+      exists: (path) => call("fs.exists", { path }),
+      readText: (path) => call("fs.readText", { path }),
+      writeText: (path, text) => call("fs.writeText", { path, text: String(text) }),
+      mkdir: (path) => call("fs.mkdir", { path }),
+      remove: (path) => call("fs.remove", { path }),
+      rename: (path, to) => call("fs.rename", { path, to }),
+      list: (path) => call("fs.list", { path }),
     },
     process: {
       run: (bin, args, opts) => call("process.run", { bin, args: args || [], ...(opts || {}) }),
@@ -325,11 +335,14 @@
         if (typeof onProgress === "function") progress.set(runId, onProgress);
         return call("agents.runOnce", { ...rest, runId, progress: typeof onProgress === "function" }).finally(() => progress.delete(runId));
       },
+      cancel: (id) => call("agents.cancel", { id: String(id) }),
     },
     orchestrator: {
       tool(def, fn) {
         if (!def || !/^[a-z0-9_]+$/.test(def.name)) throw new TypeError("tool names are [a-z0-9_]+");
-        tools.set(def.name, { def: { name: def.name, description: def.description || "", inputSchema: def.inputSchema || { type: "object" } }, fn });
+        const d = { name: def.name, description: def.description || "", inputSchema: def.inputSchema || { type: "object" } };
+        if (def.annotations) d.annotations = def.annotations;
+        tools.set(def.name, { def: d, fn });
         syncTools();
         return disposer(() => {
           tools.delete(def.name);

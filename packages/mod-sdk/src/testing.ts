@@ -63,6 +63,8 @@ export function createTestHost(opts: { id: string; settings?: Record<string, Jso
   const httpHandlers: HttpHandler[] = [];
   const processHandlers: ProcessHandler[] = [];
   const modCalls = new Map<string, (name: string, params: any) => unknown>();
+  const files = new Map<string, string>();
+  const cancelled: string[] = [];
   const clone = <T>(v: T): T => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
 
   const record = {
@@ -202,9 +204,42 @@ export function createTestHost(opts: { id: string; settings?: Record<string, Jso
     agents: {
       providers: async () => [{ kind: "claude", available: true, version: "test" }],
       models: async () => [],
+      cancel: async (runId) => {
+        cancelled.push(runId);
+        return true;
+      },
       runOnce: async (o) => {
         record.agentRuns.push(o);
         return state.agent(o);
+      },
+    },
+    fs: {
+      exists: async (p) => files.has(p) || [...files.keys()].some((k) => k.startsWith(`${p}/`)),
+      readText: async (p) => {
+        if (!files.has(p)) throw new HostError("not_found", `${p} does not exist`);
+        return files.get(p)!;
+      },
+      writeText: async (p, text) => void files.set(p, String(text)),
+      mkdir: async () => {},
+      remove: async (p) => {
+        for (const k of [...files.keys()]) if (k === p || k.startsWith(`${p}/`)) files.delete(k);
+      },
+      rename: async (p, to) => {
+        for (const [k, v] of [...files.entries()]) {
+          if (k === p || k.startsWith(`${p}/`)) {
+            files.delete(k);
+            files.set(to + k.slice(p.length), v);
+          }
+        }
+      },
+      list: async (p) => {
+        const names = new Map<string, boolean>();
+        for (const k of files.keys()) {
+          if (!k.startsWith(`${p}/`)) continue;
+          const [name, ...rest] = k.slice(p.length + 1).split("/");
+          names.set(name, rest.length > 0 || names.get(name) === true);
+        }
+        return [...names].map(([name, dir]) => ({ name, dir }));
       },
     },
     orchestrator: {
@@ -267,6 +302,8 @@ export function createTestHost(opts: { id: string; settings?: Record<string, Jso
     http: { route: (h: HttpHandler) => void httpHandlers.push(h) },
     process: { route: (h: ProcessHandler) => void processHandlers.push(h) },
     kv,
+    files,
+    cancelled,
     collections,
     sessionData,
     async activate(activate: DaemonActivate) {

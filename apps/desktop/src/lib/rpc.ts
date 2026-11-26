@@ -59,7 +59,7 @@ export type ConnectionState = "connecting" | "open" | "closed";
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; method: string };
 
 export class RpcError extends Error {
-  constructor(message: string, public code: number) {
+  constructor(message: string, public code: number, public data?: unknown) {
     super(message);
   }
 }
@@ -161,7 +161,7 @@ export class RpcClient {
 
   private onMessage(m: MessageEvent) {
     if (typeof m.data === "string") {
-      let v: { id?: number; method?: string; params?: unknown; result?: unknown; error?: { code: number; message: string } };
+      let v: { id?: number; method?: string; params?: unknown; result?: unknown; error?: { code: number; message: string; data?: unknown } };
       try {
         v = JSON.parse(m.data);
       } catch {
@@ -176,7 +176,7 @@ export class RpcClient {
         const p = this.inflight.get(v.id);
         if (!p) return;
         this.inflight.delete(v.id);
-        if (v.error) p.reject(new RpcError(v.error.message, v.error.code));
+        if (v.error) p.reject(new RpcError(v.error.message, v.error.code, v.error.data));
         else p.resolve(v.result);
       }
     } else if (m.data instanceof ArrayBuffer) {

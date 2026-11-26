@@ -5,7 +5,7 @@
  */
 import { useEffect, useSyncExternalStore } from "react";
 import type { Attention, Item, Session } from "../gen";
-import { unreadChanges, usePullChanges } from "../features/reviews/changes";
+import { unreadModItems, useModInbox } from "../mods/inbox";
 import { auraMessage } from "../lib/auraMessage";
 import { selectPendingCount, useStore, type AppState } from "./store";
 
@@ -38,7 +38,7 @@ export const selectCovered = (s: AppState) => s.dialog.kind !== "none" || s.pale
 /** The session the user is looking at: selected, shown, nothing over it, in a focused window. */
 export function useViewedSessionId(): string | null {
   const focused = useWindowFocused();
-  const selected = useStore((s) => (s.prSelection || s.reviewHistoryOpen || selectCovered(s) ? null : s.selectedId));
+  const selected = useStore((s) => (s.modView || selectCovered(s) ? null : s.selectedId));
   return focused ? selected : null;
 }
 
@@ -79,12 +79,12 @@ export function quietReportTurn(st: AppState, sessionId: string): boolean {
   return Object.values(st.sessions).some((w) => w.orchestrator_id === sessionId && !w.archived && w.status === "running");
 }
 
-/** How many rows the inbox lists: approvals and questions waiting in any session, and unread changes on followed pull requests. */
-export function inboxCount(st: AppState, changes = usePullChanges.getState().changes): number {
-  return selectPendingCount(st) + unreadChanges(changes, st.settings.pullChangesMuted).length;
+/** How many rows the inbox lists: approvals and questions waiting in any session, and what mods report unread. */
+export function inboxCount(st: AppState, modItems = useModInbox.getState().items): number {
+  return selectPendingCount(st) + unreadModItems(modItems);
 }
 
 export function useInboxCount(): number {
-  const changes = usePullChanges((s) => s.changes);
-  return useStore((st) => inboxCount(st, changes));
+  const modItems = useModInbox((s) => s.items);
+  return useStore((st) => inboxCount(st, modItems));
 }

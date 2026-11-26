@@ -81,6 +81,8 @@ pub(crate) struct Inner {
     /// Folders that hold a mod.json that could not be loaded, with why.
     broken: RwLock<Vec<(PathBuf, String)>>,
     inbox: Mutex<BTreeMap<String, Vec<Value>>>,
+    /// Agent runs a mod may cancel, by mod id and run id.
+    pub(crate) runs: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     lifecycle: tokio::sync::Mutex<()>,
 }
 
@@ -106,6 +108,7 @@ impl ModHost {
             mods: Default::default(),
             broken: Default::default(),
             inbox: Default::default(),
+            runs: Default::default(),
             lifecycle: Default::default(),
         });
         let host = ModHost(inner);

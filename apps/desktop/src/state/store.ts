@@ -4,9 +4,6 @@
  */
 import { create } from "zustand";
 import type {
-  PullRequest,
-  ReviewConfig,
-  SubmissionPreview,
   Approval,
   ApprovalDecision,
   Event,
@@ -19,7 +16,8 @@ import type {
   UserInputRequest,
 } from "../gen";
 import type { RpcClient, ConnectionState } from "../lib/rpc";
-import { normalizeSession } from "../lib/pulls";
+/** Sessions from an older daemon may lack `attention`. */
+const normalizeSession = (session: Session): Session => ({ ...session, attention: session.attention ?? null });
 import { folderOf } from "../lib/sessionFolder";
 import { planContent, type SessionPlan } from "../views/sessionPlans";
 import { dropFeature, setFeature, setRoleSuggestions } from "./features";
@@ -43,14 +41,16 @@ export type Transcript = {
   turnDiff?: string;
 };
 
+export type ModView = { modId: string; id: string; props?: unknown };
+
 export type FocusRegion = "sidebar" | "main" | "composer" | "inspector";
 
 /** The sidebar's two lists: sessions started by hand or by an orchestrator, and those scheduled tasks started. */
 export type SidebarTab = "sessions" | "scheduled";
 
 export type Dialog =
-  | { kind: "review-settings"; pull: PullRequest; config?: ReviewConfig }
-  | { kind: "review-submit"; preview: SubmissionPreview }
+  /** A dialog a mod registered (`ctx.ui.dialog`). */
+  | { kind: "mod"; modId: string; id: string; props?: unknown }
   | { kind: "none" }
   /** `featureOwner` starts on a feature owner. */
   | { kind: "new-session"; provider?: string; cwd?: string; featureOwner?: boolean }
@@ -62,7 +62,6 @@ export type Dialog =
   | { kind: "rename"; sessionId: string }
   | { kind: "system-prompt"; sessionId: string }
   | { kind: "session-links"; sessionId: string }
-  | { kind: "pr-watch"; repo: string; number: number }
   | { kind: "schedules"; taskId?: string; create?: boolean }
   /** Clean up local branches of the repository at `cwd`, or of the one whose GitHub remote is `repo`. */
   | { kind: "git-cleanup"; cwd?: string; repo?: string }
@@ -90,8 +89,8 @@ export type AppState = {
   sessions: Record<string, Session>;
   sessionOrder: string[];
   selectedId: string | null;
-  prSelection: PullRequest | null;
-  reviewHistoryOpen: boolean;
+  /** A mod's main-area view, shown instead of the selected session. */
+  modView: ModView | null;
   transcripts: Record<string, Transcript>;
   // ui
   focus: FocusRegion;
@@ -140,6 +139,8 @@ export type AppState = {
   setHintMode: (on: boolean) => void;
   openDialog: (d: Dialog) => void;
   closeDialog: () => void;
+  openModView: (v: ModView) => void;
+  closeModView: () => void;
   toast: (message: string, level?: Toast["level"]) => void;
   dismissToast: (id: number) => void;
   setInspectorOpen: (open: boolean) => void;
@@ -170,14 +171,6 @@ export type UiSettings = {
   /** The message box formats markdown as you type; off, it is a plain markdown textbox. */
   composerRich: boolean;
   summonShortcut: string;
-  /** Rules that hide matching pull requests from the sidebar; see `pullFilter`. */
-  pullFilters: string[];
-  /** Last chosen merge method; empty uses the repository's default. */
-  mergeMethod: string;
-  /** Last choice of deleting the head branch when merging. */
-  deleteBranchAfterMerge: boolean;
-  /** Kinds of pull request change (see `PULL_CHANGE_KINDS`) left out of the inbox and notifications. */
-  pullChangesMuted: string[];
 };
 
 export const defaultSettings: UiSettings = {
@@ -193,10 +186,6 @@ export const defaultSettings: UiSettings = {
   showReasoning: true,
   composerRich: true,
   summonShortcut: "CmdOrCtrl+Shift+A",
-  pullFilters: ["author:dependabot"],
-  mergeMethod: "",
-  deleteBranchAfterMerge: true,
-  pullChangesMuted: [],
 };
 
 export function emptyTranscript(): Transcript {
@@ -324,8 +313,7 @@ export const useStore = create<AppState>((set, get) => ({
   sessions: {},
   sessionOrder: loadOrder(),
   selectedId: null,
-  prSelection: null,
-  reviewHistoryOpen: false,
+  modView: null,
   transcripts: {},
   focus: "sidebar",
   paletteOpen: false,
@@ -399,7 +387,7 @@ export const useStore = create<AppState>((set, get) => ({
     const key = s ? groupKey(tab, sectionIn(s, st)) : null;
     const groups = key && st.collapsedGroups.includes(key) ? saveIds(GROUPS_KEY, st.collapsedGroups.filter((g) => g !== key)) : st.collapsedGroups;
     set({
-      prSelection: null, reviewHistoryOpen: false, selectedId: id, cursorItemId: null, sidebarCursor: id,
+      modView: null, selectedId: id, cursorItemId: null, sidebarCursor: id,
       collapsedOrchestras: revealIn(st, id), collapsedGroups: groups, sidebarTab: tab === st.sidebarTab ? tab : saveTab(tab),
     });
   },
@@ -469,6 +457,8 @@ export const useStore = create<AppState>((set, get) => ({
   setHintMode: (hintMode) => set({ hintMode }),
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: { kind: "none" } }),
+  openModView: (modView) => set({ modView }),
+  closeModView: () => set({ modView: null }),
   toast: (message, level = "info") => {
     const id = toastId++;
     set({ toasts: [...get().toasts, { id, level, message }] });
@@ -850,7 +840,7 @@ export function selectPendingCount(st: AppState): number {
 }
 
 export function selectSelected(st: AppState): Session | null {
-  return st.prSelection || st.reviewHistoryOpen ? null : st.selectedId ? st.sessions[st.selectedId] ?? null : null;
+  return st.modView ? null : st.selectedId ? st.sessions[st.selectedId] ?? null : null;
 }
 
 export function selectTranscript(st: AppState, id: string | null): Transcript | null {

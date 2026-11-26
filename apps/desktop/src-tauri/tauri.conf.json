@@ -29,7 +29,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* ipc: http://ipc.localhost; img-src 'self' data: blob: https: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self' blob:; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* ipc: http://ipc.localhost; img-src 'self' data: blob: https: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     }
   },
   "bundle": {
@@ -43,6 +43,7 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/aurad", "binaries/aura"],
+    "resources": { "mods/": "mods/" },
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-"

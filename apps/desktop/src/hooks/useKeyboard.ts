@@ -5,6 +5,7 @@ import { useStore } from "../state/store";
 import { defaultBindings, groupLabels, vimExtraBindings } from "../keymap/default";
 import { isMac } from "../lib/platform";
 import { currentCommandContext, isActivatableEl, ownsEscape } from "./useCommandContext";
+import { slots, useSlot } from "../mods/registry";
 
 let activeKeymap: Keymap | null = null;
 export function getKeymap(): Keymap | null {
@@ -26,8 +27,9 @@ export function useShortcut(command: string): string | null {
   return best ? formatKeys(best, isMac) : null;
 }
 
-export function buildBindings(preset: string, overrides: Binding[]): Binding[] {
-  const base = [...defaultBindings, ...(preset === "vim" ? vimExtraBindings : [])];
+export function buildBindings(preset: string, overrides: Binding[], extra: Binding[] = []): Binding[] {
+  // `extra`: bindings mods add. A user override still wins over them.
+  const base = [...defaultBindings, ...(preset === "vim" ? vimExtraBindings : []), ...extra];
   // overrides replace bindings for the same command+keys; an override with command "" unbinds keys.
   const out = base.filter((b) => !overrides.some((o) => o.keys === b.keys));
   for (const o of overrides) if (o.command) out.push(o);
@@ -37,11 +39,13 @@ export function buildBindings(preset: string, overrides: Binding[]): Binding[] {
 /** Installs the global keydown handler. Mount once at the app root. */
 export function useKeyboard() {
   const settings = useStore((s) => s.settings);
+  const modBindings = useSlot(slots.keybinding);
+  const modGroups = useSlot(slots.keyGroup);
   const keymap = useMemo(() => {
-    const km = new Keymap(buildBindings(settings.keymapPreset, settings.keymapOverrides), isMac, settings.leader);
-    km.setGroupLabels(groupLabels);
+    const km = new Keymap(buildBindings(settings.keymapPreset, settings.keymapOverrides, modBindings.map((b) => b.binding)), isMac, settings.leader);
+    km.setGroupLabels({ ...groupLabels, ...Object.fromEntries(modGroups.map((g) => [g.prefix, g.label])) });
     return km;
-  }, [settings.keymapPreset, settings.keymapOverrides, settings.leader]);
+  }, [settings.keymapPreset, settings.keymapOverrides, settings.leader, modBindings, modGroups]);
   const kmRef = useRef(keymap);
   kmRef.current = keymap;
   activeKeymap = keymap;

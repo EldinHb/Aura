@@ -110,7 +110,27 @@ export interface Git {
   /** `git.branch_status` from core. */
   branchStatus(cwd: string): Promise<Json>;
   /** Run git with these args in `cwd`. Resolves with stdout; rejects on a non-zero exit. */
-  run(cwd: string, args: string[], opts?: { okCodes?: number[]; timeoutMs?: number }): Promise<string>;
+  run(
+    cwd: string,
+    args: string[],
+    opts?: { okCodes?: number[]; timeoutMs?: number; env?: Record<string, string | null>; stdin?: string },
+  ): Promise<string>;
+}
+
+/**
+ * Files in the mod's own data folder (`aura.mod.dataDir`). Paths are relative
+ * to it (or absolute inside it); anything outside is refused.
+ */
+export interface Fs {
+  exists(path: string): Promise<boolean>;
+  readText(path: string): Promise<string>;
+  /** Creates missing parent folders. */
+  writeText(path: string, text: string): Promise<void>;
+  mkdir(path: string): Promise<void>;
+  /** A file or a whole folder; nothing when it does not exist. */
+  remove(path: string): Promise<void>;
+  rename(path: string, to: string): Promise<void>;
+  list(path: string): Promise<Array<{ name: string; dir: boolean }>>;
 }
 
 export interface ProcessResult {
@@ -177,6 +197,8 @@ export interface AgentRunOptions {
    */
   access?: "read-only";
   timeoutMs?: number; // default 30 min
+  /** Lets `aura.agents.cancel(id)` stop the run (it then rejects with code "cancelled"). */
+  id?: string;
   onProgress?: (line: string) => void;
 }
 
@@ -194,6 +216,8 @@ export interface Agents {
   models(provider: string): Promise<Json[]>;
   /** One headless agent run. Needs `permissions.agents`. */
   runOnce(opts: AgentRunOptions): Promise<AgentRunResult>;
+  /** Stop a run started with this `id`; resolves false when none was running. */
+  cancel(id: string): Promise<boolean>;
 }
 
 export interface ToolDef {
@@ -201,6 +225,8 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: Json;
+  /** MCP tool annotations, e.g. { readOnlyHint: true } or { destructiveHint: true }. */
+  annotations?: Record<string, Json>;
 }
 
 export interface Orchestrator {
@@ -247,6 +273,7 @@ export interface DaemonApi {
   process: Process;
   http: Http;
   agents: Agents;
+  fs: Fs;
   orchestrator: Orchestrator;
   mods: {
     /** Call another mod's rpc method. Needs the mod in `permissions.mods`. */

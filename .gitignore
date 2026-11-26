@@ -10,3 +10,4 @@ bindings/
 .aura-worktrees/
 node_modules/
 mods/*/dist/
+apps/desktop/src-tauri/mods/

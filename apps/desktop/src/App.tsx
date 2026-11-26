@@ -1,13 +1,11 @@
-import { PullWorkspace } from "./features/reviews/PullWorkspace";
-import { registerReviewCommands } from "./features/reviews/state";
-import { isHandlingReview, registerWatchCommands, useWatchSync } from "./features/watches/state";
-import { usePullChangeSync } from "./features/reviews/changes";
 import { registerScheduleCommands, useScheduleSync } from "./features/schedules/state";
 import "./features/schedules/schedules.css";
-import "./features/reviews/reviews.css";
+import { useModLoader } from "./mods/loader";
+import { ModMainView } from "./mods/Slots";
+import { slots } from "./mods/registry";
+import "./mods/mods.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
-import { useDetectedLinksSync } from "./state/sessionLinkPreferences";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
 import { connectDaemon, isTauri } from "./lib/connection";
 import { useKeyboard } from "./hooks/useKeyboard";
@@ -37,12 +35,9 @@ const initialSession = params.get("session");
 
 export default function App() {
   useKeyboard();
-  // Detached session windows would announce every review a second time.
-  useWatchSync(windowMode !== "session");
-  // Every window keeps the changes for its inbox count; only the main one announces them.
-  usePullChangeSync(windowMode !== "session");
+  // Mods' interfaces: loaded once connected, followed as they change.
+  useModLoader();
   useScheduleSync();
-  useDetectedLinksSync();
   useMarkViewedSeen();
   const inbox = useInboxCount();
   const connection = useStore((s) => s.connection);
@@ -53,9 +48,10 @@ export default function App() {
   const threads = useWorkerThreads((s) => (session?.orchestrator ? s.views[session.id]?.tab === "workers" : false));
   // A feature owner showing its team, which the user opened.
   const team = useWorkerThreads((s) => (session?.feature_owner ? s.views[session.id]?.tab === "team" : false));
-  const prMode = useStore((s) => !!s.prSelection || s.reviewHistoryOpen);
+  // A mod's view (a pull request, say) in place of the selected session.
+  const modViewOpen = useStore((s) => s.modView !== null);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
-  const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !prMode;
+  const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !modViewOpen;
   const focus = useStore((s) => s.focus);
   const theme = useStore((s) => s.settings.theme);
   const fontSize = useStore((s) => s.settings.fontSize);
@@ -79,10 +75,8 @@ export default function App() {
     setCommandErrorHandler((msg) => useStore.getState().toast(msg, "error"));
     registerGitCommands();
     const offCore = registerCoreCommands();
-    const offReviews = registerReviewCommands();
-    const offWatches = registerWatchCommands();
     const offSchedules = registerScheduleCommands();
-    return () => { offCore(); offReviews(); offWatches(); offSchedules(); };
+    return () => { offCore(); offSchedules(); };
   }, []);
 
   // Connect + subscribe.
@@ -108,7 +102,7 @@ export default function App() {
           client.features().then(setFeatures, () => {});
           client.roleSuggestions().then(setRoleSuggestions, () => {});
           if (initialSession && sessions.some((s) => s.id === initialSession)) st().select(initialSession);
-          else if (!st().selectedId && !st().prSelection && !st().reviewHistoryOpen && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
+          else if (!st().selectedId && !st().modView && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
         };
         await refresh();
         offEvent = client.onEvent((ev: Event) => {
@@ -190,8 +184,8 @@ export default function App() {
       <div className={clsx("body", sidebarCollapsed && "no-sidebar", !inspectorOpen && "no-inspector")}>
         {!sidebarCollapsed && <Sidebar />}
         <div className={clsx("region main", (focus === "main" || focus === "composer") && "focused")} data-region="main" tabIndex={-1}>
-          {prMode && <PullWorkspace />}
-          <div className="session-workspace" hidden={prMode}>
+          {modViewOpen && <ModMainView />}
+          <div className="session-workspace" hidden={modViewOpen}>
           {connection !== "open" && !session ? (
             <div className="empty">
               <h2>{connection === "connecting" ? "Connecting to the Aura daemon…" : "Not connected"}</h2>
@@ -235,8 +229,8 @@ async function notifyIfNeeded(ev: Event) {
   if (ev.type === "turn_completed" && ev.turn.status !== "completed") return;
   const focused = document.hasFocus();
   if (focused && ev.type === "turn_completed") return;
-  // A turn on review activity Aura handed over gets its own notification.
-  if (ev.type === "turn_completed" && isHandlingReview(ev.session_id)) return;
+  // A mod may handle a turn's news itself (review activity Aura handed over, say).
+  if (ev.type === "turn_completed" && st.sessions[ev.session_id] && slots.turnToastFilter.list().some((f) => { try { return f.suppress(st.sessions[ev.session_id]); } catch { return false; } })) return;
   if (ev.type === "turn_completed" && quietReportTurn(st, ev.session_id)) return;
   const now = Date.now();
   if (now - lastNotified < 1500) return;

@@ -1,5 +1,4 @@
-import { openPull, useReviews, visiblePulls } from "../features/reviews/state";
-import { ReviewSidebar } from "../features/reviews/ReviewSidebar";
+import { SidebarModSections } from "../mods/Slots";
 import { ScheduleSidebar } from "../features/schedules/ScheduleSidebar";
 import { openSchedules, useSchedules } from "../features/schedules/state";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
@@ -291,7 +290,7 @@ export function Sidebar() {
   const tasks = useSchedules((s) => s.tasks);
   const collapsedOrchestras = useStore((s) => s.collapsedOrchestras);
   const setOrchestraCollapsed = useStore((s) => s.setOrchestraCollapsed);
-  const selectedId = useStore((s) => s.prSelection || s.reviewHistoryOpen ? null : s.selectedId);
+  const selectedId = useStore((s) => s.modView ? null : s.selectedId);
   const cursor = useStore((s) => s.sidebarCursor);
   const filter = useStore((s) => s.sidebarFilter);
   const setFilter = useStore((s) => s.setSidebarFilter);
@@ -374,18 +373,16 @@ export function Sidebar() {
       const st = useStore.getState();
       if (st.focus !== "sidebar") return false;
       const all = selectVisibleSessions(st);
-      const current = st.prSelection ? undefined : sidebarCurrent(st, all);
+      const current = sidebarCurrent(st, all);
       // Up and down step over the workers of other orchestras; they are reached from
       // their orchestrator. First and last still go to the ends of the sidebar.
       const orchestra = current && selectOrchestra(st, current.id);
       const sessions = Math.abs(delta) > 1 ? all : selectSessionSections(st).flatMap(([, list]) => list.filter((s) => orchestra?.includes(s) || orchestratorsOf(s, list).length === 0));
-      const { review, mine } = visiblePulls(useReviews.getState());
-      const pulls = [...review, ...mine];
-      const count = sessions.length + pulls.length;
+      const count = sessions.length;
       if (!count) return true;
-      let cur = st.prSelection ? sessions.length + pulls.findIndex((p) => p.id === st.prSelection?.id) : current ? sessions.indexOf(current) : -1;
+      let cur = current ? sessions.indexOf(current) : -1;
       const id = st.sidebarCursor ?? st.selectedId;
-      if (!st.prSelection && cur < 0 && foldedSectionOf(st, id) !== null) {
+      if (cur < 0 && foldedSectionOf(st, id) !== null) {
         // On a folded section's heading: step to the rows around it.
         const full = selectSessionSections(st, true).flatMap(([, list]) => list);
         const above = full.slice(0, full.findIndex((s) => s.id === id)).filter((s) => sessions.includes(s)).length;
@@ -393,8 +390,8 @@ export function Sidebar() {
         cur = delta > 0 ? above - 1 : above;
       }
       const next = Math.max(0, Math.min(count - 1, cur < 0 && !(delta > 0 && foldedSectionOf(st, id) !== null) ? 0 : cur + delta));
-      if (next < sessions.length) go(sessions[next].id);
-      else { openPull(pulls[next - sessions.length]); useStore.getState().setFocus("sidebar"); }
+      // Mods' sidebar sections (pull requests, …) keep their own keys while focused.
+      go(sessions[next].id);
       return true;
     };
     // Tree keys: right opens an orchestrator, then steps to its first worker;
@@ -408,7 +405,7 @@ export function Sidebar() {
         st.setGroupCollapsed(heading.tab, heading.section, dir < 0);
         return;
       }
-      if (st.prSelection) return;
+      if (st.modView) return;
       const folded = foldedSectionOf(st, st.sidebarCursor ?? st.selectedId);
       if (folded !== null) {
         if (dir > 0) st.setGroupCollapsed(st.sidebarTab, folded, false);
@@ -593,7 +590,7 @@ export function Sidebar() {
         {showArchived && <div className="section-title">showing archived</div>}
       </div>
       <ScheduleSidebar />
-      <ReviewSidebar />
+      <SidebarModSections focused={focus === "sidebar"} />
     </div>
   );
 }

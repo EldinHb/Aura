@@ -31,3 +31,6 @@ case "$TRIPLE" in *windows*) EXT=".exe";; esac
 cp "$SRC/aurad$EXT" "$DEST/aurad-$TRIPLE$EXT"
 cp "$SRC/aura$EXT" "$DEST/aura-$TRIPLE$EXT"
 echo "sidecars -> $DEST ($TRIPLE, $PROFILE)"
+
+# The mods bundled with the app are resources of the Tauri build.
+./scripts/build-mods.sh

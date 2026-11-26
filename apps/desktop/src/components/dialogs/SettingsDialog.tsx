@@ -10,16 +10,20 @@ import type { Autonomy, CapabilitySet, LoadBalancer, LoadBalancerUpdate, Meeting
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
-import { pullFilterError } from "../../features/reviews/state";
-import { PULL_CHANGE_KINDS } from "../../features/reviews/changes";
+import { ModSettingsTab, ModsSettings, useModSettingsTabs } from "../../mods/ModsSettings";
 import { SpecialistsTab } from "./SpecialistsTab";
 import { AutonomyPicker } from "../AutonomyPicker";
 
-type Tab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups";
-const TABS: Tab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups"];
+type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "mods";
+const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "mods"];
+/** A core tab, or a mod's ("<modId>:<id>"). */
+type Tab = string;
 
 export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initial ?? "general");
+  const modTabs = useModSettingsTabs();
+  const TABS: Tab[] = [...CORE_TABS, ...modTabs.map((t) => t.key)];
+  const label = (t: Tab) => modTabs.find((m) => m.key === t)?.title ?? t[0].toUpperCase() + t.slice(1);
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const t = (e.target as HTMLElement).tagName;
     const inField = t === "INPUT" || t === "TEXTAREA" || t === "SELECT";
@@ -38,7 +42,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
           <span>Settings</span>
           <span style={{ flex: 1 }} />
           <span className="dim" style={{ fontWeight: 400, color: "var(--fg-dim)", fontSize: 11 }}>
-            <kbd>←</kbd> <kbd>→</kbd> or <kbd>1-{TABS.length}</kbd> switch tab
+            <kbd>←</kbd> <kbd>→</kbd> or <kbd>1-{Math.min(9, TABS.length)}</kbd> switch tab
           </span>
         </>
       }
@@ -50,7 +54,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
       <div className="tabs" role="tablist">
         {TABS.map((t, i) => (
           <button key={t} type="button" role="tab" data-hint className={clsx("tab", tab === t && "active")} onClick={() => setTab(t)}>
-            {i + 1} {t[0].toUpperCase() + t.slice(1)}
+            {i < 9 ? `${i + 1} ` : ""}{label(t)}
           </button>
         ))}
       </div>
@@ -62,6 +66,8 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
         {tab === "orchestrators" && <OrchestratorsTab />}
         {tab === "specialists" && <SpecialistsTab />}
         {tab === "groups" && <GroupsTab />}
+        {tab === "mods" && <ModsSettings />}
+        {modTabs.some((m) => m.key === tab) && <ModSettingsTab tabKey={tab} />}
       </div>
     </ModalC>
   );
@@ -133,14 +139,6 @@ function GeneralTab() {
       <label className="check-row">
         <input type="checkbox" checked={settings.notifications} onChange={(e) => set("notifications", e.target.checked)} /> Desktop notifications
       </label>
-      <div className="field wide">
-        <label>Pull request changes in the inbox and notifications</label>
-        {PULL_CHANGE_KINDS.map(({ kind, label }) => (
-          <label key={kind} className="check-row">
-            <input type="checkbox" checked={!settings.pullChangesMuted.includes(kind)} onChange={(e) => set("pullChangesMuted", e.target.checked ? settings.pullChangesMuted.filter((k) => k !== kind) : [...settings.pullChangesMuted, kind])} /> {label}
-          </label>
-        ))}
-      </div>
       <label className="check-row">
         <input type="checkbox" checked={settings.confirmDelete} onChange={(e) => set("confirmDelete", e.target.checked)} /> Confirm before deleting a session
       </label>
@@ -170,14 +168,6 @@ function GeneralTab() {
       <div className="field">
         <label>Summon shortcut (global, restart required)</label>
         <input type="text" value={settings.summonShortcut} onChange={(e) => set("summonShortcut", e.target.value)} />
-      </div>
-      <div className="field wide">
-        <label htmlFor="pull-filters">Hide pull requests matching (one rule per line)</label>
-        <textarea id="pull-filters" rows={4} spellCheck={false} className="mono" value={settings.pullFilters.join("\n")} placeholder="author:dependabot" onChange={(e) => set("pullFilters", e.target.value.split("\n"))} />
-        {settings.pullFilters.map(pullFilterError).filter(Boolean).map((error) => <div key={error} className="dim" style={{ fontSize: 11, color: "var(--warn)" }}>{error}</div>)}
-        <div className="dim" style={{ fontSize: 11 }}>
-          <span className="mono">author:</span>, <span className="mono">label:</span>, <span className="mono">repo:</span>, <span className="mono">title:</span> or <span className="mono">draft</span>; <span className="mono">*</span> matches anything, e.g. <span className="mono">repo:acme/*</span>. Matching PRs are listed with Show hidden.
-        </div>
       </div>
       <div>
         <button type="button" className="btn" data-hint onClick={() => setSettings(defaultSettings)}>

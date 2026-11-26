@@ -1,3 +1,5 @@
+import { modContext } from "../mods/registry";
+
 /**
  * Command registry. Every user-facing action is a command: the palette lists
  * them, the keymap binds them, hint mode and menus invoke them. A UI element
@@ -118,12 +120,14 @@ export function evaluateWhen(expr: string | undefined, ctx: CommandContext): boo
     const t = neg ? term.slice(1) : term;
     let val: boolean;
     const [k, v] = t.split(":");
+    // Mods' keys ("mod.<id>.<key>") come from the mod context, not CommandContext.
+    const lookup = (key: string) => (key.startsWith("mod.") ? modContext(key) : (ctx as unknown as Record<string, unknown>)[key]);
     if (v !== undefined) {
       const options = v.split("|");
-      const actual = (ctx as unknown as Record<string, unknown>)[k];
+      const actual = lookup(k);
       val = options.includes(String(actual));
     } else {
-      const actual = (ctx as unknown as Record<string, unknown>)[t];
+      const actual = lookup(t);
       val = typeof actual === "number" ? actual > 0 : Boolean(actual);
     }
     return neg ? !val : val;

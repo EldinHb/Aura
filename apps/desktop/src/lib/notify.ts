@@ -11,9 +11,19 @@ export function onNotificationClick(handler: (target: NotifyTarget) => void): ()
   return () => { if (clicked === handler) clicked = null; };
 }
 
+/** A mod's notification target is wrapped as {__mod: id, target}; it goes to that mod. */
+let modClicked: ((modId: string, target: unknown) => void) | null = null;
+export function onModNotificationClick(handler: (modId: string, target: unknown) => void) {
+  modClicked = handler;
+}
+function route(target: NotifyTarget) {
+  if (typeof target?.__mod === "string") modClicked?.(target.__mod, target.target);
+  else clicked?.(target);
+}
+
 if (isTauri()) {
   // The shell shows the main window and reports the click with the notification's target.
-  import("@tauri-apps/api/event").then(({ listen }) => listen<NotifyTarget>("aura://notification-clicked", (e) => clicked?.(e.payload))).catch(() => {});
+  import("@tauri-apps/api/event").then(({ listen }) => listen<NotifyTarget>("aura://notification-clicked", (e) => route(e.payload))).catch(() => {});
 }
 
 /**
@@ -38,6 +48,6 @@ export async function desktopNotify(title: string, body: string, target?: Notify
     }
   } else if ("Notification" in window && Notification.permission === "granted") {
     const n = new Notification(title, { body });
-    if (target) n.onclick = () => { window.focus(); clicked?.(target); };
+    if (target) n.onclick = () => { window.focus(); route(target); };
   }
 }

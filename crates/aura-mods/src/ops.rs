@@ -291,6 +291,9 @@ impl ModOps {
                 Ok(Value::Null)
             }
 
+            // ---- files, inside the mod's data dir only ----
+            op if op.starts_with("fs.") => self.fs_op(op, &a).await,
+
             // ---- git ----
             op if op.starts_with("git.") => {
                 self.need(p.git, "use git")?;
@@ -338,8 +341,26 @@ impl ModOps {
                 } else {
                     None
                 };
+                let cancel_id = a.get("id").and_then(Value::as_str).map(|i| format!("{id}\u{0}{i}"));
                 let args: agents::RunArgs = serde_json::from_value(a).map_err(|e| ModError::invalid(e.to_string()))?;
-                agents::run_once(args, progress).await
+                let Some(key) = cancel_id else {
+                    return agents::run_once(args, progress).await;
+                };
+                let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                host.runs.lock().insert(key.clone(), tx);
+                // Dropping the run's future kills the agent (its process is kill_on_drop).
+                let result = tokio::select! {
+                    r = agents::run_once(args, progress) => r,
+                    _ = rx => Err(ModError::new("cancelled", "the agent run was cancelled")),
+                };
+                host.runs.lock().remove(&key);
+                result
+            }
+            "agents.cancel" => {
+                self.need(p.agents, "run agents")?;
+                let key = format!("{id}\u{0}{}", str_arg(&a, "id")?);
+                let found = host.runs.lock().remove(&key);
+                Ok(json!(found.map(|tx| tx.send(()).is_ok()).unwrap_or(false)))
             }
 
             // ---- other mods, inbox ----
@@ -360,6 +381,83 @@ impl ModOps {
     }
 }
 
+impl ModOps {
+    /// A path under the mod's data dir; `..` and absolute paths elsewhere are refused.
+    fn data_path(&self, a: &Value, key: &str) -> Result<std::path::PathBuf, ModError> {
+        let raw = str_arg(a, key)?;
+        let p = std::path::Path::new(&raw);
+        let full = if p.is_absolute() { p.to_path_buf() } else { self.data_dir.join(p) };
+        let mut clean = std::path::PathBuf::new();
+        for c in full.components() {
+            match c {
+                std::path::Component::ParentDir => {
+                    if !clean.pop() {
+                        return Err(ModError::denied(format!("{raw} is outside the mod's data folder")));
+                    }
+                }
+                std::path::Component::CurDir => {}
+                other => clean.push(other.as_os_str()),
+            }
+        }
+        if !clean.starts_with(&self.data_dir) {
+            return Err(ModError::denied(format!("{raw} is outside the mod's data folder")));
+        }
+        Ok(clean)
+    }
+
+    async fn fs_op(&self, op: &str, a: &Value) -> OpResult {
+        let io = |e: std::io::Error| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ModError::new("not_found", e.to_string())
+            } else {
+                ModError::failed(e)
+            }
+        };
+        let path = self.data_path(a, "path")?;
+        match op {
+            "fs.exists" => Ok(json!(tokio::fs::try_exists(&path).await.unwrap_or(false))),
+            "fs.readText" => Ok(json!(tokio::fs::read_to_string(&path).await.map_err(io)?)),
+            "fs.writeText" => {
+                if let Some(parent) = path.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(io)?;
+                }
+                tokio::fs::write(&path, str_arg(a, "text")?).await.map_err(io)?;
+                Ok(Value::Null)
+            }
+            "fs.mkdir" => {
+                tokio::fs::create_dir_all(&path).await.map_err(io)?;
+                Ok(Value::Null)
+            }
+            "fs.remove" => {
+                match tokio::fs::metadata(&path).await {
+                    Ok(m) if m.is_dir() => tokio::fs::remove_dir_all(&path).await.map_err(io)?,
+                    Ok(_) => tokio::fs::remove_file(&path).await.map_err(io)?,
+                    Err(_) => {}
+                }
+                Ok(Value::Null)
+            }
+            "fs.rename" => {
+                let to = self.data_path(a, "to")?;
+                if let Some(parent) = to.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(io)?;
+                }
+                tokio::fs::rename(&path, &to).await.map_err(io)?;
+                Ok(Value::Null)
+            }
+            "fs.list" => {
+                let mut out = vec![];
+                let mut rd = tokio::fs::read_dir(&path).await.map_err(io)?;
+                while let Some(e) = rd.next_entry().await.map_err(io)? {
+                    let dir = e.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+                    out.push(json!({"name": e.file_name().to_string_lossy(), "dir": dir}));
+                }
+                Ok(json!(out))
+            }
+            other => Err(ModError::invalid(format!("unknown op {other}"))),
+        }
+    }
+}
+
 async fn git_op(op: &str, a: Value) -> OpResult {
     use aura_git::ops;
     let cwd = str_arg(&a, "cwd")?;
@@ -367,9 +465,17 @@ async fn git_op(op: &str, a: Value) -> OpResult {
         let args: Vec<String> = arg(&a, "args")?;
         let ok_codes: Vec<i32> = opt(&a, "okCodes")?.unwrap_or_default();
         let timeout = Duration::from_millis(opt::<u64>(&a, "timeoutMs")?.unwrap_or(10 * 60 * 1000));
+        let env: BTreeMap<String, Option<String>> = opt(&a, "env")?.unwrap_or_default();
         let mut cmd = tokio::process::Command::new("git");
-        cmd.arg("-C").arg(&cwd).args(&args);
-        let out = output(cmd, None, timeout).await?;
+        // Never wait for credentials on a terminal nobody sees.
+        cmd.arg("-C").arg(&cwd).args(&args).env("GIT_TERMINAL_PROMPT", "0");
+        for (k, v) in env {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            };
+        }
+        let out = output(cmd, opt(&a, "stdin")?, timeout).await?;
         let code = out.status.code().unwrap_or(-1);
         if !out.status.success() && !ok_codes.contains(&code) {
             return Err(ModError {
