@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { CleanupReport, Session } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { defaultSettings, useStore } from "../../state/store";
-import { CLEANUP_PROMPT, GitCleanupDialog } from "./GitCleanupDialog";
+import { CLEANUP_PROMPT, GitCleanupDialog, remoteName } from "./GitCleanupDialog";
 
 const report: CleanupReport = {
   root: "/code/widget",
@@ -17,7 +17,10 @@ const report: CleanupReport = {
 };
 const client = {
   gitMainRepoRoot: vi.fn(async (cwd: string) => (cwd.startsWith("/code/widget") ? "/code/widget" : cwd === "/code/other" ? "/code/other" : null)),
-  gitGithubRepo: vi.fn(async (root: string) => (root === "/code/widget" ? "acme/widget" : null)),
+  // A fork: the upstream remote names the repository, not origin.
+  gitRemotes: vi.fn(async (root: string) => (root === "/code/widget"
+    ? [{ name: "origin", url: "git@github.com:me/widget.git" }, { name: "upstream", url: "https://github.com/acme/widget.git" }]
+    : [])),
   gitCleanupCandidates: vi.fn(async () => report),
   gitCleanup: vi.fn(async () => ({ deleted: ["old-docs"], failed: [], pruned_worktrees: 1 })),
   createSession: vi.fn(async () => ({ id: "s-clean" }) as Session),
@@ -44,6 +47,13 @@ it("finds the PR's repository among session folders and deletes the selected bra
   fireEvent.click(screen.getByRole("button", { name: /Delete 1 branch and prune/ }));
   await waitFor(() => expect(client.gitCleanup).toHaveBeenCalledWith("/code/widget", ["old-docs"], true));
   await waitFor(() => expect(useStore.getState().dialog.kind).toBe("none"));
+});
+
+it("names a repository after its remote on any host", () => {
+  expect(remoteName("https://github.com/acme/widget.git")).toBe("acme/widget");
+  expect(remoteName("git@gitlab.com:acme/widget")).toBe("acme/widget");
+  expect(remoteName("ssh://git@example.org/acme/widget/")).toBe("acme/widget");
+  expect(remoteName("not a url")).toBeNull();
 });
 
 it("hands the repository to an agent session", async () => {

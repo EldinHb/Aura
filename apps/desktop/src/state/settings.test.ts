@@ -11,7 +11,7 @@ it("loads saved settings when the store is created", async () => {
 });
 
 it("falls back to the default for a saved setting of another type", async () => {
-  localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "light", pullFilters: "author:bot", keymapOverrides: null, fontSize: "15" }));
+  localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "light", notifications: "yes", keymapOverrides: null, fontSize: "15" }));
   vi.resetModules();
   const { useStore, defaultSettings } = await import("./store");
   expect(useStore.getState().settings).toEqual({ ...defaultSettings, theme: "light" });

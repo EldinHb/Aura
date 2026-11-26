@@ -1,10 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { PreReview, ProviderInfo, Session, SystemPrompts } from "../../gen";
+import type { ProviderInfo, Session, SystemPrompts } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { useStore } from "../../state/store";
-import { agentLabel } from "../../features/reviews/ReviewEditor";
-import { reviewFixture } from "../../features/reviews/fixtures";
 import { SettingsDialog } from "./SettingsDialog";
 import { SystemPromptDialog } from "./SystemPromptDialog";
 
@@ -77,9 +75,3 @@ it("saves a session's own prompt and shows what its agent starts with", async ()
   await waitFor(() => expect(setSystemPrompt).toHaveBeenCalledWith("s1", null));
 });
 
-it("labels a pre-review with the agent, exact model and effort it ran with", () => {
-  expect(agentLabel(reviewFixture)).toBe("Codex · model gpt-5.5-codex · effort medium");
-  const claude: PreReview = { ...reviewFixture, agent: { provider: "Claude Code", model: "opus", model_id: "claude-opus-5-5", effort: null } };
-  expect(agentLabel(claude)).toBe("Claude Code · model opus (claude-opus-5-5) · effort default");
-  expect(agentLabel({ ...reviewFixture, agent: null })).toBe("codex · default model");
-});

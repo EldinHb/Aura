@@ -1,34 +1,23 @@
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Item, ScheduledTask, Session } from "../gen";
+import type { ScheduledTask, Session } from "../gen";
 import { useSchedules } from "../features/schedules/state";
 import type { RpcClient } from "../lib/rpc";
 import { runCommand } from "../lib/commands";
-import { emptyTranscript, selectListedSessions, useStore } from "../state/store";
-import { useDetectedLinksStore, useDetectedLinksSync, useLinkPreferencesStore } from "../state/sessionLinkPreferences";
-import { useGithubRepos } from "../state/githubRepos";
+import { selectListedSessions, useStore } from "../state/store";
 import { setFeature, useFeatures } from "../state/features";
+import { slots } from "../mods/registry";
 import { Sidebar } from "./Sidebar";
 
-vi.mock("../features/reviews/ReviewSidebar", () => ({ ReviewSidebar: () => null }));
-
-const issue = "https://github.com/owner/repo/issues/7";
-const pr = "https://github.com/owner/repo/pull/42";
 const settings = new Map<string, string>();
 const values = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => values.set(k, v), removeItem: (k: string) => values.delete(k), clear: () => values.clear() } });
 const getSetting = vi.fn(async (key: string) => settings.get(key) ?? null);
 const setSetting = vi.fn(async (key: string, value: string) => { settings.set(key, value); return true; });
-const gitGithubRepo = vi.fn(async (cwd: string) => cwd === "/work/a" ? "owner/repo" : null);
 
 function session(id: string, title: string, patch: Partial<Session> = {}): Session {
   return { id, title, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false,
     pending_count: 0, last_activity: "2026-09-30T00:00:00Z", group: null, worktree: null, model: null, orchestrator: false, orchestrator_id: null, ...patch } as Session;
-}
-
-function item(text: string, kind: Item["kind"] = "agent_message"): Item {
-  return { id: "message", session_id: "a", turn_id: null, kind, status: "completed", title: null,
-    text, data: {}, parent_id: null, started_at: "2026-09-30T00:00:00Z", ended_at: null };
 }
 
 const rows = () => [...document.querySelectorAll<HTMLElement>("[data-session-id]")].map((el) => el.dataset.sessionId);
@@ -54,66 +43,42 @@ function orchestras() {
   useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), focus: "sidebar", client: null });
 }
 
-const rowLinks = (id: string) => [...document.querySelectorAll(`[data-session-id="${id}"] .session-row-link`)].map((el) => el.textContent);
-
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   localStorage.clear();
   settings.clear();
   getSetting.mockClear();
   setSetting.mockClear();
-  useLinkPreferencesStore.setState({ entries: {} });
-  useDetectedLinksStore.setState({ links: {} });
-  useGithubRepos.setState({ repos: {} });
   useStore.setState({
-    client: { getSetting, setSetting, gitGithubRepo } as unknown as RpcClient,
+    client: { getSetting, setSetting } as unknown as RpcClient,
     sessions: { a: session("a", "Hours page"), b: session("b", "Other") },
     sessionOrder: ["a", "b"], transcripts: {}, sidebarFilter: "", showArchived: false,
-    collapsedOrchestras: [], selectedId: null, sidebarCursor: null, prSelection: null, focus: "sidebar",
+    collapsedOrchestras: [], selectedId: null, sidebarCursor: null, modView: null, focus: "sidebar",
     sidebarTab: "sessions", collapsedGroups: [],
   });
 });
 afterEach(cleanup);
 
-it("shows links detected in an opened session and saved selections for unopened ones", async () => {
-  settings.set("session.links.v1.b", JSON.stringify({ issue }));
-  useStore.setState({ transcripts: { a: { ...emptyTranscript(), loaded: true, items: { message: item(`Created PR: ${pr}`) }, order: ["message"] } } });
-  render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("b")).toEqual(["Issue #7"]));
-  expect(rowLinks("a")).toEqual(["PR #42"]);
-  expect(screen.getByTitle(pr)).toBeTruthy();
-});
-
-it("saves detected links so the sidebar shows them before the session is opened again", async () => {
-  useStore.setState({ transcripts: { a: { ...emptyTranscript(), loaded: true, items: { message: item(`Created PR: ${pr}`) }, order: ["message"] } } });
-  const { unmount } = renderHook(() => useDetectedLinksSync());
-  await waitFor(() => expect(setSetting).toHaveBeenCalledWith("session.links.detected.v1.a", JSON.stringify([pr])));
-  unmount();
-
-  useDetectedLinksStore.setState({ links: {} });
-  useStore.setState({ transcripts: {} });
-  render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42"]));
-  expect(rowLinks("b")).toEqual([]);
-});
-
-it("prefers None over a saved detected link", async () => {
-  settings.set("session.links.detected.v1.a", JSON.stringify([pr]));
-  settings.set("session.links.v1.a", JSON.stringify({ pr: null }));
-  render(<Sidebar />);
-  await waitFor(() => expect(getSetting).toHaveBeenCalledWith("session.links.v1.a"));
-  await waitFor(() => expect(useLinkPreferencesStore.getState().entries.a).toBeTruthy());
-  expect(rowLinks("a")).toEqual([]);
-});
-
-it("links the issue number the user asked the agent to work on, using the session's GitHub repository", async () => {
-  useStore.setState({ transcripts: { a: { ...emptyTranscript(), loaded: true, items: { message: item("Please work on issue #7", "user_message") }, order: ["message"] } } });
-  render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["Issue #7"]));
-  expect(screen.getByTitle(issue)).toBeTruthy();
-  const { unmount } = renderHook(() => useDetectedLinksSync());
-  await waitFor(() => expect(setSetting).toHaveBeenCalledWith("session.links.detected.v1.a", JSON.stringify([issue])));
-  unmount();
+it("shows the chips mods add to each row, and none from a mod that fails", () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const off = [
+    slots.sessionRowChips.register("test-mod", "chip", {
+      component: ({ session, selected }) => <span className="test-chip">{`${session.title}${selected ? " (selected)" : ""}`}</span>,
+    }),
+    slots.sessionRowChips.register("broken-mod", "chip", { component: () => { throw new Error("boom"); } }),
+  ];
+  try {
+    useStore.setState({ selectedId: "a" });
+    render(<Sidebar />);
+    const chips = (id: string) => [...document.querySelectorAll(`[data-session-id="${id}"] .links .test-chip`)].map((el) => el.textContent);
+    expect(chips("a")).toEqual(["Hours page (selected)"]);
+    expect(chips("b")).toEqual(["Other"]);
+    expect(document.querySelector(".mod-error")).toBeNull();
+  } finally {
+    cleanup();
+    off.forEach((f) => f());
+    vi.mocked(console.error).mockRestore();
+  }
 });
 
 it("shows every level of workers under their orchestrator", () => {
@@ -361,46 +326,6 @@ it("shows no folder for an orchestrator that belongs to none, and its workers' f
   expect(worker.title).toBe("/work/repo");
   // The model and effort the orchestrator gave a worker.
   expect(document.querySelector('[data-session-id="x"] .sub .where')?.textContent).toBe("repo · gpt-5 · low");
-});
-
-it("shows only whole link chips that fit, then +N with the rest in its tooltip, and adapts as the sidebar resizes", async () => {
-  const urls = [7, 8, 9, 10].map((n) => `https://github.com/owner/repo/issues/${n}`);
-  settings.set("session.links.detected.v1.a", JSON.stringify(urls));
-  // jsdom lays nothing out: chips are 60px wide, "+N" 24px, and the line as wide as `room`.
-  let room = 150;
-  let resized = () => {};
-  vi.stubGlobal("ResizeObserver", class { constructor(cb: () => void) { resized = cb; } observe() {} disconnect() {} });
-  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
-    return this.classList.contains("link-slot") ? 60 : this.classList.contains("links-more") ? 24 : 0;
-  });
-  const client = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
-    return this.classList.contains("links") ? room : 0;
-  });
-  try {
-    render(<Sidebar />);
-    const shown = () => [...document.querySelectorAll('[data-session-id="a"] .link-slot:not(.overflow)')].map((el) => el.textContent);
-    const more = () => document.querySelector<HTMLElement>('[data-session-id="a"] .links-more')!;
-    // 60 + 60 + "+2" fits in 150; a third chip with "+1" does not.
-    await waitFor(() => expect(shown()).toEqual(["Issue #7", "Issue #8"]));
-    expect(more().textContent).toBe("+2");
-    expect(more().classList.contains("overflow")).toBe(false);
-    expect(more().title).toBe(`${urls[2]}\n${urls[3]}`);
-
-    room = 240;
-    act(() => resized());
-    expect(shown()).toEqual(["Issue #7", "Issue #8", "Issue #9", "Issue #10"]);
-    expect(more().classList.contains("overflow")).toBe(true);
-
-    // Too narrow for any chip: only the count.
-    room = 40;
-    act(() => resized());
-    expect(shown()).toEqual([]);
-    expect(more().textContent).toBe("+4");
-  } finally {
-    width.mockRestore();
-    client.mockRestore();
-    vi.unstubAllGlobals();
-  }
 });
 
 it("marks a feature owner, the role of each specialist under it and the decisions waiting on the user", () => {

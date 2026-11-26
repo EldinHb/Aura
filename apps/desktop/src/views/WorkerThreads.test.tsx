@@ -12,7 +12,7 @@ const B = "22222222-2222-4222-8222-222222222222";
 
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false, created_at: "2026-10-15T00:00:00Z",
-    pending_count: 0, last_activity: "2026-10-15T00:00:00Z", group: null, worktree: null, model: null, effort: null, orchestrator: false, orchestrator_id: null, pulls: [], attention: null, ...patch } as Session;
+    pending_count: 0, last_activity: "2026-10-15T00:00:00Z", group: null, worktree: null, model: null, effort: null, orchestrator: false, orchestrator_id: null, attention: null, ...patch } as Session;
 }
 
 function item(sessionId: string, id: string, kind: Item["kind"], text: string, at: string, extra: Partial<Item> = {}): Item {

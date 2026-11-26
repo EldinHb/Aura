@@ -1,6 +1,6 @@
 # Aura mods: design spec
 
-Status: draft for review (branch `mods`). Nothing in this document is built yet.
+Status: implemented on branch `mods` (Aura 0.3.0). Where the build differs from the first draft, the text below says so; see [WRITING.md](WRITING.md) for how to write a mod.
 
 ## Goal
 
@@ -323,8 +323,7 @@ any mod exists, so each one can land and be tested on its own.
 | Mod | Contents | Permissions | Depends on |
 | --- | --- | --- | --- |
 | `github` | Account and token handling via `gh`, a REST/GraphQL client with rate-limit gate and ETag cache, repo resolution from remotes, issue picker, session issue/PR links and detection, PR badge on branch status | `process: [gh, git]`, `net`, `sessions: write`, `git` | – |
-| `pull-requests` | PR inbox sidebar, PR page (timeline, projects, edit, merge, delete branch), PR change inbox and notifications, reviewer watches, agents following up on review activity | `sessions: write`, `git`, `mods: [github]` | `github` |
-| `pr-review` | Pre-review in an isolated PR worktree with Claude or Codex, finding editor, posting, reconcile, orchestrator review tools | `agents`, `orchestratorTools`, `git`, `process: [gh, git]`, `mods: [github, pull-requests]` | `github`, `pull-requests` |
+| `pull-requests` | PR inbox sidebar, PR page (timeline, projects, edit, merge, delete branch), PR change inbox and notifications, reviewer watches, agents following up on review activity, and pre-reviews in an isolated PR worktree with Claude or Codex (finding editor, posting, reconcile, orchestrator review tools). The first draft split pre-reviews into a `pr-review` mod; the PR page and the review editor are too intertwined for that to pay off. | `process: [gh, git]`, `sessions: write`, `git`, `agents`, `orchestratorTools`, `mods: [github]` | `github` |
 
 The GitHub client lives in the `github` mod's daemon half. The other mods
 reach it through `aura.mods.call("github", …)`, so the token and rate limits
@@ -378,24 +377,29 @@ until Phase 6.
    and the old UI. Ship the data migration, update the README and release
    workflow, and merge to `main` as 0.3.0.
 
-## Open questions
+## Decisions
 
-1. **Rewrite or wrap?** This spec rewrites the ~12k lines of GitHub and
-   review Rust in TypeScript, which proves the API is enough for real mods.
-   The alternative is "native mods": Rust compiled into `aurad` behind the
-   same manifest and UI API. That would be faster to deliver, but the bundled
-   mods would then not be JS, and the API would get less real use.
-   Recommendation: rewrite.
-2. **Orchestrator tools in v1?** These are needed for parity with
-   orchestrator-recorded reviews. They could be deferred, dropping that one
-   feature until a later API version.
-3. **The AI-footer rule.** The default global prompt asks agents to sign
-   GitHub posts (`aura-core/src/prompts.rs:15-17`). Should it move into the
-   `github` mod (needs an `aura.prompts.contribute` API), or stay as plain
-   default text in core?
-4. **Generic automations.** Should core gain an event-triggered automation
-   engine ("when a session finishes / a mod event fires, run X"), next to
-   time-based schedules? Not needed for parity; could come after 0.3.0.
-5. **Mod distribution later.** Installing third-party mods from a Git URL or
-   a registry, plus signing, is out of scope for v1. In v1, a third-party mod
-   is installed by dropping its folder into `~/.aura/mods`.
+The open questions of the first draft, as decided:
+
+1. **Rewrite or wrap?** Rewritten. The GitHub client and the review code are
+   TypeScript (`packages/github-client`, `mods/github`, `mods/pull-requests`),
+   so the bundled mods use exactly the API anyone else's do.
+2. **Orchestrator tools in v1?** Yes: `aura.orchestrator.tool`, listed and
+   called through `mods.tools.list` / `mods.tools.call` by `aura mcp`. Tool
+   names are prefixed with the mod id (`pull_requests_list_pull_requests`).
+3. **The AI-footer rule** stays plain default prompt text in core.
+4. **Generic automations** (event-triggered, next to schedules) are later work.
+5. **Distribution** of third-party mods stays "drop the folder into
+   `~/.aura/mods` and approve it" for now.
+
+What the first draft did not foresee and the build added:
+
+- `aura.fs` (text files and folders inside the mod's data folder),
+  `aura.agents.cancel`, `env`/`stdin` for `aura.git.run`, MCP annotations on
+  tools, `ctx.notify` and `ctx.window` in the UI API.
+- `mods.session_data.set`: a new-session field's `data` is stored on the new
+  session as that mod's session data.
+- Lagging notification clients get `notifications.lagged` and refresh.
+- The data migration is store migration v5 (`crates/aura-store/src/lib.rs`);
+  pre-review workspaces now live in `<data dir>/mod-data/pull-requests/`, and
+  the old `<data dir>/review-workspaces/` folder can be deleted.

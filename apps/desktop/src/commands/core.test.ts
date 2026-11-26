@@ -25,8 +25,7 @@ beforeEach(() => {
   useStore.setState({
     sessions: Object.fromEntries(list.map((s) => [s.id, s])),
     selectedId: "lead",
-    prSelection: null,
-    reviewHistoryOpen: false,
+    modView: null,
     dialog: { kind: "none" },
     client: { deleteSession } as unknown as RpcClient,
     toast,

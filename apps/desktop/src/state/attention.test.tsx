@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Item, PullChange, Session } from "../gen";
+import type { Item, Session } from "../gen";
 import type { RpcClient } from "../lib/rpc";
-import { usePullChanges } from "../features/reviews/changes";
+import type { InboxItem } from "../mods/registry";
+import { useModInbox } from "../mods/inbox";
 import { Sidebar } from "../components/Sidebar";
 import { InboxButton } from "../components/InboxButton";
 import { StatusBar } from "../components/StatusBar";
@@ -13,15 +14,14 @@ import { isMac } from "../lib/platform";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./attention";
 import { defaultSettings, emptyTranscript, useStore } from "./store";
 
-vi.mock("../features/reviews/ReviewSidebar", () => ({ ReviewSidebar: () => null }));
-
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false,
-    pending_count: 0, last_activity: "2026-10-15T00:00:00Z", group: null, worktree: null, model: null, orchestrator: false, orchestrator_id: null, pulls: [], attention: null, ...patch } as Session;
+    pending_count: 0, last_activity: "2026-10-15T00:00:00Z", group: null, worktree: null, model: null, orchestrator: false, orchestrator_id: null, attention: null, ...patch } as Session;
 }
 
-function change(id: string, patch: Partial<PullChange> = {}): PullChange {
-  return { id, account: "me", pull_id: "o/r#1", repo: "o/r", number: 1, title: "PR", url: "", role: "authored", events: [{ kind: "review", text: "approved" }], summary: "", created_at: "", read: false, ...patch } as PullChange;
+/** An item a mod put in the inbox. */
+function inboxItem(id: string, unread = true): InboxItem {
+  return { id, title: `News ${id}`, at: "2026-10-15T00:00:00Z", unread };
 }
 
 const markSeen = vi.fn(async (id: string) => session(id));
@@ -45,10 +45,10 @@ beforeEach(() => {
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
   Element.prototype.scrollIntoView = vi.fn();
   markSeen.mockClear();
-  usePullChanges.setState({ changes: [] });
+  useModInbox.setState({ items: [] });
   useStore.setState({
-    // Links and repositories never arrive, so rows do not re-render behind the test's back.
-    client: { markSeen, getSetting: () => new Promise(() => {}), gitGithubRepo: () => new Promise(() => {}) } as unknown as RpcClient,
+    // Settings never arrive, so rows do not re-render behind the test's back.
+    client: { markSeen, getSetting: () => new Promise(() => {}) } as unknown as RpcClient,
     sessions: {
       done: session("done", { attention: "done" }),
       failed: session("failed", { attention: "failed", status: "error" }),
@@ -56,7 +56,7 @@ beforeEach(() => {
       quiet: session("quiet"),
     },
     sessionOrder: ["done", "failed", "waiting", "quiet"], transcripts: {}, sidebarFilter: "", showArchived: false,
-    collapsedOrchestras: [], selectedId: null, sidebarCursor: null, prSelection: null, reviewHistoryOpen: false, settings: defaultSettings,
+    collapsedOrchestras: [], selectedId: null, sidebarCursor: null, modView: null, settings: defaultSettings,
     dialog: { kind: "none" }, paletteOpen: false,
   });
 });
@@ -112,9 +112,9 @@ it("does not mark a session that stops while the user looks at it, only while th
   expect(marker("quiet")).toBeNull();
 });
 
-it("does not clear a session hidden behind an open pull request", () => {
+it("does not clear a session hidden behind a mod's view", () => {
   renderHook(() => useMarkViewedSeen());
-  act(() => useStore.setState({ selectedId: "done", reviewHistoryOpen: true }));
+  act(() => useStore.setState({ selectedId: "done", modView: { modId: "test-mod", id: "view" } }));
   expect(markSeen).not.toHaveBeenCalled();
   expect(useStore.getState().sessions.done.attention).toBe("done");
 });
@@ -135,17 +135,19 @@ it("marks the hidden-workers chip of a collapsed orchestrator with the most urge
   expect(chip?.title).toBe("w1 · finished since you last looked\nw2 · waiting on you since you last looked");
 });
 
-it("counts what the inbox lists: waiting approvals and questions, and unread unmuted PR changes", () => {
-  const changes = [change("c1"), change("c2", { read: true }), change("c3", { events: [{ kind: "commits", text: "1 new commit" }] as PullChange["events"] })];
-  usePullChanges.setState({ changes });
+it("counts what the inbox lists: waiting approvals and questions, and what mods report unread", () => {
+  useModInbox.setState({ items: [
+    { modId: "one", items: [inboxItem("1"), inboxItem("2", false)] },
+    { modId: "two", items: [inboxItem("3")] },
+  ] });
   expect(inboxCount(useStore.getState())).toBe(4);
   const { result } = renderHook(() => useInboxCount());
   expect(result.current).toBe(4);
-  act(() => useStore.getState().setSettings({ pullChangesMuted: ["commits"] }));
+  act(() => useModInbox.setState({ items: [{ modId: "one", items: [inboxItem("1"), inboxItem("2", false)] }] }));
   expect(result.current).toBe(3);
   act(() => useStore.getState().upsertSession(session("waiting", { pending_count: 0 })));
   expect(result.current).toBe(1);
-  act(() => usePullChanges.setState({ changes: [] }));
+  act(() => useModInbox.setState({ items: [] }));
   expect(result.current).toBe(0);
 });
 
@@ -198,10 +200,10 @@ it("keeps the inbox button in the top bar and badges it with what the inbox list
   expect(button.querySelector(".badge")).toBeNull();
   expect(button.title).toBe(`Inbox: nothing waiting (${keys("mod+i")})`);
 
-  // Approvals waiting in a session and an unread pull request change.
+  // Approvals waiting in a session and an unread item from a mod.
   act(() => {
     useStore.getState().upsertSession(session("waiting", { pending_count: 2 }));
-    usePullChanges.setState({ changes: [change("c1"), change("c2", { read: true })] });
+    useModInbox.setState({ items: [{ modId: "one", items: [inboxItem("1"), inboxItem("2", false)] }] });
   });
   expect(button.getAttribute("aria-label")).toBe("Inbox, 3 items");
   expect(button.querySelector(".badge")?.textContent).toBe("3");

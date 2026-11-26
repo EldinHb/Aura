@@ -1,0 +1,67 @@
+# Checks every push and pull request: the Rust workspace on all three
+# platforms, and the app, the mod SDK and the bundled mods.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The desktop shell needs the built frontend and system webview libraries;
+      # it is built by the release workflow.
+      - name: Test
+        if: runner.os != 'Windows'
+        run: cargo test --workspace --exclude aura-desktop
+      # Several core tests run /bin/sh; on Windows build everything and test the mod host.
+      - name: Build and test the mod host
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --workspace --exclude aura-desktop
+          cargo test -p aura-mods -p aura-store -p aura-cli
+
+  web:
+    name: App, SDK and mods
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck the app
+        working-directory: apps/desktop
+        run: pnpm exec tsc -b
+      - name: Lint the app
+        working-directory: apps/desktop
+        run: pnpm lint
+      - name: Test the app
+        working-directory: apps/desktop
+        run: pnpm test
+      - name: Test the GitHub client
+        run: pnpm --filter @aura/github-client typecheck && pnpm --filter @aura/github-client test
+      - name: Typecheck and test the mods
+        run: pnpm mods:typecheck && pnpm mods:test
+      - name: Build the bundled mods
+        run: ./scripts/build-mods.sh

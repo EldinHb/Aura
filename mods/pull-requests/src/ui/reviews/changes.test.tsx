@@ -81,9 +81,8 @@ it("leaves out muted kinds, and counts entries with nothing else as nothing new"
 });
 
 it("announces new changes, and a click on the notification opens the PR", async () => {
-  const shown: { title: string; body?: string; onclick: (() => void) | null }[] = [];
-  class FakeNotification { static permission = "granted"; onclick: (() => void) | null = null; constructor(public title: string, options?: { body?: string }) { shown.push(Object.assign(this, { body: options?.body })); } }
-  vi.stubGlobal("Notification", FakeNotification);
+  // Notifications go through Aura (ctx.notify); a click comes back with the target.
+  const shown = (fake.api.notify as unknown as { mock: { calls: [string, string, unknown][] } }).mock.calls;
   vi.spyOn(document, "hasFocus").mockReturnValue(false);
   vi.spyOn(window, "focus").mockImplementation(() => {});
   useStore.setState({ dialog: { kind: "none" } });
@@ -91,8 +90,8 @@ it("announces new changes, and a click on the notification opens the PR", async 
   fake.emit("pulls.activity", { changes: [change()] });
   expect(fake.toasts.at(-1)?.message).toBe("acme/widget#42: bob pushed 2 commits · alice approved");
   await waitFor(() => expect(shown.length).toBe(1));
-  expect(shown[0].title).toBe("Handle empty responses");
-  shown[0].onclick?.();
+  expect(shown[0][0]).toBe("Handle empty responses");
+  (await import("../notify")).handleNotificationTarget(shown[0][2]);
   await waitFor(() => expect(useNav.getState().pull?.id).toBe(pullFixture.id));
   expect(fake.rpc).toHaveBeenCalledWith("pulls.changes.read", { ids: ["change-1"] });
 

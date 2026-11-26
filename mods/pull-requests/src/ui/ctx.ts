@@ -23,6 +23,9 @@ export function report(error: unknown) { current?.toast(String(error), "error");
 
 export function toast(message: string, level?: "info" | "warn" | "error") { current?.toast(message, level); }
 
+/** An OS notification through Aura; a click with a target comes back through `ctx.onNotificationClick`. */
+export function notify(title: string, body: string, target?: unknown) { current?.notify(title, body, target as never); }
+
 /** A value kept in the mod's namespaced localStorage. */
 export function stored<T>(key: string, fallback: T): T {
   try {
@@ -40,7 +43,4 @@ export function unstore(key: string) {
 }
 
 /** A detached single-session window: it neither announces nor owns notifications, as before. */
-// SDK-GAP: UiApi does not say which kind of window the UI half runs in; read Aura's own URL parameter.
-export const isSessionWindow = () => {
-  try { return new URLSearchParams(location.search).get("window") === "session"; } catch { return false; }
-};
+export const isSessionWindow = () => current?.window === "session";

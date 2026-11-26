@@ -10,6 +10,7 @@ import { useStore } from "../state/store";
 import { registerCommand, runCommand } from "../lib/commands";
 import { desktopNotify, onModNotificationClick } from "../lib/notify";
 import { RpcError, type RpcClient } from "../lib/rpc";
+import type { Session } from "../gen";
 import { clearModContext, setModContext, slots, type InboxItem, type Registry } from "./registry";
 import { installHostModules } from "./host";
 import { useModInbox } from "./inbox";
@@ -36,6 +37,9 @@ export type ModInfo = {
   settingValues: Record<string, unknown>;
   broken?: boolean;
 };
+
+/** What a mod passes to a `ctx.ui.*` slot: the slot's item plus its id. */
+type Def<R> = R extends Registry<infer T> ? T & { id: string; order?: number } : never;
 
 type Loaded = { version: string; js: string; css: string | null; dispose: () => void; uiError?: string };
 
@@ -87,7 +91,7 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
   const reg = <T,>(r: Registry<T>, key: string, item: T & { order?: number }) => track(r.register(id, key, item));
   let seq = 0;
   const storageKey = (k: string) => `aura.mod.${id}.${k}`;
-  const onNote = (method: string, fn: (p: any) => void) =>
+  const onNote = (method: string, fn: (p: unknown) => void) =>
     track(client().onNotification((m, p) => {
       if (m === method) {
         try {
@@ -101,8 +105,8 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
     mod: { id, version: info.version },
     rpc: <T,>(name: string, params?: unknown) => callMod<T>(id, name, params),
     call: <T,>(modId: string, name: string, params?: unknown) => callMod<T>(modId, name, params),
-    on: (name: string, fn: (p: any) => void) => onNote(`mod.${id}.${name}`, fn),
-    onMod: (modId: string, name: string, fn: (p: any) => void) => onNote(`mod.${modId}.${name}`, fn),
+    on: (name: string, fn: (p: unknown) => void) => onNote(`mod.${id}.${name}`, fn),
+    onMod: (modId: string, name: string, fn: (p: unknown) => void) => onNote(`mod.${modId}.${name}`, fn),
     onConnection: (fn: (s: "open" | "closed" | "connecting") => void) =>
       track(client().onState((s) => fn(s as "open" | "closed" | "connecting"))),
     client: { call: <T,>(method: string, params?: unknown) => client().call<T>(method, params ?? {}) },
@@ -154,17 +158,17 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
     },
     context: { set: (key: string, value: unknown) => setModContext(`mod.${id}.${key}`, value) },
     ui: {
-      sidebarSection: (d: any) => reg(slots.sidebarSection, d.id, d),
-      inspectorSection: (d: any) => reg(slots.inspectorSection, d.id, d),
-      sessionRowChips: (d: any) => reg(slots.sessionRowChips, d.id, d),
-      branchDecoration: (d: any) => reg(slots.branchDecoration, d.id, d),
-      statusBarItem: (d: any) => reg(slots.statusBarItem, d.id, d),
-      settingsTab: (d: any) => reg(slots.settingsTab, d.id, d),
-      newSessionField: (d: any) => reg(slots.newSessionField, d.id, d),
-      inboxRenderer: (d: any) => reg(slots.inboxRenderer, "inbox", d),
-      transcriptLinks: (d: any) => reg(slots.transcriptLinks, d.id, d),
-      view: (d: any) => reg(slots.view, d.id, d),
-      dialog: (d: any) => reg(slots.dialog, d.id, d),
+      sidebarSection: (d: Def<typeof slots.sidebarSection>) => reg(slots.sidebarSection, d.id, d),
+      inspectorSection: (d: Def<typeof slots.inspectorSection>) => reg(slots.inspectorSection, d.id, d),
+      sessionRowChips: (d: Def<typeof slots.sessionRowChips>) => reg(slots.sessionRowChips, d.id, d),
+      branchDecoration: (d: Def<typeof slots.branchDecoration>) => reg(slots.branchDecoration, d.id, d),
+      statusBarItem: (d: Def<typeof slots.statusBarItem>) => reg(slots.statusBarItem, d.id, d),
+      settingsTab: (d: Def<typeof slots.settingsTab>) => reg(slots.settingsTab, d.id, d),
+      newSessionField: (d: Def<typeof slots.newSessionField>) => reg(slots.newSessionField, d.id, d),
+      inboxRenderer: (d: Def<typeof slots.inboxRenderer>) => reg(slots.inboxRenderer, "inbox", d),
+      transcriptLinks: (d: Def<typeof slots.transcriptLinks>) => reg(slots.transcriptLinks, d.id, d),
+      view: (d: Def<typeof slots.view>) => reg(slots.view, d.id, d),
+      dialog: (d: Def<typeof slots.dialog>) => reg(slots.dialog, d.id, d),
     },
     openView: (viewId: string, props?: unknown) => useStore.getState().openModView({ modId: id, id: viewId, props }),
     closeView: () => {
@@ -197,7 +201,7 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
         });
       }),
     onNotificationClick: (fn: (target: unknown) => void) => reg(slots.notificationClick, `n${seq++}`, { handle: fn }),
-    suppressTurnToast: (fn: (s: any) => boolean) => reg(slots.turnToastFilter, `t${seq++}`, { suppress: fn }),
+    suppressTurnToast: (fn: (s: Session) => boolean) => reg(slots.turnToastFilter, `t${seq++}`, { suppress: fn }),
   };
 }
 
@@ -321,20 +325,21 @@ export function useModLoader() {
       }
     });
     const offNote = c.onNotification((method, params) => {
-      const p = (params ?? {}) as Record<string, any>;
+      const p = (params ?? {}) as { modId?: string; title?: unknown; body?: unknown; target?: unknown; key?: string; value?: unknown };
       if (method === "mods.changed") {
         void syncMods();
         void refreshInbox();
       } else if (method === "mods.inbox.changed" || method === "notifications.lagged") void refreshInbox();
       else if (method === "mods.notify") {
         void desktopNotify(String(p.title ?? ""), String(p.body ?? ""), p.target === undefined || p.target === null ? undefined : { __mod: p.modId, target: p.target });
-      } else if (method === "mods.settings.changed") {
+      } else if (method === "mods.settings.changed" && p.modId && p.key) {
+        const { modId, key } = p;
         useMods.setState((s) => ({
-          mods: s.mods.map((m) => (m.id === p.modId ? { ...m, settingValues: { ...m.settingValues, [p.key]: p.value } } : m)),
+          mods: s.mods.map((m) => (m.id === modId ? { ...m, settingValues: { ...m.settingValues, [key]: p.value } } : m)),
         }));
-        for (const fn of settingListeners.get(p.modId) ?? []) {
+        for (const fn of settingListeners.get(modId) ?? []) {
           try {
-            fn(p.key, p.value);
+            fn(key, p.value);
           } catch (e) {
             console.error(e);
           }

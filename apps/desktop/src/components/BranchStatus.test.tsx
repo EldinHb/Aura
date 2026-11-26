@@ -1,22 +1,16 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { BranchPull, BranchStatus, Item, Session } from "../gen";
-import { RpcClient } from "../lib/rpc";
-import { emptyTranscript, useStore } from "../state/store";
-import { useDetectedLinksStore, useLinkPreferencesStore } from "../state/sessionLinkPreferences";
-import { useGithubRepos } from "../state/githubRepos";
-import { PULL_TTL, resetBranches } from "../state/branchStatus";
+import type { BranchStatus, Session } from "../gen";
+import type { RpcClient } from "../lib/rpc";
+import { useStore } from "../state/store";
+import { resetBranches } from "../state/branchStatus";
+import { slots } from "../mods/registry";
 import { Sidebar } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 
-vi.mock("../features/reviews/ReviewSidebar", () => ({ ReviewSidebar: () => null }));
-
-const pr = "https://github.com/owner/repo/pull/42";
 const git = new Map<string, BranchStatus | null>();
-let pullResult: BranchPull | null = null;
 const gitBranchStatus = vi.fn(async (cwd: string) => git.get(cwd) ?? null);
-const githubBranchPull = vi.fn(async () => pullResult);
-const gitGithubRepo = vi.fn(async (cwd: string) => (cwd === "/work/a" ? "owner/repo" : null));
+const unregister: Array<() => void> = [];
 
 function session(id: string, title: string, extra: Partial<Session> = {}): Session {
   return { id, title, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false,
@@ -28,33 +22,23 @@ function status(extra: Partial<BranchStatus> = {}): BranchStatus {
     ahead: 0, behind: 0, changed: 0, ...extra };
 }
 
-function pull(extra: Partial<BranchPull> = {}): BranchPull {
-  return { repo: "owner/repo", number: 42, title: "Add hours page", url: pr, state: "open", draft: false,
-    checks: "SUCCESS", review_decision: "APPROVED", head_sha: "1234567890abcdef", reviews: [], ...extra };
-}
-
 const rowText = (id: string, part: string) => document.querySelector(`[data-session-id="${id}"] ${part}`)?.textContent;
-const rowLinks = (id: string) => [...document.querySelectorAll(`[data-session-id="${id}"] .session-row-link`)].map((el) => el.textContent);
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   resetBranches();
   git.clear();
-  pullResult = null;
   gitBranchStatus.mockClear();
-  githubBranchPull.mockClear();
-  useLinkPreferencesStore.setState({ entries: {} });
-  useDetectedLinksStore.setState({ links: {} });
-  useGithubRepos.setState({ repos: {} });
   useStore.setState({
-    client: { getSetting: async () => null, setSetting: async () => true, gitGithubRepo, gitBranchStatus, githubBranchPull } as unknown as RpcClient,
+    client: { getSetting: async () => null, setSetting: async () => true, gitBranchStatus } as unknown as RpcClient,
     connection: "open",
     sessions: { a: session("a", "Hours page"), b: session("b", "Other") },
-    sessionOrder: ["a", "b"], transcripts: {}, sidebarFilter: "", showArchived: false, selectedId: "a", prSelection: null, reviewHistoryOpen: false,
+    sessionOrder: ["a", "b"], transcripts: {}, sidebarFilter: "", showArchived: false, selectedId: "a", modView: null,
   });
 });
 afterEach(() => {
   cleanup();
+  while (unregister.length) unregister.pop()!();
   vi.useRealTimers();
 });
 
@@ -74,88 +58,26 @@ it("keeps showing the worktree branch before git is read, and no folder for work
   await waitFor(() => expect(rowText("a", ".sub .where")).toBe("⎇ feature ±1"));
 });
 
-it("shows the branch's pull request status in its row in place of the same linked PR", async () => {
-  git.set("/work/a", status());
-  pullResult = pull();
-  useStore.setState({ transcripts: { a: { ...emptyTranscript(), loaded: true, items: { m: { id: "m", session_id: "a", turn_id: null, kind: "agent_message", status: "completed", title: null, text: `Created PR: ${pr}`, data: {}, parent_id: null, started_at: "2026-09-30T00:00:00Z", ended_at: null } as Item }, order: ["m"] } } });
-  render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ approved"]));
-  expect(githubBranchPull).toHaveBeenCalledWith("owner/repo", "owner/repo", "feature");
-  expect(document.querySelector(".branch-pull")?.getAttribute("title")).toBe("owner/repo#42 · open · checks pass · approved\nAdd hours page");
-  // Session b has no GitHub repository, so its pull request is never asked for.
-  expect(githubBranchPull).toHaveBeenCalledTimes(1);
-});
-
-it("looks for the pull request under the tracked branch of a fork", async () => {
-  git.set("/work/a", status({ branch: "local-name", upstream: "fork/feat", upstream_branch: "feat", upstream_repo: "me/repo" }));
-  render(<Sidebar />);
-  await waitFor(() => expect(githubBranchPull).toHaveBeenCalledWith("owner/repo", "me/repo", "feat"));
-});
-
-it("shows merged and draft pull requests", async () => {
-  git.set("/work/a", status());
-  pullResult = pull({ state: "merged" });
-  const { unmount } = render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 merged"]));
-  unmount();
-  resetBranches();
-  pullResult = pull({ draft: true, checks: "PENDING", review_decision: "REVIEW_REQUIRED" });
-  render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 draft …"]));
-});
-
-it("counts a comment-only review as reviewed in the row", async () => {
-  git.set("/work/a", status());
-  pullResult = pull({ review_decision: "REVIEW_REQUIRED", reviews: [{ bot: false, reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: "1234567890abcdef" }] });
-  render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ commented"]));
-});
-
-it("marks new commits since the latest review, which a bot's review does not count as", async () => {
-  git.set("/work/a", status());
-  pullResult = pull({ review_decision: "REVIEW_REQUIRED", reviews: [
-    { bot: false, reviewer: "alice", state: "COMMENTED", submitted_at: "2026-10-05T10:00:00Z", commit_sha: "old" },
-    { bot: true, reviewer: "copilot", state: "COMMENTED", submitted_at: "2026-10-06T10:00:00Z", commit_sha: "1234567890abcdef" },
-  ] });
-  render(<Sidebar />);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓ commented ↻"]));
-  expect(document.querySelector(".branch-pull")?.getAttribute("title")).toContain("new commits since the latest review");
-});
-
-it("shows a pull request from a daemon older than its reviews, in the row and the status bar", async () => {
-  git.set("/work/a", status());
-  const { reviews: _, ...old } = pull({ review_decision: "REVIEW_REQUIRED" });
-  // Through the real client, which fills in what the daemon left out.
-  const call = vi.fn(async () => old);
-  const read = (...args: [string, string, string]) => RpcClient.prototype.githubBranchPull.apply({ call } as unknown as RpcClient, args);
-  useStore.setState({ client: { getSetting: async () => null, setSetting: async () => true, gitGithubRepo, gitBranchStatus, githubBranchPull: read } as unknown as RpcClient });
-  render(<><Sidebar /><StatusBar /></>);
-  await waitFor(() => expect(rowLinks("a")).toEqual(["PR #42 ✓"]));
-  await waitFor(() => expect(document.querySelector(".statusbar-pull")?.textContent).toBe("PR #42 · open · checks pass · review required"));
-});
-
-it("shows the selected session's branch and pull request in the status bar", async () => {
+it("shows the selected session's branch in the status bar, with what mods add to it", async () => {
   git.set("/work/a", status({ ahead: 1 }));
-  pullResult = pull({ checks: "FAILURE", review_decision: "CHANGES_REQUESTED" });
+  const seen = vi.fn();
+  unregister.push(slots.branchDecoration.register("test-mod", "pull", {
+    component: ({ cwd, status, place, session }) => {
+      seen(cwd, (status as BranchStatus).branch, place, session?.id);
+      return <span className="test-decoration">PR #42</span>;
+    },
+  }));
   render(<StatusBar />);
-  await waitFor(() => expect(document.querySelector(".statusbar-branch")?.textContent).toBe("⎇ feature ↑1PR #42 · open · checks fail · changes requested"));
-  expect(screen.getByRole("link").getAttribute("href")).toBe(pr);
+  await waitFor(() => expect(document.querySelector(".statusbar-branch")?.textContent).toBe("⎇ feature ↑1PR #42"));
+  expect(seen).toHaveBeenLastCalledWith("/work/a", "feature", "statusbar", "a");
 });
 
-it("reads the pull request again after a push, but not on every git read", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
-  git.set("/work/a", status({ ahead: 1 }));
-  pullResult = pull();
+it("keeps the branch when a mod's decoration fails to render", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  git.set("/work/a", status());
+  unregister.push(slots.branchDecoration.register("test-mod", "broken", { component: () => { throw new Error("boom"); } }));
   render(<StatusBar />);
-  await waitFor(() => expect(githubBranchPull).toHaveBeenCalledTimes(1));
-  await act(async () => { vi.advanceTimersByTime(20_000); });
-  await waitFor(() => expect(gitBranchStatus.mock.calls.length).toBeGreaterThan(1));
-  expect(githubBranchPull).toHaveBeenCalledTimes(1);
-  git.set("/work/a", status({ ahead: 0 }));
-  await act(async () => { vi.advanceTimersByTime(11_000); });
-  await waitFor(() => expect(githubBranchPull).toHaveBeenCalledTimes(2));
-  await act(async () => { vi.advanceTimersByTime(PULL_TTL.selected + 1); });
-  await waitFor(() => expect(githubBranchPull).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(document.querySelector(".statusbar-branch")?.textContent).toBe("⎇ feature"));
 });
 
 it("shows nothing outside a repository", async () => {

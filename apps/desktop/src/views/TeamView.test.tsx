@@ -9,7 +9,7 @@ import { OrchestratorTabs } from "./WorkerThreads";
 import { TeamView } from "./TeamView";
 
 const session = (id: string, patch: Partial<Session> = {}): Session =>
-  ({ id, title: id, cwd: "/work", provider: "claude", status: "idle", mode: "structured", archived: false, created_at: "2026-10-29T00:00:00Z", model: "opus", effort: "high", orchestrator: false, orchestrator_id: "owner", feature_owner: false, pulls: [], ...patch }) as Session;
+  ({ id, title: id, cwd: "/work", provider: "claude", status: "idle", mode: "structured", archived: false, created_at: "2026-10-29T00:00:00Z", model: "opus", effort: "high", orchestrator: false, orchestrator_id: "owner", feature_owner: false, ...patch }) as Session;
 
 const meeting = (patch: Partial<Meeting> = {}): Meeting => ({
   id: "m1",

@@ -236,8 +236,10 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   };
 
   // The first prompt with what mods' fields add to it.
-  const withExtras = (text: string) =>
-    [text, ...Object.values(contributions).map((c) => c.prompt?.trim()).filter(Boolean)].filter(Boolean).join("\n\n");
+  const withExtras = useCallback(
+    (text: string) => [text, ...Object.values(contributions).map((c) => c.prompt?.trim()).filter(Boolean)].filter(Boolean).join("\n\n"),
+    [contributions],
+  );
 
   const submit = useCallback(async () => {
     if (!client || busy) return;
@@ -285,7 +287,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {

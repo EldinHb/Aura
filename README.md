@@ -608,7 +608,26 @@ with the port and token. Session history is stored in SQLite under `~/.aura`.
 See [`PLAN.md`](PLAN.md) for the full architecture and
 [`docs/protocol/`](docs/protocol) for the captured Claude Code and Codex protocols.
 
+## Mods
+
+Features beyond running agents come as **mods**: packages with a part that runs
+inside the daemon (in a sandbox, allowed only what its manifest lists) and a part
+that adds to Aura's window — sidebar sections, views, inspector sections,
+commands, keys, settings. Aura ships two, which are on unless you turn them off:
+
+- **GitHub** (`mods/github`): your GitHub account through `gh`, the issue picker in
+  the new-session dialog, issue and PR links on sessions, and the pull request
+  next to a session's branch.
+- **Pull requests** (`mods/pull-requests`): everything in the next section.
+
+Settings → Mods lists them with what each may do, their settings and their log,
+and lets you disable, reload or approve them. Your own mods go in
+`~/.aura/mods/<id>`; see [docs/mods/WRITING.md](docs/mods/WRITING.md) to write one.
+
 ## Pull requests and pre-reviews
+
+This is the bundled **Pull requests** mod (it needs the **GitHub** mod).
+
 
 The **Needs your review** section below sessions lists open GitHub PRs requesting
 **your review** (not PRs where you are merely an assignee). Install GitHub CLI and
@@ -639,7 +658,7 @@ current diff in the main workspace. Applicable metadata and project fields can
 be edited when GitHub grants access. Project fields may require additional GitHub
 Projects permissions; their failure does not prevent reviewing the PR. Hide a PR
 with its × control and restore it through **Show hidden**. Hiding persists per
-account. Settings → General → **Hide pull requests matching** hides PRs by rule,
+account. Settings → Pull requests → **Hide pull requests matching** hides PRs by rule,
 one per line: `author:<login>`, `label:<name>`, `repo:<owner/name>`,
 `title:<text>` or `draft`, with `*` as a wildcard (`repo:acme/*`,
 `title:*chore*`). The default, `author:dependabot`, hides Dependabot PRs; remove
@@ -766,7 +785,7 @@ to open the PR in Aura; that marks it read.
   read it. The first refresh only records where things stand, and a daemon
   restart reports nothing twice. It all runs in the daemon, so it keeps working
   while the window is closed.
-- **Settings → General** chooses which kinds of change reach the inbox and
+- **Settings → Pull requests** chooses which kinds of change reach the inbox and
   notifications.
 
 ---
@@ -786,7 +805,10 @@ frontend.
 ### Build and run
 
 ```bash
-# daemon + CLI (also copies them where the Tauri bundler expects sidecars)
+# JavaScript dependencies of the app, the SDK and the mods (one pnpm workspace at the root)
+pnpm install
+
+# daemon + CLI (also copies them where the Tauri bundler expects sidecars) and the bundled mods
 ./scripts/build-sidecars.sh            # debug
 ./scripts/build-sidecars.sh release    # release
 TARGET_TRIPLE=x86_64-apple-darwin ./scripts/build-sidecars.sh release   # cross-compile
@@ -795,7 +817,7 @@ TARGET_TRIPLE=x86_64-apple-darwin ./scripts/build-sidecars.sh release   # cross-
 ./scripts/export-ts.sh
 
 # desktop app in dev mode (starts Vite, builds the shell, opens the window)
-cd apps/desktop && pnpm install && pnpm tauri dev
+cd apps/desktop && pnpm tauri dev
 
 # desktop app bundle (.app / .deb / .AppImage / .msi / NSIS depending on the host)
 cd apps/desktop && pnpm tauri build
@@ -830,13 +852,13 @@ cd apps/desktop && pnpm test && pnpm lint      # vitest + eslint (incl. the keyb
 cd apps/desktop && pnpm e2e                    # Playwright, needs a running daemon + dev server
 ```
 
-The PR review tests require no GitHub account or agent quota:
+The mod host, the SDK and the bundled mods (no GitHub account or agent quota needed):
 
 ```sh
-cargo test -p aura-github -p aura-review -p aura-store
-cd apps/desktop && pnpm test && pnpm lint && pnpm build
-# with pnpm dev running; GitHub and review providers are mocked by this spec
-pnpm e2e tests/e2e/pr-review.spec.ts
+cargo test -p aura-mods -p aura-store         # QuickJS host, permissions, storage, migration
+pnpm --filter @aura/github-client test        # the GitHub client the mods share
+pnpm mods:typecheck && pnpm mods:test         # mods/github, mods/pull-requests
+./scripts/build-mods.sh                       # bundle them where the installer picks them up
 ```
 
 The README screenshots are generated from made-up sessions against a fake daemon,
@@ -859,13 +881,16 @@ crates/aura-provider-codex  Codex adapter (app-server JSON-RPC)
 crates/aura-provider-acp    Agent Client Protocol adapter (any ACP agent)
 crates/aura-rpc             loopback WebSocket JSON-RPC server + client
 crates/aura-git             worktrees, status, diff, commit, push (shells out to git)
-crates/aura-github          GitHub access through the gh CLI
-crates/aura-review          PR pre-review jobs
+crates/aura-mods            the mod host: QuickJS runtimes, permissions, the mod API
 crates/aurad                the daemon
 crates/aura-cli             the `aura` command
-apps/desktop                Tauri 2 shell (src-tauri) + React frontend (src)
+apps/desktop                Tauri 2 shell (src-tauri) + React frontend (src); src/mods loads mods' UI
+packages/mod-sdk            @aura/mod-sdk: mod API types, `aura-mod build`, test host
+packages/github-client      @aura/github-client: GitHub reads and writes shared by the mods
+mods/                       the bundled mods (github, pull-requests)
+docs/mods                   the mod design and how to write one
 docs/protocol               captured Claude / Codex traffic and notes
-scripts/                    export-ts.sh (Rust -> TS types), build-sidecars.sh, install-macos.sh
+scripts/                    export-ts.sh (Rust -> TS types), build-sidecars.sh, build-mods.sh, install-macos.sh
 ```
 
 ### Releasing

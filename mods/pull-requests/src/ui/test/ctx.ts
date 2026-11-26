@@ -60,6 +60,8 @@ export function fakeCtx() {
     closeView: () => { view = null; },
     activeView: () => view,
     openDialog: (id, props) => { dialogs.push({ id, props }); },
+    window: "main",
+    notify: vi.fn(),
     toast: (message, level) => { toasts.push({ message, level }); },
     confirm,
     onNotificationClick: (fn) => { clicks.add(fn); return () => { clicks.delete(fn); }; },

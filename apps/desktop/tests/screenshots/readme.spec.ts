@@ -1,6 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { inboxFixture, pullFixture as basePull, reviewFixture as baseReview } from "../../src/features/reviews/fixtures";
-import type { Approval, CapabilitySet, Event, Item, PullRequest, PullTimeline, Session, StoredEvent, TimelineItem, UserInputRequest } from "../../src/gen";
+import type { Approval, CapabilitySet, Event, Item, Session, StoredEvent, UserInputRequest } from "../../src/gen";
 
 const OUT = "../../docs/screenshots";
 const now = Date.parse("2026-10-15T09:40:00Z");
@@ -8,7 +7,7 @@ const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
 const usage = (input: number, output: number, cost: number | null, used: number | null = null) => ({ input_tokens: input, output_tokens: output, cached_input_tokens: Math.round(input * 0.7), total_cost_usd: cost, context_window: used ? 200_000 : null, context_used: used, running_totals: false });
 
 function session(id: string, over: Partial<Session>): Session {
-  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-api", worktree: null, group: "acme", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(5), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, pulls: [], usage: usage(0, 0, null), ...over };
+  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-api", worktree: null, group: "acme", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(5), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, usage: usage(0, 0, null), ...over };
 }
 
 const ids = {
@@ -133,63 +132,7 @@ const approval: Approval = { id: "a-flaky", session_id: ids.flaky, turn_id: null
 histories[ids.billing].push({ seq: histories[ids.billing].length + 1, ts: at(2), event: { type: "user_input_requested", session_id: ids.billing, request: question } });
 histories[ids.flaky] = [{ seq: 1, ts: at(3), event: { type: "approval_requested", session_id: ids.flaky, approval } }];
 
-const diffFixture = `diff --git a/src/webhooks/deliver.ts b/src/webhooks/deliver.ts
---- a/src/webhooks/deliver.ts
-+++ b/src/webhooks/deliver.ts
-@@ -8,5 +8,13 @@ export async function deliver(hook: Webhook, event: WebhookEvent) {
-   const body = JSON.stringify(event);
-   const signature = sign(body, hook.secret);
--  const res = await fetch(hook.url, { method: "POST", body, headers: { "x-acme-signature": signature } });
--  if (!res.ok) throw new DeliveryError(hook.id, res.status);
-+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-+    try {
-+      const res = await fetch(hook.url, { method: "POST", body, headers: { "x-acme-signature": signature } });
-+      if (res.ok) return;
-+      if (res.status < 500) throw new DeliveryError(hook.id, res.status);
-+    } catch (e) {
-+      if (attempt === MAX_ATTEMPTS) throw e;
-+    }
-+    await sleep(2 ** attempt * 1000);
-+  }
- }
-`;
-const pullFixture = { ...basePull, id: "acme/acme-web#318", repo: "acme/acme-web", number: 318, title: "Retry failed webhook deliveries", body: "Webhook deliveries now retry with exponential backoff on network errors and 5xx responses.", url: "https://github.com/acme/acme-web/pull/318", author: "jordan", head_ref: "webhook-retries", additions: 10, deletions: 2, updated_at: at(90), created_at: at(1500), labels: ["webhooks"], assignees: [], head_sha: "4f9c2e1d8b7a6c5e4d3f2a1b0c9d8e7f6a5b4c3d" };
-const reviewFixture = {
-  ...baseReview, pull: pullFixture, diff: diffFixture, reviewed_sha: pullFixture.head_sha, created_at: at(30), updated_at: at(28),
-  result: {
-    summary: "The retry loop is a good fit, but a 4xx thrown inside the try block is caught and retried, so client errors are retried too.",
-    verdict: "request_changes", risk: "medium", confidence: 0.85,
-    comments: [
-      { ...baseReview.result.comments[0], id: "f1", path: "src/webhooks/deliver.ts", line: 15, severity: "major", body: "`DeliveryError` for a 4xx is thrown inside the `try`, so the `catch` swallows it and the delivery is retried anyway. Rethrow `DeliveryError` from the catch block.", rationale: "Receivers that reject a payload get hit up to MAX_ATTEMPTS times." },
-      { ...baseReview.result.comments[0], id: "f2", path: "src/webhooks/deliver.ts", line: 19, severity: "minor", body: "The backoff has no jitter; many failing hooks will retry in lockstep. Consider adding a random 0-500 ms.", rationale: "Thundering herd after a receiver outage." },
-    ],
-  },
-} as typeof baseReview;
-
-const event = (kind: string, minAgo: number, over: Partial<TimelineItem> = {}): TimelineItem => ({ kind, id: `${kind}-${minAgo}`, at: at(minAgo), actor: "jordan", body: "", url: "", state: "", review_id: null, subject: "", previous: "", color: "", sha: "", before: "", ...over });
-const timelineFixture: PullTimeline = {
-  commits: 3,
-  items: [
-    event("commit", 1490, { subject: "Retry webhook deliveries with exponential backoff", sha: "9a1f3c2b7d" }),
-    event("commit", 1485, { subject: "Add delivery retry tests", sha: "3e8d2a1c4b" }),
-    event("labeled", 1480, { subject: "webhooks", color: "1d76db" }),
-    event("review_requested", 1479, { subject: "sam" }),
-    event("comment", 1200, { actor: "riley", body: "Do we cap the total delay? A receiver that is down for an hour should not keep a worker busy." }),
-    event("comment", 1150, { body: "Yes: `MAX_ATTEMPTS` is 5, so the worst case is about a minute of backoff." }),
-    event("review", 300, { actor: "sam", state: "CHANGES_REQUESTED", review_id: 11, body: "The loop reads well. One problem with client errors, see inline." }),
-    event("commit", 120, { subject: "Do not retry 4xx responses", sha: "4f9c2e1d8b" }),
-    event("review", 90, { actor: "riley", state: "APPROVED", review_id: 12 }),
-  ],
-  threads: [
-    { id: "t1", path: "src/webhooks/deliver.ts", line: 15, original_line: 15, resolved: true, outdated: false, resolved_by: "jordan", review_id: 11, more: 0, diff_hunk: "@@ -8,5 +8,13 @@\n+    try {\n+      const res = await fetch(hook.url, { method: \"POST\", body });\n+      if (res.ok) return;\n+      if (res.status < 500) throw new DeliveryError(hook.id, res.status);",
-      comments: [{ id: "t1a", author: "sam", at: at(301), body: "This `DeliveryError` is caught by the `catch` below, so a 4xx is retried anyway.", url: "" }, { id: "t1b", author: "jordan", at: at(118), body: "Good catch, fixed in 4f9c2e1.", url: "" }] },
-    { id: "t2", path: "src/webhooks/deliver.ts", line: 19, original_line: 19, resolved: false, outdated: false, resolved_by: "", review_id: 11, more: 0, diff_hunk: "@@ -8,5 +8,13 @@\n+    } catch (e) {\n+      if (attempt === MAX_ATTEMPTS) throw e;\n+    }\n+    await sleep(2 ** attempt * 1000);",
-      comments: [{ id: "t2a", author: "sam", at: at(300), body: "Worth adding jitter here so failing hooks do not retry in lockstep.", url: "" }] },
-  ],
-};
-
-async function mockDaemon(page: Page, detail: { pull: PullRequest; timeline: PullTimeline } = { pull: pullFixture, timeline: timelineFixture }) {
-  const inbox = { ...inboxFixture, pulls: [pullFixture], reviews: [reviewFixture] };
+async function mockDaemon(page: Page) {
   await page.routeWebSocket("ws://127.0.0.1:19998/**", (socket) => {
     socket.onMessage((raw) => {
       if (typeof raw !== "string") return;
@@ -207,11 +150,6 @@ async function mockDaemon(page: Page, detail: { pull: PullRequest; timeline: Pul
         case "pty.attach": result = { scrollback: "" }; break;
         case "git.branch_status": result = null; break;
         case "git.status": case "git.diff_stat": case "git.log": case "git.worktrees": case "git.branches": result = []; break;
-        case "pulls.list": case "pulls.refresh": result = inbox; break;
-        case "pulls.get": result = { pull: detail.pull, timeline: detail.timeline, comments: [], reviews: [], threads: [], projects: [], project_error: null }; break;
-        case "pulls.diff": result = { diff: diffFixture, sha: pullFixture.head_sha }; break;
-        case "reviews.get": result = reviewFixture; break;
-        case "reviews.defaults": result = { instructions: "Review correctness and edge cases", config: inboxFixture.defaults }; break;
         default:
           if (/history|commands|native|list|candidates/.test(method)) result = [];
       }
@@ -220,8 +158,8 @@ async function mockDaemon(page: Page, detail: { pull: PullRequest; timeline: Pul
   });
 }
 
-const open = async (page: Page, sid: string, detail?: Parameters<typeof mockDaemon>[1]) => {
-  await mockDaemon(page, detail);
+const open = async (page: Page, sid: string) => {
+  await mockDaemon(page);
   // The fixtures are dated; a fixed clock keeps "5m ago" from drifting into "6d" as the shots age.
   await page.clock.setFixedTime(now);
   await page.goto(`/?port=19998&token=shots&session=${sid}`);
@@ -244,36 +182,4 @@ test("question", async ({ page }) => {
   await card.press("ArrowDown");
   await page.waitForTimeout(300);
   await page.screenshot({ path: `${OUT}/question.png` });
-});
-
-test("pull request review", async ({ page }) => {
-  await open(page, ids.rate);
-  await page.getByTitle("Retry failed webhook deliveries", { exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Retry failed webhook deliveries" })).toBeVisible();
-  await page.getByRole("button", { name: /Open pre-review/ }).click();
-  await expect(page.getByLabel("Summary", { exact: true })).toBeVisible();
-  await page.waitForTimeout(500);
-  await page.screenshot({ path: `${OUT}/pull-request.png` });
-});
-
-/** Not for the README: the PR page, open and merged, in both themes. Written to AURA_SHOTS_DIR. */
-const SHOTS = process.env.AURA_SHOTS_DIR ?? "test-results/screenshots";
-const reviewedPull = { ...pullFixture, review_decision: "APPROVED", milestone: 7, milestone_title: "October release", assignees: ["jordan"], reviews: [{ reviewer: "riley", bot: false, state: "APPROVED", submitted_at: at(90), commit_sha: "4f9c2e1d8b" }, { reviewer: "sam", bot: false, state: "CHANGES_REQUESTED", submitted_at: at(300), commit_sha: "3e8d2a1c4b" }] };
-const variants = {
-  open: { pull: reviewedPull, timeline: timelineFixture },
-  merged: {
-    pull: { ...reviewedPull, state: "merged", can_merge: false, merge_blocked_by: "This pull request is not open" },
-    timeline: { ...timelineFixture, items: [...timelineFixture.items, event("merged", 30, { actor: "riley", subject: "main", sha: "7c1d9e3f2a" }), event("head_ref_deleted", 29, { actor: "riley", subject: "webhook-retries" })] },
-  },
-};
-for (const [name, detail] of Object.entries(variants)) for (const theme of ["dark", "light"]) test(`pull request conversation (${name}, ${theme})`, async ({ page }) => {
-  await open(page, ids.rate, detail);
-  await page.getByTitle("Retry failed webhook deliveries", { exact: true }).click();
-  await expect(page.getByText("Worth adding jitter here", { exact: false })).toBeVisible();
-  await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: `${SHOTS}/pull-${name}-${theme}.png` });
-  await page.locator(".pr-detail-scroll").evaluate((el) => { el.scrollTop = el.scrollHeight; });
-  await page.waitForTimeout(200);
-  await page.screenshot({ path: `${SHOTS}/pull-${name}-${theme}-end.png` });
 });
