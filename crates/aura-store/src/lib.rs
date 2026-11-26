@@ -90,6 +90,36 @@ const MIGRATIONS: &[&str] = &[
     WHERE sessions.id = started.session_id AND json_valid(sessions.json)
       AND json_extract(sessions.json, '$.scheduled_task_id') IS NULL;
     "#,
+    // v5: GitHub, pull requests and reviews moved out of core into the bundled
+    // `github` and `pull-requests` mods. Their data is copied into the mods'
+    // namespaces (see crates/aura-mods/src/storage.rs); the old rows stay, so
+    // an older Aura still finds them.
+    r#"
+    INSERT OR IGNORE INTO feature_records (namespace, id, json)
+    SELECT 'mod:pull-requests:c:' || namespace, id, json FROM feature_records
+    WHERE namespace IN ('reviews', 'pr-watches', 'pr-follows', 'pr-follow-pending')
+       OR namespace LIKE 'hidden:%' OR namespace LIKE 'details:%' OR namespace LIKE 'pull-changes:%';
+
+    INSERT OR IGNORE INTO feature_records (namespace, id, json)
+    SELECT 'mod:pull-requests:kv', key, CASE WHEN json_valid(value) THEN value ELSE json_quote(value) END
+    FROM settings WHERE key = 'reviews.inbox' OR key LIKE 'pulls.snapshots.v1.%';
+
+    -- A session's issue and PR links, detected links and PRs it worked on.
+    INSERT OR IGNORE INTO feature_records (namespace, id, json)
+    SELECT 'mod:github:sessions', s.id, '{}' FROM sessions s
+    WHERE EXISTS (SELECT 1 FROM settings WHERE key IN ('session.links.v1.' || s.id, 'session.links.detected.v1.' || s.id) AND json_valid(value))
+       OR (json_valid(s.json) AND json_array_length(s.json, '$.pulls') > 0);
+    UPDATE feature_records SET json = json_set(feature_records.json, '$.links', json(st.value))
+    FROM settings st
+    WHERE feature_records.namespace = 'mod:github:sessions' AND st.key = 'session.links.v1.' || feature_records.id AND json_valid(st.value);
+    UPDATE feature_records SET json = json_set(feature_records.json, '$.detected', json(st.value))
+    FROM settings st
+    WHERE feature_records.namespace = 'mod:github:sessions' AND st.key = 'session.links.detected.v1.' || feature_records.id AND json_valid(st.value);
+    UPDATE feature_records SET json = json_set(feature_records.json, '$.pulls', json(json_extract(s.json, '$.pulls')))
+    FROM sessions s
+    WHERE feature_records.namespace = 'mod:github:sessions' AND s.id = feature_records.id
+      AND json_valid(s.json) AND json_array_length(s.json, '$.pulls') > 0;
+    "#,
 ];
 
 pub struct SqliteStore {
@@ -837,5 +867,63 @@ mod tests {
         );
         assert_eq!(by_id(&busy.id).scheduled_task_id, None);
         assert_eq!(by_id(&own.id).scheduled_task_id, None);
+    }
+
+    #[test]
+    fn github_and_review_data_is_copied_to_the_mods() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aura.db");
+        let (linked, worked, plain) = (session("/tmp/a"), session("/tmp/b"), session("/tmp/c"));
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..4] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 4).unwrap();
+            for (s, pulls) in [(&linked, json!([])), (&worked, json!(["https://github.com/o/r/pull/7"])), (&plain, json!([]))] {
+                let mut v = serde_json::to_value(s).unwrap();
+                v["pulls"] = pulls;
+                conn.execute(
+                    "INSERT INTO sessions (id, provider, created_at, last_activity, json) VALUES (?1, 'terminal', ?2, ?2, ?3)",
+                    params![s.id, s.created_at.to_rfc3339(), v.to_string()],
+                )
+                .unwrap();
+            }
+            let record = |ns: &str, id: &str, json: &str| {
+                conn.execute("INSERT INTO feature_records (namespace, id, json) VALUES (?1, ?2, ?3)", params![ns, id, json])
+                    .unwrap();
+            };
+            record("reviews", "r1", r#"{"id":"r1"}"#);
+            record("hidden:github.com:me", "o/r#1", "true");
+            record("pr-watches", "w1", r#"{"repo":"o/r"}"#);
+            record("groups", "g1", r#"{"id":"g1"}"#);
+            let setting = |k: &str, v: &str| {
+                conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2)", params![k, v]).unwrap();
+            };
+            setting("reviews.inbox", r#"{"account":"github.com:me"}"#);
+            setting("pulls.snapshots.v1.github.com:me", "[]");
+            setting(&format!("session.links.v1.{}", linked.id), r#"{"prs":["o/r#2"]}"#);
+            setting("prompts", r#"{"global":""}"#);
+        }
+        let s = SqliteStore::open(&path).unwrap();
+        let ns = |n: &str| s.feature_records(n).unwrap();
+        assert_eq!(ns("mod:pull-requests:c:reviews"), vec![("r1".into(), r#"{"id":"r1"}"#.into())]);
+        assert_eq!(ns("mod:pull-requests:c:hidden:github.com:me").len(), 1);
+        assert_eq!(ns("mod:pull-requests:c:pr-watches").len(), 1);
+        assert!(ns("mod:pull-requests:c:groups").is_empty(), "core data stays core's");
+        let kv: std::collections::HashMap<_, _> = ns("mod:pull-requests:kv").into_iter().collect();
+        assert_eq!(kv["reviews.inbox"], r#"{"account":"github.com:me"}"#);
+        assert_eq!(kv["pulls.snapshots.v1.github.com:me"], "[]");
+        assert!(!kv.contains_key("prompts"));
+        let sessions: std::collections::HashMap<String, serde_json::Value> = ns("mod:github:sessions")
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::from_str(&v).unwrap()))
+            .collect();
+        assert_eq!(sessions[&linked.id], json!({"links": {"prs": ["o/r#2"]}}));
+        assert_eq!(sessions[&worked.id], json!({"pulls": ["https://github.com/o/r/pull/7"]}));
+        assert!(!sessions.contains_key(&plain.id));
+        // The old rows stay for an older Aura.
+        assert_eq!(ns("reviews").len(), 1);
     }
 }

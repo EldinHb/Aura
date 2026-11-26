@@ -176,11 +176,6 @@ pub struct Session {
     /// directory Aura made for it (`cwd`) and names a folder for each worker.
     #[serde(default)]
     pub folderless: bool,
-    /// URLs of the pull requests opened from this session's branch, recorded
-    /// as the app finds them, so a PR keeps listing the session after the
-    /// branch is deleted or the session moves to another one.
-    #[serde(default)]
-    pub pulls: Vec<String>,
     /// What happened since the user last opened the session, if anything.
     /// Cleared by [`crate::Manager::mark_seen`]. A `Waiting` one also ends
     /// once nothing waits any more, e.g. after an answer from the inbox.
@@ -697,7 +692,6 @@ impl Session {
             specialist_id: opts.specialist.as_ref().map(|(id, _)| id.clone()),
             specialist_name: opts.specialist.as_ref().map(|(_, name)| name.clone()),
             folderless: false,
-            pulls: vec![],
             attention: None,
             scheduled_task_id: opts.scheduled_task.as_ref().map(|(id, _)| id.clone()),
             scheduled_task_name: opts.scheduled_task.as_ref().map(|(_, name)| name.clone()),

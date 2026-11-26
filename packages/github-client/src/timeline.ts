@@ -1,4 +1,4 @@
-﻿// A pull request's conversation, read as GitHub's Conversation tab shows it: one GraphQL
+// A pull request's conversation, read as GitHub's Conversation tab shows it: one GraphQL
 // query for the timeline and the review threads, paginated, instead of a REST list each.
 import { has, list, s, show, u64, validateRepo, type Github } from "./github";
 import type { PullRequest, PullTimeline, ReviewThread, TimelineItem } from "./types";

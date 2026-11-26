@@ -16,7 +16,7 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["vite/client"],
     "paths": {
-      "@aura/host": ["../../packages/mod-sdk/src/host.ts"]
+      "@aura/host": ["../packages/mod-sdk/src/host.ts"]
     }
   }
 }

@@ -870,65 +870,6 @@ async fn clearing_notices_is_recorded_without_touching_the_sessions() {
 }
 
 #[tokio::test]
-async fn pull_requests_are_recorded_once_and_survive_a_restart() {
-    let (m, _calls, _starts, store) = setup();
-    let dir = tempfile::tempdir().unwrap();
-    let s = m
-        .create_session(CreateSessionOpts {
-            provider: ProviderKind::Claude,
-            cwd: dir.path().to_string_lossy().to_string(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let mut rx = m.subscribe();
-    drain(&mut rx).await;
-    let before = m.get_session(&s.id).unwrap().last_activity;
-    let url = "https://github.com/owner/repo/pull/7";
-
-    assert_eq!(m.record_pull(&s.id, url).unwrap().pulls, vec![url]);
-    let evs = drain(&mut rx).await;
-    assert!(evs.iter().any(
-        |e| matches!(e, Event::SessionUpdated { session } if session.pulls == vec![url.to_string()])
-    ));
-    // The same PR again, in another case, changes nothing and tells no one.
-    m.record_pull(&s.id, "https://github.com/Owner/Repo/pull/7")
-        .unwrap();
-    assert!(!drain(&mut rx)
-        .await
-        .iter()
-        .any(|e| matches!(e, Event::SessionUpdated { .. })));
-    let later = "https://github.com/owner/repo/pull/9";
-    assert_eq!(m.record_pull(&s.id, later).unwrap().pulls, vec![url, later]);
-    assert_eq!(
-        m.get_session(&s.id).unwrap().last_activity,
-        before,
-        "finding a PR must not reorder the sidebar"
-    );
-    assert!(m.record_pull(&s.id, "not a url").is_err());
-    assert!(m.record_pull("missing", url).is_err());
-
-    let stored = store.list_sessions().unwrap();
-    assert_eq!(
-        stored.iter().find(|x| x.id == s.id).unwrap().pulls,
-        vec![url, later]
-    );
-}
-
-#[test]
-fn sessions_saved_before_pulls_were_recorded_still_load() {
-    let s = Session::new(&CreateSessionOpts {
-        provider: ProviderKind::Claude,
-        cwd: "/tmp".into(),
-        ..Default::default()
-    });
-    let mut json = serde_json::to_value(&s).unwrap();
-    json.as_object_mut().unwrap().remove("pulls");
-    let old: Session = serde_json::from_value(json).unwrap();
-    assert!(old.pulls.is_empty());
-}
-
-#[tokio::test]
 async fn sessions_want_attention_when_they_stop_until_they_are_seen() {
     let (m, _calls, _starts, store) = setup();
     let dir = tempfile::tempdir().unwrap();
@@ -1485,7 +1426,7 @@ async fn changes_made_at_once_are_all_stored_and_announced_in_order() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let mut rx = m.subscribe();
     for round in 0..20 {
-        // Activity (rename) and bookkeeping (record_pull) at the same moment.
+        // Two changes to the session at the same moment: a rename and a pin.
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let threads: Vec<_> = (0..2)
             .map(|t| {
@@ -1495,8 +1436,7 @@ async fn changes_made_at_once_are_all_stored_and_announced_in_order() {
                     if t == 0 {
                         m.rename(&id, &format!("title {round}")).unwrap();
                     } else {
-                        m.record_pull(&id, &format!("https://github.com/o/r/pull/{round}"))
-                            .unwrap();
+                        m.set_pinned(&id, round % 2 == 0).unwrap();
                     }
                 })
             })
@@ -1506,8 +1446,8 @@ async fn changes_made_at_once_are_all_stored_and_announced_in_order() {
         }
         let live = m.get_session(&s.id).unwrap();
         assert_eq!(
-            (live.title.clone(), live.pulls.len()),
-            (format!("title {round}"), round + 1)
+            (live.title.clone(), live.pinned),
+            (format!("title {round}"), round % 2 == 0)
         );
         let stored = store
             .list_sessions()

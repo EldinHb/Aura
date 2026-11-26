@@ -1,0 +1,40 @@
+/* The github mod's own styles, moved from the app's styles.css. Theme variables and shared
+   classes (.btn, .chip, .dim, .list-item, .dir-browser, .check-row, .radio-row, .field,
+   .inspector-section) stay Aura's. */
+
+/* Sidebar row chips: whole chips only; the ones that do not fit leave the line but stay measurable, and "+N" lists them. */
+.session-row .links { position: relative; display: flex; gap: 6px; margin-top: 2px; font-size: 11px; line-height: 16px; color: var(--accent-2); white-space: nowrap; overflow: hidden; }
+.session-row .links > * { flex-shrink: 0; }
+.session-row .links > .overflow { position: absolute; visibility: hidden; }
+.session-row .links .links-more { padding: 0 5px; font-size: 10px; line-height: 14px; color: var(--fg-muted); }
+:root[data-theme="light"] .session-row .links { color: #0e8a76; }
+
+/* A branch's pull request. */
+.pull-label.ok { color: var(--ok); }
+.pull-label.err { color: var(--err); }
+.pull-label.merged { color: #c79bf0; }
+.statusbar-pull { color: var(--accent-2); text-decoration: none; }
+.statusbar-pull:hover { text-decoration: underline; }
+
+/* Issues & PRs in the Inspector. */
+.session-link { display: flex; flex-direction: column; gap: 2px; padding: 5px 0; color: var(--accent-2); font-size: 12px; text-decoration: none; }
+.session-link:hover { text-decoration: underline; }
+.session-link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.session-link-repo { overflow-wrap: anywhere; }
+
+/* The issue picker of the new-session dialog. */
+.issue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.issue-head .radio-row { flex-wrap: nowrap; }
+.issue-list { max-height: 180px; }
+.issue-empty { padding: 6px 10px; font-size: 12px; display: flex; gap: 8px; align-items: center; }
+.issue-picked { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.issue-picked .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The links dialog. */
+.link-list { display: flex; flex-direction: column; gap: 4px; border: 0; padding: 0; margin: 0 0 10px; min-width: 0; }
+.link-list-head { display: flex; align-items: center; justify-content: space-between; }
+.link-list-head .label { font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.link-list-head .check-row { margin: 0; font-size: 12px; }
+.link-list-row { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.link-list-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-list-row input.grow { border: 0; padding: 2px 0; background: transparent; }

@@ -1,4 +1,15 @@
 {
   "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // `paths` replaces the base file's, so @aura/host is repeated here (relative to this file).
+    "paths": {
+      "@aura/host": ["../../packages/mod-sdk/src/host.ts"],
+      // UI tests render with the desktop app's React DOM and Testing Library
+      // (see vitest.config.ts); the mod itself never imports them.
+      "@testing-library/react": ["../../apps/desktop/node_modules/@testing-library/react"],
+      "react-dom": ["../../apps/desktop/node_modules/react-dom"],
+      "react-dom/*": ["../../apps/desktop/node_modules/react-dom/*"]
+    }
+  },
   "include": ["src"]
 }

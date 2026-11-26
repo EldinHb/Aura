@@ -1036,23 +1036,6 @@ impl Manager {
         self.update_session(id, |s| s.pinned = pinned)
     }
 
-    /// Remember that the session's branch is the head of this pull request
-    /// (see [`Session::pulls`]). Finding it is not activity: the session keeps
-    /// its place in the list.
-    pub fn record_pull(&self, id: &str, url: &str) -> Result<Session> {
-        let url = url.trim();
-        if !url.starts_with("https://") || !url.contains("/pull/") || url.len() > 512 {
-            bail!("not a pull request URL: {url}");
-        }
-        self.change_session(id, false, |s| {
-            if s.pulls.iter().any(|p| p.eq_ignore_ascii_case(url)) {
-                return false;
-            }
-            s.pulls.push(url.to_string());
-            true
-        })
-    }
-
     /// The user opened the session: forget what it wanted them to see.
     /// Not activity either, and a session without attention is left alone.
     pub fn mark_seen(&self, id: &str) -> Result<Session> {
