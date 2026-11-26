@@ -553,6 +553,19 @@ impl ModHost {
                 self.0.set_setting(&id()?, key, params.get("value").cloned().unwrap_or(Value::Null))?;
                 json!(true)
             }
+            // What a mod's new-session field contributed, stored on the new session for that mod.
+            "mods.session_data.set" => {
+                let id = id()?;
+                let sid = params.get("sessionId").and_then(Value::as_str).context("sessionId is required")?;
+                let key = params.get("key").and_then(Value::as_str).context("key is required")?;
+                if !self.0.mods.read().contains_key(&id) {
+                    anyhow::bail!("no mod {id}");
+                }
+                self.0.manager.get_session(sid)?;
+                let value = params.get("value").cloned().filter(|v| !v.is_null());
+                self.0.records.set_field(&crate::storage::sessions_ns(&id), sid, key, value)?;
+                json!(true)
+            }
             "mods.inbox" => json!(self
                 .0
                 .inbox

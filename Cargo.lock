@@ -411,24 +411,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aura-github"
-version = "0.2.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "aura-core",
- "chrono",
- "futures",
- "parking_lot",
- "reqwest",
- "rustls",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "aura-mods"
 version = "0.2.25"
 dependencies = [
@@ -516,25 +498,6 @@ dependencies = [
  "bytes",
  "parking_lot",
  "portable-pty",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "aura-review"
-version = "0.2.25"
-dependencies = [
- "anyhow",
- "async-trait",
- "aura-core",
- "aura-git",
- "aura-github",
- "chrono",
- "parking_lot",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
  "tokio",
  "tracing",
 ]

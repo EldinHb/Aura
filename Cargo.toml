@@ -9,8 +9,6 @@ members = [
   "crates/aura-provider-acp",
   "crates/aura-rpc",
   "crates/aura-git",
-  "crates/aura-github",
-  "crates/aura-review",
   "crates/aura-terminal",
   "crates/aura-mods",
   "crates/aurad",
@@ -31,8 +29,6 @@ aura-provider-claude = { path = "crates/aura-provider-claude" }
 aura-provider-codex = { path = "crates/aura-provider-codex" }
 aura-provider-acp = { path = "crates/aura-provider-acp" }
 aura-rpc = { path = "crates/aura-rpc" }
-aura-github = { path = "crates/aura-github" }
-aura-review = { path = "crates/aura-review" }
 aura-git = { path = "crates/aura-git" }
 aura-terminal = { path = "crates/aura-terminal" }
 aura-mods = { path = "crates/aura-mods" }

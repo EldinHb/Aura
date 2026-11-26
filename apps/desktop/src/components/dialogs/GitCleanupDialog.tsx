@@ -4,7 +4,14 @@ import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
 import { folderOf } from "../../lib/sessionFolder";
 
-type Repo = { root: string; github: string | null };
+/** `remote`: "owner/repo" of the repository's preferred remote, when it has one. */
+type Repo = { root: string; remote: string | null };
+
+/** "owner/repo" of a remote URL on any host (https or scp-like ssh). */
+export function remoteName(url: string): string | null {
+  const m = /[/:]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url.trim());
+  return m ? `${m[1]}/${m[2]}` : null;
+}
 
 /** First message of the agent session that cleans up a repository. */
 export const CLEANUP_PROMPT = `Clean up this local git repository. Work carefully and show me what you plan to remove before removing it.
@@ -16,7 +23,7 @@ export const CLEANUP_PROMPT = `Clean up this local git repository. Work carefull
 
 Never touch the current branch, the default branch, a branch checked out in another worktree, or uncommitted changes. Finish with a short summary of what you removed and what you left.`;
 
-const name = (r: Repo) => r.github ?? r.root.split("/").filter(Boolean).pop() ?? r.root;
+const name = (r: Repo) => r.remote ?? r.root.split("/").filter(Boolean).pop() ?? r.root;
 
 /** Lists stale local branches of a repository and deletes the selected ones, or hands the job to an agent. */
 export function GitCleanupDialog({ cwd, repo }: { cwd?: string; repo?: string }) {
@@ -40,15 +47,18 @@ export function GitCleanupDialog({ cwd, repo }: { cwd?: string; repo?: string })
     let active = true;
     void Promise.all(cwds.map(async (c) => {
       const root = await client.gitMainRepoRoot(c).catch(() => null);
-      return root ? { root, cwd: c, github: await client.gitGithubRepo(root).catch(() => null) } : null;
+      if (!root) return null;
+      const remotes = await client.gitRemotes(root).catch(() => []);
+      const preferred = ["upstream", "origin"].map((n) => remotes.find((r) => r.name === n)).find(Boolean) ?? remotes[0];
+      return { root, cwd: c, remote: preferred ? remoteName(preferred.url) : null };
     })).then((found) => {
       if (!active) return;
       const list: Repo[] = [];
-      for (const f of found) if (f && !list.some((r) => r.root === f.root)) list.push({ root: f.root, github: f.github });
+      for (const f of found) if (f && !list.some((r) => r.root === f.root)) list.push({ root: f.root, remote: f.remote });
       list.sort((a, b) => name(a).localeCompare(name(b)));
       setRepos(list);
       const start = found.find((f) => f && cwd && f.cwd === cwd)?.root
-        ?? list.find((r) => repo && r.github?.toLowerCase() === repo.toLowerCase())?.root
+        ?? list.find((r) => repo && r.remote?.toLowerCase() === repo.toLowerCase())?.root
         ?? list[0]?.root ?? "";
       setRoot(start);
     });

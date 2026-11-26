@@ -10,7 +10,7 @@ import type { ClearHistory, HistoryCounts, Schedule, ScheduledRun, ScheduledTask
 import { registerCommands } from "../../lib/commands";
 import { setFocus } from "../../commands/core";
 import { useStore } from "../../state/store";
-import { rpc } from "../reviews/state";
+import { rpc } from "../../lib/call";
 
 type ScheduleState = {
   tasks: ScheduledTask[]; loaded: boolean; error: string | null;

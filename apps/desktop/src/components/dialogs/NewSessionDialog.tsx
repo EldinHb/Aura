@@ -8,8 +8,7 @@ import { physicalKey } from "../../lib/keymap";
 import clsx from "clsx";
 import { providerChoices } from "../../lib/acp";
 import { useGroups } from "../../state/groups";
-import { saveLinkPreferences } from "../../state/sessionLinkPreferences";
-import { IssuePicker, type PickedIssue } from "./IssuePicker";
+import { NewSessionModFields } from "../../mods/Slots";
 import { folderOf } from "../../lib/sessionFolder";
 import { AutonomyPicker } from "../AutonomyPicker";
 import { describeAutonomy } from "../../lib/features";
@@ -113,7 +112,14 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   // An orchestrator belongs to no folder unless the user gives it one.
   const [orchestratorFolder, setOrchestratorFolder] = useState(false);
   const noFolder = orchestrates && !orchestratorFolder;
-  const [issues, setIssues] = useState<PickedIssue[]>([]);
+  // What mods' fields add (picked issues, say), by field: prompt text and data for the new session.
+  const [contributions, setContributions] = useState<Record<string, { prompt?: string; data?: unknown }>>({});
+  const onContribution = useCallback((key: string, c: { prompt?: string; data?: unknown } | null) => {
+    setContributions((all) => {
+      const { [key]: _, ...rest } = all;
+      return c ? { ...rest, [key]: c } : rest;
+    });
+  }, []);
   const [busy, setBusy] = useState(false);
   const dirInput = useRef<HTMLInputElement>(null);
   const dirBrowser = useRef<HTMLDivElement>(null);
@@ -229,6 +235,10 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     setDirIndex(0);
   };
 
+  // The first prompt with what mods' fields add to it.
+  const withExtras = (text: string) =>
+    [text, ...Object.values(contributions).map((c) => c.prompt?.trim()).filter(Boolean)].filter(Boolean).join("\n\n");
+
   const submit = useCallback(async () => {
     if (!client || busy) return;
     // An empty directory gives an orchestrator none: the daemon makes it one of its own.
@@ -249,7 +259,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         sandbox_mode: sandbox || null,
         worktree: !noFolder && worktree && repoRoot && branch.trim() ? { branch: branch.trim(), base: null, path: null } : null,
         // A feature owner starts on its goal.
-        initial_prompt: owns ? goal.trim() || null : (mode === "structured" || orchestrates) && prompt.trim() ? prompt.trim() : null,
+        initial_prompt: owns ? goal.trim() || null : (mode === "structured" || orchestrates) && withExtras(prompt.trim()) ? withExtras(prompt.trim()) : null,
         system_prompt: provider !== "terminal" && systemPrompt.trim() ? systemPrompt : null,
         orchestrator: orchestrates,
         orchestrator_id: null,
@@ -258,9 +268,14 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         autonomy: owns ? autonomy : null,
       });
       if (cwd) pushRecentDir(cwd);
-      if (issues.length && !noFolder) {
-        await saveLinkPreferences(client, s.id, { issues: issues.map((issue) => issue.url) }).catch((e) =>
-          toast(`Session created, but linking ${issues.map((issue) => `${issue.repo} #${issue.number}`).join(", ")} failed: ${e instanceof Error ? e.message : e}`, "error"));
+      // Each key of a field's `data` becomes that mod's data on the new session.
+      for (const [key, c] of Object.entries(contributions)) {
+        if (noFolder || !c.data || typeof c.data !== "object") continue;
+        const modId = key.slice(0, key.indexOf(":"));
+        for (const [k, value] of Object.entries(c.data as Record<string, unknown>)) {
+          await client.call("mods.session_data.set", { id: modId, sessionId: s.id, key: k, value }).catch((e) =>
+            toast(`Session created, but ${modId} could not store ${k}: ${e instanceof Error ? e.message : e}`, "error"));
+        }
       }
       select(s.id);
       closeDialog();
@@ -270,7 +285,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, issues, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, select, closeDialog, toast]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -426,7 +441,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         </div>
       </div>
 
-      {!noFolder && <IssuePicker cwd={expandedDir.replace(/\/+$/, "")} value={issues} onChange={setIssues} />}
+      {!noFolder && <NewSessionModFields cwd={expandedDir.replace(/\/+$/, "") || null} onChange={onContribution} />}
 
       {isAcp ? (
         <div className="field">

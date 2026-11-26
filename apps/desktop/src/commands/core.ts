@@ -220,7 +220,6 @@ export const coreCommands: Command[] = [
       if (s.orchestrator_id) openWorkerThread(s.orchestrator_id, s.id);
     },
   },
-  { id: "session.links", title: "Edit issues & PRs…", keywords: ["GitHub", "pull request", "links"], group: "Session", when: "hasSelection", run: () => st().openDialog({ kind: "session-links", sessionId: selected().id }) },
   { id: "session.plan.toggle", title: "Show / hide session plan", group: "Session", when: "hasSelection", run: () => {
     const id = selected().id;
     const open = !st().inspectorOpen || !(usePlanViews.getState().views[id]?.open ?? true);

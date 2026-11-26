@@ -10,7 +10,6 @@ import { HelpOverlay } from "./HelpOverlay";
 import { ConfirmDialog } from "./dialogs/ConfirmDialog";
 import { RenameDialog } from "./dialogs/RenameDialog";
 import { SystemPromptDialog } from "./dialogs/SystemPromptDialog";
-import { SessionLinksDialog } from "./dialogs/SessionLinksDialog";
 import { GroupDialog } from "./dialogs/GroupDialog";
 import { PickerDialog } from "./dialogs/PickerDialog";
 import { NewSessionDialog } from "./dialogs/NewSessionDialog";
@@ -46,8 +45,6 @@ function CurrentDialog() {
       return <SchedulesDialog key={`${dialog.taskId ?? ""}-${dialog.create ? "new" : ""}`} taskId={dialog.taskId} create={dialog.create} />;
     case "git-cleanup":
       return <GitCleanupDialog key={`${dialog.cwd ?? ""}-${dialog.repo ?? ""}`} cwd={dialog.cwd} repo={dialog.repo} />;
-    case "session-links":
-      return <SessionLinksDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "group":
       return <GroupDialog sessionId={dialog.sessionId} />;
     case "models":

@@ -7,7 +7,6 @@ import { fmtTokens, fmtUsd, relTime, truncate } from "./transcript/format";
 import { PlanSection } from "./PlanSection";
 import { acpSessionInfo } from "../lib/acp";
 import { useMemo } from "react";
-import { folderOf } from "../lib/sessionFolder";
 import { statusClass } from "../lib/sessionStatus";
 import { openWorkerThread } from "../state/workerThreads";
 import { FeatureSection } from "./FeatureSection";

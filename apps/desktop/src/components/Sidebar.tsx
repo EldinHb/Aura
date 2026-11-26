@@ -1,22 +1,18 @@
-import { SidebarModSections } from "../mods/Slots";
+import { SessionRowModChips, SidebarModSections } from "../mods/Slots";
 import { ScheduleSidebar } from "../features/schedules/ScheduleSidebar";
 import { openSchedules, useSchedules } from "../features/schedules/state";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, selectTabActivity, canReorder, groupKey, hasHeading, isNestedWorker, orchestratorsOf, ORCHESTRATORS_SECTION, TASK_SECTION, type AppState, type SidebarTab } from "../state/store";
 import { folderOf } from "../lib/sessionFolder";
-import type { BranchPull, Session } from "../gen";
+import type { Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
 import { registerCommands } from "../lib/commands";
 import { setFocus } from "../commands/core";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import { useDetectedLinksStore, useLinkPreferencesStore, useSidebarLinks } from "../state/sessionLinkPreferences";
-import { selectedSessionLinks, sessionLinks } from "../views/issueLinks";
-import { useGithubRepo } from "../state/githubRepos";
 import { useSessionBranch } from "../state/branchStatus";
-import { BranchPullChip, GitCounts, branchName, describeBranchPull } from "./BranchStatus";
+import { GitCounts, branchName } from "./BranchStatus";
 import { statusClass } from "../lib/sessionStatus";
-import { useRecordBranchPull } from "../state/pullSessions";
 import { ATTENTION, hiddenAttention, useViewedSessionId } from "../state/attention";
 import { useFeature } from "../state/features";
 import { openQuestions } from "../lib/features";
@@ -57,8 +53,7 @@ function sidebarCurrent(st: AppState, sessions: Session[]): Session | undefined 
  * of the folder's. Then the session's issues and PRs.
  */
 function SessionRowDetails({ session: s, selected, hidden }: { session: Session; selected: boolean; hidden: Session[] }) {
-  const { git, pull } = useSessionBranch(s, selected);
-  useRecordBranchPull(s, pull);
+  const { git } = useSessionBranch(s, selected);
   const branch = (git && branchName(git)) ?? s.worktree?.branch;
   const agent = s.agent ?? s.provider;
   const runs = s.model ? [s.model, s.effort].filter(Boolean).join(" · ") : s.effort ? `effort ${s.effort}` : "";
@@ -82,7 +77,8 @@ function SessionRowDetails({ session: s, selected, hidden }: { session: Session;
           {runs ? `${folderOf(s) === null && !branch ? "" : " · "}${runs}` : ""}
         </span>
       </div>
-      <SessionRowLinks session={s} branchPull={pull} />
+      {/* Mods' chips: the branch's pull request, linked issues, … */}
+      <div className="links"><SessionRowModChips session={s} selected={selected} /></div>
     </>
   );
 }
@@ -108,69 +104,6 @@ function HiddenWorkers({ hidden }: { hidden: Session[] }) {
   );
 }
 
-/**
- * How many of the chips in `ref` fit on its one line whole, leaving room for
- * the "+N" chip after them when some do not. Chips past that stay laid out,
- * out of sight, so they can be measured again when the sidebar widens.
- */
-function useFittingChips(ref: RefObject<HTMLDivElement | null>, key: string) {
-  const [fit, setFit] = useState(Infinity);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      const widths = [...el.querySelectorAll<HTMLElement>(":scope > .link-slot")].map((c) => c.offsetWidth);
-      const more = el.querySelector<HTMLElement>(":scope > .links-more")?.offsetWidth ?? 0;
-      const gap = parseFloat(getComputedStyle(el).columnGap) || 0;
-      const width = (n: number) => widths.slice(0, n).reduce((sum, w) => sum + w, 0) + gap * Math.max(0, n - 1);
-      let n = widths.length;
-      if (width(n) > el.clientWidth) do n--; while (n > 0 && width(n) + gap + more > el.clientWidth);
-      setFit(n);
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ref, key]);
-  return fit;
-}
-
-/**
- * The pull request of the session's branch with its status, then the issue and
- * PR numbers linked to the session as the Inspector shows them. As many whole
- * chips as fit, then "+N" with the rest in its tooltip.
- */
-function SessionRowLinks({ session, branchPull }: { session: Session; branchPull: BranchPull | null }) {
-  const transcript = useStore((s) => s.transcripts[session.id]);
-  const preferences = useLinkPreferencesStore((s) => s.entries[session.id]?.preferences);
-  const detected = useDetectedLinksStore((s) => s.links[session.id]);
-  const repo = useGithubRepo(folderOf(session) ?? undefined);
-  const links = useMemo(() => {
-    const automatic = transcript?.loaded ? sessionLinks(transcript.items, session.title, repo) : detected ?? sessionLinks({}, session.title, repo);
-    return selectedSessionLinks(automatic, preferences);
-  }, [transcript?.loaded, transcript?.items, session.title, repo, detected, preferences]);
-  // The branch's pull request replaces the same PR linked from the transcript.
-  const shown = branchPull ? links.filter((l) => !(l.kind === "PR" && Number(l.number) === branchPull.number && l.repo.toLowerCase() === branchPull.repo.toLowerCase())) : links;
-  const chips = [
-    ...(branchPull ? [{ key: branchPull.url, tip: describeBranchPull(branchPull), chip: <BranchPullChip pull={branchPull} /> }] : []),
-    ...shown.map((link) => ({ key: link.url, tip: link.url, chip: <span className="session-row-link" title={link.url}>{link.kind} #{link.number}</span> })),
-  ];
-  const ref = useRef<HTMLDivElement>(null);
-  // The branch PR's labels change its width, so they are part of what is measured.
-  const fit = useFittingChips(ref, chips.map((c) => c.key).join(" ") + (branchPull ? describeBranchPull(branchPull) : ""));
-  if (chips.length === 0) return null;
-  const rest = chips.slice(fit);
-  return (
-    <div className="links" ref={ref}>
-      {chips.map((c, i) => <span key={c.key} className={clsx("link-slot", i >= fit && "overflow")} aria-hidden={i >= fit || undefined}>{c.chip}</span>)}
-      {/* Measured even while every chip fits, at its widest. */}
-      <span className={clsx("chip", "links-more", rest.length === 0 && "overflow")} aria-hidden={rest.length === 0 || undefined} title={rest.map((c) => c.tip).join("\n")}>
-        +{rest.length || chips.length}
-      </span>
-    </div>
-  );
-}
 
 const TABS: { tab: SidebarTab; label: string; command: string }[] = [
   { tab: "sessions", label: "Sessions", command: "sidebar.tab.sessions" },
@@ -301,7 +234,6 @@ export function Sidebar() {
   // Opening a session clears its marker (see useMarkViewedSeen); until the daemon has, it is not shown.
   const viewedId = useViewedSessionId();
   const listRef = useRef<HTMLDivElement>(null);
-  useSidebarLinks(useMemo(() => sessions.map((s) => s.id), [sessions]));
 
   // Sections in ⌘1–9 order, with the rows of folded sections and collapsed
   // workers in to count them.

@@ -33,9 +33,7 @@ import type {
   UserInputRequest,
   DaemonInfo,
   Group,
-  RepoIssue,
   BranchStatus,
-  BranchPull,
   Autonomy,
   Feature,
   MeetingMode,
@@ -48,7 +46,6 @@ import type {
   SuggestionRun,
   SuggestionSettings,
 } from "../gen";
-import { normalizeBranchPull } from "./pulls";
 
 export const FRAME_PTY_OUTPUT = 1;
 export const FRAME_PTY_INPUT = 2;
@@ -391,10 +388,6 @@ export class RpcClient {
   setPinned(id: string, pinned: boolean) {
     return this.call<Session>("session.set_pinned", { id, pinned });
   }
-  /** Remember that the session's branch is the head of this pull request. */
-  recordSessionPull(id: string, url: string) {
-    return this.call<Session>("session.record_pull", { id, url });
-  }
   /** The user opened the session: clear what it wanted them to see (`Session.attention`). */
   markSeen(id: string) {
     return this.call<Session>("session.mark_seen", { id });
@@ -458,17 +451,12 @@ export class RpcClient {
   gitRepoRoot(cwd: string) {
     return this.call<string | null>("git.repo_root", { cwd });
   }
-  githubIssues(repo: string, query = "") {
-    return this.call<RepoIssue[]>("github.issues", { repo, query });
-  }
-  githubBranchPull(repo: string, head_repo: string, branch: string) {
-    return this.call<BranchPull | null>("github.branch_pull", { repo, head_repo, branch }).then(normalizeBranchPull);
-  }
   gitBranchStatus(cwd: string) {
     return this.call<BranchStatus | null>("git.branch_status", { cwd });
   }
-  gitGithubRepo(cwd: string) {
-    return this.call<string | null>("git.github_repo", { cwd });
+  /** The repository's remotes (name and fetch URL). */
+  gitRemotes(cwd: string) {
+    return this.call<Array<{ name: string; url: string }>>("git.remotes", { cwd });
   }
   gitStatus(cwd: string) {
     return this.call<FileStatus[]>("git.status", { cwd });

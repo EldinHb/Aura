@@ -67,12 +67,6 @@ specialist_name: string | null,
  */
 folderless: boolean, 
 /**
- * URLs of the pull requests opened from this session's branch, recorded
- * as the app finds them, so a PR keeps listing the session after the
- * branch is deleted or the session moves to another one.
- */
-pulls: Array<string>, 
-/**
  * What happened since the user last opened the session, if anything.
  * Cleared by [`crate::Manager::mark_seen`]. A `Waiting` one also ends
  * once nothing waits any more, e.g. after an answer from the inbox.

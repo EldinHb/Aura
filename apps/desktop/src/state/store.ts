@@ -61,7 +61,6 @@ export type Dialog =
   | { kind: "diff"; sessionId: string; path?: string }
   | { kind: "rename"; sessionId: string }
   | { kind: "system-prompt"; sessionId: string }
-  | { kind: "session-links"; sessionId: string }
   | { kind: "schedules"; taskId?: string; create?: boolean }
   /** Clean up local branches of the repository at `cwd`, or of the one whose GitHub remote is `repo`. */
   | { kind: "git-cleanup"; cwd?: string; repo?: string }
