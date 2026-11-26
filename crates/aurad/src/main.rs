@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use aura_core::{Manager, Store};
-use aura_rpc::server::{ExtHandler, RpcServer};
+use aura_rpc::server::{ExtCall, ExtError, ExtHandler, RpcServer};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -24,6 +24,12 @@ struct Args {
     /// Providers to enable (default: all detected). Comma separated: claude,codex,acp,terminal
     #[arg(long)]
     providers: Option<String>,
+    /// Folder of the mods bundled with the app (default: found next to aurad).
+    #[arg(long)]
+    mods_dir: Option<std::path::PathBuf>,
+    /// Start no mods at all.
+    #[arg(long)]
+    no_mods: bool,
 }
 
 #[tokio::main]
@@ -123,62 +129,77 @@ async fn main() -> Result<()> {
     manager.launch_idle_sweep();
     tracing::info!(restored, "sessions restored");
 
-    // One client for every loop: they share gh's token, the caches and the rate limit.
-    let github: Arc<dyn aura_github::Github> = Arc::new(aura_github::GhCli::default());
-    let reviews = aura_review::ReviewService::new(
-        store.clone(),
-        github.clone(),
-        Arc::new(aura_review::runner::CliRunner),
-        manager.clone(),
-        data_dir.join("review-workspaces"),
-    )?;
-    reviews.launch();
-    let watches = aura_review::watch::WatchService::new(
-        store.clone(),
-        github.clone(),
-        reviews.events.clone(),
-    )?;
-    watches.launch();
-    // Review activity on a session's own PRs goes to that session's agent.
-    let follows = aura_review::follow::FollowService::new(
-        store.clone(),
-        github.clone(),
-        manager.clone(),
-        reviews.events.clone(),
-    )?;
-    follows.launch();
+    // Notifications for the app that are not core events: schedules, mods.
+    let (notifications, _) = tokio::sync::broadcast::channel::<Value>(4096);
+
     // Scheduled tasks start their sessions from here, whether the app is open or not.
     let schedules =
-        aura_core::ScheduleService::new(manager.clone(), store.clone(), reviews.events.clone());
+        aura_core::ScheduleService::new(manager.clone(), store.clone(), notifications.clone());
     schedules.launch();
-    let service = reviews.clone();
+
+    // Mods: bundled with the app, then the user's own, then a development folder.
+    let mut mod_dirs = vec![];
+    if !args.no_mods {
+        let bundled = args.mods_dir.clone().or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| aura_mods::bundled_dir_near(&exe))
+        });
+        if let Some(dir) = bundled {
+            mod_dirs.push((aura_mods::ModSource::Bundled, dir));
+        }
+        mod_dirs.push((aura_mods::ModSource::User, data_dir.join("mods")));
+        if let Some(dev) = std::env::var_os("AURA_MODS_DIR") {
+            mod_dirs.push((aura_mods::ModSource::Dev, dev.into()));
+        }
+    }
+    let mods = aura_mods::ModHost::start(
+        aura_mods::Config {
+            dirs: mod_dirs,
+            data_dir: data_dir.clone(),
+        },
+        manager.clone(),
+        store.clone(),
+        notifications.clone(),
+    )
+    .await;
+
     let scheduler = schedules.clone();
-    let ext: ExtHandler = Arc::new(move |method: String, params: Value| {
-        let service = service.clone();
-        let watches = watches.clone();
-        let github = github.clone();
+    let mod_host = mods.clone();
+    let ext: ExtHandler = Arc::new(move |call: ExtCall| {
         let scheduler = scheduler.clone();
+        let mods = mod_host.clone();
         Box::pin(async move {
-            if let Some(result) = scheduler.handle(&method, params.clone()).await? {
+            if let Some(result) = scheduler.handle(&call.method, call.params.clone()).await? {
                 return Ok(Some(result));
             }
-            if let Some(result) = service.handle(&method, params.clone()).await? {
-                return Ok(Some(result));
+            match mods
+                .handle(&call.method, &call.params, call.session.as_deref())
+                .await
+            {
+                Ok(Some(result)) => return Ok(Some(result)),
+                Ok(None) => {}
+                // A mod's error keeps its code and data for the caller.
+                Err(e) => {
+                    return Err(match e.downcast::<aura_mods::ModError>() {
+                        Ok(m) => ExtError {
+                            code: m.code,
+                            message: m.message,
+                            data: m.data,
+                        }
+                        .into(),
+                        Err(e) => e,
+                    })
+                }
             }
-            if let Some(result) = watches.handle(&method, params.clone()).await? {
-                return Ok(Some(result));
-            }
-            if let Some(result) = github_methods(github.as_ref(), &method, &params).await? {
-                return Ok(Some(result));
-            }
-            git_methods(&method, params).await
+            git_methods(&call.method, call.params).await
         })
     });
     let server = RpcServer::start_with_notifications(
         manager.clone(),
         &data_dir,
         Some(ext),
-        Some(reviews.events.clone()),
+        Some(notifications.clone()),
     )
     .await?;
     tracing::info!(
@@ -203,7 +224,7 @@ async fn main() -> Result<()> {
 
     let mut rx = server.shutdown.subscribe();
     let _ = rx.recv().await;
-    reviews.shutdown();
+    mods.shutdown().await;
     schedules.shutdown();
     manager.shutdown().await;
     // Only remove daemon.json if it is still ours. A newer daemon may have
@@ -286,44 +307,6 @@ fn init_logging(data_dir: &std::path::Path, foreground: bool) -> Result<()> {
     Ok(())
 }
 
-/// GitHub reads for the new-session dialog and a session's branch status.
-async fn github_methods(
-    gh: &dyn aura_github::Github,
-    method: &str,
-    params: &Value,
-) -> Result<Option<Value>> {
-    Ok(match method {
-        "github.issues" => {
-            let repo = params
-                .get("repo")
-                .and_then(|v| v.as_str())
-                .context("repo is required")?;
-            let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let today = chrono::Local::now().date_naive();
-            Some(serde_json::to_value(
-                aura_github::issues::open_issues(gh, repo, query, today).await?,
-            )?)
-        }
-        "github.branch_pull" => {
-            let str_param = |key: &str| {
-                params
-                    .get(key)
-                    .and_then(|v| v.as_str())
-                    .with_context(|| format!("{key} is required"))
-            };
-            let (repo, head_repo, branch) = (
-                str_param("repo")?,
-                str_param("head_repo")?,
-                str_param("branch")?,
-            );
-            Some(serde_json::to_value(
-                aura_github::branch::branch_pull(gh, repo, head_repo, branch).await?,
-            )?)
-        }
-        _ => None,
-    })
-}
-
 /// Git methods exposed to clients. All take `cwd`.
 async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     use aura_git::ops;
@@ -337,7 +320,7 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     let res = tokio::task::spawn_blocking(move || -> Result<Option<Value>> {
         Ok(match m.as_str() {
             "git.repo_root" => Some(json!(ops::repo_root(&cwd)?)),
-            "git.github_repo" => Some(json!(ops::github_repo(&cwd)?)),
+            "git.remotes" => Some(json!(aura_mods::ops::remotes(&cwd).map_err(|e| anyhow::anyhow!(e))?)),
             "git.status" => Some(serde_json::to_value(ops::status(&cwd)?)?),
             "git.diff" => {
                 let opts = ops::DiffOpts {

@@ -351,7 +351,8 @@ async fn an_orchestrators_review_tools_act_for_it_alone_and_leave_the_users_revi
     let (m, a, _b, plain) = sessions();
     let dir = tempfile::tempdir().unwrap();
     // Stands in for the daemon's review service: says which method reached it.
-    let ext: aura_rpc::server::ExtHandler = Arc::new(|method: String, _params: Value| {
+    let ext: aura_rpc::server::ExtHandler = Arc::new(|call: aura_rpc::server::ExtCall| {
+        let method = call.method;
         Box::pin(async move {
             Ok(
                 (method.starts_with("orchestrator.reviews.") || method.starts_with("reviews."))
@@ -411,7 +412,8 @@ async fn an_orchestrators_schedule_tools_act_for_it_and_the_users_schedule_metho
     let (tx, _rx) = tokio::sync::broadcast::channel(16);
     let schedules = ScheduleService::new(m.clone(), Arc::new(MemoryStore::default()), tx);
     let svc = schedules.clone();
-    let ext: aura_rpc::server::ExtHandler = Arc::new(move |method: String, params: Value| {
+    let ext: aura_rpc::server::ExtHandler = Arc::new(move |call: aura_rpc::server::ExtCall| {
+        let (method, params) = (call.method, call.params);
         let svc = svc.clone();
         Box::pin(async move { svc.handle(&method, params).await })
     });

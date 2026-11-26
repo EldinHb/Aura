@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-mod reviews;
+
 mod schedules;
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -124,16 +124,26 @@ impl Server {
                     "instructions": if self.worker {
                         "Work with your team in Aura: see who is on it, and ask a teammate or the feature owner a question. Answers come back as messages from Aura."
                     } else if self.feature_owner {
-                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them. Manage the user's scheduled tasks, which start a session with a prompt on a schedule."
+                        "Own a feature in Aura: hire specialists as worker sessions, direct and follow them, hold meetings, put the user's decisions to them, and deliver a report. Workers are normal Aura sessions the user can open and message too. Use the tools Aura's mods add (their names start with the mod's id). Manage the user's scheduled tasks, which start a session with a prompt on a schedule."
                     } else {
-                        "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too. Record pull request reviews in Aura's pull request list, where the user edits and posts them. Manage the user's scheduled tasks, which start a session with a prompt on a schedule."
+                        "Start, direct and follow Aura worker sessions. Workers are normal Aura sessions the user can open and message too. Use the tools Aura's mods add (their names start with the mod's id). Manage the user's scheduled tasks, which start a session with a prompt on a schedule."
                     },
                 }))
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(
-                json!({ "tools": if self.worker { worker_tools() } else { tools(self.feature_owner) } }),
-            ),
+            "tools/list" => {
+                if self.worker {
+                    return Ok(json!({ "tools": worker_tools() }));
+                }
+                let mut all = tools(self.feature_owner);
+                // Tools mods offer orchestrators; a daemon without mods offers none.
+                if let (Some(list), Ok(Value::Array(extra))) =
+                    (all.as_array_mut(), self.rpc("mods.tools.list", json!({})).await)
+                {
+                    list.extend(extra);
+                }
+                Ok(json!({ "tools": all }))
+            }
             "tools/call" => {
                 let name = params
                     .get("name")
@@ -174,6 +184,21 @@ impl Server {
         Ok(c)
     }
 
+    /// Whether a mod offers `tool` (Aura's own tools never contain the mod prefix).
+    async fn is_mod_tool(&self, tool: &str) -> bool {
+        if worker_tools().as_array().into_iter().flatten().chain(tools(true).as_array().into_iter().flatten())
+            .any(|t| t.get("name").and_then(Value::as_str) == Some(tool))
+        {
+            return false;
+        }
+        match self.rpc("mods.tools.list", json!({})).await {
+            Ok(Value::Array(list)) => list
+                .iter()
+                .any(|t| t.get("name").and_then(Value::as_str) == Some(tool)),
+            _ => false,
+        }
+    }
+
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         // Above the longest `orchestrator.wait` the daemon allows.
         let timeout = Duration::from_secs(3700);
@@ -197,6 +222,16 @@ impl Server {
     async fn call(&self, tool: &str, a: &Value) -> Result<String> {
         if self.worker {
             return self.call_teammate(tool, a).await;
+        }
+        if self.is_mod_tool(tool).await {
+            let answer = self
+                .rpc("mods.tools.call", json!({ "name": tool, "args": a }))
+                .await?;
+            return Ok(match answer {
+                Value::String(text) => text,
+                Value::Null => "Done.".into(),
+                other => serde_json::to_string_pretty(&other)?,
+            });
         }
         let o = &self.orchestrator;
         match tool {
@@ -334,10 +369,6 @@ impl Server {
                         w.title, w.id
                     ),
                 })
-            }
-            _ if reviews::NAMES.contains(&tool) => {
-                let (method, p) = reviews::request(tool, o, a).expect("a review tool");
-                reviews::reply(tool, a, self.rpc(method, p).await?)
             }
             _ if schedules::NAMES.contains(&tool) => {
                 let (method, p) = schedules::request(tool, o, a).expect("a schedule tool");
@@ -731,7 +762,6 @@ fn session_arg() -> Value {
 fn tools(feature_owner: bool) -> Value {
     let mut tools = orchestrator_tools();
     if let Some(all) = tools.as_array_mut() {
-        all.extend(reviews::tools());
         all.extend(schedules::tools());
     }
     if feature_owner {
@@ -1085,16 +1115,6 @@ mod tests {
                 "interrupt_session",
                 "stop_session",
                 "delete_session",
-                "list_pull_requests",
-                "read_pull_review",
-                "create_review",
-                "update_review",
-                "add_review_comment",
-                "edit_review_comment",
-                "delete_review_comment",
-                "discard_review",
-                "start_pre_review",
-                "hide_pull_request",
                 "list_scheduled_tasks",
                 "read_scheduled_task_history",
                 "create_scheduled_task",
@@ -1107,9 +1127,9 @@ mod tests {
         );
         let owner = tools(true);
         let owner = names(&owner);
-        assert_eq!(&owner[..28], names(&tools(false)).as_slice());
+        assert_eq!(&owner[..18], names(&tools(false)).as_slice());
         assert_eq!(
-            &owner[28..],
+            &owner[18..],
             [
                 "list_specialists",
                 "hire",

@@ -19,10 +19,29 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
-/// Extra method handler registered by the daemon (git, etc.). Return
+/// One call to an [`ExtHandler`].
+#[derive(Debug, Clone)]
+pub struct ExtCall {
+    pub method: String,
+    pub params: Value,
+    /// The session whose tools made the call, when the connection holds a
+    /// session token; None for the user (the app, the CLI).
+    pub session: Option<String>,
+}
+
+/// Extra method handler registered by the daemon (git, mods, etc.). Return
 /// `Ok(None)` when the method is not yours.
-pub type ExtHandler =
-    Arc<dyn Fn(String, Value) -> BoxFuture<'static, Result<Option<Value>>> + Send + Sync>;
+pub type ExtHandler = Arc<dyn Fn(ExtCall) -> BoxFuture<'static, Result<Option<Value>>> + Send + Sync>;
+
+/// An extension's error with a stable string code and optional data, sent to
+/// the client as the error's `data: {code, data}`.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+pub struct ExtError {
+    pub code: String,
+    pub message: String,
+    pub data: Option<Value>,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -152,6 +171,7 @@ fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), Dispat
     let forbidden = |message: String| DispatchError {
         code: ERR_FORBIDDEN,
         message,
+        data: None,
     };
     match caller {
         Caller::User if session_tool => Err(forbidden(format!(
@@ -162,6 +182,8 @@ fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), Dispat
             let acts_for = |key: &str| params.get(key).and_then(Value::as_str) == Some(id.as_str());
             let allowed = match method {
                 "daemon.ping" | "provider.list" | "provider.models" | "orchestrator.projects" => true,
+                // Mods' orchestrator tools act for the calling session, which the host is told.
+                "mods.tools.list" | "mods.tools.call" => true,
                 m if m.starts_with("orchestrator.") => acts_for("orchestrator"),
                 m if m.starts_with("owner.") => acts_for("owner"),
                 m if m.starts_with("team.") => acts_for("worker"),
@@ -261,8 +283,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
             loop {
                 let notification = match rx.recv().await {
                     Ok(value) => value,
+                    // Notifications were dropped: clients refresh what they show.
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        json!({"method":"reviews.changed","params":{}})
+                        json!({"method":"notifications.lagged","params":{}})
                     }
                     Err(_) => break,
                 };
@@ -351,7 +374,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
                 tokio::spawn(async move {
                     let id = req.id.clone();
                     let result = match authorize(&caller, &req.method, &req.params) {
-                        Ok(()) => dispatch(&state, &attached, req).await,
+                        Ok(()) => {
+                            let session = match &caller {
+                                Caller::Session { id, .. } => Some(id.clone()),
+                                Caller::User => None,
+                            };
+                            dispatch(&state, &attached, req, session).await
+                        }
                         Err(e) => Err(e),
                     };
                     if let Some(id) = id {
@@ -367,7 +396,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
                                 error: Some(RpcError {
                                     code: e.code,
                                     message: e.message,
-                                    data: None,
+                                    data: e.data,
                                 }),
                             },
                         };
@@ -402,13 +431,23 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
 struct DispatchError {
     code: i64,
     message: String,
+    data: Option<Value>,
 }
 
 impl From<anyhow::Error> for DispatchError {
     fn from(e: anyhow::Error) -> Self {
+        // An extension's error with a code of its own (a mod's) keeps it, in `data`.
+        if let Some(x) = e.downcast_ref::<ExtError>() {
+            return DispatchError {
+                code: ERR_INTERNAL,
+                message: x.message.clone(),
+                data: Some(json!({"code": x.code, "data": x.data})),
+            };
+        }
         DispatchError {
             code: ERR_INTERNAL,
             message: format!("{e:#}"),
+            data: None,
         }
     }
 }
@@ -417,6 +456,7 @@ fn params<T: serde::de::DeserializeOwned>(v: &Value) -> Result<T, DispatchError>
     serde_json::from_value(v.clone()).map_err(|e| DispatchError {
         code: ERR_PARAMS,
         message: e.to_string(),
+        data: None,
     })
 }
 
@@ -424,6 +464,7 @@ fn ok<T: serde::Serialize>(v: T) -> Result<Value, DispatchError> {
     serde_json::to_value(v).map_err(|e| DispatchError {
         code: ERR_INTERNAL,
         message: e.to_string(),
+        data: None,
     })
 }
 
@@ -436,6 +477,7 @@ async fn dispatch(
     state: &AppState,
     attached: &Arc<parking_lot::Mutex<HashSet<String>>>,
     req: Request,
+    session: Option<String>,
 ) -> Result<Value, DispatchError> {
     let m = &state.manager;
     let p = &req.params;
@@ -1351,13 +1393,19 @@ async fn dispatch(
         }
         other => {
             if let Some(ext) = &state.ext {
-                if let Some(v) = ext(other.to_string(), p.clone()).await? {
+                let call = ExtCall {
+                    method: other.to_string(),
+                    params: p.clone(),
+                    session: session.clone(),
+                };
+                if let Some(v) = ext(call).await? {
                     return Ok(v);
                 }
             }
             Err(DispatchError {
                 code: ERR_METHOD,
                 message: format!("unknown method {other}"),
+                data: None,
             })
         }
     }
