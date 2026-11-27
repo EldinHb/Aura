@@ -174,7 +174,12 @@ async fn main() -> Result<()> {
                 return Ok(Some(result));
             }
             match mods
-                .handle_as(&call.method, &call.params, call.session.as_deref(), call.window)
+                .handle_as(
+                    &call.method,
+                    &call.params,
+                    call.session.as_deref(),
+                    call.window,
+                )
                 .await
             {
                 Ok(Some(result)) => return Ok(Some(result)),
@@ -320,7 +325,9 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     let res = tokio::task::spawn_blocking(move || -> Result<Option<Value>> {
         Ok(match m.as_str() {
             "git.repo_root" => Some(json!(ops::repo_root(&cwd)?)),
-            "git.remotes" => Some(json!(aura_mods::ops::remotes(&cwd).map_err(|e| anyhow::anyhow!(e))?)),
+            "git.remotes" => Some(json!(
+                aura_mods::ops::remotes(&cwd).map_err(|e| anyhow::anyhow!(e))?
+            )),
             "git.status" => Some(serde_json::to_value(ops::status(&cwd)?)?),
             "git.diff" => {
                 let opts = ops::DiffOpts {

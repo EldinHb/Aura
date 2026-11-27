@@ -37,16 +37,23 @@ pub struct ExtCall {
 /// server on this machine. A same-user program can forge it, but an agent
 /// running `aura` cannot: it makes the window the one place that grants.
 pub fn is_app_origin(origin: &str) -> bool {
-    let local_port = |rest: &str| rest.split_once(':').is_some_and(|(host, port)| {
-        matches!(host, "localhost" | "127.0.0.1") && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
-    });
-    matches!(origin, "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost")
-        || origin.strip_prefix("http://").is_some_and(local_port)
+    let local_port = |rest: &str| {
+        rest.split_once(':').is_some_and(|(host, port)| {
+            matches!(host, "localhost" | "127.0.0.1")
+                && !port.is_empty()
+                && port.chars().all(|c| c.is_ascii_digit())
+        })
+    };
+    matches!(
+        origin,
+        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost"
+    ) || origin.strip_prefix("http://").is_some_and(local_port)
 }
 
 /// Extra method handler registered by the daemon (git, mods, etc.). Return
 /// `Ok(None)` when the method is not yours.
-pub type ExtHandler = Arc<dyn Fn(ExtCall) -> BoxFuture<'static, Result<Option<Value>>> + Send + Sync>;
+pub type ExtHandler =
+    Arc<dyn Fn(ExtCall) -> BoxFuture<'static, Result<Option<Value>>> + Send + Sync>;
 
 /// An extension's error with a stable string code and optional data, sent to
 /// the client as the error's `data: {code, data}`.
@@ -1430,10 +1437,24 @@ mod origin_tests {
 
     #[test]
     fn only_the_app_is_the_window() {
-        for o in ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "http://localhost:1420", "http://127.0.0.1:5173"] {
+        for o in [
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://localhost:1420",
+            "http://127.0.0.1:5173",
+        ] {
             assert!(is_app_origin(o), "{o}");
         }
-        for o in ["", "null", "https://evil.example", "http://localhost", "http://localhost:1420.evil.example", "http://localhost.evil:1420", "file://"] {
+        for o in [
+            "",
+            "null",
+            "https://evil.example",
+            "http://localhost",
+            "http://localhost:1420.evil.example",
+            "http://localhost.evil:1420",
+            "file://",
+        ] {
             assert!(!is_app_origin(o), "{o}");
         }
     }

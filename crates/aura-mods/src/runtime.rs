@@ -269,75 +269,80 @@ fn run(
     let mut next_call: u64 = 1;
 
     // Install the bridge, run the prelude, load the module and call activate.
-    let activation = context.with(|ctx| -> Result<rquickjs::Persistent<Promise<'static>>, ModError> {
-        let globals = ctx.globals();
-        let sync_ops = ops.clone();
-        let sync_replies = replies.clone();
-        let sync = Function::new(ctx.clone(), move |op: String, args: String| -> String {
-            let args: Value = serde_json::from_str(&args).unwrap_or(Value::Null);
-            let result = if op == "reply" {
-                match serde_json::from_value::<Reply>(args) {
-                    Ok(r) => {
-                        if let Some(tx) = sync_replies.borrow_mut().remove(&r.id) {
-                            let _ = tx.send(if r.ok {
-                                Ok(r.value)
-                            } else {
-                                Err(r.error.unwrap_or_else(|| ModError::failed("failed")))
-                            });
+    let activation = context.with(
+        |ctx| -> Result<rquickjs::Persistent<Promise<'static>>, ModError> {
+            let globals = ctx.globals();
+            let sync_ops = ops.clone();
+            let sync_replies = replies.clone();
+            let sync = Function::new(ctx.clone(), move |op: String, args: String| -> String {
+                let args: Value = serde_json::from_str(&args).unwrap_or(Value::Null);
+                let result = if op == "reply" {
+                    match serde_json::from_value::<Reply>(args) {
+                        Ok(r) => {
+                            if let Some(tx) = sync_replies.borrow_mut().remove(&r.id) {
+                                let _ = tx.send(if r.ok {
+                                    Ok(r.value)
+                                } else {
+                                    Err(r.error.unwrap_or_else(|| ModError::failed("failed")))
+                                });
+                            }
+                            Ok(Value::Null)
                         }
-                        Ok(Value::Null)
+                        Err(e) => Err(ModError::invalid(format!("bad reply: {e}"))),
                     }
-                    Err(e) => Err(ModError::invalid(format!("bad reply: {e}"))),
+                } else {
+                    sync_ops.sync_op(&op, args)
+                };
+                match result {
+                    Ok(value) => json!({"ok": true, "value": value}).to_string(),
+                    Err(error) => json!({"ok": false, "error": error}).to_string(),
                 }
-            } else {
-                sync_ops.sync_op(&op, args)
-            };
-            match result {
-                Ok(value) => json!({"ok": true, "value": value}).to_string(),
-                Err(error) => json!({"ok": false, "error": error}).to_string(),
+            })
+            .map_err(ModError::failed)?;
+            globals.set("__aura_sync", sync).map_err(ModError::failed)?;
+
+            let async_ops = ops.clone();
+            let async_tx = tx.clone();
+            let handle = tokio.clone();
+            let asynchronous =
+                Function::new(ctx.clone(), move |id: f64, op: String, args: String| {
+                    let args: Value = serde_json::from_str(&args).unwrap_or(Value::Null);
+                    let fut = async_ops.async_op(&op, args);
+                    let tx = async_tx.clone();
+                    handle.spawn(async move {
+                        let result = fut.await;
+                        let _ = tx.send(Msg::Complete {
+                            id: id as u64,
+                            result,
+                        });
+                    });
+                })
+                .map_err(ModError::failed)?;
+            globals
+                .set("__aura_async", asynchronous)
+                .map_err(ModError::failed)?;
+
+            {
+                let _g = busy.enter();
+                ctx.eval::<(), _>(PRELUDE).map_err(|e| exception(&ctx, e))?;
             }
-        })
-        .map_err(ModError::failed)?;
-        globals.set("__aura_sync", sync).map_err(ModError::failed)?;
-
-        let async_ops = ops.clone();
-        let async_tx = tx.clone();
-        let handle = tokio.clone();
-        let asynchronous = Function::new(ctx.clone(), move |id: f64, op: String, args: String| {
-            let args: Value = serde_json::from_str(&args).unwrap_or(Value::Null);
-            let fut = async_ops.async_op(&op, args);
-            let tx = async_tx.clone();
-            handle.spawn(async move {
-                let result = fut.await;
-                let _ = tx.send(Msg::Complete {
-                    id: id as u64,
-                    result,
-                });
-            });
-        })
-        .map_err(ModError::failed)?;
-        globals.set("__aura_async", asynchronous).map_err(ModError::failed)?;
-
-        {
             let _g = busy.enter();
-            ctx.eval::<(), _>(PRELUDE).map_err(|e| exception(&ctx, e))?;
-        }
-        let _g = busy.enter();
-        let module = Module::declare(ctx.clone(), format!("mod:{id}"), source)
-            .map_err(|e| exception(&ctx, e))?;
-        let (module, evaluated) = module.eval().map_err(|e| exception(&ctx, e))?;
-        // Top-level await is not used by bundled mods; run what is queued.
-        match evaluated.finish::<()>() {
-            Ok(()) | Err(rquickjs::Error::WouldBlock) => {}
-            Err(e) => return Err(exception(&ctx, e)),
-        }
-        let default: rquickjs::Value = module.get("default").map_err(|e| exception(&ctx, e))?;
-        let activate: Function = globals
-            .get("__aura_activate")
-            .map_err(|e| exception(&ctx, e))?;
-        let promise: Promise = activate.call((default,)).map_err(|e| exception(&ctx, e))?;
-        Ok(rquickjs::Persistent::save(&ctx, promise))
-    });
+            let module = Module::declare(ctx.clone(), format!("mod:{id}"), source)
+                .map_err(|e| exception(&ctx, e))?;
+            let (module, evaluated) = module.eval().map_err(|e| exception(&ctx, e))?;
+            // Top-level await is not used by bundled mods; run what is queued.
+            match evaluated.finish::<()>() {
+                Ok(()) | Err(rquickjs::Error::WouldBlock) => {}
+                Err(e) => return Err(exception(&ctx, e)),
+            }
+            let default: rquickjs::Value = module.get("default").map_err(|e| exception(&ctx, e))?;
+            let activate: Function = globals
+                .get("__aura_activate")
+                .map_err(|e| exception(&ctx, e))?;
+            let promise: Promise = activate.call((default,)).map_err(|e| exception(&ctx, e))?;
+            Ok(rquickjs::Persistent::save(&ctx, promise))
+        },
+    );
     let activation = match activation {
         Ok(p) => Some(p),
         Err(e) => return Err(fail(&mut ready, e)),
@@ -356,21 +361,23 @@ fn run(
             }
         })
     };
-    let drain = || {
-        loop {
-            let _g = busy.enter();
-            match rt.execute_pending_job() {
-                Ok(true) => continue,
-                Ok(false) => break,
-                Err(e) => {
-                    let msg = e.0.with(|ctx| exception(&ctx, rquickjs::Error::Exception));
-                    tracing::warn!(mod_id = %id, "uncaught error in a promise job: {}", msg.message);
-                }
+    let drain = || loop {
+        let _g = busy.enter();
+        match rt.execute_pending_job() {
+            Ok(true) => continue,
+            Ok(false) => break,
+            Err(e) => {
+                let msg = e.0.with(|ctx| exception(&ctx, rquickjs::Error::Exception));
+                tracing::warn!(mod_id = %id, "uncaught error in a promise job: {}", msg.message);
             }
         }
     };
 
-    let mut stopping: Option<(oneshot::Sender<()>, Instant, rquickjs::Persistent<Promise<'static>>)> = None;
+    let mut stopping: Option<(
+        oneshot::Sender<()>,
+        Instant,
+        rquickjs::Persistent<Promise<'static>>,
+    )> = None;
     loop {
         drain();
 
