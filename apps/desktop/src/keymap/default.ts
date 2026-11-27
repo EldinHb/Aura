@@ -1,4 +1,19 @@
 import type { Binding } from "../lib/keymap";
+import { isMac } from "../lib/platform";
+
+/**
+ * The chord that goes to workspace `n`. mod+digit selects sessions and alt+digit
+ * tabs on every platform, so macOS uses ⌃ (not ⌘ there) and Windows / Linux, where
+ * mod is Ctrl, alt+shift, matched by the physical digit key (see chordFromEvent).
+ */
+export function workspaceDigitKeys(n: number, mac: boolean): string {
+  return `${mac ? "ctrl" : "alt+shift"}+${n}`;
+}
+
+/** Workspace 1–9 by number. Not in dialogs or focused widgets, which keep their own alt+digit keys. */
+export function workspaceDigitBindings(mac: boolean): Binding[] {
+  return [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ keys: workspaceDigitKeys(n, mac), command: "workspace.go-nth", arg: n, when: "!dialogOpen,!widgetFocused" }));
+}
 
 /** Default bindings. `mod` = ⌘ on macOS, Ctrl elsewhere. `leader` from settings (Ctrl+Space). */
 export const defaultBindings: Binding[] = [
@@ -30,6 +45,9 @@ export const defaultBindings: Binding[] = [
   { keys: "mod+7", command: "session.select-nth", arg: 7 },
   { keys: "mod+8", command: "session.select-nth", arg: 8 },
   { keys: "mod+9", command: "session.select-nth", arg: 9 },
+  // workspaces: ⌘⇧K opens the list; the first nine by number, see workspaceDigitKeys
+  { keys: "mod+shift+k", command: "workspace.switch" },
+  ...workspaceDigitBindings(isMac),
   { keys: "mod+alt+up", command: "session.move-up" },
   { keys: "mod+alt+down", command: "session.move-down" },
   { keys: "mod+y", command: "approval.accept-oldest" },
@@ -77,6 +95,12 @@ export const defaultBindings: Binding[] = [
   { keys: "leader s x", command: "session.restart", label: "Restart terminal" },
   { keys: "leader s c", command: "schedules.open", label: "Scheduled tasks" },
   { keys: "leader s s", command: "sidebar.tab.next", label: "Sessions / Scheduled tab" },
+  { keys: "leader s v", command: "session.move-workspace", label: "Move to workspace" },
+  { keys: "leader k k", command: "workspace.switch", label: "Switch" },
+  { keys: "leader k n", command: "workspace.new", label: "New" },
+  { keys: "leader k r", command: "workspace.rename", label: "Rename" },
+  { keys: "leader k d", command: "workspace.delete", label: "Delete" },
+  { keys: "leader k c", command: "workers.cleanup", label: "Clean up workers" },
   { keys: "leader m", command: "session.pick-model", label: "Model…" },
   { keys: "leader e", command: "session.pick-effort", label: "Effort…" },
   { keys: "leader p", command: "session.pick-permission", label: "Permission mode…" },
@@ -87,6 +111,7 @@ export const defaultBindings: Binding[] = [
   { keys: "leader o c", command: "orchestrator.chat", label: "Chat" },
   { keys: "leader o w", command: "orchestrator.workers", label: "Workers" },
   { keys: "leader o t", command: "orchestrator.team", label: "Team" },
+  { keys: "leader o x", command: "workers.cleanup-orchestrator", label: "Clean up workers" },
   { keys: "leader g d", command: "git.diff", label: "Diff" },
   { keys: "leader g c", command: "git.commit", label: "Commit…" },
   { keys: "leader g p", command: "git.push", label: "Push" },
@@ -140,6 +165,7 @@ export const groupLabels: Record<string, string> = {
   "leader s": "Session",
   "leader g": "Git",
   "leader o": "Orchestrator",
+  "leader k": "Workspace",
   "g": "Go",
   "d": "Delete",
 };

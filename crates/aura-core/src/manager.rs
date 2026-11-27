@@ -21,6 +21,7 @@ mod orchestrator;
 mod specialists;
 mod suggest;
 mod team;
+mod workspaces;
 pub use features::{AskSpec, CheckpointOutcome, HireSpec, ReportSpec};
 pub use orchestrator::{
     agent_line, describe_projects, describe_workers, parse_agent, report_message, Project,
@@ -28,6 +29,7 @@ pub use orchestrator::{
 };
 pub use suggest::SuggestionRun;
 pub use team::MeetingSpec;
+pub use workspaces::{DEFAULT_WORKSPACE_NAME, LAST_ACTIVE_WORKSPACE_KEY, WORKSPACE_NAME_MAX};
 
 /// Git worktree creation is provided by `aura-git`; the manager only needs this.
 pub trait WorktreeBackend: Send + Sync {
@@ -80,6 +82,17 @@ struct Sourced {
     event: Event,
 }
 
+/// See [`Manager::on_scheduled_task_changed`].
+pub type ScheduledTaskListener = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// What deleting a session and the sessions under it did.
+struct TreeDeletion {
+    deleted: Vec<SessionId>,
+    failed: Vec<(Session, anyhow::Error)>,
+    /// Workers under a session that failed, kept with it.
+    kept: Vec<Session>,
+}
+
 /// A session was created but its agent did not start. The session is kept,
 /// in the error state; `session_id` says which. Reads as the cause.
 #[derive(Debug)]
@@ -118,6 +131,16 @@ struct Inner {
     gates: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
     /// Serialises read-modify-write updates of the group registry.
     groups: Mutex<()>,
+    /// Serialises changes to the workspace registry, and the placing of
+    /// sessions in workspaces (see `workspaces`). Taken before `sessions`.
+    workspaces: Mutex<()>,
+    /// Serialises read-modify-write updates of scheduled task records: the
+    /// scheduler's, and a workspace's tasks moving when it is deleted.
+    scheduled_tasks: Mutex<()>,
+    /// Told the id of a scheduled task the manager changed (moved out of a
+    /// deleted workspace), so the scheduler announces it; see
+    /// [`Manager::on_scheduled_task_changed`].
+    scheduled_task_changed: Mutex<Option<ScheduledTaskListener>>,
     /// Serialises read-modify-write updates of feature records.
     features: Mutex<()>,
     /// Serialises changes to the stored specialists.
@@ -160,6 +183,9 @@ impl Manager {
             applying: Mutex::new(()),
             gates: Mutex::new(HashMap::new()),
             groups: Mutex::new(()),
+            workspaces: Mutex::new(()),
+            scheduled_tasks: Mutex::new(()),
+            scheduled_task_changed: Mutex::new(None),
             features: Mutex::new(()),
             specialists: Mutex::new(()),
             suggestions: Mutex::new(()),
@@ -174,6 +200,26 @@ impl Manager {
     }
 
     // ---------------------------------------------------------------- queries
+
+    /// Held while a scheduled task record is read, changed and saved; see
+    /// [`crate::ScheduleService`].
+    pub(crate) fn lock_scheduled_tasks(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.inner.scheduled_tasks.lock()
+    }
+
+    /// Call `f` with the id of each scheduled task the manager itself
+    /// changes. The scheduler sets it, to announce those changes as it does
+    /// its own. `f` must not block or take the manager's locks.
+    pub fn on_scheduled_task_changed(&self, f: ScheduledTaskListener) {
+        *self.inner.scheduled_task_changed.lock() = Some(f);
+    }
+
+    pub(crate) fn scheduled_task_changed(&self, id: &str) {
+        let f = self.inner.scheduled_task_changed.lock().clone();
+        if let Some(f) = f {
+            f(id);
+        }
+    }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.inner.events.subscribe()
@@ -516,6 +562,11 @@ impl Manager {
                 self.remember_group(&s);
             }
         }
+        // Workers of scheduled runs from before they carried it.
+        self.backfill_scheduled_runs();
+        // Sessions and scheduled tasks from before workspaces go in the default one.
+        self.backfill_workspaces()
+            .context("put sessions and scheduled tasks in a workspace")?;
         // The user's answers that went with the old daemon before their owner took them.
         self.requeue_undelivered();
         Ok(n)
@@ -568,11 +619,20 @@ impl Manager {
                 bail!("session {o} is not an orchestrator");
             }
         }
+        self.check_requested_workspace(&opts)?;
         let provider = self.provider(opts.provider)?;
         if opts.provider == ProviderKind::Acp && opts.agent.as_deref().unwrap_or("").is_empty() {
             bail!("ACP sessions need an agent (e.g. `gemini`)");
         }
         let mut session = Session::new(&opts);
+        // A worker of a scheduled run is part of that run, however deep.
+        if let Some(o) = opts
+            .orchestrator_id
+            .as_deref()
+            .and_then(|o| self.get_session(o).ok())
+        {
+            session.scheduled_run = o.scheduled_run.or(o.scheduled_task_id);
+        }
         if session.orchestrator && session.mode == SessionMode::Terminal {
             bail!(
                 "an orchestrator runs in the structured view, where its workers' reports reach it"
@@ -621,15 +681,40 @@ impl Manager {
             }
             session.command = Some(argv);
         }
-        self.inner.store.upsert_session(&session)?;
         // Held from before anyone can see the session until its first agent
         // is in place: a message meanwhile waits for it, and goes to it,
         // rather than start a second agent beside it.
         let gate = self.gate(&session.id).await;
-        self.inner
-            .sessions
-            .lock()
-            .insert(session.id.clone(), session.clone());
+        // Placed and stored under the workspace lock, so it never lands in a
+        // workspace deleted meanwhile, and a worker never misses its
+        // orchestrator's move to another workspace.
+        let stored = {
+            let _workspaces = self.inner.workspaces.lock();
+            // A scheduled run goes where its task is. The task lock is held
+            // until the run is stored and in the list, so the task cannot
+            // move to another workspace in between (lock order: workspaces,
+            // scheduled tasks, sessions).
+            let _tasks = session
+                .scheduled_task_id
+                .is_some()
+                .then(|| self.inner.scheduled_tasks.lock());
+            self.place_new_session_locked(&session)
+                .and_then(|ws| {
+                    session.workspace = ws;
+                    self.inner.store.upsert_session(&session)
+                })
+                .map(|()| {
+                    self.inner
+                        .sessions
+                        .lock()
+                        .insert(session.id.clone(), session.clone());
+                })
+        };
+        if let Err(e) = stored {
+            drop(gate);
+            self.inner.gates.lock().remove(&session.id);
+            return Err(e);
+        }
         // Its prompt carries the goal, so the record is there before it starts.
         if session.feature_owner {
             let feature = crate::features::Feature::new(
@@ -713,6 +798,8 @@ impl Manager {
                     cwd: s.cwd.clone(),
                     title: Some(format!("{} (fork)", s.title)),
                     group: s.group.clone(),
+                    // A fork stays in its source's workspace.
+                    workspace: Some(s.workspace.clone()),
                     mode: Some(SessionMode::Structured),
                     command: None,
                     model: s.model.clone(),
@@ -1083,8 +1170,42 @@ impl Manager {
             }
             s.scheduled_task_id = Some(task_id.to_string());
             s.scheduled_task_name = Some(task_name.to_string());
+            s.scheduled_run = Some(task_id.to_string());
             true
         })
+    }
+
+    /// Mark every session whose orchestrator chain reaches a scheduled run
+    /// (the run itself included) as part of it: [`Session::scheduled_run`],
+    /// for sessions from before it was set when they started. One whose
+    /// chain was already broken (its run deleted) cannot be told. Not
+    /// activity; a failure to store is logged and the next change stores it.
+    fn backfill_scheduled_runs(&self) {
+        let sessions = self.list_sessions();
+        let by_id: HashMap<&str, &Session> = sessions.iter().map(|s| (s.id.as_str(), s)).collect();
+        for s in sessions.iter().filter(|s| s.scheduled_run.is_none()) {
+            let mut seen = HashSet::new();
+            let mut at = Some(s);
+            let mut run = None;
+            while let Some(c) = at.filter(|c| seen.insert(c.id.as_str())) {
+                if let Some(t) = c.scheduled_run.as_ref().or(c.scheduled_task_id.as_ref()) {
+                    run = Some(t.clone());
+                    break;
+                }
+                at = c
+                    .orchestrator_id
+                    .as_deref()
+                    .and_then(|o| by_id.get(o).copied());
+            }
+            if let Some(run) = run {
+                if let Err(e) = self.change_session(&s.id, false, |s| {
+                    s.scheduled_run = Some(run);
+                    true
+                }) {
+                    tracing::warn!("mark session {} as part of a scheduled run: {e:#}", s.id);
+                }
+            }
+        }
     }
 
     /// Stop the process(es) behind a session but keep it (resumable).
@@ -1170,7 +1291,70 @@ impl Manager {
     /// workers stay with it.
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> Result<()> {
         self.get_session(id)?;
-        let mut deleted: HashSet<SessionId> = HashSet::new();
+        let TreeDeletion { failed, kept, .. } = self.delete_tree(id, remove_worktree).await;
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let mut msg = format!(
+            "could not delete {}",
+            failed
+                .iter()
+                .map(|(s, e)| format!("{} ({}): {e:#}", s.title, s.id))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        if !kept.is_empty() {
+            msg.push_str(&format!(
+                ". The workers under {0} are kept with {0}: {1}",
+                if failed.len() == 1 { "it" } else { "them" },
+                kept.iter()
+                    .map(|s| format!("{} ({})", s.title, s.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        bail!(msg)
+    }
+
+    /// Delete each of `ids` as [`Manager::delete`] does, workers and all, and
+    /// say per session what happened. One that cannot be deleted does not
+    /// stop the rest; one already deleted with an earlier one's workers is
+    /// skipped, not counted as failed. `remove_worktree` applies to the
+    /// sessions named, not to the workers that go with them.
+    pub async fn delete_many(&self, ids: &[String], remove_worktree: bool) -> BulkDeleteResult {
+        let mut deleted: Vec<SessionId> = vec![];
+        let mut failed: Vec<BulkDeleteFailure> = vec![];
+        let mut done: HashSet<&str> = HashSet::new();
+        for id in ids {
+            if !done.insert(id) || deleted.contains(id) {
+                continue;
+            }
+            if self.get_session(id).is_err() {
+                failed.push(BulkDeleteFailure {
+                    id: id.clone(),
+                    error: format!("unknown session {id}"),
+                });
+                continue;
+            }
+            let tree = self.delete_tree(id, remove_worktree).await;
+            deleted.extend(tree.deleted);
+            for (s, e) in tree.failed {
+                failed.retain(|f| f.id != s.id);
+                failed.push(BulkDeleteFailure {
+                    id: s.id,
+                    error: format!("{e:#}"),
+                });
+            }
+        }
+        // One that failed under an earlier session and was named again later
+        // may have gone the second time.
+        failed.retain(|f| !deleted.contains(&f.id));
+        BulkDeleteResult { deleted, failed }
+    }
+
+    /// Delete `id` and every session under it; see [`Manager::delete`].
+    async fn delete_tree(&self, id: &str, remove_worktree: bool) -> TreeDeletion {
+        let mut deleted: Vec<SessionId> = vec![];
         let mut failed: Vec<(Session, anyhow::Error)> = vec![];
         // Workers under a session that failed, left attached to it.
         let mut kept: Vec<Session> = vec![];
@@ -1191,9 +1375,7 @@ impl Manager {
                     continue;
                 }
                 match self.remove_session(&s, remove_worktree && s.id == id).await {
-                    Ok(true) => {
-                        deleted.insert(s.id);
-                    }
+                    Ok(true) => deleted.push(s.id),
                     Ok(false) => {}
                     Err(e) => failed.push((s, e)),
                 }
@@ -1216,9 +1398,6 @@ impl Manager {
                 queue.extend(self.with_workers(&s.id));
             }
         }
-        if failed.is_empty() {
-            return Ok(());
-        }
         for (s, _) in &failed {
             if s.orchestrator_id
                 .as_ref()
@@ -1227,25 +1406,11 @@ impl Manager {
                 let _ = self.update_session(&s.id, |s| s.orchestrator_id = None);
             }
         }
-        let mut msg = format!(
-            "could not delete {}",
-            failed
-                .iter()
-                .map(|(s, e)| format!("{} ({}): {e:#}", s.title, s.id))
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
-        if !kept.is_empty() {
-            msg.push_str(&format!(
-                ". The workers under {0} are kept with {0}: {1}",
-                if failed.len() == 1 { "it" } else { "them" },
-                kept.iter()
-                    .map(|s| format!("{} ({})", s.title, s.id))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        TreeDeletion {
+            deleted,
+            failed,
+            kept,
         }
-        bail!(msg)
     }
 
     /// Delete one session. False when it was already gone.
@@ -1589,28 +1754,66 @@ impl Manager {
     /// lock is held until the change is stored and broadcast, so two changes
     /// at once (an RPC and the event loop) are stored and announced in the
     /// order they were made, and neither overwrites the other with a stale copy.
+    ///
+    /// The live session changes even when the store fails, and the change is
+    /// announced; the error is returned. What the agent and the daemon
+    /// learned (a native id, a status, usage) must reach the live session
+    /// whatever the disk does, and the next change that is stored carries it.
     fn change_session(
         &self,
         id: &str,
         activity: bool,
         f: impl FnOnce(&mut Session) -> bool,
     ) -> Result<Session> {
+        self.apply_change(id, activity, false, f)
+    }
+
+    /// [`Manager::change_session`] for a change that is the user's decision
+    /// rather than a fact (a session moving to another workspace): stored
+    /// first, and not made at all when the store fails, so a retry sees
+    /// what is stored.
+    fn change_session_stored(
+        &self,
+        id: &str,
+        activity: bool,
+        f: impl FnOnce(&mut Session) -> bool,
+    ) -> Result<Session> {
+        self.apply_change(id, activity, true, f)
+    }
+
+    fn apply_change(
+        &self,
+        id: &str,
+        activity: bool,
+        stored_first: bool,
+        f: impl FnOnce(&mut Session) -> bool,
+    ) -> Result<Session> {
         let mut sessions = self.inner.sessions.lock();
         let s = sessions
             .get_mut(id)
             .ok_or_else(|| anyhow!("unknown session {id}"))?;
-        if !f(s) {
-            return Ok(s.clone());
+        let mut updated = s.clone();
+        if !f(&mut updated) {
+            // Nothing to store; what `f` touched anyway is kept.
+            *s = updated.clone();
+            return Ok(updated);
         }
         if activity {
-            s.last_activity = crate::now();
+            updated.last_activity = crate::now();
         }
-        let updated = s.clone();
-        self.inner.store.upsert_session(&updated)?;
+        let stored = self.inner.store.upsert_session(&updated);
+        match &stored {
+            Err(_) if stored_first => return stored.map(|()| updated),
+            Err(e) => {
+                tracing::warn!("store session {id}: {e:#}; it is stored with its next change")
+            }
+            Ok(()) => {}
+        }
+        *s = updated.clone();
         self.broadcast(Event::SessionUpdated {
             session: updated.clone(),
         });
-        Ok(updated)
+        stored.map(|()| updated)
     }
 
     fn spawn_event_loop(&self, mut rx: mpsc::UnboundedReceiver<Sourced>) {

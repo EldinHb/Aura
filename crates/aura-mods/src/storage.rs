@@ -148,13 +148,22 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(aura_core::MemoryStore::default());
         let r = Records::new(store.clone());
         r.put("mod:a:kv", "x", &json!(1)).unwrap();
-        r.set_field("mod:a:sessions", "s1", "links", Some(json!(["u"]))).unwrap();
+        r.set_field("mod:a:sessions", "s1", "links", Some(json!(["u"])))
+            .unwrap();
         // A fresh view of the same store sees what was written.
         let again = Records::new(store);
         assert_eq!(again.get("mod:a:kv", "x").unwrap(), Some(json!(1)));
-        assert_eq!(again.get_field("mod:a:sessions", "s1", "links").unwrap(), Some(json!(["u"])));
-        again.set_field("mod:a:sessions", "s1", "links", None).unwrap();
-        assert!(again.all("mod:a:sessions").unwrap().is_empty(), "an emptied document is deleted");
+        assert_eq!(
+            again.get_field("mod:a:sessions", "s1", "links").unwrap(),
+            Some(json!(["u"]))
+        );
+        again
+            .set_field("mod:a:sessions", "s1", "links", None)
+            .unwrap();
+        assert!(
+            again.all("mod:a:sessions").unwrap().is_empty(),
+            "an emptied document is deleted"
+        );
         again.clear("mod:a:kv").unwrap();
         assert_eq!(again.get("mod:a:kv", "x").unwrap(), None);
     }

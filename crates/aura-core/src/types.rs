@@ -129,6 +129,11 @@ pub struct Session {
     pub worktree: Option<WorktreeInfo>,
     pub title: String,
     pub group: Option<String>,
+    /// The id of the [`Workspace`] the session is in; every session is in
+    /// exactly one. Sessions stored before workspaces read as empty and are
+    /// put in the default workspace when the daemon loads them.
+    #[serde(default)]
+    pub workspace: String,
     pub status: SessionStatus,
     pub mode: SessionMode,
     pub model: Option<String>,
@@ -188,6 +193,15 @@ pub struct Session {
     /// That task's name when it started the session, for labels.
     #[serde(default)]
     pub scheduled_task_name: Option<String>,
+    /// The scheduled task whose run this session is part of: set on the run
+    /// itself (with `scheduled_task_id`) and on every worker under it, at any
+    /// depth, when they start. Kept when the run's orchestrator is deleted,
+    /// so a surviving worker is still known as part of a scheduled run.
+    /// Unlike `scheduled_task_id`, it does not make the session one of the
+    /// task's runs (its history, its overlap check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scheduled_run: Option<String>,
     /// The complete system prompt Aura hands the agent when it starts: global,
     /// per-agent and per-session prompts with their placeholders filled in.
     /// Set by the manager just before `Provider::start`; never stored or sent.
@@ -207,6 +221,37 @@ pub struct McpServer {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+}
+
+/// A named container the user works in. Every session is in exactly one
+/// (see [`Session::workspace`]); the app shows one workspace at a time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Workspace {
+    pub id: String,
+    /// Unique, ignoring case; trimmed, 1 to 40 characters.
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    /// Order in the app's workspace list, lowest first.
+    pub position: u32,
+}
+
+/// What `Manager::delete_many` did, per session.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BulkDeleteResult {
+    /// Every session deleted: those asked for and the workers that went with them.
+    pub deleted: Vec<SessionId>,
+    /// The sessions that could not be deleted, with why. Workers under one
+    /// that failed are kept with it, and are in neither list.
+    pub failed: Vec<BulkDeleteFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BulkDeleteFailure {
+    pub id: SessionId,
+    pub error: String,
 }
 
 /// A session group the user created. Kept after its last session is deleted,
@@ -606,6 +651,10 @@ pub struct CreateSessionOpts {
     pub cwd: String,
     pub title: Option<String>,
     pub group: Option<String>,
+    /// The workspace to create the session in. None (or empty) puts it in the
+    /// workspace the user was last active in. A worker always goes into its
+    /// orchestrator's workspace, whatever this says.
+    pub workspace: Option<String>,
     /// Structured (default for AI providers) or Terminal.
     pub mode: Option<SessionMode>,
     /// argv for terminal sessions. Defaults to the user's shell.
@@ -670,6 +719,7 @@ impl Session {
             worktree: None,
             title,
             group: opts.group.clone(),
+            workspace: opts.workspace.clone().unwrap_or_default(),
             status: SessionStatus::Idle,
             mode,
             model: opts.model.clone(),
@@ -695,6 +745,7 @@ impl Session {
             attention: None,
             scheduled_task_id: opts.scheduled_task.as_ref().map(|(id, _)| id.clone()),
             scheduled_task_name: opts.scheduled_task.as_ref().map(|(_, name)| name.clone()),
+            scheduled_run: opts.scheduled_task.as_ref().map(|(id, _)| id.clone()),
             instructions: None,
             mcp_servers: vec![],
         }

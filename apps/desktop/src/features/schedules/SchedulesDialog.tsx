@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { ModalC } from "../../components/ModalC";
-import { useStore } from "../../state/store";
+import { activeWorkspaceId, useStore } from "../../state/store";
 import { useGroups } from "../../state/groups";
 import { providerChoices } from "../../lib/acp";
 import { exactTime } from "../../lib/time";
@@ -102,10 +102,13 @@ function TaskEditor({ task, onSaved }: { task: ScheduledTask | null; onSaved: (t
   const settings = useStore((s) => s.settings);
   const sessionsById = useStore((s) => s.sessions);
   const toast = useStore((s) => s.toast);
+  const workspaces = useStore((s) => s.workspaces);
+  // A new task's runs go into the workspace the sidebar shows.
+  const activeWorkspace = useStore((s) => activeWorkspaceId(s));
   const agents = useMemo(() => providerChoices(providers).filter((c) => c.kind !== "terminal"), [providers]);
   const agentOf = (key: string) => agents.find((c) => c.key === key)?.agent ?? key;
   const defaultAgent = agents.find((c) => c.key === settings.defaultProvider) ?? agents[0];
-  const [draft, setDraft] = useState<TaskDraft>(() => task ? draftOfTask(task) : newDraft(defaultAgent ? agentOf(defaultAgent.key) : "", settings.defaultCwd));
+  const [draft, setDraft] = useState<TaskDraft>(() => task ? draftOfTask(task) : newDraft(defaultAgent ? agentOf(defaultAgent.key) : "", settings.defaultCwd, activeWorkspace ?? ""));
   const saved = useMemo(() => (task ? JSON.stringify(inputOf(draftOfTask(task))) : null), [task]);
   const dirty = !task || JSON.stringify(inputOf(draft)) !== saved;
   const [busy, setBusy] = useState(false);
@@ -231,6 +234,15 @@ function TaskEditor({ task, onSaved }: { task: ScheduledTask | null; onSaved: (t
           <datalist id="aura-groups-schedule">{groups.map((g) => <option key={g} value={g} />)}</datalist>
         </div>
       </div>
+      {workspaces.length > 0 && (
+        <div className="field">
+          <label htmlFor="schedule-workspace">Workspace</label>
+          <select id="schedule-workspace" value={draft.workspace} onChange={(e) => set("workspace", e.target.value)}>
+            {!workspaces.some((w) => w.id === draft.workspace) && <option value={draft.workspace}>Unknown workspace</option>}
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </div>
+      )}
       <div className="field">
         <label htmlFor="schedule-prompt">Prompt</label>
         <textarea id="schedule-prompt" rows={5} value={draft.prompt} onChange={(e) => set("prompt", e.target.value)} placeholder="The first message of every session this task starts: a complete brief." />

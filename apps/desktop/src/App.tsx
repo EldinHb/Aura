@@ -10,7 +10,7 @@ import type { Tab } from "./state/tabs";
 import { slots } from "./mods/registry";
 import "./mods/mods.css";
 import { useEffect } from "react";
-import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
+import { useStore, selectSelected } from "./state/store";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
 import { discoverDaemon, isTauri, type ConnInfo } from "./lib/connection";
 import { DaemonLink, connectWindow } from "./lib/daemonLink";
@@ -29,12 +29,12 @@ import { Inspector } from "./views/Inspector";
 import { OrchestratorTabs, WorkerThreads } from "./views/WorkerThreads";
 import { TeamView } from "./views/TeamView";
 import { useWorkerThreads } from "./state/workerThreads";
-import { setFeatures, setRoleSuggestions } from "./state/features";
 import { Overlays } from "./components/Overlays";
 import { isMac } from "./lib/platform";
 import { desktopNotify } from "./lib/notify";
 import clsx from "clsx";
 import type { Event } from "./gen";
+import { syncWithDaemon } from "./state/daemonSync";
 
 const params = new URLSearchParams(location.search);
 const windowMode = params.get("window"); // "session" for a detached single-session window
@@ -99,28 +99,11 @@ export default function App() {
     const link = new DaemonLink<RpcClient>({
       makeClient: (info) => new RpcClient(info.port, info.token),
       // Subscribes and loads on the new client; it becomes the window's in
-      // `commit`, once this succeeded.
+      // `commit`, once this succeeded. Events, the connection state and a
+      // refresh on every reconnect are state/daemonSync.ts's.
       attach: async (client) => {
-        const refresh = async () => {
-          const [providers, sessions, info] = await Promise.all([client.providers(), client.sessions(), client.daemonInfo()]);
-          st().setProviders(providers);
-          st().setSessions(sessions);
-          useStore.setState({ daemonVersion: info.version });
-          // A daemon from before feature owners has none to list.
-          client.features().then(setFeatures, () => {});
-          client.roleSuggestions().then(setRoleSuggestions, () => {});
-          if (initialSession && sessions.some((s) => s.id === initialSession)) st().select(initialSession);
-          else if (!st().selectedId && !st().modView && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
-        };
-        await refresh();
-        const offEvent = client.onEvent((ev: Event) => {
-          st().applyEvent(ev);
-          notifyIfNeeded(ev);
-        });
-        const offState = client.onState((s) => {
-          st().setConnection(s);
-          if (s === "open") void refresh();
-        });
+        const offSync = syncWithDaemon(client, { initialSession, selectFirst: windowMode !== "session", onEvent: (ev) => void notifyIfNeeded(ev) });
+        await offSync.loaded;
         // Provider CLIs are upgraded outside Aura, so re-read them whenever the
         // window comes back rather than trusting what we saw at connect. Only
         // the provider list — a full refresh would re-apply the initial session
@@ -133,8 +116,7 @@ export default function App() {
         };
         window.addEventListener("focus", onWindowFocus);
         return () => {
-          offEvent();
-          offState();
+          offSync();
           window.removeEventListener("focus", onWindowFocus);
         };
       },

@@ -20,6 +20,8 @@ import { SearchDialog } from "./dialogs/SearchDialog";
 import { InboxDialog } from "./dialogs/InboxDialog";
 import { SettingsDialog } from "./dialogs/SettingsDialog";
 import { GitCleanupDialog } from "./dialogs/GitCleanupDialog";
+import { WorkspaceDeleteDialog, WorkspaceEditDialog, WorkspaceGatherDialog, WorkspaceMoveDialog } from "./dialogs/WorkspaceDialogs";
+import { WorkersCleanupDialog } from "./dialogs/WorkersCleanupDialog";
 import { StepsDialog } from "../views/transcript/Steps";
 import { ImageDialog } from "../views/ImageThumbs";
 import { getDialog, onDialogsChanged } from "./dialogRegistry";
@@ -36,7 +38,17 @@ function CurrentDialog() {
     case "help":
       return <HelpOverlay />;
     case "confirm":
-      return <ConfirmDialog title={dialog.title} message={dialog.message} onConfirm={dialog.onConfirm} danger={dialog.danger} />;
+      return <ConfirmDialog title={dialog.title} message={dialog.message} onConfirm={dialog.onConfirm} danger={dialog.danger} confirmLabel={dialog.confirmLabel} focusCancel={dialog.focusCancel} />;
+    case "workspace-edit":
+      return <WorkspaceEditDialog key={dialog.id ?? "new"} id={dialog.id} moveSessionId={dialog.moveSessionId} />;
+    case "workspace-delete":
+      return <WorkspaceDeleteDialog key={dialog.id} id={dialog.id} />;
+    case "workspace-move":
+      return <WorkspaceMoveDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
+    case "workspace-gather":
+      return <WorkspaceGatherDialog />;
+    case "workers-cleanup":
+      return <WorkersCleanupDialog key={`${dialog.orchestratorId ?? ""}-${dialog.scope ?? ""}`} orchestratorId={dialog.orchestratorId} scope={dialog.scope} />;
     case "rename":
       return <RenameDialog sessionId={dialog.sessionId} />;
     case "system-prompt":

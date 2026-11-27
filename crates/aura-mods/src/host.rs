@@ -253,25 +253,45 @@ impl ModHost {
 
             // Dependencies run first; a cycle or a missing one fails this mod.
             if chain.contains(&id.to_string()) {
-                return Err(fail(self, ModError::invalid(format!("dependency cycle: {} → {id}", chain.join(" → ")))));
+                return Err(fail(
+                    self,
+                    ModError::invalid(format!("dependency cycle: {} → {id}", chain.join(" → "))),
+                ));
             }
             chain.push(id.to_string());
             for (dep, req) in &manifest.depends_on {
-                let version = self.0.mods.read().get(dep).map(|d| d.manifest.version.clone());
+                let version = self
+                    .0
+                    .mods
+                    .read()
+                    .get(dep)
+                    .map(|d| d.manifest.version.clone());
                 let Some(version) = version else {
-                    return Err(fail(self, ModError::unavailable(format!("needs mod {dep}, which is not installed"))));
+                    return Err(fail(
+                        self,
+                        ModError::unavailable(format!("needs mod {dep}, which is not installed")),
+                    ));
                 };
                 let fits = semver::VersionReq::parse(req)
                     .ok()
                     .zip(semver::Version::parse(&version).ok())
                     .is_some_and(|(r, v)| r.matches(&v));
                 if !fits {
-                    return Err(fail(self, ModError::unavailable(format!("needs {dep} {req}, found {version}"))));
+                    return Err(fail(
+                        self,
+                        ModError::unavailable(format!("needs {dep} {req}, found {version}")),
+                    ));
                 }
                 self.start_mod(dep, chain).await.ok();
-                let running = matches!(self.0.mods.read().get(dep).map(|d| &d.status), Some(Status::Running));
+                let running = matches!(
+                    self.0.mods.read().get(dep).map(|d| &d.status),
+                    Some(Status::Running)
+                );
                 if !running {
-                    return Err(fail(self, ModError::unavailable(format!("needs mod {dep}, which is not running"))));
+                    return Err(fail(
+                        self,
+                        ModError::unavailable(format!("needs mod {dep}, which is not running")),
+                    ));
                 }
             }
             chain.pop();
@@ -279,12 +299,21 @@ impl ModHost {
             let runtime = match &manifest.daemon {
                 None => None,
                 Some(rel) => {
-                    let path = entry_path(&dir, rel).map_err(|e| fail(self, ModError::invalid(e.to_string())))?;
-                    let source_code = std::fs::read_to_string(&path)
-                        .map_err(|e| fail(self, ModError::failed(format!("read {}: {e}", path.display()))))?;
+                    let path = entry_path(&dir, rel)
+                        .map_err(|e| fail(self, ModError::invalid(e.to_string())))?;
+                    let source_code = std::fs::read_to_string(&path).map_err(|e| {
+                        fail(
+                            self,
+                            ModError::failed(format!("read {}: {e}", path.display())),
+                        )
+                    })?;
                     let data_dir = self.0.config.data_dir.join("mod-data").join(id);
-                    std::fs::create_dir_all(&data_dir)
-                        .map_err(|e| fail(self, ModError::failed(format!("create {}: {e}", data_dir.display()))))?;
+                    std::fs::create_dir_all(&data_dir).map_err(|e| {
+                        fail(
+                            self,
+                            ModError::failed(format!("create {}: {e}", data_dir.display())),
+                        )
+                    })?;
                     let ops = Arc::new(ModOps {
                         host: Arc::downgrade(&self.0),
                         id: id.to_string(),
@@ -292,7 +321,8 @@ impl ModHost {
                         data_dir,
                         permissions: manifest.permissions.clone(),
                     });
-                    let started = ModRuntime::start(id, source_code, ops, self.0.tokio.clone()).await;
+                    let started =
+                        ModRuntime::start(id, source_code, ops, self.0.tokio.clone()).await;
                     Some(started.map_err(|e| fail(self, e))?)
                 }
             };
@@ -376,7 +406,11 @@ impl ModHost {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                let kind = value.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+                let kind = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 if kind == "session_removed" {
                     inner.forget_session(ev.session_id());
                 }
@@ -445,7 +479,11 @@ impl ModHost {
                     let mods = host.0.mods.read();
                     paths
                         .iter()
-                        .filter_map(|p| mods.values().find(|e| p.starts_with(&e.dir)).map(|e| e.manifest.id.clone()))
+                        .filter_map(|p| {
+                            mods.values()
+                                .find(|e| p.starts_with(&e.dir))
+                                .map(|e| e.manifest.id.clone())
+                        })
                         .collect()
                 };
                 for id in ids {
@@ -458,7 +496,12 @@ impl ModHost {
 
     /// The `mods.*` and `mod.<id>.*` RPC methods. `session` is the calling
     /// session when the connection holds a session token.
-    pub async fn handle(&self, method: &str, params: &Value, session: Option<&str>) -> Result<Option<Value>> {
+    pub async fn handle(
+        &self,
+        method: &str,
+        params: &Value,
+        session: Option<&str>,
+    ) -> Result<Option<Value>> {
         if let Some(rest) = method.strip_prefix("mod.") {
             let Some((id, name)) = rest.split_once('.') else {
                 anyhow::bail!("mod methods are mod.<id>.<name>");
@@ -467,7 +510,9 @@ impl ModHost {
                 Some(s) => json!({"kind": "session", "sessionId": s}),
                 None => json!({"kind": "user"}),
             };
-            return Ok(Some(self.0.call_mod(id, name, params.clone(), caller).await?));
+            return Ok(Some(
+                self.0.call_mod(id, name, params.clone(), caller).await?,
+            ));
         }
         let id = || -> Result<String> {
             params
@@ -545,25 +590,46 @@ impl ModHost {
             }
             "mods.logs" => {
                 let id = id()?;
-                json!(self.0.mods.read().get(&id).map(|e| e.logs.iter().cloned().collect::<Vec<_>>()).unwrap_or_default())
+                json!(self
+                    .0
+                    .mods
+                    .read()
+                    .get(&id)
+                    .map(|e| e.logs.iter().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default())
             }
             "mods.settings.get" => self.0.settings_of(&id()?),
             "mods.settings.set" => {
-                let key = params.get("key").and_then(Value::as_str).context("key is required")?;
-                self.0.set_setting(&id()?, key, params.get("value").cloned().unwrap_or(Value::Null))?;
+                let key = params
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .context("key is required")?;
+                self.0.set_setting(
+                    &id()?,
+                    key,
+                    params.get("value").cloned().unwrap_or(Value::Null),
+                )?;
                 json!(true)
             }
             // What a mod's new-session field contributed, stored on the new session for that mod.
             "mods.session_data.set" => {
                 let id = id()?;
-                let sid = params.get("sessionId").and_then(Value::as_str).context("sessionId is required")?;
-                let key = params.get("key").and_then(Value::as_str).context("key is required")?;
+                let sid = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .context("sessionId is required")?;
+                let key = params
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .context("key is required")?;
                 if !self.0.mods.read().contains_key(&id) {
                     anyhow::bail!("no mod {id}");
                 }
                 self.0.manager.get_session(sid)?;
                 let value = params.get("value").cloned().filter(|v| !v.is_null());
-                self.0.records.set_field(&crate::storage::sessions_ns(&id), sid, key, value)?;
+                self.0
+                    .records
+                    .set_field(&crate::storage::sessions_ns(&id), sid, key, value)?;
                 json!(true)
             }
             "mods.inbox" => json!(self
@@ -578,7 +644,10 @@ impl ModHost {
                 let Some(session) = session else {
                     anyhow::bail!("mods.tools.call acts for an orchestrator session and needs its session token");
                 };
-                let name = params.get("name").and_then(Value::as_str).context("name is required")?;
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("name is required")?;
                 let args = params.get("args").cloned().unwrap_or_else(|| json!({}));
                 self.call_tool(name, args, session).await?
             }
@@ -675,7 +744,10 @@ impl ModHost {
             let found = mods.values().find_map(|e| {
                 let prefix = Self::tool_prefix(&e.manifest.id);
                 let name = full.strip_prefix(&prefix)?;
-                let has = e.tools.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(name));
+                let has = e
+                    .tools
+                    .iter()
+                    .any(|t| t.get("name").and_then(Value::as_str) == Some(name));
                 (has && e.manifest.permissions.orchestrator_tools)
                     .then(|| e.runtime.clone().map(|r| (r, name.to_string())))
                     .flatten()
@@ -703,7 +775,9 @@ impl ModHost {
 
 impl Inner {
     pub(crate) fn broadcast(&self, method: &str, params: Value) {
-        let _ = self.notifications.send(json!({"method": method, "params": params}));
+        let _ = self
+            .notifications
+            .send(json!({"method": method, "params": params}));
     }
 
     pub(crate) fn log(&self, id: &str, level: &str, message: &str) {
@@ -728,11 +802,16 @@ impl Inner {
             .mods
             .read()
             .values()
-            .filter(|e| e.mod_subs.contains(&key) && e.manifest.permissions.mods.iter().any(|m| m == id))
+            .filter(|e| {
+                e.mod_subs.contains(&key) && e.manifest.permissions.mods.iter().any(|m| m == id)
+            })
             .filter_map(|e| e.runtime.clone())
             .collect();
         for r in targets {
-            r.dispatch("modEvent", json!({"modId": id, "name": name, "payload": payload}));
+            r.dispatch(
+                "modEvent",
+                json!({"modId": id, "name": name, "payload": payload}),
+            );
         }
     }
 
@@ -780,15 +859,29 @@ impl Inner {
 
     pub(crate) fn set_setting(&self, id: &str, key: &str, value: Value) -> Result<(), ModError> {
         let value = (!value.is_null()).then_some(value);
-        self.records.set_field(SETTINGS_NS, id, key, value.clone())?;
+        self.records
+            .set_field(SETTINGS_NS, id, key, value.clone())?;
         let all = self.settings_of(id);
         let effective = all.get(key).cloned().unwrap_or(Value::Null);
-        self.dispatch_to(id, "settings", json!({"key": key, "value": effective, "all": all}));
-        self.broadcast("mods.settings.changed", json!({"modId": id, "key": key, "value": effective}));
+        self.dispatch_to(
+            id,
+            "settings",
+            json!({"key": key, "value": effective, "all": all}),
+        );
+        self.broadcast(
+            "mods.settings.changed",
+            json!({"modId": id, "key": key, "value": effective}),
+        );
         Ok(())
     }
 
-    pub(crate) async fn call_mod(&self, id: &str, name: &str, params: Value, caller: Value) -> OpResult {
+    pub(crate) async fn call_mod(
+        &self,
+        id: &str,
+        name: &str,
+        params: Value,
+        caller: Value,
+    ) -> OpResult {
         let runtime = {
             let mods = self.mods.read();
             let e = mods
@@ -797,16 +890,23 @@ impl Inner {
             match (&e.status, &e.runtime) {
                 (Status::Running, Some(r)) => r.clone(),
                 (Status::Running, None) => {
-                    return Err(ModError::new("not_found", format!("mod {id} has no daemon half")))
+                    return Err(ModError::new(
+                        "not_found",
+                        format!("mod {id} has no daemon half"),
+                    ))
                 }
                 (status, _) => {
-                    return Err(ModError::unavailable(format!("mod {id} is not running ({status:?})")))
+                    return Err(ModError::unavailable(format!(
+                        "mod {id} is not running ({status:?})"
+                    )))
                 }
             }
         };
         tokio::time::timeout(CALL_TIMEOUT, runtime.call(name, params, caller))
             .await
-            .map_err(|_| ModError::new("timeout", format!("mod.{id}.{name} did not answer in time")))?
+            .map_err(|_| {
+                ModError::new("timeout", format!("mod.{id}.{name} did not answer in time"))
+            })?
     }
 
     fn forget_session(&self, sid: &str) {

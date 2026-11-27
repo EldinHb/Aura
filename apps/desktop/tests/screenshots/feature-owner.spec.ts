@@ -16,7 +16,7 @@ const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
 const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false };
 
 function session(id: string, over: Partial<Session>): Session {
-  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-web", worktree: null, group: null, status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(10), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, usage, ...over };
+  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-web", worktree: null, group: null, workspace: "default", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(10), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, usage, ...over };
 }
 
 const id = (n: number) => `fe47a0e0-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -214,6 +214,7 @@ async function mockDaemon(page: Page) {
         case "session.list": result = sessions; break;
         case "session.get": result = sessions.find((s) => s.id === params.id); break;
         case "session.pending": result = { approvals: [], inputs: [] }; break;
+        case "mods.inbox": result = []; break;
         case "session.history": result = (history[params.id] ?? []).map((it, i) => ({ seq: i + 1, ts: it.started_at, event: { type: "item_completed", session_id: params.id, item: it } })); break;
         case "feature.list": result = [feature]; break;
         case "feature.get": result = feature; break;

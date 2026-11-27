@@ -129,6 +129,11 @@ pub enum Event {
     SpecialistSuggestionsUpdated {
         suggestions: Vec<crate::features::SpecialistSuggestion>,
     },
+    /// A workspace was created, renamed or deleted: all of them, in order.
+    /// Belongs to no session; not part of the history (see `workspace.list`).
+    WorkspacesChanged {
+        workspaces: Vec<Workspace>,
+    },
 }
 
 impl Event {
@@ -153,7 +158,7 @@ impl Event {
             | Event::SettingChanged { session_id, .. }
             | Event::NoticesCleared { session_id }
             | Event::FeatureUpdated { session_id, .. } => session_id,
-            Event::SpecialistSuggestionsUpdated { .. } => "",
+            Event::SpecialistSuggestionsUpdated { .. } | Event::WorkspacesChanged { .. } => "",
         }
     }
 
@@ -168,6 +173,7 @@ impl Event {
                 | Event::ItemDelta { .. }
                 | Event::FeatureUpdated { .. }
                 | Event::SpecialistSuggestionsUpdated { .. }
+                | Event::WorkspacesChanged { .. }
         )
     }
 }

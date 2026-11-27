@@ -85,3 +85,15 @@ it("lets an orchestrator left in terminal mode go back to the structured view, a
   await runCommand("session.toggle-mode");
   expect(switchMode).not.toHaveBeenCalled();
 });
+
+it("steps ⌘[ / ⌘] from a selected worker's leader, not from the first leader", async () => {
+  const s = (id: string, patch: Partial<Session> = {}) => ({ ...session(id, patch), status: "idle", attention: null, pending_count: 0, archived: false, pinned: false, created_at: "", last_activity: "" }) as Session;
+  const list = [s("a"), s("b", { orchestrator: true }), s("bw", { orchestrator_id: "b" }), s("c")];
+  useStore.setState({ sessions: Object.fromEntries(list.map((x) => [x.id, x])), sessionOrder: list.map((x) => x.id), sidebarFilter: "", showArchived: false, collapsedGroups: [], sidebarTab: "sessions", workspaces: [], tabs: [], activeTab: null, recentTabs: [], closedTabs: [] });
+  useStore.getState().select("bw");
+  await runCommand("session.next");
+  expect(useStore.getState().selectedId).toBe("c");
+  useStore.getState().select("bw");
+  await runCommand("session.prev");
+  expect(useStore.getState().selectedId).toBe("a");
+});

@@ -17,6 +17,9 @@ export type KeyResult =
 
 const MOD_ORDER = ["ctrl", "alt", "shift", "cmd"];
 
+/** Commands whose bindings reach Aura from a focused terminal whatever their chord. */
+const TERMINAL_PASS = new Set(["workspace.go-nth"]);
+
 export function normalizeChord(chord: string, isMac: boolean, leader: string): string {
   const raw = chord.trim().toLowerCase();
   if (raw === "leader") return normalizeChord(leader, isMac, "ctrl+space");
@@ -65,7 +68,10 @@ function normalizeKeyName(k: string): string {
 
 /** Translate a DOM KeyboardEvent to a normalized chord string. */
 export function chordFromEvent(e: KeyboardEvent, _isMac: boolean): string | null {
-  const key = e.key;
+  // A digit with a modifier is matched by its physical key: on some layouts alt+shift+digit
+  // gives a dead key or none at all (the chord is still alt+shift+1 for the 1 key).
+  const modifiedDigit = /^Digit[0-9]$/.test(e.code ?? "") && (e.ctrlKey || e.altKey || e.metaKey);
+  const key = modifiedDigit && (e.key === "Dead" || e.key === "Unidentified") ? e.code.slice(5) : e.key;
   if (["Shift", "Control", "Alt", "Meta", "CapsLock", "Dead", "Unidentified"].includes(key)) return null;
   const mods: string[] = [];
   if (e.ctrlKey) mods.push("ctrl");
@@ -176,11 +182,13 @@ export class Keymap {
   /**
    * Whether a chord is allowed to fire while a text input / terminal has focus.
    * Inputs: modifier chords, escape and the leader. Terminals: only leader and
-   * cmd-chords (mac) / ctrl+shift-chords (others) so the shell keeps ctrl keys.
+   * cmd-chords (mac) / ctrl+shift-chords (others) so the shell keeps ctrl keys,
+   * and the workspace digits (⌃1–9 on macOS), which a shell has no use for.
    */
   eligibleInInput(firstChord: string, ctx: CommandContext, binding: Binding): boolean {
     if (firstChord === this.leaderChord) return true;
     if (ctx.terminalFocused) {
+      if (TERMINAL_PASS.has(binding.command)) return true;
       if (this.isMac) return firstChord.includes("cmd+");
       return firstChord.startsWith("ctrl+shift+") || firstChord.includes("alt+");
     }

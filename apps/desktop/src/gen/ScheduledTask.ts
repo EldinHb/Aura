@@ -49,7 +49,12 @@ branch_prefix: string | null,
 /**
  * The sidebar group of the sessions it starts.
  */
-group: string | null, enabled: boolean, schedule: Schedule, missed: MissedRuns, 
+group: string | null, 
+/**
+ * The workspace its runs belong to. Tasks stored before workspaces read
+ * as empty and are put in the default workspace when the daemon starts.
+ */
+workspace: string, enabled: boolean, schedule: Schedule, missed: MissedRuns, 
 /**
  * Start a run while the previous one is still working. Off: that run is
  * skipped and recorded as skipped.

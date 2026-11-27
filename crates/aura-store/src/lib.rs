@@ -661,6 +661,7 @@ mod tests {
             worktree: true,
             branch_prefix: None,
             group: Some("nightly".into()),
+            workspace: "ws".into(),
             enabled: true,
             schedule: aura_core::Schedule::Days {
                 every: 1,
@@ -746,6 +747,42 @@ mod tests {
         s.delete_scheduled_task("a").unwrap();
         assert!(s.scheduled_tasks().unwrap().is_empty());
         assert!(s.scheduled_runs("a", 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sessions_and_tasks_stored_before_workspaces_still_load() {
+        let s = SqliteStore::open_in_memory().unwrap();
+        let sess = session("/tmp/old");
+        let mut json = serde_json::to_value(&sess).unwrap();
+        json.as_object_mut().unwrap().remove("workspace");
+        s.conn
+            .lock()
+            .execute(
+                "INSERT INTO sessions (id, provider, archived, pinned, created_at, last_activity, json)
+                 VALUES (?1, 'terminal', 0, 0, ?2, ?2, ?3)",
+                params![sess.id, sess.created_at.to_rfc3339(), json.to_string()],
+            )
+            .unwrap();
+        let loaded = s.list_sessions().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, sess.id);
+        assert_eq!(loaded[0].workspace, "", "the daemon puts it in one");
+
+        let old = task("old", Utc::now());
+        let mut json = serde_json::to_value(&old).unwrap();
+        json.as_object_mut().unwrap().remove("workspace");
+        s.conn
+            .lock()
+            .execute(
+                "INSERT INTO scheduled_tasks (id, created_at, json) VALUES (?1, ?2, ?3)",
+                params![old.id, old.created_at.to_rfc3339(), json.to_string()],
+            )
+            .unwrap();
+        let tasks = s.scheduled_tasks().unwrap();
+        assert_eq!(
+            (tasks[0].id.as_str(), tasks[0].workspace.as_str()),
+            ("old", "")
+        );
     }
 
     #[test]
@@ -881,7 +918,11 @@ mod tests {
                 conn.execute_batch(sql).unwrap();
             }
             conn.pragma_update(None, "user_version", 4).unwrap();
-            for (s, pulls) in [(&linked, json!([])), (&worked, json!(["https://github.com/o/r/pull/7"])), (&plain, json!([]))] {
+            for (s, pulls) in [
+                (&linked, json!([])),
+                (&worked, json!(["https://github.com/o/r/pull/7"])),
+                (&plain, json!([])),
+            ] {
                 let mut v = serde_json::to_value(s).unwrap();
                 v["pulls"] = pulls;
                 conn.execute(
@@ -891,37 +932,57 @@ mod tests {
                 .unwrap();
             }
             let record = |ns: &str, id: &str, json: &str| {
-                conn.execute("INSERT INTO feature_records (namespace, id, json) VALUES (?1, ?2, ?3)", params![ns, id, json])
-                    .unwrap();
+                conn.execute(
+                    "INSERT INTO feature_records (namespace, id, json) VALUES (?1, ?2, ?3)",
+                    params![ns, id, json],
+                )
+                .unwrap();
             };
             record("reviews", "r1", r#"{"id":"r1"}"#);
             record("hidden:github.com:me", "o/r#1", "true");
             record("pr-watches", "w1", r#"{"repo":"o/r"}"#);
             record("groups", "g1", r#"{"id":"g1"}"#);
             let setting = |k: &str, v: &str| {
-                conn.execute("INSERT INTO settings (key, value) VALUES (?1, ?2)", params![k, v]).unwrap();
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                    params![k, v],
+                )
+                .unwrap();
             };
             setting("reviews.inbox", r#"{"account":"github.com:me"}"#);
             setting("pulls.snapshots.v1.github.com:me", "[]");
-            setting(&format!("session.links.v1.{}", linked.id), r#"{"prs":["o/r#2"]}"#);
+            setting(
+                &format!("session.links.v1.{}", linked.id),
+                r#"{"prs":["o/r#2"]}"#,
+            );
             setting("prompts", r#"{"global":""}"#);
         }
         let s = SqliteStore::open(&path).unwrap();
         let ns = |n: &str| s.feature_records(n).unwrap();
-        assert_eq!(ns("mod:pull-requests:c:reviews"), vec![("r1".into(), r#"{"id":"r1"}"#.into())]);
+        assert_eq!(
+            ns("mod:pull-requests:c:reviews"),
+            vec![("r1".into(), r#"{"id":"r1"}"#.into())]
+        );
         assert_eq!(ns("mod:pull-requests:c:hidden:github.com:me").len(), 1);
         assert_eq!(ns("mod:pull-requests:c:pr-watches").len(), 1);
-        assert!(ns("mod:pull-requests:c:groups").is_empty(), "core data stays core's");
+        assert!(
+            ns("mod:pull-requests:c:groups").is_empty(),
+            "core data stays core's"
+        );
         let kv: std::collections::HashMap<_, _> = ns("mod:pull-requests:kv").into_iter().collect();
         assert_eq!(kv["reviews.inbox"], r#"{"account":"github.com:me"}"#);
         assert_eq!(kv["pulls.snapshots.v1.github.com:me"], "[]");
         assert!(!kv.contains_key("prompts"));
-        let sessions: std::collections::HashMap<String, serde_json::Value> = ns("mod:github:sessions")
-            .into_iter()
-            .map(|(k, v)| (k, serde_json::from_str(&v).unwrap()))
-            .collect();
+        let sessions: std::collections::HashMap<String, serde_json::Value> =
+            ns("mod:github:sessions")
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::from_str(&v).unwrap()))
+                .collect();
         assert_eq!(sessions[&linked.id], json!({"links": {"prs": ["o/r#2"]}}));
-        assert_eq!(sessions[&worked.id], json!({"pulls": ["https://github.com/o/r/pull/7"]}));
+        assert_eq!(
+            sessions[&worked.id],
+            json!({"pulls": ["https://github.com/o/r/pull/7"]})
+        );
         assert!(!sessions.contains_key(&plain.id));
         // The old rows stay for an older Aura.
         assert_eq!(ns("reviews").len(), 1);

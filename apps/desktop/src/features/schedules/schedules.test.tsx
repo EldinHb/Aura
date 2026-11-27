@@ -15,7 +15,7 @@ vi.hoisted(() => {
 
 const task = (over: Partial<ScheduledTask> = {}): ScheduledTask => ({
   id: "t1", name: "Nightly triage", prompt: "Triage new issues", agent: "claude", model: null, effort: null,
-  permission_mode: null, sandbox_mode: null, cwd: "/repo", run_as: "session", feature_goal: null, autonomy: null, worktree: false, branch_prefix: null, group: null, enabled: true,
+  permission_mode: null, sandbox_mode: null, cwd: "/repo", run_as: "session", feature_goal: null, autonomy: null, worktree: false, branch_prefix: null, group: null, workspace: "default", enabled: true,
   schedule: { unit: "days", every: 1, at: "09:00" }, missed: "run_once", allow_overlap: false,
   created_at: "2026-11-18T08:00:00Z", updated_at: "2026-11-18T08:00:00Z", anchor: "2026-11-18T08:00:00Z",
   last_slot: null, next_run: "2026-11-19T08:00:00Z", last_run: null, created_by: null, ...over,
@@ -118,7 +118,7 @@ describe("schedules in words", () => {
     expect(inputOf(draftOfTask(t))).toEqual({
       name: "Nightly triage", prompt: "Triage new issues", agent: "claude", model: "opus", effort: "", permission_mode: "", sandbox_mode: "",
       cwd: "/repo", worktree: true, run_as: "session", feature_goal: "", autonomy: null,
-      branch_prefix: "chore/x", group: "Chores", enabled: true, schedule: t.schedule, missed: "run_once", allow_overlap: false,
+      branch_prefix: "chore/x", group: "Chores", enabled: true, schedule: t.schedule, missed: "run_once", allow_overlap: false, workspace: "default",
     });
   });
 

@@ -48,7 +48,9 @@ fn str_arg(args: &Value, key: &str) -> Result<String, ModError> {
 fn name_arg(args: &Value, key: &str) -> Result<String, ModError> {
     let v = str_arg(args, key)?;
     if v.is_empty() || v.len() > 512 {
-        return Err(ModError::invalid(format!("{key} must be 1 to 512 characters")));
+        return Err(ModError::invalid(format!(
+            "{key} must be 1 to 512 characters"
+        )));
     }
     Ok(v)
 }
@@ -104,7 +106,11 @@ impl Ops for ModOps {
             }
             "emit" => {
                 let name = name_arg(&args, "name")?;
-                self.host()?.emit(&self.id, &name, args.get("payload").cloned().unwrap_or(Value::Null));
+                self.host()?.emit(
+                    &self.id,
+                    &name,
+                    args.get("payload").cloned().unwrap_or(Value::Null),
+                );
                 Ok(Value::Null)
             }
             "notify" => {
@@ -117,23 +123,34 @@ impl Ops for ModOps {
             "events.subscribe" => {
                 let types: Vec<String> = arg(&args, "types")?;
                 if !types.is_empty() {
-                    self.need(self.permissions.reads_sessions(), "read sessions and their events")?;
+                    self.need(
+                        self.permissions.reads_sessions(),
+                        "read sessions and their events",
+                    )?;
                 }
-                self.host()?.set_event_types(&self.id, types.into_iter().collect());
+                self.host()?
+                    .set_event_types(&self.id, types.into_iter().collect());
                 Ok(Value::Null)
             }
             "mods.subscribe" => {
                 let subs: Vec<(String, String)> = arg(&args, "subs")?;
                 for (m, _) in &subs {
-                    self.need(self.permissions.mods.contains(m), &format!("listen to mod {m}"))?;
+                    self.need(
+                        self.permissions.mods.contains(m),
+                        &format!("listen to mod {m}"),
+                    )?;
                 }
-                self.host()?.set_mod_subs(&self.id, subs.into_iter().collect());
+                self.host()?
+                    .set_mod_subs(&self.id, subs.into_iter().collect());
                 Ok(Value::Null)
             }
             "tools.set" => {
                 let tools: Vec<Value> = arg(&args, "tools")?;
                 if !tools.is_empty() {
-                    self.need(self.permissions.orchestrator_tools, "offer orchestrator tools")?;
+                    self.need(
+                        self.permissions.orchestrator_tools,
+                        "offer orchestrator tools",
+                    )?;
                 }
                 self.host()?.set_tools(&self.id, tools);
                 Ok(Value::Null)
@@ -169,7 +186,9 @@ impl ModOps {
             }
 
             // ---- storage ----
-            "kv.get" => Ok(records.get(&kv_ns(id), &name_arg(&a, "key")?)?.unwrap_or(Value::Null)),
+            "kv.get" => Ok(records
+                .get(&kv_ns(id), &name_arg(&a, "key")?)?
+                .unwrap_or(Value::Null)),
             "kv.set" => {
                 records.put(&kv_ns(id), &name_arg(&a, "key")?, &a["value"])?;
                 Ok(Value::Null)
@@ -188,14 +207,24 @@ impl ModOps {
                     .collect::<Vec<_>>()))
             }
             "collection.get" => Ok(records
-                .get(&collection_ns(id, &name_arg(&a, "name")?), &name_arg(&a, "id")?)?
+                .get(
+                    &collection_ns(id, &name_arg(&a, "name")?),
+                    &name_arg(&a, "id")?,
+                )?
                 .unwrap_or(Value::Null)),
             "collection.put" => {
-                records.put(&collection_ns(id, &name_arg(&a, "name")?), &name_arg(&a, "id")?, &a["doc"])?;
+                records.put(
+                    &collection_ns(id, &name_arg(&a, "name")?),
+                    &name_arg(&a, "id")?,
+                    &a["doc"],
+                )?;
                 Ok(Value::Null)
             }
             "collection.delete" => {
-                records.delete(&collection_ns(id, &name_arg(&a, "name")?), &name_arg(&a, "id")?)?;
+                records.delete(
+                    &collection_ns(id, &name_arg(&a, "name")?),
+                    &name_arg(&a, "id")?,
+                )?;
                 Ok(Value::Null)
             }
             "collection.all" => Ok(json!(records
@@ -277,7 +306,11 @@ impl ModOps {
                 Ok(json!(records
                     .all(&sessions_ns(id))?
                     .into_iter()
-                    .filter_map(|(sid, doc)| doc.get(&key).filter(|v| !v.is_null()).cloned().map(|v| json!([sid, v])))
+                    .filter_map(|(sid, doc)| doc
+                        .get(&key)
+                        .filter(|v| !v.is_null())
+                        .cloned()
+                        .map(|v| json!([sid, v])))
                     .collect::<Vec<_>>()))
             }
             "sessionData.set" | "sessionData.delete" => {
@@ -286,7 +319,9 @@ impl ModOps {
                 if host.manager.get_session(&sid).is_err() {
                     return Err(ModError::new("not_found", format!("no session {sid}")));
                 }
-                let value = (op == "sessionData.set").then(|| a["value"].clone()).filter(|v| !v.is_null());
+                let value = (op == "sessionData.set")
+                    .then(|| a["value"].clone())
+                    .filter(|v| !v.is_null());
                 records.set_field(&sessions_ns(id), &sid, &name_arg(&a, "key")?, value)?;
                 Ok(Value::Null)
             }
@@ -307,7 +342,8 @@ impl ModOps {
                 run_process(&bin, &a).await
             }
             "http.fetch" => {
-                let args: FetchArgs = serde_json::from_value(a).map_err(|e| ModError::invalid(e.to_string()))?;
+                let args: FetchArgs =
+                    serde_json::from_value(a).map_err(|e| ModError::invalid(e.to_string()))?;
                 let h = http::host_of(&args.url)?;
                 self.need(p.allows_host(&h), &format!("reach {h}"))?;
                 host.http.fetch(id, args).await
@@ -319,30 +355,42 @@ impl ModOps {
                 let list = host.manager.providers().await;
                 Ok(json!(list
                     .into_iter()
-                    .map(|i| json!({"kind": i.kind, "available": i.available, "version": i.version}))
+                    .map(
+                        |i| json!({"kind": i.kind, "available": i.available, "version": i.version})
+                    )
                     .collect::<Vec<_>>()))
             }
             "agents.models" => {
                 self.need(p.agents, "use agents")?;
                 let kind: aura_core::ProviderKind = arg(&a, "provider")?;
-                Ok(serde_json::to_value(host.manager.list_models(kind).await?).map_err(ModError::failed)?)
+                Ok(serde_json::to_value(host.manager.list_models(kind).await?)
+                    .map_err(ModError::failed)?)
             }
             "agents.runOnce" => {
                 self.need(p.agents, "run agents")?;
                 let run_id = a["runId"].clone();
-                let progress: Option<agents::Progress> = if a["progress"].as_bool().unwrap_or(false) {
+                let progress: Option<agents::Progress> = if a["progress"].as_bool().unwrap_or(false)
+                {
                     let weak = self.host.clone();
                     let mod_id = self.id.clone();
                     Some(Arc::new(move |line: String| {
                         if let Some(h) = weak.upgrade() {
-                            h.dispatch_to(&mod_id, "progress", json!({"runId": run_id, "line": line}));
+                            h.dispatch_to(
+                                &mod_id,
+                                "progress",
+                                json!({"runId": run_id, "line": line}),
+                            );
                         }
                     }))
                 } else {
                     None
                 };
-                let cancel_id = a.get("id").and_then(Value::as_str).map(|i| format!("{id}\u{0}{i}"));
-                let args: agents::RunArgs = serde_json::from_value(a).map_err(|e| ModError::invalid(e.to_string()))?;
+                let cancel_id = a
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|i| format!("{id}\u{0}{i}"));
+                let args: agents::RunArgs =
+                    serde_json::from_value(a).map_err(|e| ModError::invalid(e.to_string()))?;
                 let Some(key) = cancel_id else {
                     return agents::run_once(args, progress).await;
                 };
@@ -368,8 +416,13 @@ impl ModOps {
                 let target = str_arg(&a, "modId")?;
                 self.need(p.mods.contains(&target), &format!("call mod {target}"))?;
                 let name = name_arg(&a, "name")?;
-                host.call_mod(&target, &name, a["params"].clone(), json!({"kind": "mod", "id": id}))
-                    .await
+                host.call_mod(
+                    &target,
+                    &name,
+                    a["params"].clone(),
+                    json!({"kind": "mod", "id": id}),
+                )
+                .await
             }
             "inbox.set" => {
                 let items: Vec<Value> = arg(&a, "items")?;
@@ -386,13 +439,19 @@ impl ModOps {
     fn data_path(&self, a: &Value, key: &str) -> Result<std::path::PathBuf, ModError> {
         let raw = str_arg(a, key)?;
         let p = std::path::Path::new(&raw);
-        let full = if p.is_absolute() { p.to_path_buf() } else { self.data_dir.join(p) };
+        let full = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.data_dir.join(p)
+        };
         let mut clean = std::path::PathBuf::new();
         for c in full.components() {
             match c {
                 std::path::Component::ParentDir => {
                     if !clean.pop() {
-                        return Err(ModError::denied(format!("{raw} is outside the mod's data folder")));
+                        return Err(ModError::denied(format!(
+                            "{raw} is outside the mod's data folder"
+                        )));
                     }
                 }
                 std::path::Component::CurDir => {}
@@ -400,7 +459,9 @@ impl ModOps {
             }
         }
         if !clean.starts_with(&self.data_dir) {
-            return Err(ModError::denied(format!("{raw} is outside the mod's data folder")));
+            return Err(ModError::denied(format!(
+                "{raw} is outside the mod's data folder"
+            )));
         }
         Ok(clean)
     }
@@ -421,7 +482,9 @@ impl ModOps {
                 if let Some(parent) = path.parent() {
                     tokio::fs::create_dir_all(parent).await.map_err(io)?;
                 }
-                tokio::fs::write(&path, str_arg(a, "text")?).await.map_err(io)?;
+                tokio::fs::write(&path, str_arg(a, "text")?)
+                    .await
+                    .map_err(io)?;
                 Ok(Value::Null)
             }
             "fs.mkdir" => {
@@ -468,7 +531,10 @@ async fn git_op(op: &str, a: Value) -> OpResult {
         let env: BTreeMap<String, Option<String>> = opt(&a, "env")?.unwrap_or_default();
         let mut cmd = tokio::process::Command::new("git");
         // Never wait for credentials on a terminal nobody sees.
-        cmd.arg("-C").arg(&cwd).args(&args).env("GIT_TERMINAL_PROMPT", "0");
+        cmd.arg("-C")
+            .arg(&cwd)
+            .args(&args)
+            .env("GIT_TERMINAL_PROMPT", "0");
         for (k, v) in env {
             match v {
                 Some(v) => cmd.env(k, v),
@@ -486,7 +552,9 @@ async fn git_op(op: &str, a: Value) -> OpResult {
                     out.status,
                     String::from_utf8_lossy(&out.stderr).trim()
                 ),
-                data: Some(json!({"exitCode": code, "stderr": String::from_utf8_lossy(&out.stderr)})),
+                data: Some(
+                    json!({"exitCode": code, "stderr": String::from_utf8_lossy(&out.stderr)}),
+                ),
             });
         }
         return Ok(json!(String::from_utf8_lossy(&out.stdout)));
@@ -497,7 +565,9 @@ async fn git_op(op: &str, a: Value) -> OpResult {
             "git.repoRoot" => json!(ops::repo_root(&cwd)?),
             "git.mainRepoRoot" => json!(ops::main_repo_root(&cwd)?),
             "git.currentBranch" => json!(ops::current_branch(&cwd).ok()),
-            "git.branchStatus" => serde_json::to_value(ops::branch_status(&cwd)?).map_err(ModError::failed)?,
+            "git.branchStatus" => {
+                serde_json::to_value(ops::branch_status(&cwd)?).map_err(ModError::failed)?
+            }
             "git.remotes" => json!(remotes(&cwd)?),
             other => return Err(ModError::invalid(format!("unknown op {other}"))),
         })
@@ -534,12 +604,18 @@ async fn output(
     stdin: Option<String>,
     timeout: Duration,
 ) -> Result<std::process::Output, ModError> {
-    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
     aura_core::process::hide_window_tokio(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| ModError::failed(format!("start: {e}")))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| ModError::failed(format!("start: {e}")))?;
     if let Some(text) = stdin {
         if let Some(mut pipe) = child.stdin.take() {
             tokio::spawn(async move {
@@ -549,7 +625,10 @@ async fn output(
     }
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(r) => r.map_err(ModError::failed),
-        Err(_) => Err(ModError::new("timeout", "the program did not finish in time")),
+        Err(_) => Err(ModError::new(
+            "timeout",
+            "the program did not finish in time",
+        )),
     }
 }
 

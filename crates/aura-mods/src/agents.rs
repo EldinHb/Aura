@@ -47,7 +47,11 @@ pub async fn run_once(a: RunArgs, progress: Option<Progress>) -> Result<Value, M
     let env_override = match provider {
         "codex" => "AURA_CODEX_BIN",
         "claude" => "AURA_CLAUDE_BIN",
-        _ => return Err(ModError::invalid(format!("unsupported provider {provider}"))),
+        _ => {
+            return Err(ModError::invalid(format!(
+                "unsupported provider {provider}"
+            )))
+        }
     };
     let bin = aura_core::which::find_binary(provider, env_override, &[])
         .ok_or_else(|| ModError::unavailable(format!("{provider} is not installed")))?;
@@ -72,9 +76,12 @@ pub async fn run_once(a: RunArgs, progress: Option<Progress>) -> Result<Value, M
                 "--skip-git-repo-check",
             ]);
             if let Some(schema) = &a.json_schema {
-                tokio::fs::write(&schema_path, serde_json::to_vec(schema).map_err(ModError::failed)?)
-                    .await
-                    .map_err(ModError::failed)?;
+                tokio::fs::write(
+                    &schema_path,
+                    serde_json::to_vec(schema).map_err(ModError::failed)?,
+                )
+                .await
+                .map_err(ModError::failed)?;
                 cmd.arg("--output-schema").arg(&schema_path);
             }
             cmd.arg("-o").arg(&output_path).args([
@@ -146,7 +153,8 @@ pub async fn run_once(a: RunArgs, progress: Option<Progress>) -> Result<Value, M
     let stderr = child.stderr.take().expect("piped stderr");
     let prompt = a.prompt;
     let capture = async {
-        let read = |pipe: Box<dyn tokio::io::AsyncRead + Unpin + Send>, progress: Option<Progress>| async move {
+        let read = |pipe: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+                    progress: Option<Progress>| async move {
             let mut reader = BufReader::new(pipe).lines();
             let mut text = String::new();
             while let Some(line) = reader.next_line().await? {
@@ -188,26 +196,28 @@ pub async fn run_once(a: RunArgs, progress: Option<Progress>) -> Result<Value, M
         let text = tokio::fs::read_to_string(&output_path)
             .await
             .map_err(|_| ModError::failed("Agent did not produce output"))?;
-        let output = if a.json_schema.is_some() {
-            Some(serde_json::from_str::<Value>(&text).map_err(|e| {
-                ModError::failed(format!("Agent did not return valid JSON: {e}"))
-            })?)
-        } else {
-            None
-        };
+        let output =
+            if a.json_schema.is_some() {
+                Some(serde_json::from_str::<Value>(&text).map_err(|e| {
+                    ModError::failed(format!("Agent did not return valid JSON: {e}"))
+                })?)
+            } else {
+                None
+            };
         Ok(json!({"output": output, "text": text, "modelId": Value::Null}))
     } else {
         let v: Value = serde_json::from_str(&out)
             .map_err(|e| ModError::failed(format!("Claude returned no JSON: {e}")))?;
         if v["is_error"] == true {
-            return Err(ModError::failed(format!("Claude reported an error: {}", v["result"])));
+            return Err(ModError::failed(format!(
+                "Claude reported an error: {}",
+                v["result"]
+            )));
         }
         let output = if a.json_schema.is_some() {
-            Some(
-                v.get("structured_output")
-                    .cloned()
-                    .ok_or_else(|| ModError::failed("Claude did not return schema-constrained output"))?,
-            )
+            Some(v.get("structured_output").cloned().ok_or_else(|| {
+                ModError::failed("Claude did not return schema-constrained output")
+            })?)
         } else {
             None
         };

@@ -18,7 +18,6 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-
 mod schedules;
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -137,9 +136,10 @@ impl Server {
                 }
                 let mut all = tools(self.feature_owner);
                 // Tools mods offer orchestrators; a daemon without mods offers none.
-                if let (Some(list), Ok(Value::Array(extra))) =
-                    (all.as_array_mut(), self.rpc("mods.tools.list", json!({})).await)
-                {
+                if let (Some(list), Ok(Value::Array(extra))) = (
+                    all.as_array_mut(),
+                    self.rpc("mods.tools.list", json!({})).await,
+                ) {
                     list.extend(extra);
                 }
                 Ok(json!({ "tools": all }))
@@ -186,7 +186,11 @@ impl Server {
 
     /// Whether a mod offers `tool` (Aura's own tools never contain the mod prefix).
     async fn is_mod_tool(&self, tool: &str) -> bool {
-        if worker_tools().as_array().into_iter().flatten().chain(tools(true).as_array().into_iter().flatten())
+        if worker_tools()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(tools(true).as_array().into_iter().flatten())
             .any(|t| t.get("name").and_then(Value::as_str) == Some(tool))
         {
             return false;

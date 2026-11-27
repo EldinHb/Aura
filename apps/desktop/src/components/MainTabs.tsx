@@ -68,6 +68,8 @@ function MainTab(props: {
   const { tab, active } = props;
   const title = useTabTitle(tab);
   const session = useStore((s) => (tab.kind === "session" ? s.sessions[tab.sessionId] : undefined));
+  // A session of another workspace than the one shown says which.
+  const elsewhere = useStore((s) => (session && s.workspaces.length > 1 && session.workspace !== s.activeWorkspace ? s.workspaces.find((w) => w.id === session.workspace)?.name ?? null : null));
   const closeKeys = useShortcut("tab.close");
   return (
     <div
@@ -105,12 +107,13 @@ function MainTab(props: {
         className="main-tab-label"
         data-hint
         data-command="tab.activate"
-        title={tab.preview ? `${title} (preview: double-click to keep it open)` : title}
+        title={`${tab.preview ? `${title} (preview: double-click to keep it open)` : title}${elsewhere ? `\nIn ${elsewhere}` : ""}`}
         onClick={() => void runCommand("tab.activate", tab.key)}
         onDoubleClick={() => void runCommand("tab.keep", tab.key)}
       >
         {session && <span className={clsx("dot", statusClass(session))} aria-hidden />}
         <span className="main-tab-title">{title}</span>
+        {elsewhere && <span className="dim main-tab-workspace" title={`In ${elsewhere}`}>· {elsewhere.length > 12 ? `${elsewhere.slice(0, 11)}…` : elsewhere}</span>}
       </button>
       <button
         type="button"

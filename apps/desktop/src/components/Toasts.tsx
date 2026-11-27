@@ -19,6 +19,7 @@ export function Toasts() {
               type="button"
               className="toast-action"
               data-hint
+              data-command="toast.action"
               onClick={() => {
                 dismiss(t.id);
                 a.run();

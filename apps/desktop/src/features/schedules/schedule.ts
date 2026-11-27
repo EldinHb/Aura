@@ -80,12 +80,15 @@ export const RUN_AS: { value: RunAs; label: string; help: string }[] = [
   { value: "feature_owner", label: "Feature owner", help: "An orchestrator that owns one feature end to end with a team of specialists, and ends with a delivery report." },
 ];
 
-/** What the task editor holds. `no_folder`: an orchestrator or feature owner without a folder of its own. */
+/**
+ * What the task editor holds. `no_folder`: an orchestrator or feature owner without a folder of its own.
+ * `workspace`: where its runs go; empty leaves it to the daemon (a daemon without workspaces).
+ */
 export type TaskDraft = {
   name: string; prompt: string; agent: string; model: string; effort: string;
   permission_mode: string; sandbox_mode: string; cwd: string; no_folder: boolean; worktree: boolean; branch_prefix: string;
   run_as: RunAs; feature_goal: string; autonomy: Autonomy | null;
-  group: string; enabled: boolean; schedule: ScheduleDraft; missed: MissedRuns; allow_overlap: boolean;
+  group: string; workspace: string; enabled: boolean; schedule: ScheduleDraft; missed: MissedRuns; allow_overlap: boolean;
 };
 
 /** Whether the draft's session orchestrates, and so may go without a folder. */
@@ -93,10 +96,10 @@ export const orchestrates = (d: TaskDraft) => d.run_as !== "session";
 /** The draft has no folder: an orchestrator that was not given one. */
 export const folderless = (d: TaskDraft) => orchestrates(d) && d.no_folder;
 
-export function newDraft(agent: string, cwd: string): TaskDraft {
+export function newDraft(agent: string, cwd: string, workspace = ""): TaskDraft {
   return {
     name: "", prompt: "", agent, model: "", effort: "", permission_mode: "", sandbox_mode: "", cwd, no_folder: true,
-    worktree: false, branch_prefix: "", run_as: "session", feature_goal: "", autonomy: null, group: "", enabled: true,
+    worktree: false, branch_prefix: "", run_as: "session", feature_goal: "", autonomy: null, group: "", workspace, enabled: true,
     schedule: { unit: "days", every: 1, at: "09:00", weekdays: ["mon"], day: 1 }, missed: "run_once", allow_overlap: false,
   };
 }
@@ -106,7 +109,7 @@ export function draftOfTask(t: ScheduledTask): TaskDraft {
     name: t.name, prompt: t.prompt, agent: t.agent, model: t.model ?? "", effort: t.effort ?? "",
     permission_mode: t.permission_mode ?? "", sandbox_mode: t.sandbox_mode ?? "", cwd: t.cwd, no_folder: !t.cwd,
     worktree: t.worktree, branch_prefix: t.branch_prefix ?? "", run_as: t.run_as ?? "session", feature_goal: t.feature_goal ?? "",
-    autonomy: t.autonomy ?? null, group: t.group ?? "", enabled: t.enabled,
+    autonomy: t.autonomy ?? null, group: t.group ?? "", workspace: t.workspace ?? "", enabled: t.enabled,
     schedule: draftOf(t.schedule), missed: t.missed, allow_overlap: t.allow_overlap,
   };
 }
@@ -122,6 +125,7 @@ export function inputOf(d: TaskDraft): ScheduledTaskInput {
     run_as: d.run_as, feature_goal: owner ? d.feature_goal.trim() : "", autonomy: owner ? d.autonomy : null,
     branch_prefix: d.branch_prefix.trim(), group: d.group.trim(), enabled: d.enabled,
     schedule: scheduleOf(d.schedule), missed: d.missed, allow_overlap: d.allow_overlap,
+    ...(d.workspace ? { workspace: d.workspace } : {}),
   };
 }
 

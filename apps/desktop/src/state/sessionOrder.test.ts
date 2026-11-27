@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session } from "../gen";
-import { STATE_SECTION, selectSessionSections, selectVisibleSessions, useStore } from "./store";
+import { STATE_SECTION, rollupOf, selectListedSessions, treeOf, selectNestedRows, selectSessionSections, selectVisibleSessions, useStore } from "./store";
 
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false, pending_count: 0,
@@ -13,7 +13,7 @@ Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
 
 beforeEach(() => {
   localStorage.clear();
-  useStore.setState({ sessions: {}, sessionOrder: [], sidebarFilter: "", showArchived: false, collapsedOrchestras: [] });
+  useStore.setState({ sessions: {}, sessionOrder: [], sidebarFilter: "", showArchived: false, expandedOrchestras: [], collapsedSubOrchestras: [], workspaces: [] });
 });
 
 describe("session order", () => {
@@ -60,26 +60,22 @@ describe("session order", () => {
     expect(visible()).toEqual(["a", "b"]);
   });
 
-  it("shows workers under their orchestrator and reorders them only among each other", () => {
+  it("lists leaders only, and reorders only leaders", () => {
     useStore.getState().setSessions([
       session("a", { orchestrator: true }),
       session("b"),
       session("c", { orchestrator_id: "a" }),
       session("d", { orchestrator_id: "a" }),
-      session("e", { orchestrator_id: "z" }),
     ].map((s) => ({ ...s, group: "g" })));
-    // An orchestrator that is not shown leaves its worker where it is.
-    expect(visible()).toEqual(["a", "c", "d", "b", "e"]);
+    expect(visible()).toEqual(["a", "b"]);
+    // A worker has no row of its own to move.
     useStore.getState().moveSessionBy("d", -1);
-    expect(visible()).toEqual(["a", "d", "c", "b", "e"]);
-    useStore.getState().moveSessionTo("c", "b");
-    expect(visible()).toEqual(["a", "d", "c", "b", "e"]);
-    // Moving the orchestrator takes its workers along.
+    expect(visible()).toEqual(["a", "b"]);
     useStore.getState().moveSessionTo("b", "a");
-    expect(visible()).toEqual(["b", "a", "d", "c", "e"]);
+    expect(visible()).toEqual(["b", "a"]);
   });
 
-  it("groups no longer make sections: every idle session is in one", () => {
+  it("groups no longer make sections: every idle leader is in one", () => {
     useStore.getState().setSessions([
       session("a"),
       session("b", { orchestrator: true }),
@@ -88,37 +84,57 @@ describe("session order", () => {
       session("e", { orchestrator_id: "d" }),
     ]);
     expect(selectSessionSections(useStore.getState()).map(([key, list]) => [key, list.map((s) => s.id)])).toEqual([
-      [STATE_SECTION + "idle", ["a", "b", "c", "d", "e"]],
+      [STATE_SECTION + "idle", ["a", "b", "d"]],
     ]);
   });
 
-  it("shows the workers of a worker that orchestrates in turn", () => {
-    useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" }), session("c", { orchestrator_id: "b" }), session("d")]);
-    expect(visible()).toEqual(["a", "b", "c", "d"]);
+  it("nests a leader's whole tree in worker order while expanded, and only what waits on the user while collapsed", () => {
+    useStore.getState().setSessions([
+      session("a"),
+      session("b", { orchestrator_id: "a", orchestrator: true }),
+      session("c", { orchestrator_id: "b" }),
+      session("d", { orchestrator_id: "a", pending_count: 1 }),
+      session("e"),
+    ]);
+    const nested = () => selectNestedRows(useStore.getState(), "a");
+    // Collapsed by default: the peek, and how many it leaves out.
+    expect(nested()).toMatchObject({ expanded: false, more: 2, total: 3 });
+    expect(nested().rows.map((r) => [r.session.id, r.depth])).toEqual([["d", 1]]);
+    useStore.getState().setOrchestraExpanded("a", true);
+    expect(nested().rows.map((r) => [r.session.id, r.depth])).toEqual([["b", 1], ["c", 2], ["d", 1]]);
+    // An orchestrator under the leader closes on its own.
+    useStore.getState().setOrchestraExpanded("b", false);
+    expect(nested().rows.map((r) => r.session.id)).toEqual(["b", "d"]);
+    expect(visible()).toEqual(["a", "e"]);
   });
 
-  it("keeps orchestrators that point at each other, below the others", () => {
-    useStore.getState().setSessions([session("a", { orchestrator_id: "b" }), session("b", { orchestrator_id: "a" }), session("c")]);
-    expect(visible()).toEqual(["c", "a", "b"]);
+  it("stops the nested list at 8 rows and says so", () => {
+    useStore.getState().setSessions([session("a"), ...Array.from({ length: 9 }, (_, i) => session(`w${i}`, { orchestrator_id: "a", created_at: `2026-09-30T00:01:0${i}Z` }))]);
+    useStore.getState().setOrchestraExpanded("a", true);
+    const n = selectNestedRows(useStore.getState(), "a");
+    expect(n.rows).toHaveLength(8);
+    expect(n.overflow).toBe(true);
   });
 
-  it("moves a session up and down past a whole orchestra", () => {
-    useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" }), session("c", { orchestrator_id: "a" }), session("d")]);
-    useStore.getState().moveSessionBy("d", -1);
-    expect(visible()).toEqual(["d", "a", "b", "c"]);
-    useStore.getState().moveSessionBy("d", 1);
-    expect(visible()).toEqual(["a", "b", "c", "d"]);
-    // The last worker has no worker of its orchestrator below it.
-    useStore.getState().moveSessionBy("c", 1);
-    expect(visible()).toEqual(["a", "b", "c", "d"]);
+  it("breaks an orchestrator cycle at its oldest session: one leader, each session listed and counted once", () => {
+    // a and b point at each other, c works under a; a is the oldest.
+    useStore.getState().setSessions([session("b", { orchestrator_id: "a" }), session("a", { orchestrator_id: "b" }), session("c", { orchestrator_id: "a", pending_count: 1 }), session("d")]);
+    expect(visible()).toEqual(["a", "d"]);
+    const st = useStore.getState();
+    expect(selectListedSessions(st).map((s) => s.id)).toEqual(["a", "b", "c", "d"]);
+    expect(treeOf("a", st.sessions).map((s) => s.id)).toEqual(["b", "c"]);
+    expect(rollupOf(st.sessions.a, st.sessions)).toBe("waiting");
+    // b's own report of the loop changes nothing: the cycle still breaks at a.
+    useStore.getState().upsertSession(session("b", { orchestrator_id: "a", status: "running" }));
+    expect(visible()).toEqual(["a", "d"]);
+    expect(selectListedSessions(useStore.getState()).map((s) => s.id)).toEqual(["a", "b", "c", "d"]);
   });
 
-  it("forgets collapsed orchestrators that no longer exist", () => {
+  it("forgets expanded leaders that no longer exist", () => {
     useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" })]);
-    useStore.getState().setOrchestraCollapsed("a", true);
-    useStore.getState().setOrchestraCollapsed("z", true);
-    expect(visible()).toEqual(["a"]);
+    useStore.getState().setOrchestraExpanded("a", true);
+    useStore.getState().setOrchestraExpanded("z", true);
     useStore.getState().setSessions([session("a"), session("b", { orchestrator_id: "a" })]);
-    expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed.v1")!)).toEqual(["a"]);
+    expect(JSON.parse(localStorage.getItem("aura.sidebar-expanded.v1")!)).toEqual(["a"]);
   });
 });

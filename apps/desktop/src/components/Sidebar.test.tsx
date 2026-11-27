@@ -53,7 +53,7 @@ beforeEach(() => {
     client: { getSetting, setSetting } as unknown as RpcClient,
     sessions: { a: session("a", "Hours page"), b: session("b", "Other") },
     sessionOrder: ["a", "b"], transcripts: {}, sidebarFilter: "", showArchived: false,
-    collapsedOrchestras: [], selectedId: null, sidebarCursor: null, modView: null, focus: "sidebar",
+    expandedOrchestras: [], collapsedSubOrchestras: [], workspaces: [], selectedId: null, sidebarCursor: null, modView: null, focus: "sidebar",
     sidebarTab: "sessions", collapsedGroups: [],
   });
 });
@@ -81,88 +81,95 @@ it("shows the chips mods add to each row, and none from a mod that fails", () =>
   }
 });
 
-it("shows every level of workers under their orchestrator", () => {
+it("lists leaders only, collapsed, and an expanded leader's whole tree under it", () => {
   orchestras();
   render(<Sidebar />);
-  expect(rows()).toEqual(["p", "o1", "w1", "w2", "w3", "o2", "v1", "q"]);
-  expect(toggle("o1")?.getAttribute("aria-expanded")).toBe("true");
-  expect(toggle("w2")?.getAttribute("aria-expanded")).toBe("true");
+  expect(rows()).toEqual(["p", "o1", "o2", "q"]);
+  expect(toggle("o1")?.getAttribute("aria-expanded")).toBe("false");
   expect(toggle("p")).toBeNull();
+  fireEvent.click(toggle("o1")!);
+  expect(rows()).toEqual(["p", "o1", "w1", "w2", "w3", "o2", "q"]);
+  // An orchestrator under the leader opens with it, and has a toggle of its own; a plain worker none.
+  expect(toggle("w2")?.getAttribute("aria-expanded")).toBe("true");
   expect(toggle("w1")).toBeNull();
+  // Nested rows carry no ⌘-digit; leaders keep theirs.
+  expect(document.querySelector('[data-session-id="w1"] kbd')).toBeNull();
+  expect(document.querySelector('[data-session-id="o2"] kbd')?.textContent).toBe("3");
 });
 
-it("collapses an orchestrator to hide its workers and keeps that across a restart", () => {
+it("expands a leader and keeps that across a restart, under its own key", () => {
   orchestras();
   render(<Sidebar />);
   fireEvent.click(toggle("o1")!);
-  expect(rows()).toEqual(["p", "o1", "o2", "v1", "q"]);
-  expect(toggle("o1")?.getAttribute("aria-expanded")).toBe("false");
-  expect(document.querySelector('[data-session-id="o1"] .sub .workers')?.textContent).toContain("+3");
-  // Collapsing does not select the orchestrator, and the hidden workers give up their ⌘-numbers.
+  // Expanding does not select the leader.
   expect(current()).toBeNull();
-  expect(document.querySelector('[data-session-id="o2"] kbd')?.textContent).toBe("3");
-  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed.v1")!)).toEqual(["o1"]);
+  expect(JSON.parse(localStorage.getItem("aura.sidebar-expanded.v1")!)).toEqual(["o1"]);
 
   // Another window, or the next start, reads the saved state.
-  act(() => useStore.setState({ collapsedOrchestras: [] }));
-  expect(rows()).toContain("w1");
-  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "aura.sidebar-collapsed.v1" })); });
-  expect(rows()).toEqual(["p", "o1", "o2", "v1", "q"]);
+  act(() => useStore.setState({ expandedOrchestras: [] }));
+  expect(rows()).not.toContain("w1");
+  act(() => { window.dispatchEvent(new StorageEvent("storage", { key: "aura.sidebar-expanded.v1" })); });
+  expect(rows()).toEqual(["p", "o1", "w1", "w2", "w3", "o2", "q"]);
 
-  fireEvent.click(toggle("o1")!);
-  expect(rows()).toEqual(["p", "o1", "w1", "w2", "w3", "o2", "v1", "q"]);
-  expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed.v1")!)).toEqual([]);
+  // The workers chip toggles too.
+  fireEvent.click(document.querySelector('[data-session-id="o1"] .chip.workers')!);
+  expect(rows()).toEqual(["p", "o1", "o2", "q"]);
+  expect(JSON.parse(localStorage.getItem("aura.sidebar-expanded.v1")!)).toEqual([]);
 });
 
 it("collapses a nested orchestrator on its own", () => {
   orchestras();
+  useStore.setState({ expandedOrchestras: ["o1"] });
   render(<Sidebar />);
   fireEvent.click(toggle("w2")!);
-  expect(rows()).toEqual(["p", "o1", "w1", "w2", "o2", "v1", "q"]);
+  expect(rows()).toEqual(["p", "o1", "w1", "w2", "o2", "q"]);
 });
 
-it("opens a collapsed orchestra when one of its workers is selected from elsewhere", () => {
+it("expands the leader of a worker selected from elsewhere", () => {
   orchestras();
-  useStore.setState({ collapsedOrchestras: ["o1", "w2", "o2"] });
+  useStore.setState({ collapsedSubOrchestras: ["w2"] });
   render(<Sidebar />);
   act(() => useStore.getState().select("w3"));
   expect(rows()).toEqual(["p", "o1", "w1", "w2", "w3", "o2", "q"]);
-  expect(useStore.getState().collapsedOrchestras).toEqual(["o2"]);
+  expect(useStore.getState().expandedOrchestras).toEqual(["o1"]);
+  expect(useStore.getState().collapsedSubOrchestras).toEqual([]);
 });
 
-it("shows matching workers of a collapsed orchestrator while filtering", () => {
+it("shows the leader of a worker that matches the filter, with that worker", () => {
   orchestras();
-  useStore.setState({ collapsedOrchestras: ["o1"], sidebarFilter: "worker 3" });
+  useStore.setState({ sidebarFilter: "worker 3" });
   render(<Sidebar />);
-  expect(rows()).toEqual(["w3"]);
+  expect(rows()).toEqual(["o1", "w3"]);
 });
 
-it("walks into an orchestra from its orchestrator and out past its last worker", () => {
+it("walks into an expanded leader's workers and out past its last one", () => {
   orchestras();
+  useStore.setState({ expandedOrchestras: ["o1", "o2"] });
   render(<Sidebar />);
   act(() => useStore.getState().select("p"));
-  // The orchestrator belongs to its orchestra, so down from it goes through every worker, nested ones included.
+  // Down from a leader goes through its workers, nested ones included.
   for (const id of ["o1", "w1", "w2", "w3", "o2", "v1", "q", "q"]) {
     press("sidebar.nav.down");
     expect(current()).toBe(id);
   }
 });
 
-it("skips the workers of open orchestras when moving up from outside them", () => {
+it("reaches workers only from their leader", () => {
   orchestras();
+  useStore.setState({ expandedOrchestras: ["o1", "o2"] });
   render(<Sidebar />);
   act(() => useStore.getState().select("q"));
   for (const id of ["o2", "o1", "p", "p"]) {
     press("sidebar.nav.up");
     expect(current()).toBe(id);
   }
-  // Up from a worker stays in its orchestra until the orchestrator, then leaves it.
+  // Up from a worker stays with its leader until the leader, then leaves it.
   act(() => useStore.getState().select("w3"));
   for (const id of ["w2", "w1", "o1", "p"]) {
     press("sidebar.nav.up");
     expect(current()).toBe(id);
   }
-  // Up from the orchestrator below lands on the orchestrator above, not its last worker.
+  // Up from the leader below lands on the leader above, not its last worker.
   act(() => useStore.getState().select("v1"));
   press("sidebar.nav.up");
   expect(current()).toBe("o2");
@@ -170,9 +177,9 @@ it("skips the workers of open orchestras when moving up from outside them", () =
   expect(current()).toBe("o1");
 });
 
-it("steps over a collapsed nested orchestra inside an open one", () => {
+it("steps over a collapsed nested orchestra inside an expanded leader", () => {
   orchestras();
-  useStore.setState({ collapsedOrchestras: ["w2"] });
+  useStore.setState({ expandedOrchestras: ["o1"], collapsedSubOrchestras: ["w2"] });
   render(<Sidebar />);
   act(() => useStore.getState().select("o1"));
   for (const id of ["w1", "w2", "o2"]) {
@@ -181,20 +188,19 @@ it("steps over a collapsed nested orchestra inside an open one", () => {
   }
 });
 
-it("keeps first and last at the ends of the sidebar", () => {
+it("keeps first and last on the first and last leader", () => {
   orchestras();
-  useStore.setState({ sessionOrder: ["p", "q", "o1", "w1", "w2", "w3", "o2", "v1"] });
+  useStore.setState({ sessionOrder: ["p", "q", "o1", "w1", "w2", "w3", "o2", "v1"], expandedOrchestras: ["o2"] });
   render(<Sidebar />);
   act(() => useStore.getState().select("w1"));
   press("sidebar.nav.first");
   expect(current()).toBe("p");
   press("sidebar.nav.last");
-  expect(current()).toBe("v1");
+  expect(current()).toBe("o2");
 });
 
-it("moves through every session as before outside an orchestra and past collapsed ones", () => {
+it("moves between leaders past collapsed ones, and numbers leaders only", () => {
   orchestras();
-  useStore.setState({ collapsedOrchestras: ["o1", "o2"] });
   render(<Sidebar />);
   press("sidebar.nav.down");
   expect(current()).toBe("p");
@@ -208,7 +214,7 @@ it("moves through every session as before outside an orchestra and past collapse
   expect(current()).toBe("q");
 
   // Plain sessions alone are unchanged.
-  act(() => useStore.setState({ sessions: { a: session("a", "A"), b: session("b", "B") }, sessionOrder: ["a", "b"], collapsedOrchestras: [] }));
+  act(() => useStore.setState({ sessions: { a: session("a", "A"), b: session("b", "B") }, sessionOrder: ["a", "b"] }));
   act(() => useStore.getState().select("a"));
   press("sidebar.nav.down");
   expect(current()).toBe("b");
@@ -216,7 +222,7 @@ it("moves through every session as before outside an orchestra and past collapse
   expect(current()).toBe("a");
 });
 
-it("opens and closes orchestras with left and right like a tree", () => {
+it("opens and closes leaders and nested orchestrators with left and right like a tree", () => {
   orchestras();
   render(<Sidebar />);
   act(() => useStore.getState().select("w3"));
@@ -228,8 +234,8 @@ it("opens and closes orchestras with left and right like a tree", () => {
   press("sidebar.nav.collapse");
   expect(current()).toBe("o1");
   press("sidebar.nav.collapse");
-  expect(rows()).toEqual(["p", "o1", "o2", "v1", "q"]);
-  // A collapsed orchestrator is a single row that up and down move past.
+  expect(rows()).toEqual(["p", "o1", "o2", "q"]);
+  // A collapsed leader is a single row that up and down move past.
   press("sidebar.nav.up");
   expect(current()).toBe("p");
   press("sidebar.nav.down");
@@ -239,19 +245,21 @@ it("opens and closes orchestras with left and right like a tree", () => {
   press("sidebar.nav.up");
   expect(current()).toBe("o1");
   press("sidebar.nav.expand");
-  expect(rows()).toEqual(["p", "o1", "w1", "w2", "o2", "v1", "q"]);
+  expect(rows()).toEqual(["p", "o1", "w1", "w2", "o2", "q"]);
   expect(current()).toBe("o1");
   press("sidebar.nav.expand");
   expect(current()).toBe("w1");
-  // Right on a worker and left on a plain session do nothing.
+  // Right on a plain worker does nothing; right on a closed nested orchestrator opens it, then steps in.
   press("sidebar.nav.expand");
   expect(current()).toBe("w1");
-  act(() => useStore.getState().select("p"));
-  press("sidebar.nav.collapse");
-  expect(current()).toBe("p");
+  press("sidebar.nav.down");
+  press("sidebar.nav.expand");
+  expect(rows()).toContain("w3");
+  press("sidebar.nav.expand");
+  expect(current()).toBe("w3");
 });
 
-it("navigates from the orchestrator when the selected worker was collapsed away with the mouse", () => {
+it("marks the leader when the selected worker was collapsed away with the mouse, and navigates from it", () => {
   orchestras();
   render(<Sidebar />);
   act(() => useStore.getState().select("w1"));
@@ -262,24 +270,26 @@ it("navigates from the orchestrator when the selected worker was collapsed away 
   expect(current()).toBe("o2");
 });
 
-it("shows the session's agent, orchestrator mark and hidden workers on the second line, the title alone on the first", () => {
+it("shows the session's agent, orchestrator mark and the workers chip on the second line, the title alone on the first", () => {
   orchestras();
-  useStore.setState({ collapsedOrchestras: ["o1"], sessions: { ...useStore.getState().sessions, w3: session("w3", "Worker 3", { group: "Work", orchestrator_id: "w2" }) } });
+  useStore.setState({ sessions: { ...useStore.getState().sessions, w1: session("w1", "Worker 1", { group: "Work", orchestrator_id: "o1", status: "running" }) } });
   render(<Sidebar />);
   const row = document.querySelector('[data-session-id="o1"]')!;
   expect(row.querySelector(".title")?.textContent).toBe("Lead");
   expect(row.querySelector(".sub .agent")?.textContent).toBe("claude");
   expect(row.querySelector(".sub [aria-label=Orchestrator]")).toBeTruthy();
-  const workers = row.querySelector(".sub .workers")!;
-  expect(workers.textContent).toBe("+3");
-  expect(workers.getAttribute("title")).toBe("Worker 1\nWorker 2\nWorker 3");
+  const workers = row.querySelector<HTMLElement>(".sub .workers")!;
+  expect(workers.textContent).toBe("3 workers · 1 working");
+  expect(workers.getAttribute("title")).toBe("Worker 1 · working\nWorker 2 · idle\nWorker 3 · idle");
+  expect(row.getAttribute("aria-label")).toBe("Lead, idle. 3 workers: 1 working. Collapsed.");
   expect(document.querySelector('[data-session-id="p"] [aria-label=Orchestrator]')).toBeNull();
+  expect(document.querySelector('[data-session-id="p"] .chip.workers')).toBeNull();
 });
 
-it("lists sessions by state: waiting for you, working, idle; workers under their orchestrator while they share a state", () => {
+it("sections leaders by the state of their tree, and never gives a worker its own row", () => {
   const list = [
     session("p", "Plain"),
-    session("o", "Chat", { orchestrator: true, folderless: true, cwd: "/data/orchestrators/o", status: "running" }),
+    session("o", "Chat", { orchestrator: true, folderless: true, cwd: "/data/orchestrators/o" }),
     session("w", "Worker", { orchestrator_id: "o", cwd: "/work/repo", status: "running" }),
     session("done", "Worker done", { orchestrator_id: "o", attention: "done" }),
     session("g", "Grouped", { group: "G" }),
@@ -287,22 +297,33 @@ it("lists sessions by state: waiting for you, working, idle; workers under their
   ];
   useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
   render(<Sidebar />);
-  expect(rows()).toEqual(["done", "ask", "o", "w", "p", "g"]);
+  // The idle orchestrator works through its worker; its finished worker does not make it wait.
+  expect(rows()).toEqual(["ask", "o", "p", "g"]);
   expect([...document.querySelectorAll(".section-label")].map((el) => el.textContent)).toEqual(["Waiting for you", "Working", "Idle"]);
-  expect(document.querySelector('[data-session-id="w"]')?.classList.contains("worker")).toBe(true);
-  // A worker away from its orchestrator says whose it is; a group shows on the row.
-  expect(document.querySelector('[data-session-id="done"] .chip.lead')?.textContent).toBe("↳ Chat");
-  expect(document.querySelector('[data-session-id="w"] .chip.lead')).toBeNull();
+  expect(document.querySelector(".chip.lead")).toBeNull();
   expect(document.querySelector('[data-session-id="g"] .chip.group')?.textContent).toBe("G");
-  // Sessions move only within their state.
+  // Section headings count leaders, and carry what their workers have.
+  expect(document.querySelector('.section-toggle[aria-label^="Working,"]')?.getAttribute("aria-label")).toBe("Working, 1 session, 1 working, finished since you last looked. Hide its sessions");
+  // Leaders move only within their state.
   act(() => useStore.getState().moveSessionTo("p", "o"));
-  expect(rows()).toEqual(["done", "ask", "o", "w", "p", "g"]);
+  expect(rows()).toEqual(["ask", "o", "p", "g"]);
   act(() => useStore.getState().moveSessionTo("g", "p"));
-  expect(rows()).toEqual(["done", "ask", "o", "w", "g", "p"]);
-  // A session that starts working moves up to Working.
+  expect(rows()).toEqual(["ask", "o", "g", "p"]);
+  // A leader that starts working moves up to Working, in its saved place: above the orchestra.
   act(() => useStore.getState().upsertSession({ ...useStore.getState().sessions.p, status: "running" }));
-  // It keeps its place in the saved order: above the orchestra.
-  expect(rows()).toEqual(["done", "ask", "p", "o", "w", "g"]);
+  expect(rows()).toEqual(["ask", "p", "o", "g"]);
+  // A worker that asks the user puts its leader in Waiting for you, and peeks out while it is collapsed.
+  act(() => useStore.getState().upsertSession({ ...useStore.getState().sessions.done, status: "waiting_approval", pending_count: 2 }));
+  expect(rows()).toEqual(["o", "done", "ask", "p", "g"]);
+  const peek = document.querySelector('[data-session-id="done"]')!;
+  expect(peek.classList.contains("needs-you")).toBe(true);
+  expect(document.querySelector('[data-leader="o"] .nested-more')?.textContent).toBe("+1 more worker");
+  expect(document.querySelector('[data-session-id="o"] .title-line .badge')?.textContent).toBe("2");
+  expect(document.querySelector('[data-session-id="o"] .chip.workers')?.textContent).toBe("2 workers · 1 needs you");
+  // The peek does not change the saved fold.
+  expect(useStore.getState().expandedOrchestras).toEqual([]);
+  fireEvent.click(document.querySelector('[data-leader="o"] .nested-more')!);
+  expect(rows()).toEqual(["o", "w", "done", "ask", "p", "g"]);
 });
 
 it("leaves out a state no session is in", () => {
@@ -319,7 +340,7 @@ it("shows no folder for an orchestrator that belongs to none, and its workers' f
     session("w", "Worker", { orchestrator_id: "o", cwd: "/work/repo" }),
     session("x", "Picked", { orchestrator_id: "o", cwd: "/work/repo", model: "gpt-5", effort: "low" }),
   ];
-  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null, expandedOrchestras: ["o"] });
   render(<Sidebar />);
   const lead = document.querySelector<HTMLElement>('[data-session-id="o"]')!;
   expect(lead.querySelector(".sub .where")?.textContent).toBe("opus");
@@ -342,7 +363,7 @@ it("marks a feature owner, the role of each specialist under it and the decision
   useFeatures.setState({ features: {} });
   setFeature({ owner_id: "owner", goal: "", status: "waiting_on_user", autonomy: null, meeting_mode: null, team: [], decisions: [], checkpoints: [], suggestions: [], meetings: [], one_on_ones: [], report: null, created_at: "", updated_at: "", counters: {},
     questions: [{ id: "q1", question: "Which?", context: "", options: [], recommended: null, kind: "decision", checkpoint: null, asked_at: "", answer: null, withdrawn: false }] });
-  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null });
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), client: null, expandedOrchestras: ["owner"] });
   render(<Sidebar />);
   const row = (id: string) => document.querySelector<HTMLElement>(`[data-session-id="${id}"]`)!;
   expect(row("owner").querySelector("[aria-label='Feature owner']")).toBeTruthy();
@@ -388,8 +409,8 @@ it("lists the sessions scheduled tasks started on a tab of their own, by task, n
   fireEvent.click(tab(/^Scheduled/));
   expect(tab(/^Scheduled/).getAttribute("aria-selected")).toBe("true");
   expect(localStorage.getItem("aura.sidebar-tab.v1")).toBe("scheduled");
-  // The task that ran last first; its runs newest first; the worker under its orchestrator.
-  expect(rows()).toEqual(["n2", "n1", "o", "ow"]);
+  // The task that ran last first; its runs newest first; the worker under its orchestrator, collapsed.
+  expect(rows()).toEqual(["n2", "n1", "o"]);
   expect([...document.querySelectorAll(".section-label")].map((el) => el.textContent)).toEqual(["Nightly", "Weekly"]);
   // Rows keep their role marks, and drop the task's name the heading already shows.
   expect(document.querySelector('[data-session-id="o"] .orchestrator-mark')).not.toBeNull();
@@ -439,7 +460,7 @@ it("folds a section by its heading, says what is in it, and keeps that across a 
   // Each tab folds its own; a folded task shows what waits on the user in it.
   fireEvent.click(tab(/^Scheduled/));
   fireEvent.click(heading("Nightly"));
-  expect(rows()).toEqual(["o", "ow"]);
+  expect(rows()).toEqual(["o"]);
   expect(heading("Nightly").querySelector(".badge")?.textContent).toBe("2");
   expect(heading("Nightly").querySelector(".attention.waiting")).not.toBeNull();
   expect(JSON.parse(localStorage.getItem("aura.sidebar-collapsed-groups.v1")!)).toEqual(["sessions:\u0000state:idle", "scheduled:\u0000task:t1"]);
@@ -498,4 +519,16 @@ it("lets ⌘K pick from both tabs, folded sections included", () => {
   render(<Sidebar />);
   expect(rows()).toEqual(["g2"]);
   expect(selectListedSessions(useStore.getState()).map((s) => s.id)).toEqual(["g2", "a", "g1", "n2", "n1", "o", "ow"]);
+});
+
+it("renders a worker past the nested cap once it is selected in an expanded leader", () => {
+  const list = [session("lead", "Lead", { orchestrator: true }), ...Array.from({ length: 10 }, (_, i) => session(`w${i}`, `Worker ${i}`, { orchestrator_id: "lead", created_at: `2026-09-30T00:0${i}:00Z` }))];
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), expandedOrchestras: ["lead"], client: null });
+  render(<Sidebar />);
+  expect(rows()).toEqual(["lead", "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"]);
+  expect(screen.getByRole("button", { name: "Open workers panel" })).toBeTruthy();
+  // From ⌘K, the inbox or the rail: the leader is already expanded, so only the selection changes.
+  act(() => useStore.getState().select("w9"));
+  expect(rows()).toEqual(["lead", "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w9"]);
+  expect(document.querySelector('[data-session-id="w9"]')?.classList.contains("selected")).toBe(true);
 });

@@ -58,7 +58,11 @@ fn executable_names(name: &str) -> Vec<String> {
         return vec![name.to_string()];
     }
     // `.exe` first: it is a real program, `.cmd` is a shim around one.
-    vec![format!("{name}.exe"), format!("{name}.cmd"), name.to_string()]
+    vec![
+        format!("{name}.exe"),
+        format!("{name}.cmd"),
+        name.to_string(),
+    ]
 }
 
 /// Where Windows tools such as the GitHub CLI install to, searched even when

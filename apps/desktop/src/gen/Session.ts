@@ -14,7 +14,13 @@ agent: string | null,
 /**
  * The provider's own identifier (Claude session id, Codex thread id). None until known.
  */
-native_id: string | null, cwd: string, worktree: WorktreeInfo | null, title: string, group: string | null, status: SessionStatus, mode: SessionMode, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 
+native_id: string | null, cwd: string, worktree: WorktreeInfo | null, title: string, group: string | null, 
+/**
+ * The id of the [`Workspace`] the session is in; every session is in
+ * exactly one. Sessions stored before workspaces read as empty and are
+ * put in the default workspace when the daemon loads them.
+ */
+workspace: string, status: SessionStatus, mode: SessionMode, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 
 /**
  * Command for terminal sessions (argv). For structured sessions this is the
  * command used when switching to terminal mode.
@@ -80,4 +86,13 @@ scheduled_task_id: string | null,
 /**
  * That task's name when it started the session, for labels.
  */
-scheduled_task_name: string | null, };
+scheduled_task_name: string | null, 
+/**
+ * The scheduled task whose run this session is part of: set on the run
+ * itself (with `scheduled_task_id`) and on every worker under it, at any
+ * depth, when they start. Kept when the run's orchestrator is deleted,
+ * so a surviving worker is still known as part of a scheduled run.
+ * Unlike `scheduled_task_id`, it does not make the session one of the
+ * task's runs (its history, its overlap check).
+ */
+scheduled_run?: string, };

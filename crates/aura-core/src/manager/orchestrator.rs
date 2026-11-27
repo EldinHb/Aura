@@ -622,6 +622,8 @@ impl Manager {
                 cwd,
                 title: spec.title.filter(|t| !t.trim().is_empty()),
                 group: orch.group.clone(),
+                // An orchestra never spans two workspaces.
+                workspace: Some(orch.workspace.clone()),
                 model,
                 effort: spec.effort.filter(|e| !e.is_empty()),
                 permission_mode: orch.permission_mode.clone().filter(|_| same_agent),

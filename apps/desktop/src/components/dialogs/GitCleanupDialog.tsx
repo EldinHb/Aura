@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CleanupReport, ProviderKind } from "../../gen";
 import { Modal } from "../Modal";
-import { useStore } from "../../state/store";
+import { activeWorkspaceId, useStore } from "../../state/store";
 import { folderOf } from "../../lib/sessionFolder";
 
 /** `remote`: "owner/repo" of the repository's preferred remote, when it has one. */
@@ -109,7 +109,7 @@ export function GitCleanupDialog({ cwd, repo }: { cwd?: string; repo?: string })
       const target = repos?.find((r) => r.root === root);
       // Terminal and ACP sessions cannot take a first prompt without more setup.
       const agent: ProviderKind = provider === "codex" ? "codex" : "claude";
-      const s = await client.createSession({ provider: agent, cwd: root, title: `Clean up ${target ? name(target) : root}`, initial_prompt: CLEANUP_PROMPT });
+      const s = await client.createSession({ provider: agent, cwd: root, title: `Clean up ${target ? name(target) : root}`, initial_prompt: CLEANUP_PROMPT, workspace: activeWorkspaceId(useStore.getState()) });
       useStore.getState().select(s.id);
       close();
       useStore.getState().setFocus("main");

@@ -1,11 +1,13 @@
 /** Core commands: sessions, navigation, focus, approvals. Registered once from App. */
 import { registerCommands, type Command } from "../lib/commands";
-import { useStore, selectVisibleSessions, selectSelected } from "../state/store";
+import { useStore, selectVisibleSessions, selectSelected, activeWorkspaceId, leaderOf } from "../state/store";
 import type { ApprovalOption, SessionMode } from "../gen";
 import { isTauri } from "../lib/connection";
 import { setPlanView, usePlanViews } from "../state/planView";
 import { closeWorkerThreads, openTeam, openWorkerThread } from "../state/workerThreads";
 import { folderOf, workersUnder } from "../lib/sessionFolder";
+import { openWorkspaceMenu } from "../components/WorkspaceSwitcher";
+import { confirmDeleteWorkspace } from "../components/dialogs/WorkspaceDialogs";
 
 function st() {
   return useStore.getState();
@@ -81,7 +83,10 @@ function visible() {
 function moveSession(delta: number) {
   const list = visible();
   if (list.length === 0) return;
-  const cur = list.findIndex((s) => s.id === st().selectedId);
+  // From a worker, step from its leader: workers have no place among the leaders.
+  const here = st().selectedId ? st().sessions[st().selectedId!] : undefined;
+  const leader = here ? leaderOf(here, st().sessions) : undefined;
+  const cur = list.findIndex((s) => s.id === leader?.id);
   const next = cur < 0 ? 0 : (cur + delta + list.length) % list.length;
   st().select(list[next].id);
 }
@@ -174,7 +179,7 @@ export const coreCommands: Command[] = [
     run: async () => {
       const here = selectSelected(st());
       const cwd = (here && folderOf(here)) || st().settings.defaultCwd || (await client().home()) || "/";
-      const s = await client().createSession({ provider: "terminal", cwd });
+      const s = await client().createSession({ provider: "terminal", cwd, workspace: activeWorkspaceId(st()) });
       st().select(s.id);
       setFocus("main");
     },
@@ -327,6 +332,44 @@ export const coreCommands: Command[] = [
     },
   },
   { id: "app.reload", title: "Reload UI", group: "Aura", run: () => location.reload() },
+  // workspaces
+  { id: "workspace.switch", title: "Workspace: Switch…", group: "Workspace", keywords: ["workspace", "switch"], run: () => openWorkspaceMenu() },
+  {
+    id: "workspace.go-nth",
+    title: "Workspace: go to by number",
+    group: "Workspace",
+    hidden: true,
+    run: (n) => {
+      const w = st().workspaces[Number(n) - 1];
+      if (w) st().switchWorkspace(w.id);
+    },
+  },
+  { id: "workspace.new", title: "Workspace: New…", group: "Workspace", keywords: ["create workspace"], run: () => st().openDialog({ kind: "workspace-edit" }) },
+  { id: "workspace.rename", title: "Workspace: Rename…", group: "Workspace", run: () => { const id = activeWorkspaceId(st()); if (id) st().openDialog({ kind: "workspace-edit", id }); } },
+  { id: "workspace.delete", title: "Workspace: Delete…", group: "Workspace", keywords: ["remove workspace"], run: () => { const id = activeWorkspaceId(st()); if (id) confirmDeleteWorkspace(id); } },
+  { id: "workspace.gather", title: "Workspace: Move sessions here…", group: "Workspace", keywords: ["move", "bring"], run: () => st().openDialog({ kind: "workspace-gather" }) },
+  {
+    id: "session.move-workspace",
+    title: "Move to workspace…",
+    group: "Workspace",
+    keywords: ["workspace", "move session"],
+    when: "hasSelection",
+    run: () => {
+      const s = selected();
+      // Orchestras stay whole: a worker goes where its orchestrator goes.
+      if (s.orchestrator_id && st().sessions[s.orchestrator_id]) return st().toast("Workers stay with their orchestrator. Move the orchestrator.", "warn");
+      st().openDialog({ kind: "workspace-move", sessionId: s.id });
+    },
+  },
+  { id: "workers.cleanup", title: "Clean up worker sessions…", group: "Workspace", keywords: ["delete workers", "bulk delete", "cleanup"], run: () => st().openDialog({ kind: "workers-cleanup", scope: "workspace" }) },
+  {
+    id: "workers.cleanup-orchestrator",
+    title: "Clean up this orchestrator's workers…",
+    group: "Workspace",
+    keywords: ["delete workers", "cleanup"],
+    when: "hasSelection,orchestrator,hasWorkers",
+    run: () => st().openDialog({ kind: "workers-cleanup", orchestratorId: selected().id }),
+  },
 ];
 
 export function registerCoreCommands() {

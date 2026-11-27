@@ -17,9 +17,21 @@ it("falls back to the default for a saved setting of another type", async () => 
   expect(useStore.getState().settings).toEqual({ ...defaultSettings, theme: "light" });
 });
 
-it("loads collapsed orchestrators when the store is created", async () => {
+it("loads expanded leaders when the store is created, and drops the collapsed orchestrators saved before leaders-only", async () => {
   localStorage.setItem("aura.sidebar-collapsed.v1", JSON.stringify(["o1"]));
+  localStorage.setItem("aura.sidebar-expanded.v1", JSON.stringify(["o2"]));
   vi.resetModules();
   const { useStore } = await import("./store");
-  expect(useStore.getState().collapsedOrchestras).toEqual(["o1"]);
+  expect(useStore.getState().expandedOrchestras).toEqual(["o2"]);
+  expect(localStorage.getItem("aura.sidebar-collapsed.v1")).toBeNull();
+});
+
+it("comes back to the workspace this window showed last", async () => {
+  localStorage.setItem("aura.workspace", "ws-2");
+  vi.resetModules();
+  const { useStore } = await import("./store");
+  expect(useStore.getState().activeWorkspace).toBe("ws-2");
+  // Gone since: the first workspace instead.
+  useStore.getState().setWorkspaces([{ id: "ws-1", name: "One", created_at: "", position: 0 }]);
+  expect(useStore.getState().activeWorkspace).toBe("ws-1");
 });

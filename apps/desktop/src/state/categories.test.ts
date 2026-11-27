@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session } from "../gen";
-import { categoryOf, selectSessionSections, STATE_SECTION, useStore } from "./store";
+import { categoryOf, rollupOf, selectSessionSections, STATE_SECTION, useStore } from "./store";
 import { newlyWaiting, snapshot } from "./waitingSound";
 
 function session(id: string, patch: Partial<Session> = {}): Session {
@@ -13,7 +13,7 @@ Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
 
 beforeEach(() => {
   localStorage.clear();
-  useStore.setState({ sessions: {}, sessionOrder: [], sidebarFilter: "", showArchived: false, collapsedOrchestras: [], collapsedGroups: [], sidebarTab: "sessions" });
+  useStore.setState({ sessions: {}, sessionOrder: [], sidebarFilter: "", showArchived: false, expandedOrchestras: [], collapsedSubOrchestras: [], workspaces: [], collapsedGroups: [], sidebarTab: "sessions" });
 });
 
 describe("session categories", () => {
@@ -47,14 +47,34 @@ describe("session categories", () => {
     ]);
   });
 
-  it("keeps a worker under its orchestrator only while both are in the same state", () => {
+  it("sections leaders only, by the state of their whole tree", () => {
     useStore.getState().setSessions([
-      session("lead", { orchestrator: true, status: "running" }),
+      session("lead", { orchestrator: true }),
       session("w1", { orchestrator_id: "lead", status: "running" }),
       session("w2", { orchestrator_id: "lead", attention: "done" }),
+      session("idle"),
     ]);
-    const sections = Object.fromEntries(selectSessionSections(useStore.getState()).map(([k, list]) => [k.slice(STATE_SECTION.length), list.map((s) => s.id)]));
-    expect(sections).toEqual({ waiting: ["w2"], working: ["lead", "w1"] });
+    const sections = () => Object.fromEntries(selectSessionSections(useStore.getState()).map(([k, list]) => [k.slice(STATE_SECTION.length), list.map((s) => s.id)]));
+    // A working worker makes its idle leader working; its finished worker does not make it wait.
+    expect(sections()).toEqual({ working: ["lead"], idle: ["idle"] });
+    // A worker that waits on the user, at any depth, puts its leader in Waiting for you.
+    useStore.getState().upsertSession(session("sub", { orchestrator_id: "w1", orchestrator: true }));
+    useStore.getState().upsertSession(session("deep", { orchestrator_id: "sub", status: "waiting_input" }));
+    expect(sections()).toEqual({ waiting: ["lead"], idle: ["idle"] });
+  });
+
+  it("rolls up needs you > working > idle", () => {
+    const sessions = (list: ReturnType<typeof session>[]) => Object.fromEntries(list.map((s) => [s.id, s]));
+    const lead = session("lead");
+    expect(rollupOf(lead, sessions([lead, session("w", { orchestrator_id: "lead" })]))).toBe("idle");
+    expect(rollupOf(lead, sessions([lead, session("w", { orchestrator_id: "lead", status: "running" })]))).toBe("working");
+    expect(rollupOf(lead, sessions([lead, session("w", { orchestrator_id: "lead", status: "running" }), session("x", { orchestrator_id: "lead", pending_count: 1 })]))).toBe("waiting");
+    expect(rollupOf(lead, sessions([lead, session("w", { orchestrator_id: "lead", attention: "waiting" })]))).toBe("waiting");
+    expect(rollupOf(lead, sessions([lead, session("w", { orchestrator_id: "lead", attention: "failed" })]))).toBe("idle");
+    // The leader's own news counts, as before.
+    expect(rollupOf(session("lead", { attention: "done" }), sessions([lead]))).toBe("waiting");
+    // An archived worker does not count.
+    expect(rollupOf(lead, sessions([lead, session("w", { orchestrator_id: "lead", status: "running", archived: true })]))).toBe("idle");
   });
 });
 

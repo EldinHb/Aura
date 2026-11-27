@@ -1006,3 +1006,77 @@ input[type=checkbox], input[type=radio] { accent-color: var(--md-primary); }
 .specialist-suggestions .suggestions-resolved ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
 .card.feature-card .suggestion-evidence summary { cursor: pointer; color: var(--fg-muted); }
 .card.feature-card .suggestion-evidence ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+
+/* Workspaces: the switcher row at the top of the sidebar, its list and its actions. */
+.workspace-switcher { position: relative; flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px 4px; }
+.workspace-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: var(--shape-full); font-weight: 500; color: var(--fg); cursor: pointer; transition: background-color 0.12s; }
+.workspace-name:hover { background: var(--hover-layer); }
+.workspace-name .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-others { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.workspace-others .badge { height: 16px; min-width: 16px; padding: 0 5px; font-size: 10px; }
+.workspace-more { flex: none; width: 32px; height: 32px; border-radius: var(--shape-full); color: var(--fg-muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.workspace-more:hover { background: var(--hover-layer); color: var(--fg); }
+.workspace-menu { position: absolute; top: calc(100% + 2px); left: 12px; right: 12px; z-index: 30; display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow: auto; padding: 8px; border-radius: var(--shape-md); background: var(--md-surface-container-high); box-shadow: var(--elev-2); }
+.workspace-menu input { height: 32px; margin-bottom: 4px; border: none; border-radius: var(--shape-full); padding: 0 12px; background: var(--md-surface-container-highest); }
+.workspace-options { display: flex; flex-direction: column; gap: 2px; }
+.workspace-option { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 10px; border-radius: var(--shape-sm); text-align: left; cursor: pointer; color: var(--fg); }
+.workspace-option.active, .workspace-option:hover:not(:disabled), .workspace-option:focus-visible { background: var(--hover-layer); }
+.workspace-option:disabled { opacity: 0.5; cursor: default; }
+.workspace-option.current .name { font-weight: 600; }
+.workspace-option .check { flex: none; width: 14px; color: var(--md-primary); }
+.workspace-option .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-option .count { font-variant-numeric: tabular-nums; }
+.workspace-option .badge { height: 16px; min-width: 16px; padding: 0 5px; font-size: 10px; }
+.workspace-option kbd { padding: 0 4px; font-size: 10px; line-height: 14px; }
+.workspace-divider { height: 1px; margin: 4px 0; background: var(--md-outline-variant); }
+.workspace-none { padding: 4px 10px; }
+.main-tab-workspace { flex: none; font-size: var(--fs-label-s); }
+
+/* Leaders only: workers sit under their leader. A worker that waits on the user shows while the leader is collapsed. */
+.session-row .chip.workers { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; background: transparent; }
+.session-row .chip.workers:hover { background: var(--hover-layer); }
+.session-row .chip.workers .dot { width: 6px; height: 6px; }
+.session-row.needs-you { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.session-row.needs-you:hover { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.nested-more { display: block; width: calc(100% - 26px); margin: 0 0 4px 26px; padding: 2px 12px; border-radius: var(--shape-sm); font-size: var(--fs-label-s); text-align: left; cursor: pointer; }
+.nested-more:hover { background: var(--hover-layer); color: var(--fg); }
+.session-row .row-action { display: none; flex: none; padding: 0 6px; border-radius: var(--shape-sm); font-size: 10px; line-height: 16px; color: var(--fg-muted); border: 1px solid var(--md-outline-variant); cursor: pointer; }
+.session-row:hover .row-action, .session-row .row-action:focus-visible { display: inline-block; }
+.session-row .row-action:hover { color: var(--fg); background: var(--hover-layer); }
+
+/* The status rail: pinned between the list and the scheduled tasks line; the list keeps at least 40% of the height. */
+.session-list { min-height: 40%; }
+.status-rail { flex: 0 1 auto; min-height: 0; max-height: 60%; overflow: auto; padding: 4px 8px 6px; border-top: 1px solid var(--md-outline-variant); }
+.rail-block + .rail-block { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--md-outline-variant); }
+.status-rail .rail-heading { display: block; width: 100%; padding: 8px 12px 2px; text-align: left; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px; }
+.status-rail button.rail-heading { cursor: pointer; border-radius: var(--shape-sm); }
+.status-rail button.rail-heading:hover { color: var(--fg); background: var(--hover-layer); }
+.rail-subheading { padding: 4px 12px 2px; font-size: var(--fs-label-s); color: var(--md-tertiary); }
+.rail-empty { padding: 2px 12px 4px; font-size: var(--fs-label-s); }
+.session-row.rail-row { width: 100%; margin: 0; padding: 4px 12px; text-align: left; align-items: center; cursor: pointer; color: inherit; }
+.session-row.rail-row > .dot { margin-top: 0; }
+.session-row.rail-row .title-line { min-width: 0; }
+/* The title keeps its room; the workspace and the reason give way first, down to nothing (the tooltip has them). */
+.session-row.rail-row .title { flex: 0 1 auto; min-width: 0; }
+.session-row.rail-row .rail-suffix { flex: 1 1000 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-label-s); }
+.session-row.rail-row .badge { height: 16px; min-width: 16px; padding: 0 5px; font-size: 10px; }
+.session-row.rail-row:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--md-primary) 75%, transparent); }
+.rail-more { display: block; width: 100%; padding: 2px 12px 2px 30px; text-align: left; font-size: var(--fs-label-s); border-radius: var(--shape-sm); cursor: pointer; }
+.rail-more:hover { background: var(--hover-layer); color: var(--fg); }
+.status-rail .section-heading.rail-idle { margin: 2px 0 0; }
+.status-rail .rail-idle .section-toggle { padding: 4px 12px; font-size: var(--fs-label-s); }
+
+/* Worker cleanup: groups per orchestrator, each a tri-state header over its workers. */
+.workers-cleanup .modal-head { display: flex; align-items: center; gap: 12px; }
+.cleanup-tools { display: flex; gap: 8px; margin-bottom: 8px; }
+.cleanup-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow: auto; }
+.cleanup-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-weight: 500; border-radius: var(--shape-sm); }
+.cleanup-row { display: grid; grid-template-columns: auto 8px 1fr auto auto; align-items: center; gap: 8px; padding: 4px 8px 4px 32px; border-radius: var(--shape-sm); }
+.cleanup-head:hover, .cleanup-row:hover { background: var(--hover-layer); }
+.cleanup-row .cleanup-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cleanup-row .chip.specialist { margin-left: 6px; }
+.cleanup-row .cleanup-state { font-size: var(--fs-label-s); white-space: nowrap; }
+.cleanup-row .cleanup-error { grid-column: 3 / -1; font-size: var(--fs-label-s); }
+.modal-foot .grow { flex: 1; }
+.worker-list-head { display: flex; align-items: center; gap: 8px; padding: 0 4px 6px; }
+.worker-list > [role="list"] { display: flex; flex-direction: column; gap: 2px; }
