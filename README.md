@@ -636,7 +636,8 @@ commands, keys, settings. Aura ships three, which are on unless you turn them of
   the selected session and its workers work on: its state, who reviewed and who
   is still to review, its checks, and whether it is ready to merge, kept up to date;
   approved ones can be squash-merged from the card. A PR's title opens its page in a
-  tab: the conversation, commits, checks and changed files, laid out like GitHub's.
+  tab: the conversation, commits, checks and changed files, laid out like GitHub's. It needs
+  the GitHub CLI (`gh`), signed in, and works without the other mods.
 
 Settings → Mods lists them with what each may do, their settings and their log,
 and lets you disable, reload or approve them. Your own mods go in
