@@ -166,6 +166,14 @@ describe("workspace 1–9 by number", () => {
     expect(formatKeys(workspaceDigitKeys(3, true), true)).toBe("⌃3");
   });
 
+  it("switches workspace from a focused terminal on both platforms; a shell keeps its other ctrl keys", () => {
+    const inTerminal = { terminalFocused: true, focus: "main" };
+    expect(run(true, "ctrl+4", inTerminal)).toEqual(["workspace.go-nth", 4]);
+    expect(run(false, "alt+shift+4", inTerminal)).toEqual(["workspace.go-nth", 4]);
+    // Ctrl+K stays the shell's on macOS, as before.
+    expect(run(true, "ctrl+k", inTerminal)).toBe("none");
+  });
+
   it("collides with no other default binding", () => {
     for (const mac of [true, false]) {
       const chords = new Set(workspaceDigitBindings(mac).map((b) => normalizeChord(b.keys, mac, "ctrl+space")));

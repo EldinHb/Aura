@@ -17,6 +17,9 @@ export type KeyResult =
 
 const MOD_ORDER = ["ctrl", "alt", "shift", "cmd"];
 
+/** Commands whose bindings reach Aura from a focused terminal whatever their chord. */
+const TERMINAL_PASS = new Set(["workspace.go-nth"]);
+
 export function normalizeChord(chord: string, isMac: boolean, leader: string): string {
   const raw = chord.trim().toLowerCase();
   if (raw === "leader") return normalizeChord(leader, isMac, "ctrl+space");
@@ -179,11 +182,13 @@ export class Keymap {
   /**
    * Whether a chord is allowed to fire while a text input / terminal has focus.
    * Inputs: modifier chords, escape and the leader. Terminals: only leader and
-   * cmd-chords (mac) / ctrl+shift-chords (others) so the shell keeps ctrl keys.
+   * cmd-chords (mac) / ctrl+shift-chords (others) so the shell keeps ctrl keys,
+   * and the workspace digits (⌃1–9 on macOS), which a shell has no use for.
    */
   eligibleInInput(firstChord: string, ctx: CommandContext, binding: Binding): boolean {
     if (firstChord === this.leaderChord) return true;
     if (ctx.terminalFocused) {
+      if (TERMINAL_PASS.has(binding.command)) return true;
       if (this.isMac) return firstChord.includes("cmd+");
       return firstChord.startsWith("ctrl+shift+") || firstChord.includes("alt+");
     }

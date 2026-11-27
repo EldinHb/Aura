@@ -1,6 +1,6 @@
 /** Core commands: sessions, navigation, focus, approvals. Registered once from App. */
 import { registerCommands, type Command } from "../lib/commands";
-import { useStore, selectVisibleSessions, selectSelected, activeWorkspaceId } from "../state/store";
+import { useStore, selectVisibleSessions, selectSelected, activeWorkspaceId, leaderOf } from "../state/store";
 import type { ApprovalOption, SessionMode } from "../gen";
 import { isTauri } from "../lib/connection";
 import { setPlanView, usePlanViews } from "../state/planView";
@@ -83,7 +83,10 @@ function visible() {
 function moveSession(delta: number) {
   const list = visible();
   if (list.length === 0) return;
-  const cur = list.findIndex((s) => s.id === st().selectedId);
+  // From a worker, step from its leader: workers have no place among the leaders.
+  const here = st().selectedId ? st().sessions[st().selectedId!] : undefined;
+  const leader = here ? leaderOf(here, st().sessions) : undefined;
+  const cur = list.findIndex((s) => s.id === leader?.id);
   const next = cur < 0 ? 0 : (cur + delta + list.length) % list.length;
   st().select(list[next].id);
 }
