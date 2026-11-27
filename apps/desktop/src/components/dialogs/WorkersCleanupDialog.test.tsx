@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { BulkDeleteResult, Session, Workspace } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
@@ -158,4 +158,40 @@ it("offers every workspace from the global entry, and says when there is nothing
   act(() => useStore.setState({ sessions: { lead: session("lead", { orchestrator: true }) } }));
   render(<WorkersCleanupDialog />);
   expect(screen.getByText("No worker sessions to clean up.")).toBeTruthy();
+});
+
+it("keeps a failed session that became an orchestrator in view, disabled and explained, and leaves it out of the retry", async () => {
+  useStore.setState({ settings: { ...defaultSettings, confirmDelete: false } });
+  deleteSessions.mockResolvedValueOnce({ deleted: ["idle", "done", "old"], failed: [{ id: "failed", error: "busy" }, { id: "subw", error: "locked" }] });
+  render(<WorkersCleanupDialog orchestratorId="lead" />);
+  fireEvent.click(screen.getByRole("button", { name: /Delete 5 sessions/ }));
+  await waitFor(() => expect(screen.getByText("Deleted 3. 2 couldn't be deleted.")).toBeTruthy());
+  act(() => { for (const id of ["idle", "done", "old"]) useStore.getState().removeSession(id); });
+  // Meanwhile subw was made an orchestrator and started a worker.
+  act(() => useStore.setState({ sessions: { ...useStore.getState().sessions, subw: { ...useStore.getState().sessions.subw, orchestrator: true }, subw1: session("subw1", { orchestrator_id: "subw" }) } }));
+  // Its new worker gets a group of its own; subw itself stays under "Couldn't delete".
+  expect(screen.getByRole("group", { name: "subw" })).toBeTruthy();
+  const row = within(screen.getByRole("group", { name: "Couldn't delete" })).getByRole("checkbox", { name: /^subw/ }) as HTMLInputElement;
+  expect(row.disabled).toBe(true);
+  expect(row.checked).toBe(false);
+  expect(row.closest("label")!.textContent).toContain("It is an orchestrator now; delete it on its own.");
+  expect(row.closest("label")!.textContent).toContain("locked");
+  expect(screen.getByRole("group", { name: "Couldn't delete" })).toBeTruthy();
+  deleteSessions.mockResolvedValueOnce({ deleted: ["failed"], failed: [] });
+  fireEvent.click(screen.getByRole("button", { name: "Retry failed" }));
+  await waitFor(() => expect(deleteSessions).toHaveBeenLastCalledWith(["failed"]));
+});
+
+it("checks again right before deleting: a row that became an orchestrator after it was picked is not sent", async () => {
+  useStore.setState({ settings: { ...defaultSettings, confirmDelete: true } });
+  deleteSessions.mockResolvedValue({ deleted: ["idle"], failed: [] });
+  render(<WorkersCleanupDialog orchestratorId="lead" />);
+  fireEvent.click(screen.getByRole("button", { name: "Select none" }));
+  for (const id of ["idle", "done"]) fireEvent.click(screen.getByRole("checkbox", { name: new RegExp(`^${id}`) }));
+  fireEvent.click(screen.getByRole("button", { name: /Delete 2 sessions/ }));
+  const confirm = screen.getByRole("button", { name: "Delete" });
+  // Between the confirmation showing and the click, done becomes an orchestrator (no render in between).
+  useStore.setState({ sessions: { ...useStore.getState().sessions, done: { ...useStore.getState().sessions.done, orchestrator: true } } });
+  fireEvent.click(confirm);
+  await waitFor(() => expect(deleteSessions).toHaveBeenCalledWith(["idle"]));
 });

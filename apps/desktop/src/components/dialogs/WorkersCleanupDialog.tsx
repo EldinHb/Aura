@@ -33,10 +33,22 @@ function finished(s: Session): boolean {
 }
 
 /**
+ * Why `s` may not be deleted from this dialog, or null when it may: deleting
+ * an orchestrator, or anything with workers, would take a tree along. Checked
+ * for every row, failed ones included, and again right before deleting.
+ */
+export function cleanupBlocker(s: Session, sessions: Record<string, Session>): string | null {
+  if (s.orchestrator) return "It is an orchestrator now; delete it on its own.";
+  if (forestOf(sessions).childrenOf(s.id).length > 0) return "It has workers now; delete it on its own.";
+  return null;
+}
+
+/**
  * What the cleanup dialog lists. Only sessions that are no orchestrator and
  * have no workers are listed, so deleting one never takes a tree along.
  * First, `failedIds` that still exist ("Couldn't delete"), wherever they are
- * now. Then, for `orchestratorId`, the workers of it and of each orchestrator
+ * now; one that may no longer be deleted here stays listed (see
+ * `cleanupBlocker`). Then, for `orchestratorId`, the workers of it and of each orchestrator
  * under it; otherwise, in `workspace` (null for every workspace), a group per
  * orchestrator with workers, most recent first, the workers whose
  * orchestrator is gone, and last the scheduled runs that lead (newest
@@ -46,7 +58,7 @@ export function cleanupGroups(sessions: Record<string, Session>, orchestratorId:
   const forest = forestOf(sessions);
   const failed = failedIds.map((id) => sessions[id]).filter((s): s is Session => !!s);
   const failedSet = new Set(failed.map((s) => s.id));
-  const listable = (s: Session) => !s.orchestrator && forest.childrenOf(s.id).length === 0 && !failedSet.has(s.id);
+  const listable = (s: Session) => !cleanupBlocker(s, sessions) && !failedSet.has(s.id);
   const workersOf = (id: string) => forest.childrenOf(id).filter(listable);
   const ownerLabel = (o: Session) => (o.scheduled_task_id ? runLabel(o) : o.title);
   const groups: CleanupGroup[] = failed.length ? [{ key: FAILED_GROUP, label: "Couldn't delete", orchestrator: null, rows: failed }] : [];
@@ -117,7 +129,8 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
   const [summary, setSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const listed = useMemo(() => new Set(groups.flatMap((g) => g.rows.map((s) => s.id))), [groups]);
+  // The rows that can be picked: a failed row that became an orchestrator (or got workers) is shown, not picked.
+  const listed = useMemo(() => new Set(groups.flatMap((g) => g.rows.filter((s) => !cleanupBlocker(s, sessions)).map((s) => s.id))), [groups, sessions]);
   // Picks of rows that went away (deleted elsewhere, or out of scope) do not count.
   const live = picked.filter((id) => listed.has(id));
   const targets = affected(live, sessions);
@@ -125,7 +138,10 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
   const waiting = targets.filter(waitsOnUser).length;
   const toggle = (ids: string[], on: boolean) => setPicked((cur) => (on ? [...new Set([...cur, ...ids])] : cur.filter((id) => !ids.includes(id))));
 
-  const run = async (ids: string[]) => {
+  const run = async (requested: string[]) => {
+    // Checked again right before sending: a session that became an orchestrator since is not deleted with its tree.
+    const fresh = useStore.getState().sessions;
+    const ids = requested.filter((id) => fresh[id] && !cleanupBlocker(fresh[id], fresh));
     if (!client || !ids.length) return;
     setConfirming(false);
     setError(null);
@@ -219,7 +235,7 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
   }
 
   const deleting = busy ? busy.filter((id) => !sessions[id]).length : 0;
-  const failedIds = Object.keys(failed).filter((id) => sessions[id]);
+  const failedIds = Object.keys(failed).filter((id) => sessions[id] && !cleanupBlocker(sessions[id], sessions));
   return (
     <Modal
       key="list"
@@ -256,7 +272,7 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
       {error && <p role="alert" className="err-text">{error}</p>}
       <div className="cleanup-list" onKeyDown={onListKey} role="group" aria-label="Worker sessions">
         {groups.map((g, gi) => {
-          const ids = g.rows.map((s) => s.id);
+          const ids = g.rows.filter((s) => listed.has(s.id)).map((s) => s.id);
           const on = ids.filter((id) => live.includes(id)).length;
           return (
             <div key={g.key} className="cleanup-group" role="group" aria-label={g.label}>
@@ -264,8 +280,8 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
                 <input
                   type="checkbox"
                   data-autofocus={gi === 0 || undefined}
-                  disabled={!!busy}
-                  checked={on === ids.length}
+                  disabled={!!busy || !ids.length}
+                  checked={ids.length > 0 && on === ids.length}
                   ref={(el) => { if (el) el.indeterminate = on > 0 && on < ids.length; }}
                   onChange={(e) => toggle(ids, e.target.checked)}
                 />
@@ -278,10 +294,11 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
               {g.rows.map((s) => {
                 const under = workersUnder(s.id, sessions).length;
                 const why = failed[s.id];
+                const blocked = cleanupBlocker(s, sessions);
                 const label = s.scheduled_task_id ? runLabel(s) : s.title;
                 return (
                   <label key={s.id} className={clsx("cleanup-row", why && "failed")}>
-                    <input type="checkbox" disabled={!!busy} checked={live.includes(s.id)} onChange={(e) => toggle([s.id], e.target.checked)} />
+                    <input type="checkbox" disabled={!!busy || !!blocked} checked={live.includes(s.id)} onChange={(e) => toggle([s.id], e.target.checked)} />
                     <span className={clsx("dot", statusClass(s))} aria-hidden />
                     <span className="grow cleanup-title">
                       {label}
@@ -292,6 +309,7 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
                     {/* A waiting row says so in its chip; the others in words here. */}
                     <span className="dim cleanup-state">{waitsOnUser(s) ? relTime(s.last_activity) : `${stateWord(s)} · ${relTime(s.last_activity)}`}</span>
                     {why && <span className="err-text cleanup-error">{why}</span>}
+                    {blocked && <span className="dim cleanup-error">{blocked}</span>}
                   </label>
                 );
               })}
