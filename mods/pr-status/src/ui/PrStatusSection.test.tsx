@@ -95,7 +95,7 @@ describe("PrStatusSection", () => {
     fireEvent.click(title);
     fireEvent.click(title);
     const page = { key: "https://github.com/acme/api/pull/1", title: "#1 Add rate limiting", repo: "acme/api", number: 1, url: "https://github.com/acme/api/pull/1" };
-    expect(openView.mock.calls).toEqual([["pr", page], ["pr", page]]);
+    expect(openView.mock.calls).toEqual([["pr", page, { preview: false }], ["pr", page, { preview: false }]]);
   });
 
   it("shows a card without data once, with one error line (QA)", async () => {

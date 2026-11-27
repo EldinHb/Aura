@@ -25,10 +25,10 @@ export interface PageProps {
   url: string;
 }
 
-/** Open the PR's page in a main-area tab, or show the one already open. */
+/** Open the PR's page in a main-area tab of its own (not the preview tab), or show the one already open. */
 export function openPrPage(pr: { repo: string; number: number; url: string; title: string }): void {
   const props: PageProps = { key: pr.url, title: `#${pr.number} ${pr.title}`, repo: pr.repo, number: pr.number, url: pr.url };
-  getCtx()?.openView(PAGE_VIEW, props);
+  getCtx()?.openView(PAGE_VIEW, props, { preview: false });
 }
 
 /** Changed files with more lines than this start folded, behind "Load diff". */
