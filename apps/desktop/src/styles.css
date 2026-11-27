@@ -115,6 +115,28 @@
   --sidebar-w: 280px;
   --inspector-w: 320px;
   --titlebar-h: 38px;
+  /* Terminal: the embedded terminal's colours (xterm), plain colours only. */
+  --term-bg: #0b0d13;
+  --term-fg: #e6e8ef;
+  --term-cursor: #8b7cff;
+  --term-cursor-accent: #0b0d13;
+  --term-selection: rgba(139,124,255,0.35);
+  --term-black: #1b1f2d;
+  --term-red: #ff6b7a;
+  --term-green: #4ad295;
+  --term-yellow: #f2b84b;
+  --term-blue: #62b0ff;
+  --term-magenta: #c792ea;
+  --term-cyan: #5ee0c8;
+  --term-white: #d0d4e0;
+  --term-bright-black: #6b7490;
+  --term-bright-red: #ff8a95;
+  --term-bright-green: #7fe0b3;
+  --term-bright-yellow: #ffd07a;
+  --term-bright-blue: #8cc6ff;
+  --term-bright-magenta: #dcb3f5;
+  --term-bright-cyan: #8fece0;
+  --term-bright-white: #ffffff;
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -168,6 +190,28 @@
   --agent-terminal: #4d5bd6;
   --agent-acp: #8045b8;
   --chevron: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" fill="none" stroke="%2346464f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+  /* Terminal (light): dark ink on a light page; "white" stays readable as a grey. */
+  --term-bg: #fbfbfe;
+  --term-fg: #1f2230;
+  --term-cursor: #4c56a8;
+  --term-cursor-accent: #fbfbfe;
+  --term-selection: rgba(76,86,168,0.22);
+  --term-black: #1f2230;
+  --term-red: #b3261e;
+  --term-green: #1b6d3f;
+  --term-yellow: #7a5900;
+  --term-blue: #1f5fa8;
+  --term-magenta: #7d3aa8;
+  --term-cyan: #00696b;
+  --term-white: #5d6273;
+  --term-bright-black: #6b7080;
+  --term-bright-red: #c4372e;
+  --term-bright-green: #237f4b;
+  --term-bright-yellow: #8a6600;
+  --term-bright-blue: #2a6cc0;
+  --term-bright-magenta: #8e4bbb;
+  --term-bright-cyan: #0b7b7d;
+  --term-bright-white: #2b2f3d;
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
@@ -362,7 +406,7 @@ kbd { font-family: var(--mono); font-size: 10.5px; line-height: 1.4; padding: 1p
 .error-screen code { max-width: 720px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--err); }
 .error-screen-actions { display: flex; gap: 8px; margin-top: 4px; }
 
-.terminal-wrap { flex: 1; min-height: 0; padding: 8px 0 0 10px; background: #0b0d13; }
+.terminal-wrap { flex: 1; min-height: 0; padding: 8px 0 0 10px; background: var(--term-bg); }
 .terminal-wrap .xterm { height: 100%; }
 .terminal-bar { display: flex; gap: 12px; align-items: center; padding: 6px 16px; font-size: var(--fs-label-s); color: var(--fg-dim); border-top: 1px solid var(--border); background: var(--panel); }
 

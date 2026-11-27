@@ -201,6 +201,33 @@ pub const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        title: "Terminal",
+        about: "The embedded terminal's colours. Use plain colours (#rrggbb, rgb(), rgba(), hsl()): the terminal draws on a canvas and cannot use color-mix(); var(--token) works when that token is a plain colour. The 16 ANSI colours are what programs ask for by number, so keep each readable on --term-bg.",
+        tokens: &[
+            ("--term-bg", "Terminal background"),
+            ("--term-fg", "Default text colour"),
+            ("--term-cursor", "Cursor colour"),
+            ("--term-cursor-accent", "Text under a block cursor"),
+            ("--term-selection", "Selection background (use alpha so text shows through)"),
+            ("--term-black", "ANSI 0, black"),
+            ("--term-red", "ANSI 1, red"),
+            ("--term-green", "ANSI 2, green"),
+            ("--term-yellow", "ANSI 3, yellow"),
+            ("--term-blue", "ANSI 4, blue"),
+            ("--term-magenta", "ANSI 5, magenta"),
+            ("--term-cyan", "ANSI 6, cyan"),
+            ("--term-white", "ANSI 7, white (a grey in light themes, so it stays readable)"),
+            ("--term-bright-black", "ANSI 8, bright black (dim text, comments)"),
+            ("--term-bright-red", "ANSI 9, bright red"),
+            ("--term-bright-green", "ANSI 10, bright green"),
+            ("--term-bright-yellow", "ANSI 11, bright yellow"),
+            ("--term-bright-blue", "ANSI 12, bright blue"),
+            ("--term-bright-magenta", "ANSI 13, bright magenta"),
+            ("--term-bright-cyan", "ANSI 14, bright cyan"),
+            ("--term-bright-white", "ANSI 15, bright white (the darkest ink in light themes)"),
+        ],
+    },
+    Group {
         title: "Layout sizes",
         about: "Default sizes of the panes and the title bar.",
         tokens: &[
@@ -691,6 +718,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn terminal_colours_are_tokens_with_both_palettes() {
+        let term: Vec<&Token> = tokens()
+            .iter()
+            .filter(|t| t.name.starts_with("--term-"))
+            .collect();
+        assert_eq!(
+            term.len(),
+            21,
+            "background, foreground, cursor, cursor accent, selection and 16 ANSI colours"
+        );
+        assert!(term.iter().all(|t| t.group == "Terminal"));
+        assert_eq!(tokens_by_name("--term-bg").unwrap().dark, "#0b0d13");
+        assert_eq!(tokens_by_name("--term-bg").unwrap().light, "#fbfbfe");
+        let differ = term.iter().filter(|t| t.dark != t.light).count();
+        assert_eq!(differ, 21, "the light theme has its own terminal palette");
+        assert!(reference_markdown().contains("| `--term-bright-white` |"));
     }
 
     #[test]

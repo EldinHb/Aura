@@ -119,10 +119,17 @@ drops the broken rule, as in any stylesheet.
    tone and panels are lighter.
 4. Then adjust the status colours (`--md-tertiary` for warnings, `--md-error`,
    `--md-success`, `--md-info`), `--fg-dim`, `--accent-2` and the agent colours.
-5. Only then, if needed, shape (`--shape-*`), spacing (`--space-*`) and fonts
+5. Match the terminal (`--term-*`): at least `--term-bg`, `--term-fg`,
+   `--term-cursor` and `--term-selection`, so the terminal pane sits on the
+   theme's surfaces. Each base has its own full palette, so a light theme
+   already gets a light terminal; override the 16 ANSI colours only if you
+   want different ones, and keep each readable on `--term-bg`. Use plain
+   colours here: the terminal cannot use `color-mix()`.
+6. Only then, if needed, shape (`--shape-*`), spacing (`--space-*`) and fonts
    (`--font`, `--mono`).
-6. Run `aura themes check <id>`, switch to it with `aura themes use <id>`, and
-   look at the sidebar, a transcript, a dialog (`⌘K` / `Ctrl+K`) and Settings.
+7. Run `aura themes check <id>`, switch to it with `aura themes use <id>`, and
+   look at the sidebar, a transcript, a terminal session, a dialog
+   (`⌘K` / `Ctrl+K`) and Settings.
 
 ### Accessibility
 
@@ -138,6 +145,9 @@ drops the broken rule, as in any stylesheet.
   every surface: at least 3:1.
 - Do not tell states apart by hue alone: warning, error and success should
   differ in lightness too.
+- Terminal colours: `--term-fg` and every ANSI colour you set on
+  `--term-bg` at 4.5:1 too, except `--term-black` (and `--term-white` in a
+  light theme), which programs use as backgrounds.
 - Leave `--font-size` alone: the user sets it in Settings, which wins anyway.
 
 ## Themes in a mod
@@ -178,6 +188,12 @@ least 5.5:1):
     "--md-success": "#8fd5a6",
     "--fg-dim": "#8d9a91",
     "--accent-2": "#9ccfd8",
+    "--term-bg": "#0f1512",
+    "--term-fg": "#dfe9e2",
+    "--term-cursor": "#8fd5a6",
+    "--term-cursor-accent": "#0f1512",
+    "--term-selection": "rgba(143,213,166,0.3)",
+    "--term-green": "#8fd5a6",
     "--shape-md": "8px",
     "--shape-lg": "12px"
   }
@@ -399,6 +415,34 @@ Small icons drawn from CSS. `--chevron` is an image (it carries its own colour);
 | `--feature-owner-icon` | Flag marking a feature owner session (a mask) | *(SVG data URL)* | *(SVG data URL)* |
 | `--orchestrator-icon` | Mark of an orchestrator session (a mask) | *(SVG data URL)* | *(SVG data URL)* |
 | `--inbox-icon` | Inbox icon (a mask) | *(SVG data URL)* | *(SVG data URL)* |
+
+### Terminal
+
+The embedded terminal's colours. Use plain colours (#rrggbb, rgb(), rgba(), hsl()): the terminal draws on a canvas and cannot use color-mix(); var(--token) works when that token is a plain colour. The 16 ANSI colours are what programs ask for by number, so keep each readable on --term-bg.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--term-bg` | Terminal background | `#0b0d13` | `#fbfbfe` |
+| `--term-fg` | Default text colour | `#e6e8ef` | `#1f2230` |
+| `--term-cursor` | Cursor colour | `#8b7cff` | `#4c56a8` |
+| `--term-cursor-accent` | Text under a block cursor | `#0b0d13` | `#fbfbfe` |
+| `--term-selection` | Selection background (use alpha so text shows through) | `rgba(139,124,255,0.35)` | `rgba(76,86,168,0.22)` |
+| `--term-black` | ANSI 0, black | `#1b1f2d` | `#1f2230` |
+| `--term-red` | ANSI 1, red | `#ff6b7a` | `#b3261e` |
+| `--term-green` | ANSI 2, green | `#4ad295` | `#1b6d3f` |
+| `--term-yellow` | ANSI 3, yellow | `#f2b84b` | `#7a5900` |
+| `--term-blue` | ANSI 4, blue | `#62b0ff` | `#1f5fa8` |
+| `--term-magenta` | ANSI 5, magenta | `#c792ea` | `#7d3aa8` |
+| `--term-cyan` | ANSI 6, cyan | `#5ee0c8` | `#00696b` |
+| `--term-white` | ANSI 7, white (a grey in light themes, so it stays readable) | `#d0d4e0` | `#5d6273` |
+| `--term-bright-black` | ANSI 8, bright black (dim text, comments) | `#6b7490` | `#6b7080` |
+| `--term-bright-red` | ANSI 9, bright red | `#ff8a95` | `#c4372e` |
+| `--term-bright-green` | ANSI 10, bright green | `#7fe0b3` | `#237f4b` |
+| `--term-bright-yellow` | ANSI 11, bright yellow | `#ffd07a` | `#8a6600` |
+| `--term-bright-blue` | ANSI 12, bright blue | `#8cc6ff` | `#2a6cc0` |
+| `--term-bright-magenta` | ANSI 13, bright magenta | `#dcb3f5` | `#8e4bbb` |
+| `--term-bright-cyan` | ANSI 14, bright cyan | `#8fece0` | `#0b7b7d` |
+| `--term-bright-white` | ANSI 15, bright white (the darkest ink in light themes) | `#ffffff` | `#2b2f3d` |
 
 ### Layout sizes
 

@@ -11,6 +11,7 @@ import { useEffect } from "react";
 import { create } from "zustand";
 import { useStore } from "./store";
 import { isTauri } from "../lib/connection";
+import { THEME_APPLIED_EVENT } from "../lib/terminalTheme";
 
 export type UserTheme = {
   id: string;
@@ -102,8 +103,13 @@ function styleEl(id: string): HTMLStyleElement {
   return el;
 }
 
-/** Put `r` on the document. */
+/** Put `r` on the document, then tell what draws its own colours (the terminal) to read them again. */
 export function applyTheme(r: ResolvedTheme) {
+  putTheme(r);
+  window.dispatchEvent(new Event(THEME_APPLIED_EVENT));
+}
+
+function putTheme(r: ResolvedTheme) {
   const root = document.documentElement;
   root.dataset.theme = r.base;
   if (!r.theme) {
