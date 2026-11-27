@@ -80,6 +80,57 @@ struct ApprovedCss {
     css: String,
 }
 
+/// A message as one log entry that cannot pass for another: control
+/// characters (escape sequences, carriage returns, …) are shown as `\u{..}`,
+/// tabs become spaces, and every line after the first is indented under a
+/// bar, so no line of a message can look like a line of its own
+/// ("12:00:00 info: …").
+fn log_text(message: &str) -> String {
+    let normal = message.replace("\r\n", "\n");
+    let mut out = String::with_capacity(normal.len());
+    for (i, line) in normal.split('\n').enumerate() {
+        if i > 0 {
+            out.push_str("\n    │ ");
+        }
+        for c in line.chars() {
+            match c {
+                '\t' => out.push(' '),
+                // Controls, line and paragraph separators, and bidi overrides (which reorder what shows).
+                c if c.is_control()
+                    || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
+                {
+                    out.push_str(&format!("\\u{{{:x}}}", c as u32))
+                }
+                c => out.push(c),
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod log_text_tests {
+    #[test]
+    fn a_message_cannot_forge_a_log_line() {
+        let forged = super::log_text("boom\n12:00:00 info: mod approved by the user\r12:00:01 info: x\u{1b}[2K\u{202e}desrever\tend");
+        assert!(
+            !forged.lines().skip(1).any(|l| !l.starts_with("    │ ")),
+            "{forged}"
+        );
+        assert!(
+            !forged.contains('\r')
+                && !forged.contains('\u{1b}')
+                && !forged.contains('\u{202e}')
+                && !forged.contains('\t'),
+            "{forged}"
+        );
+        assert!(
+            forged.contains("\\u{d}") && forged.contains("\\u{1b}") && forged.contains("\\u{202e}")
+        );
+        assert_eq!(super::log_text("plain"), "plain");
+    }
+}
+
 /// A folder's identity for approvals.
 fn identity(dir: &Path) -> String {
     std::fs::canonicalize(dir)
@@ -96,12 +147,34 @@ struct Stamp {
     ui: u64,
 }
 
+/// A file's content hash, reading at most a script's cap (plus one byte): a
+/// larger file is told apart by its size and time only, never read whole.
 fn file_hash(path: Option<PathBuf>) -> u64 {
     use std::hash::{Hash, Hasher};
+    use std::io::Read;
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    match path.and_then(|p| std::fs::read(p).ok()) {
-        Some(bytes) => bytes.hash(&mut h),
-        None => 0u8.hash(&mut h),
+    let Some(path) = path else {
+        0u8.hash(&mut h);
+        return h.finish();
+    };
+    match std::fs::File::open(&path) {
+        Err(_) => 1u8.hash(&mut h),
+        Ok(f) => {
+            let meta = f.metadata().ok();
+            let mut bytes = Vec::new();
+            let _ = f
+                .take(crate::manifest::MAX_SCRIPT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes);
+            if bytes.len() > crate::manifest::MAX_SCRIPT_BYTES {
+                (
+                    meta.as_ref().map(|m| m.len()),
+                    meta.and_then(|m| m.modified().ok()),
+                )
+                    .hash(&mut h);
+            } else {
+                bytes.hash(&mut h);
+            }
+        }
     }
     h.finish()
 }
@@ -346,8 +419,39 @@ impl ModHost {
     /// first: if they do not load, the running version stays and the reason
     /// is logged. Returns whether anything changed.
     pub async fn reconcile(&self) -> bool {
-        let _l = self.0.lifecycle.lock().await;
+        // Read and syntax-check changed daemon files first, without the
+        // lifecycle lock and off the async runtime: a slow file then holds
+        // up nothing else (enable, approve, other reloads).
         let (mut found, broken) = self.scan();
+        let mut checked: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let stamps: BTreeMap<String, Stamp> = self
+            .0
+            .mods
+            .read()
+            .iter()
+            .map(|(id, e)| (id.clone(), e.stamp.clone()))
+            .collect();
+        for (id, c) in &found {
+            if stamps.get(id) == Some(&c.stamp) {
+                continue;
+            }
+            if let Some(rel) = &c.manifest.daemon {
+                let problem = match entry_path(&c.dir, rel).and_then(|p| {
+                    crate::manifest::read_mod_file(&p, crate::manifest::MAX_SCRIPT_BYTES)
+                }) {
+                    Ok(t) => crate::runtime::check_module_syntax_within(
+                        rel,
+                        t,
+                        crate::runtime::SYNTAX_CHECK_LIMIT,
+                    )
+                    .await
+                    .err(),
+                    Err(e) => Some(format!("{rel}: {e:#}")),
+                };
+                checked.insert(id.clone(), problem);
+            }
+        }
+        let _l = self.0.lifecycle.lock().await;
         let mut changed = false;
         let broken_dirs: HashSet<PathBuf> = broken.iter().map(|(d, _)| d.clone()).collect();
         let current: Vec<(String, PathBuf, ModSource, Stamp, bool)> = self
@@ -422,15 +526,9 @@ impl ModHost {
             changed = true;
             self.set_reload_error(&id, None);
             if c.stamp.manifest != stamp.manifest || c.stamp.daemon != stamp.daemon || !running {
-                // Check the daemon file before stopping what runs.
-                if let Some(rel) = &c.manifest.daemon {
-                    let text =
-                        entry_path(&c.dir, rel).and_then(|p| Ok(std::fs::read_to_string(p)?));
-                    let problem = match text {
-                        Ok(t) => crate::runtime::check_module_syntax(rel, &t).err(),
-                        Err(e) => Some(format!("{rel}: {e:#}")),
-                    };
-                    if let Some(p) = problem {
+                // The daemon file was checked above, before anything stops.
+                if c.manifest.daemon.is_some() {
+                    if let Some(Some(p)) = checked.get(&id).cloned() {
                         if running {
                             self.set_reload_error(
                                 &id,
@@ -639,12 +737,9 @@ impl ModHost {
                 Some(rel) => {
                     let path = entry_path(&dir, rel)
                         .map_err(|e| fail(self, ModError::invalid(e.to_string())))?;
-                    let source_code = std::fs::read_to_string(&path).map_err(|e| {
-                        fail(
-                            self,
-                            ModError::failed(format!("read {}: {e}", path.display())),
-                        )
-                    })?;
+                    let source_code =
+                        crate::manifest::read_mod_file(&path, crate::manifest::MAX_SCRIPT_BYTES)
+                            .map_err(|e| fail(self, ModError::failed(format!("{e:#}"))))?;
                     let data_dir = self.0.config.data_dir.join("mod-data").join(id);
                     std::fs::create_dir_all(&data_dir).map_err(|e| {
                         fail(
@@ -754,25 +849,44 @@ impl ModHost {
         self.0.broadcast("mods.changed", json!({}));
     }
 
-    /// Syntax-check a running mod's UI half, remember the result, and log a problem.
+    /// Syntax-check a running mod's UI half in the background (capped read,
+    /// a blocking thread, a deadline, no lock held), then remember the result,
+    /// log a problem, and tell the windows when it changed.
     fn check_ui(&self, id: &str) {
         let (dir, ui) = match self.0.mods.read().get(id) {
             Some(e) => (e.dir.clone(), e.manifest.ui.clone()),
             None => return,
         };
-        let error = ui.and_then(|rel| {
-            let text = entry_path(&dir, &rel).and_then(|p| Ok(std::fs::read_to_string(p)?));
-            match text {
-                Ok(text) => crate::runtime::check_module_syntax(&rel, &text).err(),
+        let Some(rel) = ui else { return };
+        let host = self.clone();
+        let id = id.to_string();
+        self.0.tokio.spawn(async move {
+            let error = match entry_path(&dir, &rel)
+                .and_then(|p| crate::manifest::read_mod_file(&p, crate::manifest::MAX_SCRIPT_BYTES))
+            {
+                Ok(text) => crate::runtime::check_module_syntax_within(
+                    &rel,
+                    text,
+                    crate::runtime::SYNTAX_CHECK_LIMIT,
+                )
+                .await
+                .err(),
                 Err(e) => Some(format!("{rel}: {e:#}")),
+            };
+            if let Some(e) = &error {
+                host.0.log(&id, "ui error", e);
+            }
+            let changed = match host.0.mods.write().get_mut(&id) {
+                Some(e) if e.ui_error != error => {
+                    e.ui_error = error;
+                    true
+                }
+                _ => false,
+            };
+            if changed {
+                host.changed();
             }
         });
-        if let Some(e) = &error {
-            self.0.log(id, "ui error", e);
-        }
-        if let Some(e) = self.0.mods.write().get_mut(id) {
-            e.ui_error = error;
-        }
     }
 
     /// The UI half's files changed: check them and let the windows load them again.
@@ -1034,7 +1148,11 @@ impl ModHost {
             } else {
                 Err(crate::runtime::ModError::new(
                     "needs_window",
-                    format!("{what} is granted only by a click in Aura's window; `aura mods approve` / `aura themes approve` ask the window to show the prompt"),
+                    format!(
+                        "{what} is granted only by a click in the Aura app: approve it in the Aura app. \
+                         `aura mods approve` / `aura themes approve` make the app show the prompt. \
+                         (If the app says it cannot approve, its background service was not started by the app; the prompt offers to restart it.)"
+                    ),
                 )
                 .into())
             }
@@ -1396,18 +1514,21 @@ impl ModHost {
         if status != Status::Running {
             anyhow::bail!("mod {id} is not running");
         }
-        let read = |rel: &Option<String>| -> Result<Option<String>> {
+        let read = |rel: &Option<String>, cap: usize| -> Result<Option<String>> {
             match rel {
                 None => Ok(None),
-                Some(r) => Ok(Some(std::fs::read_to_string(entry_path(&dir, r)?)?)),
+                Some(r) => Ok(Some(crate::manifest::read_mod_file(
+                    &entry_path(&dir, r)?,
+                    cap,
+                )?)),
             }
         };
         Ok(json!({
             "id": id,
             "version": manifest.version,
             "rev": rev,
-            "js": read(&manifest.ui)?,
-            "css": read(&manifest.styles)?,
+            "js": read(&manifest.ui, crate::manifest::MAX_SCRIPT_BYTES)?,
+            "css": read(&manifest.styles, crate::manifest::MAX_STYLES_BYTES)?,
         }))
     }
 
@@ -1479,7 +1600,7 @@ impl Inner {
             let line = format!(
                 "{} {level}: {}",
                 chrono::Local::now().format("%H:%M:%S"),
-                message.chars().take(4000).collect::<String>()
+                log_text(&message.chars().take(4000).collect::<String>())
             );
             let seq = self
                 .log_seq

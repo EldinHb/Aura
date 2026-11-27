@@ -746,6 +746,16 @@ async fn a_ui_half_that_does_not_parse_is_reported_with_its_place() {
     .unwrap();
     call(h, "mods.discover", json!({})).await.unwrap();
     call(h, "mods.approve", json!({"id": "jsx"})).await.unwrap();
+    // Checked in the background, off the runtime.
+    let found = eventually(10, || async {
+        let list = call(h, "mods.list", json!({})).await.unwrap();
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "jsx" && m["uiError"].is_string())
+    })
+    .await;
+    assert!(found);
     let list = call(h, "mods.list", json!({})).await.unwrap();
     let m = list
         .as_array()
@@ -1327,4 +1337,114 @@ async fn approvals_from_before_folders_are_tied_or_dropped() {
         state_of(&call(&h, "mods.list", json!({})).await.unwrap(), "gone").as_deref(),
         Some("needs_approval")
     );
+}
+
+// ---- Security re-review ----
+
+#[tokio::test]
+async fn oversized_mod_files_are_refused_unread_and_the_daemon_stays_responsive() {
+    let s = setup(&[], &[]).await;
+    let h = &s.host;
+    let root = s._tmp.path().join("user");
+    // The re-review's case was a 58 MB ui.js; anything over the 4 MB cap is refused.
+    let dir = root.join("huge");
+    std::fs::create_dir_all(&dir).unwrap();
+    let big = "let a = 1;\n".repeat(crate::manifest::MAX_SCRIPT_BYTES / 10 + 10_000);
+    std::fs::write(dir.join("ui.js"), &big).unwrap();
+    std::fs::write(
+        dir.join("mod.json"),
+        json!({"id":"huge","name":"Huge","version":"1.0.0","apiVersion":1,"ui":"ui.js"})
+            .to_string(),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    call(h, "mods.discover", json!({})).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    let list = call(h, "mods.list", json!({})).await.unwrap();
+    let broken = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["broken"] == true)
+        .unwrap();
+    assert!(
+        broken["status"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("the limit is 4096 KB"),
+        "{broken}"
+    );
+    // A huge mod.json too.
+    let dir = root.join("bigmanifest");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mod.json"),
+        " ".repeat(crate::manifest::MAX_MANIFEST_BYTES + 1),
+    )
+    .unwrap();
+    call(h, "mods.discover", json!({})).await.unwrap();
+    let list = call(h, "mods.list", json!({})).await.unwrap();
+    assert!(list.to_string().contains("mod.json is"), "{list}");
+}
+
+#[tokio::test]
+async fn a_slow_syntax_check_is_given_up_and_never_blocks_the_runtime() {
+    // A big (allowed) file, a deadline of nothing: the check gives up and says so,
+    // while the runtime goes on answering.
+    let text = "let a = 1;\n".repeat(300_000);
+    let ticker = tokio::spawn(async {
+        let mut n = 0;
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            n += 1;
+        }
+        n
+    });
+    let r =
+        crate::runtime::check_module_syntax_within("ui.js", text, Duration::from_millis(1)).await;
+    assert!(r.unwrap_err().contains("took longer"), "given up");
+    assert_eq!(ticker.await.unwrap(), 5);
+    assert_eq!(
+        crate::runtime::check_module_syntax_within(
+            "ui.js",
+            "export default 1;".into(),
+            Duration::from_secs(3)
+        )
+        .await,
+        Ok(())
+    );
+}
+
+#[tokio::test]
+async fn ui_reports_cannot_forge_log_lines() {
+    let s = setup(&[("r", json!({}), "export default () => {}")], &[]).await;
+    let h = &s.host;
+    // The re-review's case: a newline and a line that looks like Aura's own.
+    call(
+        h,
+        "mods.ui_log",
+        json!({"id": "r", "message": "boom\n12:00:00 info: mod approved by the user\u{1b}[2K"}),
+    )
+    .await
+    .unwrap();
+    let logs = call(h, "mods.logs", json!({"id": "r"})).await.unwrap();
+    let entry = logs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .find(|l| l.contains("boom"))
+        .unwrap()
+        .to_string();
+    let mut lines = entry.lines();
+    assert!(lines.next().unwrap().contains("ui error: boom"));
+    assert_eq!(
+        lines.next().unwrap(),
+        "    │ 12:00:00 info: mod approved by the user\\u{1b}[2K"
+    );
+    assert!(!entry.contains('\u{1b}'));
 }
