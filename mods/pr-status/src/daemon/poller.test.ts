@@ -496,4 +496,44 @@ describe("PrPoller", () => {
       expect(view.pulls.map((p) => [p.ref.url, p.status?.state ?? null])).toEqual([[URL2, "open"]]);
     });
   });
+
+  describe("sessions open in the background", () => {
+    const background = (sessionId = "lead") => t.host.call("watch", { viewer: "tab", sessionId, background: true });
+
+    it("keeps an open session's PRs without reading them, and reads them again when shown", async () => {
+      await t.watch();
+      expect(t.reads()).toEqual([1]);
+      // Another session is selected; the lead stays open in its tab.
+      await t.host.call("unwatch", { viewer: "v1" });
+      for (let i = 0; i < 15; i++) {
+        t.advance(POLL_MS);
+        expect(await background()).toBeNull();
+        await t.poller.tick();
+      }
+      expect(t.reads()).toEqual([1]);
+      expect(t.poller.cached().entries).toBe(1);
+      // Shown again: the cards are there, dated, and read once more.
+      const view = await t.watch();
+      expect(view.pulls[0].status?.state).toBe("open");
+      expect(t.reads()).toEqual([1, 1]);
+    });
+
+    it("polls a selected session at the normal rate, also while it is open in a tab", async () => {
+      await background();
+      await t.watch();
+      t.advance(POLL_MS);
+      await t.renew();
+      expect(t.reads()).toEqual([1, 1]);
+    });
+
+    it("forgets an open session's PRs once its tab closes", async () => {
+      await t.watch();
+      await t.host.call("unwatch", { viewer: "v1" });
+      await background();
+      await t.host.call("unwatch", { viewer: "tab" });
+      t.advance(RETAIN_MS);
+      await t.poller.tick();
+      expect(t.poller.cached()).toMatchObject({ entries: 0, trees: 0 });
+    });
+  });
 });

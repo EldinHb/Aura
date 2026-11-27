@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionView } from "../shared/types";
 import { getCtx } from "./ctx";
+import { cacheView, cachedView } from "./openSessions";
 
 /** The daemon half drops a watch not renewed within 90 s. */
 export const RENEW_MS = 30_000;
@@ -10,7 +11,8 @@ export const RENEW_MS = 30_000;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function usePullStatus(sessionId: string) {
-  const [view, setView] = useState<SessionView | null>(null);
+  // A session open in a tab shows its cards at once, as last read, and refreshes them below.
+  const [view, setView] = useState<SessionView | null>(() => cachedView(sessionId));
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const shown = useRef(sessionId);
@@ -21,10 +23,11 @@ export function usePullStatus(sessionId: string) {
     if (!ctx) return;
     const viewer = crypto.randomUUID();
     let active = true;
-    setView(null);
+    setView(cachedView(sessionId));
     setError(null);
     const take = (v: SessionView) => {
       if (!active || v.sessionId !== sessionId) return;
+      cacheView(v);
       setView(v);
       setError(null);
     };
@@ -62,6 +65,7 @@ export function usePullStatus(sessionId: string) {
     setRefreshing(true);
     try {
       const v = await ctx.rpc<SessionView>("refresh", { sessionId });
+      cacheView(v);
       if (shown.current !== sessionId) return;
       setView(v);
       setError(null);

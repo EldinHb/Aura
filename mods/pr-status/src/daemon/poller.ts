@@ -103,7 +103,11 @@ export class PrPoller {
   private readonly gh: Github;
   private readonly github: GithubCall;
   private readonly now: () => number;
-  private viewers = new Map<string, { sessionId: string; until: number }>();
+  /**
+   * Who looks at which session: the Inspector of a selected session (polled), or, in the
+   * background, a session open in a tab (kept, not polled: read again when shown).
+   */
+  private viewers = new Map<string, { sessionId: string; until: number; background: boolean }>();
   /** Bumped whenever a viewer starts, stops or switches sessions: a round that collected for older watches starts over. */
   private watchRevision = 0;
   private entries = new Map<string, Entry>();
@@ -131,10 +135,16 @@ export class PrPoller {
     this.now = deps.now ?? Date.now;
   }
 
-  /** `viewer` shows `sessionId`; with `refresh` (the section just became visible) its PRs are read now. */
-  async watch(viewer: string, sessionId: string, refresh: boolean): Promise<SessionView> {
-    if (this.viewers.get(viewer)?.sessionId !== sessionId) this.watchRevision++;
-    this.viewers.set(viewer, { sessionId, until: this.now() + LEASE_MS });
+  /**
+   * `viewer` shows `sessionId`; with `refresh` (the section just became visible) its PRs are
+   * read now. A `background` viewer (the session is open in a tab, not shown) only keeps what
+   * is known of the session from being forgotten; nothing is read for it, and nothing returned.
+   */
+  async watch(viewer: string, sessionId: string, refresh: boolean, background = false): Promise<SessionView | null> {
+    const before = this.viewers.get(viewer);
+    if (before?.sessionId !== sessionId || before.background !== background) this.watchRevision++;
+    this.viewers.set(viewer, { sessionId, until: this.now() + LEASE_MS, background });
+    if (background) return null;
     if (refresh) {
       const refs = await this.refsOf(sessionId);
       // A PR read moments ago (another viewer, the previous tick) is fresh enough; a closed one
@@ -231,13 +241,16 @@ export class PrPoller {
     let changed: Set<string>;
     let trees: Map<string, PrRef[]>;
     let folders: Set<string>;
+    let kept: Set<string>;
     // Collecting waits on other mods; a selection that changes meanwhile must not be pruned
     // with the folders of the watches before it, so the collection starts over.
     for (;;) {
       for (const [viewer, w] of this.viewers) if (w.until <= now) this.unwatch(viewer);
       const revision = this.watchRevision;
-      watched = [...new Set([...this.viewers.values()].map((w) => w.sessionId))];
-      for (const id of this.trees.keys()) if (!watched.includes(id)) this.trees.delete(id);
+      const viewers = [...this.viewers.values()];
+      watched = [...new Set(viewers.filter((w) => !w.background).map((w) => w.sessionId))];
+      kept = new Set(viewers.map((w) => w.sessionId));
+      for (const id of this.trees.keys()) if (!kept.has(id)) this.trees.delete(id);
       changed = new Set<string>();
       trees = new Map<string, PrRef[]>();
       folders = new Set<string>();
@@ -251,8 +264,14 @@ export class PrPoller {
       if (revision === this.watchRevision) break;
     }
     // What the watched trees hold is in use, GitHub blocked or not; only the rest may be forgotten.
+    // So is what is known of sessions open in the background, as last collected (not collected again).
     const active = new Set<string>();
     for (const refs of trees.values()) for (const ref of refs) active.add(prKey(ref.url));
+    for (const id of kept) {
+      const tree = trees.has(id) ? null : this.trees.get(id);
+      tree?.refs.forEach((ref) => active.add(prKey(ref.url)));
+      tree?.folders.forEach((f) => folders.add(f));
+    }
     for (const key of active) {
       const e = this.entries.get(key);
       if (e) e.seen = now;

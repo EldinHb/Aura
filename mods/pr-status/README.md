@@ -31,10 +31,10 @@ status words --md-success/-tertiary/-error; classes `prs-`. Blocked: a reason, c
 - Status: one batched GraphQL query (`batchNodes`, 20 PRs each), then the pages left of the
   checks and reviews (up to 10 each; beyond that GitHub's rollup state is used and the
   reviewer list is marked incomplete). Branch PRs come from a paced queue, 2 a round.
-
 ## Polling (daemon half)
 The UI half `watch`es the shown session (a 90 s lease, renewed every 30 s). A 5 s tick
 reads watched PRs that are due: every 60 s, 20 s while checks run or mergeability is
 unknown, 15 min once closed, never once merged; at least `api.pace`, and after failures
 a doubling back-off up to 15 min. Once per new `api.notified` entry, on `watch` and on
-`refresh`. Unseen data is forgotten after 10 min. Nothing is read while `api.blocked`.
+`refresh`. Nothing is read while `api.blocked`. Sessions open in tabs keep a background
+watch: kept, not polled; their cards show at once on switching back, then refresh.

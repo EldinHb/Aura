@@ -3,7 +3,9 @@
 // merge" (`merge`), asked for by the user.
 //
 // RPC (`mod.pr-status.*`), each answering a SessionView:
-//   watch   {viewer, sessionId, refresh?}  the viewer shows the session (a lease of LEASE_MS)
+//   watch   {viewer, sessionId, refresh?, background?}
+//                                          the viewer shows the session (a lease of LEASE_MS); with
+//                                          `background` (open in a tab) it is kept, not polled → null
 //   unwatch {viewer}                       → true
 //   view    {sessionId}                    what is known, without reading GitHub
 //   refresh {sessionId}                    collect and read every PR of the session now
@@ -30,7 +32,7 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
   const merger = new Merger(gh);
 
   const off = [
-    aura.rpc.handle("watch", (p) => poller.watch(text(p, "viewer"), text(p, "sessionId"), p?.refresh === true)),
+    aura.rpc.handle("watch", (p) => poller.watch(text(p, "viewer"), text(p, "sessionId"), p?.refresh === true, p?.background === true)),
     aura.rpc.handle("unwatch", (p) => {
       poller.unwatch(text(p, "viewer"));
       return true;

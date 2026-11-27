@@ -5,12 +5,14 @@ import { useStore } from "@aura/host";
 import "./ui.css";
 import { setCtx } from "./ui/ctx";
 import { PrStatusSection } from "./ui/PrStatusSection";
+import { keepOpenSessions } from "./ui/openSessions";
 
 export function activate(ctx: UiApi) {
   setCtx(ctx);
   const off = [
     // Above the github mod's "Issues & PRs" (order 0): the state of the work comes first.
     ctx.ui.inspectorSection({ id: "status", order: -10, component: PrStatusSection }),
+    keepOpenSessions(ctx),
     ctx.commands.register({
       id: "refresh",
       title: "Refresh PR status",
