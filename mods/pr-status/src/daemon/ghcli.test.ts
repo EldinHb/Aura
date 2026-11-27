@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTestHost } from "@aura/mod-sdk/testing";
 import { LOGIN_EXPIRED, NO_GH, RateLimited, RejectedRequest } from "@aura/github-client";
 import { ghReply, rate, type Canned } from "../test/gh";
-import { GhCli, NOT_SIGNED_IN, NOTIFY_MS, parseReply, RECHECK_MS } from "./ghcli";
+import { ACCOUNT_MS, GhCli, NOT_SIGNED_IN, NOTIFY_MS, parseReply, RECHECK_MS } from "./ghcli";
 
 /** A GhCli on a test host whose gh answers from `answer` (args after `gh api -i`). */
 function setup(answer: (args: string[], stdin?: string) => Canned | { raw: { code: number; stdout: string; stderr: string } } | "missing") {
@@ -121,5 +121,32 @@ describe("GhCli", () => {
     t.advance(NOTIFY_MS);
     expect(await t.gh.notified()).toBe(first);
     expect(t.calls.at(-1)).toEqual(["api", "-i", "notifications?per_page=50", "-H", "If-Modified-Since: Fri, 27 Nov 2026 09:00:00 GMT"]);
+  });
+
+  it("keeps the login for 15 minutes, asking again only before a merge write and after a 401 or 403", async () => {
+    let status = 200;
+    const t = setup((args) => (args[0] === "user" ? { body: { login: "sam" } } : { status, body: status === 200 ? { data: {} } : { message: "Forbidden" } }));
+    const asked = () => t.calls.filter((c) => c[2] === "user").length;
+    await t.gh.account();
+    t.advance(ACCOUNT_MS - 1);
+    await t.gh.account();
+    expect(asked()).toBe(1);
+    t.advance(1);
+    await t.gh.account();
+    expect(asked()).toBe(2);
+    // A merge write always asks.
+    await t.gh.requestFor("github.com:sam", "POST", "graphql", { query: "q" });
+    expect(asked()).toBe(3);
+    await t.gh.account();
+    expect(asked()).toBe(3);
+    // A 403 (or a 401) makes the next read ask again.
+    status = 403;
+    await t.gh.request("POST", "graphql", { query: "q" }).catch(() => {});
+    await t.gh.account();
+    expect(asked()).toBe(4);
+    status = 401;
+    await t.gh.request("POST", "graphql", { query: "q" }).catch(() => {});
+    await t.gh.account().catch(() => {});
+    expect(asked()).toBe(5);
   });
 });

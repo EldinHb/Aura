@@ -10,8 +10,8 @@ export const NOT_SIGNED_IN = "GitHub CLI is not signed in. Run `gh auth login`; 
 export const RECHECK_MS = 60_000;
 /** Notifications are asked for at most this often (or as GitHub's X-Poll-Interval says). */
 export const NOTIFY_MS = 60_000;
-/** Reads may reuse the signed-in login this long; a write checks it again. */
-const ACCOUNT_MS = 60_000;
+/** Reads reuse the signed-in login this long; a merge write, and any 401 or 403, check it again. */
+export const ACCOUNT_MS = 15 * 60_000;
 const NOTIFY_PAGE = 50;
 
 export interface GhReply {
@@ -87,6 +87,8 @@ export class GhCli implements Github {
       throw e;
     }
     this.budget(reply.headers);
+    // Refused: the login (or its rights) may have changed; ask who is signed in next time.
+    if (reply.status === 401 || reply.status === 403) this.login = null;
     if (reply.status === 401) {
       this.problem = { reason: LOGIN_EXPIRED, at: this.now() };
       throw new RejectedRequest(LOGIN_EXPIRED);
