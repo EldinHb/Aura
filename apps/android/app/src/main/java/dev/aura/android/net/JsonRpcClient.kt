@@ -19,7 +19,29 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /** A JSON-RPC error the server answered with. */
-class RpcException(val code: Int, message: String, val data: JsonElement? = null) : Exception(message)
+class RpcException(val code: Int, message: String, val data: JsonElement? = null) : Exception(message) {
+    /** For [RemoteErrors.RATE_LIMITED]: how long the server wants the client to wait, in seconds. */
+    val retryAfterSecs: Long?
+        get() = ((data as? JsonObject)?.get("retryAfterSecs") as? JsonPrimitive)?.longOrNull
+}
+
+/** The remote listener's error codes (docs/design/remote.md, section 5). */
+object RemoteErrors {
+    /** A method other than pairing or auth before authenticating. The server closes the connection. */
+    const val NOT_AUTHENTICATED = -32010
+
+    /** Unknown or revoked device, or wrong token. The server closes the connection. */
+    const val AUTH_FAILED = -32011
+
+    /** The pairing code is wrong, expired or used. The server closes the connection. */
+    const val PAIR_CODE_INVALID = -32012
+
+    /** Too many failed attempts from this address; see [RpcException.retryAfterSecs]. */
+    const val RATE_LIMITED = -32013
+
+    /** The method or a parameter is not allowed for remote clients. */
+    const val FORBIDDEN = -32003
+}
 
 /** The connection closed, or was never open, before the answer came. */
 class NotConnectedException(message: String = "Not connected") : Exception(message)

@@ -59,6 +59,8 @@
     <string name="confirm_body">Check that the fingerprint below is the one Aura shows on your computer. This phone will trust only the server with this certificate.</string>
     <string name="pair">Pair</string>
     <string name="pair_cert_mismatch">The server\'s certificate does not match this fingerprint. Nothing was sent. Check that you are on the right network and that the link is current.</string>
+    <string name="pair_code_invalid">The pairing code is wrong, has expired (codes last 5 minutes) or was already used. Start pairing again in Aura on your computer.</string>
+    <string name="pair_rate_limited">Too many failed attempts. Wait %1$d seconds and try again.</string>
     <string name="pair_refused">The server refused to pair: %1$s</string>
     <string name="pair_unknown_host">Cannot find that host. Check the address and your network.</string>
     <string name="pair_unreachable">Cannot reach the server. Check that Aura is running and that this phone is on the same network.</string>

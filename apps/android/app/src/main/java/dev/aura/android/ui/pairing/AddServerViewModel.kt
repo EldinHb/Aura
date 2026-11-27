@@ -6,6 +6,7 @@ import dev.aura.android.AppContainer
 import dev.aura.android.R
 import dev.aura.android.data.SavedServer
 import dev.aura.android.net.HandshakeRejectedException
+import dev.aura.android.net.RemoteErrors
 import dev.aura.android.net.RpcException
 import dev.aura.android.net.fingerprintMismatch
 import dev.aura.android.net.pair
@@ -93,7 +94,11 @@ class AddServerViewModel(private val container: AppContainer, initialLink: Strin
     private fun describe(e: Throwable): UiMessage {
         e.fingerprintMismatch()?.let { return UiMessage.Res(R.string.pair_cert_mismatch) }
         return when (e) {
-            is RpcException -> UiMessage.Res(R.string.pair_refused, listOf(e.message ?: ""))
+            is RpcException -> when (e.code) {
+                RemoteErrors.PAIR_CODE_INVALID -> UiMessage.Res(R.string.pair_code_invalid)
+                RemoteErrors.RATE_LIMITED -> UiMessage.Res(R.string.pair_rate_limited, listOf(e.retryAfterSecs ?: 60))
+                else -> UiMessage.Res(R.string.pair_refused, listOf(e.message ?: ""))
+            }
             is HandshakeRejectedException -> UiMessage.Text(e.message ?: "")
             is java.net.UnknownHostException -> UiMessage.Res(R.string.pair_unknown_host)
             is java.net.ConnectException, is java.net.SocketTimeoutException -> UiMessage.Res(R.string.pair_unreachable)

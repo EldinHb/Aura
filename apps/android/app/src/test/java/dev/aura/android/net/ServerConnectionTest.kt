@@ -45,16 +45,24 @@ class ServerConnectionTest {
                     put("version", JsonPrimitive("0.6.0"))
                 }
             } else {
-                FakeAurad.error(-32001, "wrong or expired pairing code")
+                FakeAurad.error(RemoteErrors.PAIR_CODE_INVALID, "wrong or expired pairing code")
             }
-            "remote.auth" -> if (params["token"]?.jsonPrimitive?.content == "good") {
+            "remote.auth" -> if (params["token"]?.jsonPrimitive?.content == "limited") {
+                buildJsonObject {
+                    put("error", buildJsonObject {
+                        put("code", JsonPrimitive(RemoteErrors.RATE_LIMITED))
+                        put("message", JsonPrimitive("too many attempts"))
+                        put("data", buildJsonObject { put("retryAfterSecs", JsonPrimitive(42)) })
+                    })
+                }
+            } else if (params["token"]?.jsonPrimitive?.content == "good") {
                 buildJsonObject {
                     put("serverId", JsonPrimitive("srv"))
                     put("serverName", JsonPrimitive("Studio"))
                     put("version", JsonPrimitive("0.6.0"))
                 }
             } else {
-                FakeAurad.error(-32001, "unknown device")
+                FakeAurad.error(RemoteErrors.AUTH_FAILED, "unknown device")
             }
             "session.list" -> JsonArray(listOf(session))
             else -> FakeAurad.error(-32601, "unknown method $method")
@@ -97,7 +105,7 @@ class ServerConnectionTest {
     fun `pairing with a wrong code reports the server's error`() = runBlocking {
         aurad.accept()
         val e = runCatching { pair(http, link(code = "000000"), "Pixel") }.exceptionOrNull()
-        assertTrue("$e", e is RpcException && e.message == "wrong or expired pairing code")
+        assertTrue("$e", e is RpcException && e.code == RemoteErrors.PAIR_CODE_INVALID)
     }
 
     @Test
@@ -141,6 +149,16 @@ class ServerConnectionTest {
         assertTrue(state is ConnectionState.Revoked)
         c.retryNow()
         assertTrue("it does not retry by itself", c.state.value is ConnectionState.Revoked)
+    }
+
+    @Test
+    fun `a rate limit is waited out as the server asks, not taken for a revoked device`() = runBlocking {
+        aurad.accept()
+        val now = 1_000_000L
+        val c = ServerConnection(saved(), "limited", http, scope, clock = { now })
+        c.start()
+        val state = c.reach { it is ConnectionState.Retrying || it is ConnectionState.Revoked }
+        assertEquals(now + 42_000, (state as ConnectionState.Retrying).retryAt)
     }
 
     @Test

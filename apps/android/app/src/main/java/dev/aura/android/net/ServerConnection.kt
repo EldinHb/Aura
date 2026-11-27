@@ -137,7 +137,8 @@ class ServerConnection(
                 return
             }
             attempt = if (outcome is WasOnline) 1 else attempt + 1
-            val wait = backoffMillis(attempt)
+            val limited = (outcome as? RpcException)?.takeIf { it.code == RemoteErrors.RATE_LIMITED }
+            val wait = limited?.retryAfterSecs?.let { it * 1_000 } ?: backoffMillis(attempt)
             _state.value = ConnectionState.Retrying(describe(outcome.cause ?: outcome), clock() + wait)
             withTimeoutOrNull(wait) { wake.receive() }
         }
@@ -157,7 +158,8 @@ class ServerConnection(
                     }),
                 )
             } catch (e: RpcException) {
-                return AuthRejected(e.message)
+                // Only a refused device means pairing again; anything else (a rate limit) is retried.
+                return if (e.code == RemoteErrors.AUTH_FAILED) AuthRejected(e.message) else e
             }
             if (auth.serverId != server.serverId) {
                 return AuthRejected("This is not the server this device paired with.")
