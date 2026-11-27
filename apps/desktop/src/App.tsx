@@ -2,6 +2,7 @@ import { registerScheduleCommands, useScheduleSync } from "./features/schedules/
 import "./features/schedules/schedules.css";
 import { useModLoader } from "./mods/loader";
 import { useThemeLoader } from "./state/themes";
+import { ApprovalDialog } from "./mods/ApprovalDialog";
 import { useWaitingSound } from "./state/waitingSound";
 import { ModView } from "./mods/Slots";
 import { MainTabs, TabPane } from "./components/MainTabs";
@@ -209,6 +210,8 @@ export default function App() {
       </div>
       <StatusBar />
       <Overlays />
+      {/* Approval prompts: a top-layer dialog no stylesheet can hide (protected.css). */}
+      <ApprovalDialog />
     </div>
   );
 }

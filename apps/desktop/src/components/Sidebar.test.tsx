@@ -81,6 +81,23 @@ it("shows the chips mods add to each row, and none from a mod that fails", () =>
   }
 });
 
+it("draws a mod sidebar section's title as Aura's own section heading", () => {
+  const off = [
+    slots.sidebarSection.register("titled", "panel", { title: "Turn counter", component: () => <div className="titled-body">body</div> }),
+    slots.sidebarSection.register("untitled", "panel", { component: () => <div className="untitled-body">body</div> }),
+  ];
+  try {
+    render(<Sidebar />);
+    const headings = [...document.querySelectorAll(".section-title.mod-section-title")].map((el) => el.textContent);
+    expect(headings).toEqual(["Turn counter"]);
+    const heading = document.querySelector(".mod-section-title")!;
+    expect(heading.nextElementSibling?.className).toBe("titled-body");
+  } finally {
+    cleanup();
+    off.forEach((f) => f());
+  }
+});
+
 it("shows every level of workers under their orchestrator", () => {
   orchestras();
   render(<Sidebar />);

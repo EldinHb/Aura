@@ -15,6 +15,7 @@ import { MAX_SOUND_FILE, SOUND_CHOICES, playSound } from "../../lib/sound";
 import { SpecialistsTab } from "./SpecialistsTab";
 import { AutonomyPicker } from "../AutonomyPicker";
 import { isBuiltinTheme, resolveTheme, useThemes } from "../../state/themes";
+import { openApprovalPrompt } from "../../mods/ApprovalDialog";
 
 type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "mods";
 const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "mods"];
@@ -207,13 +208,21 @@ function ThemeField() {
               <option key={t.id} value={t.id}>
                 {t.name}
                 {t.source.startsWith("mod:") ? ` (${t.source.slice(4)})` : ""}
-                {t.error ? " (invalid)" : ""}
+                {t.error ? " (invalid)" : t.approval === "needs_approval" ? " (CSS waits for approval)" : ""}
               </option>
             ))}
           </optgroup>
         )}
       </select>
       {resolved.problem && <small className="theme-problem">{resolved.problem}</small>}
+      {current && !current.error && current.approval === "needs_approval" && (
+        <small className="theme-problem">
+          Its CSS ({current.cssBytes ?? 0} bytes) waits for your approval; only its colours and other tokens apply until then.{" "}
+          <button type="button" className="btn small" data-hint onClick={() => openApprovalPrompt("theme", current.id)}>
+            Review and approve…
+          </button>
+        </small>
+      )}
       {current && !current.error && current.warnings.length > 0 && (
         <small className="dim">
           {current.warnings.length === 1 ? "1 warning" : `${current.warnings.length} warnings`}: {current.warnings.join("; ")}

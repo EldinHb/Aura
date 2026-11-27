@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { applyTheme, resolveTheme, tokenCss, type UserTheme } from "./themes";
+import { applyTheme, isSingleValue, resolveTheme, setTokens, type UserTheme } from "./themes";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+// Node's own (empty) localStorage shadows jsdom's; a plain in-memory one.
+const values = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => values.set(k, v), removeItem: (k: string) => values.delete(k), clear: () => values.clear() },
+});
 
 const theme = (over: Partial<UserTheme> = {}): UserTheme => ({
   id: "ocean",
@@ -46,18 +55,79 @@ describe("resolveTheme", () => {
   });
 });
 
-describe("tokenCss", () => {
-  it("writes the overrides with a selector that outranks the base themes", () => {
-    expect(tokenCss(theme({ tokens: { "--fg": "#fff", "--bg": "var(--md-surface)" } }))).toBe(
-      ":root:root[data-user-theme] {\n  --fg: #fff;\n  --bg: var(--md-surface);\n}\n",
-    );
+describe("setTokens", () => {
+  const sheet = () => {
+    const el = document.createElement("style");
+    document.head.appendChild(el);
+    return el;
+  };
+
+  it("sets each token as one value of its own property", () => {
+    const rule = setTokens(sheet(), { "--fg": "#fff", "--bg": "var(--md-surface)" })!;
+    expect(rule.selectorText).toBe(":root:root[data-user-theme]");
+    expect(rule.style.getPropertyValue("--fg").trim()).toBe("#fff");
+    expect(rule.style.getPropertyValue("--bg").trim()).toBe("var(--md-surface)");
   });
 
-  it("drops anything that could leave the rule", () => {
-    const css = tokenCss(theme({ tokens: { "--fg": "red } body { display: none", "--x;y": "1", "--ok": "1px" } }));
-    expect(css).not.toContain("display");
-    expect(css).not.toContain("--x;y");
-    expect(css).toContain("--ok: 1px;");
+  it("cannot be made to add a declaration (the reviewer's case)", () => {
+    const el = sheet();
+    const rule = setTokens(el, { "--fg": "red;display:none", "--x;y": "1", "--ok": "1px" })!;
+    expect(rule.style.getPropertyValue("display")).toBe("");
+    expect(rule.style.getPropertyValue("--ok").trim()).toBe("1px");
+    expect(el.textContent).toBe(":root:root[data-user-theme] {}");
+    expect(rule.cssText).not.toMatch(/display\s*:/);
+  });
+
+  it("knows one value from several", () => {
+    for (const ok of ["#fff", "var(--a)", "\"a;b\", serif", "url('data:image/svg+xml;utf8,<svg/>')", "0 1px 2px rgb(0 0 0 / 0.3), 0 2px 4px rgb(0 0 0 / 0.2)"])
+      expect(isSingleValue(ok)).toBe(true);
+    for (const bad of ["red;display:none", "red } body { x: y", "red !important"]) expect(isSingleValue(bad)).toBe(false);
+  });
+
+  it("drops tokens a new version of the theme no longer sets", () => {
+    const el = sheet();
+    setTokens(el, { "--fg": "#fff", "--bg": "#000" });
+    const rule = setTokens(el, { "--fg": "#eee" })!;
+    expect(rule.style.getPropertyValue("--bg")).toBe("");
+    expect(rule.style.getPropertyValue("--fg").trim()).toBe("#eee");
+  });
+});
+
+describe("theme-boot.js (before the first paint)", () => {
+  const boot = readFileSync(resolve(__dirname, "../../public/theme-boot.js"), "utf8");
+  afterEach(() => {
+    localStorage.clear();
+    document.head.innerHTML = "";
+    delete document.documentElement.dataset.theme;
+    delete document.documentElement.dataset.userTheme;
+  });
+
+  it("shows the cached user theme, its tokens and its approved CSS", () => {
+    localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "ocean" }));
+    localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme({ css: ".a{color:red}", approval: "approved" })));
+    new Function(boot)();
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.userTheme).toBe("ocean");
+    const rule = (document.getElementById("aura-user-theme-tokens") as HTMLStyleElement).sheet!.cssRules[0] as CSSStyleRule;
+    expect(rule.style.getPropertyValue("--md-primary").trim()).toBe("#0066cc");
+    expect(document.getElementById("aura-user-theme-css")?.textContent).toBe(".a{color:red}");
+  });
+
+  it("uses a built-in theme as is, and dark when the cache is for another theme", () => {
+    localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "light" }));
+    new Function(boot)();
+    expect(document.documentElement.dataset.theme).toBe("light");
+    localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "other" }));
+    localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme()));
+    new Function(boot)();
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
+  it("never applies CSS that waits for approval", () => {
+    localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "ocean" }));
+    localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme({ css: ".a{}", approval: "needs_approval" })));
+    new Function(boot)();
+    expect(document.getElementById("aura-user-theme-css")).toBeNull();
   });
 });
 
@@ -73,7 +143,7 @@ describe("applyTheme", () => {
     const root = document.documentElement;
     expect(root.dataset.theme).toBe("light");
     expect(root.dataset.userTheme).toBe("ocean");
-    expect(document.getElementById("aura-user-theme-tokens")?.textContent).toContain("--md-primary: #0066cc;");
+    expect(((document.getElementById("aura-user-theme-tokens") as HTMLStyleElement).sheet!.cssRules[0] as CSSStyleRule).style.getPropertyValue("--md-primary").trim()).toBe("#0066cc");
     expect(document.getElementById("aura-user-theme-css")?.textContent).toBe(".sidebar { opacity: 0.9 }");
 
     applyTheme({ base: "dark", theme: null, problem: null });

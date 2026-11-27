@@ -1,0 +1,147 @@
+/*
+ * Security prompts, out of a theme's reach.
+ *
+ * A theme's CSS (once approved) and a mod's ui.css are author styles, like
+ * Aura's own. To keep them from hiding, moving or relabelling an approval
+ * prompt, the prompt is a modal <dialog> in the browser's top layer (above
+ * everything, whatever z-index or overlay a stylesheet adds), attached to
+ * <body>, and styled only from the cascade layer below. Important
+ * declarations in the first-declared layer win over important declarations
+ * in any later layer and in unlayered styles, so nothing a theme writes can
+ * override them. Themes may not use @layer at all (the daemon refuses it),
+ * so they cannot add rules to this layer.
+ *
+ * Inside the dialog everything is first reset to the browser's defaults
+ * (`all: revert`), then given a fixed look that uses no theme token: plain
+ * values and generic font families (which @font-face cannot redefine).
+ */
+@layer aura-protected {
+  html,
+  body {
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    filter: none !important;
+    transform: none !important;
+    clip-path: none !important;
+    mask: none !important;
+    zoom: 1 !important;
+    content-visibility: visible !important;
+  }
+
+  dialog.aura-protected,
+  dialog.aura-protected *,
+  dialog.aura-protected *::before,
+  dialog.aura-protected *::after,
+  dialog.aura-protected *::first-line,
+  dialog.aura-protected *::first-letter,
+  dialog.aura-protected::before,
+  dialog.aura-protected::after,
+  dialog.aura-protected::backdrop {
+    all: revert !important;
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+  }
+
+  dialog.aura-protected:not([open]) {
+    display: none !important;
+  }
+  dialog.aura-protected[open] {
+    display: block !important;
+    position: fixed !important;
+    inset: 0 !important;
+    margin: auto !important;
+    width: min(520px, calc(100vw - 48px)) !important;
+    height: fit-content !important;
+    max-height: calc(100vh - 48px) !important;
+    overflow: auto !important;
+    box-sizing: border-box !important;
+    padding: 22px 24px !important;
+    border: 2px solid #d9a400 !important;
+    border-radius: 14px !important;
+    background: #ffffff !important;
+    color: #1b1b21 !important;
+    font: 400 14px/1.5 system-ui, sans-serif !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    transform: none !important;
+    zoom: 1 !important;
+    pointer-events: auto !important;
+    box-shadow: 0 10px 40px rgb(0 0 0 / 0.45) !important;
+  }
+  :root[data-theme="dark"] dialog.aura-protected[open] {
+    background: #1d1e25 !important;
+    color: #e3e1e9 !important;
+  }
+  dialog.aura-protected::backdrop {
+    background: rgb(0 0 0 / 0.55) !important;
+  }
+
+  dialog.aura-protected div,
+  dialog.aura-protected p,
+  dialog.aura-protected ul,
+  dialog.aura-protected h2 {
+    display: block !important;
+    margin: 0 0 12px !important;
+    padding: 0 !important;
+    color: inherit !important;
+    font: inherit !important;
+    visibility: inherit !important;
+  }
+  dialog.aura-protected h2 {
+    font-size: 18px !important;
+    font-weight: 600 !important;
+  }
+  dialog.aura-protected ul {
+    padding-left: 20px !important;
+  }
+  dialog.aura-protected li {
+    display: list-item !important;
+    list-style: disc outside !important;
+    color: inherit !important;
+    font: inherit !important;
+  }
+  dialog.aura-protected strong,
+  dialog.aura-protected span,
+  dialog.aura-protected code {
+    display: inline !important;
+    color: inherit !important;
+    font: inherit !important;
+  }
+  dialog.aura-protected strong {
+    font-weight: 700 !important;
+  }
+  dialog.aura-protected code {
+    font-family: ui-monospace, monospace !important;
+    font-size: 12.5px !important;
+    word-break: break-all !important;
+  }
+  dialog.aura-protected .aura-protected-actions {
+    display: flex !important;
+    justify-content: flex-end !important;
+    gap: 10px !important;
+    margin: 18px 0 0 !important;
+  }
+  dialog.aura-protected button {
+    display: inline-block !important;
+    padding: 7px 18px !important;
+    border-radius: 999px !important;
+    border: 1px solid #767680 !important;
+    background: transparent !important;
+    color: inherit !important;
+    font: 500 14px/1.4 system-ui, sans-serif !important;
+    cursor: pointer !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+  dialog.aura-protected button.aura-protected-approve {
+    background: #4c56a8 !important;
+    border-color: #4c56a8 !important;
+    color: #ffffff !important;
+  }
+  dialog.aura-protected button:focus-visible {
+    outline: 3px solid #d9a400 !important;
+    outline-offset: 2px !important;
+  }
+}

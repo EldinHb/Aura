@@ -2,16 +2,23 @@
  * User themes: `<data dir>/themes/<id>.json` (and mods' `themes/`), listed and
  * validated by the daemon (`themes.list`), applied here on top of their base.
  *
- * A theme sets `data-theme` to its base ("dark" or "light"), then overrides
- * tokens from one <style> and adds its own CSS from another. A theme that is
- * missing or invalid never breaks the window: its base (or dark) shows, and
- * Settings › General says why.
+ * A theme sets `data-theme` to its base ("dark" or "light"), then sets its
+ * tokens one by one with `style.setProperty` (a value can never add a
+ * declaration of its own), and adds its CSS, which the daemon hands out only
+ * once the user approved that exact CSS. A theme that is missing or invalid
+ * never breaks the window: its base (or dark) shows, and Settings says why.
+ *
+ * The choice is kept by the daemon (`themes.use` / `themes.current`), so it
+ * holds for every window and across restarts, whether it was made in
+ * Settings or with `aura themes use`.
  */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import { useStore } from "./store";
 import { isTauri } from "../lib/connection";
 import { THEME_APPLIED_EVENT } from "../lib/terminalTheme";
+
+type RpcLike = { call<T = unknown>(method: string, params?: unknown): Promise<T> };
 
 export type UserTheme = {
   id: string;
@@ -25,6 +32,10 @@ export type UserTheme = {
   source: string;
   warnings: string[];
   error?: string;
+  /** For a theme with CSS: "needs_approval" (its CSS is withheld) or "approved". */
+  approval?: "needs_approval" | "approved";
+  /** The size of CSS that waits for approval. */
+  cssBytes?: number;
 };
 
 export const BUILTIN_THEMES = ["dark", "light", "system"] as const;
@@ -79,14 +90,41 @@ export function resolveTheme(choice: string, themes: UserTheme[] | null, prefers
 }
 
 const SAFE_NAME = /^--[a-z0-9-]+$/;
+const RULE = ":root:root[data-user-theme]";
 
-/** The stylesheet with a theme's token overrides. Values are validated by the daemon; this guards again. */
-export function tokenCss(t: UserTheme): string {
-  const lines = Object.entries(t.tokens)
-    .filter(([name, value]) => SAFE_NAME.test(name) && typeof value === "string" && !/[{}<]/.test(value))
-    .map(([name, value]) => `  ${name}: ${value};`);
-  // :root:root[…] outranks :root[data-theme="light"], whatever the order of the stylesheets.
-  return `:root:root[data-user-theme] {\n${lines.join("\n")}\n}\n`;
+/** No `;`, `{`, `}` or `!` outside strings and brackets: one value (the daemon checks this fully). */
+export function isSingleValue(v: string): boolean {
+  let quote = "";
+  let depth = 0;
+  for (let i = 0; i < v.length; i++) {
+    const c = v[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = "";
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "(" || c === "[") depth++;
+    else if (c === ")" || c === "]") depth = Math.max(0, depth - 1);
+    else if (c === "{" || c === "}") return false;
+    else if (depth === 0 && (c === ";" || c === "!")) return false;
+  }
+  return true;
+}
+
+/**
+ * Set a theme's tokens on the rule of `el`, each with `style.setProperty`:
+ * the browser parses every value as one value of that one property, so no
+ * value can add, hide or end a declaration. (The daemon validates them too.)
+ * The selector outranks :root[data-theme="light"], whatever the order of the stylesheets.
+ */
+export function setTokens(el: HTMLStyleElement, tokens: Record<string, string>): CSSStyleRule | null {
+  if (el.textContent !== `${RULE} {}`) el.textContent = `${RULE} {}`;
+  const rule = el.sheet?.cssRules[0] as CSSStyleRule | undefined;
+  if (!rule) return null;
+  for (let i = rule.style.length - 1; i >= 0; i--) rule.style.removeProperty(rule.style[i]);
+  for (const [name, value] of Object.entries(tokens)) {
+    if (SAFE_NAME.test(name) && typeof value === "string" && isSingleValue(value)) rule.style.setProperty(name, value);
+  }
+  return rule;
 }
 
 const TOKENS_ID = "aura-user-theme-tokens";
@@ -119,13 +157,17 @@ function putTheme(r: ResolvedTheme) {
     return;
   }
   root.dataset.userTheme = r.theme.id;
-  const tokens = styleEl(TOKENS_ID);
-  const text = tokenCss(r.theme);
-  if (tokens.textContent !== text) tokens.textContent = text;
-  if (r.theme.css) {
+  setTokens(styleEl(TOKENS_ID), r.theme.tokens);
+  // Only approved CSS ever arrives here (the daemon withholds the rest).
+  if (r.theme.css && r.theme.approval !== "needs_approval") {
     const css = styleEl(CSS_ID);
     if (css.textContent !== r.theme.css) css.textContent = r.theme.css;
   } else document.getElementById(CSS_ID)?.remove();
+}
+
+/** Fetch the theme list again (also after an approval). */
+export async function refreshThemes() {
+  await refresh();
 }
 
 async function refresh() {
@@ -147,11 +189,34 @@ export function useThemeLoader() {
   const loaded = useThemes((s) => s.loaded);
   const themes = useThemes((s) => s.themes);
 
+  // The daemon keeps the choice. On connecting, take its choice (set by
+  // another window or `aura themes use` while this one was closed); after
+  // that, tell it each choice made here.
+  const synced = useRef<RpcLike | null>(null);
   useEffect(() => {
     if (!client) return;
+    const sync = () => {
+      client
+        .call<{ id: string | null }>("themes.current", {})
+        .then(({ id }) => {
+          const mine = useStore.getState().settings.theme;
+          if (id && id !== mine) useStore.getState().setSettings({ theme: id });
+          else if (!id) void client.call("themes.use", { id: mine, allowInvalid: true }).catch(() => {});
+        })
+        .catch(() => {
+          /* an older daemon: the choice stays this window's */
+        })
+        .finally(() => {
+          synced.current = client;
+        });
+    };
+    sync();
     void refresh();
     const offState = client.onState((s) => {
-      if (s === "open") void refresh();
+      if (s === "open") {
+        void refresh();
+        sync();
+      }
     });
     const offNote = client.onNotification((method, params) => {
       if (method === "themes.changed" || method === "mods.changed" || method === "notifications.lagged") void refresh();
@@ -165,6 +230,10 @@ export function useThemeLoader() {
       offNote();
     };
   }, [client]);
+
+  useEffect(() => {
+    if (client && synced.current === client) void client.call("themes.use", { id: choice, allowInvalid: true }).catch(() => {});
+  }, [client, choice]);
 
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: light)");

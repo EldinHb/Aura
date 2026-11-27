@@ -5,8 +5,9 @@ import { useStore } from "../state/store";
  * next to the daemon half's lines: an agent working on a mod reads that log, not this window's console.
  */
 export function reportModUiError(modId: string, what: string, error: unknown) {
-  const e = error instanceof Error ? error : new Error(String(error));
-  const message = `${what}: ${e.message}${e.stack ? `\n${e.stack.split("\n").slice(0, 6).join("\n")}` : ""}`;
+  // A string is a message already located (see locateUiError).
+  const e = error instanceof Error ? error : null;
+  const message = e ? `${what}: ${e.message}${e.stack ? `\n${e.stack.split("\n").slice(0, 6).join("\n")}` : ""}` : `${what}: ${String(error)}`;
   // Reporting must never throw: it runs inside error boundaries and catch blocks.
   try {
     const client = useStore.getState().client;
