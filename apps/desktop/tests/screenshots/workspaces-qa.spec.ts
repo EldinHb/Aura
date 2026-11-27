@@ -494,3 +494,195 @@ test("7b empty workspace copy, filter hint for matches elsewhere", async ({ page
   await shot(page, "7b-filter");
   console.log("FILTER TEXT:", (await sidebarText(page)).replace(/\n/g, " | "));
 });
+
+// ---------------------------------------------------------------- round 2
+
+const palette = async (page: Page, q: string) => {
+  await page.keyboard.press("Meta+k");
+  await page.keyboard.type(q);
+  await page.waitForTimeout(150);
+  await page.keyboard.press("Enter");
+};
+
+test("R2-T1/T2 cleanup: counts agree, no orchestrators, run labels, failed grandchild group", async ({ page }) => {
+  const sessions = [
+    session(1, { title: "Orch 1", orchestrator: true, last_activity: at(1) }),
+    session(2, { title: "idle w", orchestrator_id: id(1), created_at: at(200) }),
+    session(3, { title: "done w", orchestrator_id: id(1), attention: "done", created_at: at(190) }),
+    session(4, { title: "Sub orch", orchestrator_id: id(1), orchestrator: true, created_at: at(150) }),
+    session(5, { title: "grandchild ok", orchestrator_id: id(4), created_at: at(140) }),
+    session(6, { title: "grandchild fails", orchestrator_id: id(4), created_at: at(139) }),
+    session(20, { title: "Sched orch run", scheduled_task_id: "t1", scheduled_task_name: "Nightly", orchestrator: true, created_at: new Date(2026, 10, 27, 3, 0).toISOString() }),
+    session(21, { title: "sched worker", orchestrator_id: id(20), scheduled_run: "t1", created_at: at(100) }),
+    session(22, { title: "Sched plain run", scheduled_task_id: "t1", scheduled_task_name: "Nightly", created_at: new Date(2026, 10, 27, 4, 5).toISOString() }),
+  ];
+  const fake = await boot(page, sessions);
+  await page.getByRole("button", { name: "Workspace actions" }).click();
+  await page.getByRole("menuitem", { name: "Clean up worker sessions…" }).click();
+  const m = dialog(page);
+  await page.waitForTimeout(300);
+  const text = await m.innerText();
+  console.log("R2 DIALOG:", text.replace(/\n/g, " | "));
+  await shot(page, "r2-cleanup");
+  expect(text).not.toMatch(/Sched orch run|Sub orch\b.*\(\+/);
+  expect(text).toMatch(/Nightly · 27 Nov 04:05/);
+  const btn = await m.getByRole("button", { name: /^Delete \d+/ }).innerText();
+  const n = Number(btn.match(/Delete (\d+)/)![1]);
+  fake.failDelete.add(id(6));
+  await m.getByRole("button", { name: /^Delete \d+/ }).click();
+  const confirm = await page.locator(".modal").last().innerText();
+  console.log("R2 button:", btn.replace(/\n/g, " "), "| confirm:", confirm.replace(/\n/g, " | "));
+  expect(confirm).toContain(`Delete ${n} worker session`);
+  await page.locator(".modal").last().getByRole("button", { name: "Delete", exact: true }).click();
+  await page.waitForTimeout(500);
+  await shot(page, "r2-partial");
+  const after = await page.locator(".modal").first().innerText();
+  console.log("R2 AFTER:", after.replace(/\n/g, " | "));
+  expect(after).toContain("Couldn't delete");
+  expect(after).toContain("Couldn't stop the process: EPERM");
+  expect(after).toContain(`Deleted ${n - 1}. 1 couldn't be deleted.`);
+});
+
+test("R2 workers of a deleted scheduled run stay out of status sections and Elsewhere", async ({ page }) => {
+  const sessions = [
+    session(1, { title: "Plain" }),
+    session(2, { title: "ORPHAN-run-waiting", orchestrator_id: id(999), scheduled_run: "t1", status: "waiting_approval", pending_count: 1, attention: "waiting" }),
+    session(3, { title: "ORPHAN-run-working", orchestrator_id: id(999), scheduled_run: "t1", status: "running" }),
+    session(4, { title: "ORPHAN-run-idle", orchestrator_id: id(999), scheduled_run: "t1" }),
+    session(5, { title: "ORPHAN-b-waiting", workspace: "b", orchestrator_id: id(999), scheduled_run: "t1", status: "waiting_approval", pending_count: 1, attention: "waiting" }),
+    session(6, { title: "ORPHAN-plain-waiting", orchestrator_id: id(998), status: "waiting_approval", pending_count: 1, attention: "waiting" }),
+  ];
+  await boot(page, sessions);
+  const list = await titles(page);
+  console.log("R2 SESSIONS TAB:", JSON.stringify(list));
+  expect(list.some((t) => t.startsWith("ORPHAN-run") || t === "ORPHAN-b-waiting")).toBe(false);
+  expect(list).toContain("ORPHAN-plain-waiting"); // non-scheduled orphan still a normal row
+  const rail = page.getByRole("group", { name: "Other workspaces" });
+  await expect(rail).not.toContainText("ORPHAN-b-waiting");
+  await page.getByRole("tab", { name: /Scheduled/ }).click();
+  await page.waitForTimeout(300);
+  console.log("R2 SCHEDULED TAB:", (await sidebarText(page)).replace(/\n/g, " | "));
+  await shot(page, "r2-orphan-scheduled");
+});
+
+test("R2 Move → New workspace… moves the session and its workers", async ({ page }) => {
+  const fake = await boot(page, [
+    session(1, { title: "Boss", orchestrator: true }),
+    session(2, { title: "W1", orchestrator_id: id(1) }),
+    session(3, { title: "W2", orchestrator_id: id(1), orchestrator: true }),
+    session(4, { title: "W3", orchestrator_id: id(3) }),
+    session(5, { title: "Plain" }),
+  ], { select: id(1) });
+  await palette(page, "Move to workspace");
+  await expect(dialog(page)).toBeVisible();
+  await dialog(page).getByText("New workspace…").click();
+  await page.locator("#workspace-name").fill("Fresh");
+  await page.locator("#workspace-name").press("Enter");
+  await page.waitForTimeout(500);
+  const call = fake.calls.find((c) => c.method === "session.set_workspace");
+  console.log("R2 set_workspace:", JSON.stringify(call?.params), "moved:", fake.sessions.filter((s) => s.workspace !== "a").length);
+  expect(call).toBeTruthy();
+  expect(fake.sessions.filter((s) => s.workspace === call!.params.workspace).length).toBe(4);
+  await shot(page, "r2-move-new");
+  console.log("R2 after move active:", await page.locator(".workspace-name").first().innerText(), "rows", JSON.stringify(await titles(page)));
+});
+
+test("R2 ⌘[ / ⌘] from a selected worker go to neighbouring leaders", async ({ page }) => {
+  const s = [
+    session(1, { title: "Lead A", orchestrator: true, last_activity: at(1) }),
+    session(2, { title: "Lead B", orchestrator: true, last_activity: at(2) }),
+    session(3, { title: "wb", orchestrator_id: id(2) }),
+    session(4, { title: "Lead C", last_activity: at(3) }),
+  ];
+  await boot(page, s, { select: id(3) });
+  const sel = () => page.locator(".sidebar .session-row.selected .title").first().innerText();
+  console.log("R2 selected worker:", await sel());
+  await page.keyboard.press("Meta+]");
+  await page.waitForTimeout(200);
+  const next = await page.locator(".sidebar .session-row.selected .title").allInnerTexts();
+  await page.keyboard.press("Meta+4").catch(() => {});
+  await page.getByText("Lead B").first().click();
+  await page.locator('[data-session-id="' + id(3) + '"]').click().catch(() => {});
+  await page.keyboard.press("Meta+[");
+  await page.waitForTimeout(200);
+  const prev = await page.locator(".sidebar .session-row.selected .title").allInnerTexts();
+  console.log("R2 ⌘] from worker =>", next, " ⌘[ from worker =>", prev);
+  expect(next).toContain("Lead C");
+  expect(prev).toContain("Lead A");
+});
+
+test("R2 worker beyond the 8-row cap is revealed via ⌘K", async ({ page }) => {
+  const s = [session(1, { title: "Big lead", orchestrator: true })];
+  for (let i = 0; i < 12; i++) s.push(session(10 + i, { title: `worker-${i}`, orchestrator_id: id(1), created_at: at(300 - i) }));
+  await boot(page, s, { select: id(1) });
+  await palette(page, "@worker-11");
+  await page.waitForTimeout(400);
+  const vis = await page.locator('[data-session-id="' + id(21) + '"]').isVisible();
+  console.log("R2 worker-11 visible:", vis, "rows", JSON.stringify(await titles(page)));
+  await shot(page, "r2-cap");
+  expect(vis).toBe(true);
+  expect(await page.locator(".sidebar .session-row.selected").count()).toBeGreaterThan(0);
+});
+
+test("R2 show archived: archived workers + waiting grandchild under archived sub-orch", async ({ page }) => {
+  const s = [
+    session(1, { title: "Lead", orchestrator: true }),
+    session(2, { title: "arch-worker", orchestrator_id: id(1), archived: true }),
+    session(3, { title: "arch-sub", orchestrator_id: id(1), orchestrator: true, archived: true }),
+    session(4, { title: "grand-waiting", orchestrator_id: id(3), status: "waiting_approval", pending_count: 1, attention: "waiting" }),
+    session(5, { title: "live-worker", orchestrator_id: id(1) }),
+  ];
+  await boot(page, s, { select: id(1) });
+  await rows(page).first().locator(".orchestra-toggle").click().catch(() => {});
+  await page.waitForTimeout(200);
+  const hidden = await page.locator(".sidebar .session-list").innerText();
+  console.log("R2 archived hidden:", hidden.replace(/\n/g, " | "));
+  expect(hidden).not.toContain("arch-worker");
+  await shot(page, "r2-archived-hidden");
+  await palette(page, "Show / hide archived");
+  await page.waitForTimeout(300);
+  const shown = await page.locator(".sidebar .session-list").innerText();
+  console.log("R2 archived shown:", shown.replace(/\n/g, " | "));
+  await shot(page, "r2-archived-shown");
+  expect(shown).toContain("arch-worker");
+  expect(shown).toContain("grand-waiting");
+});
+
+test("R2 ⌃digit with a terminal focused switches workspace", async ({ page }) => {
+  await boot(page, [session(1, { title: "Term", mode: "terminal", provider: "terminal", command: ["/bin/zsh"] }), session(2, { title: "In beta", workspace: "b" })], { select: id(1) });
+  await page.waitForTimeout(600);
+  const ta = page.locator(".xterm-helper-textarea").first();
+  console.log("R2 xterm present:", await ta.count());
+  await ta.focus().catch(() => {});
+  await shot(page, "r2-terminal");
+  await page.keyboard.press("Control+2");
+  await expect(page.getByRole("button", { name: /Workspace: Beta/ })).toBeVisible();
+});
+
+test("R2 performance with 2000 sessions", async ({ page }) => {
+  const s: Session[] = [];
+  for (let i = 0; i < 40; i++) s.push(session(i + 1, { title: `Lead ${i}`, orchestrator: true, last_activity: at(i) }));
+  for (let i = 0; i < 1500; i++) s.push(session(100 + i, { title: `w${i}`, orchestrator_id: id(1 + (i % 40)), status: i % 7 === 0 ? "running" : "idle", ...(i % 50 === 0 ? { pending_count: 1, status: "waiting_approval" as const, attention: "waiting" as const } : {}) }));
+  for (let i = 0; i < 460; i++) s.push(session(5000 + i, { title: `Plain ${i}`, workspace: i % 2 ? "b" : "a", last_activity: at(i) }));
+  const t0 = Date.now();
+  await boot(page, s);
+  console.log("R2 PERF boot ms:", Date.now() - t0, "sessions", s.length);
+  const filter = page.getByRole("textbox", { name: "Filter sessions" });
+  const t1 = Date.now();
+  await filter.pressSequentially("Plain 12", { delay: 0 });
+  await expect(rows(page).first()).toBeVisible();
+  console.log("R2 PERF type filter ms:", Date.now() - t1);
+  await filter.fill("");
+  const t2 = Date.now();
+  for (let i = 0; i < 20; i++) await page.keyboard.press("Meta+]");
+  console.log("R2 PERF 20x ⌘] ms:", Date.now() - t2);
+  const t3 = Date.now();
+  await page.keyboard.press("Control+2");
+  await page.keyboard.press("Control+1");
+  console.log("R2 PERF 2 switches ms:", Date.now() - t3);
+  const t4 = Date.now();
+  await page.keyboard.press("Meta+k"); await page.keyboard.type("@w1499");
+  await page.waitForTimeout(100);
+  console.log("R2 PERF palette ms:", Date.now() - t4);
+  await shot(page, "r2-perf");
+});
