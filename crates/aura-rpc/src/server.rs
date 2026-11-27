@@ -73,6 +73,8 @@ pub struct AppState {
     /// The window secret, when the desktop shell spawned this daemon. Kept in
     /// memory only: never written to daemon.json, argv, the environment or a log.
     pub window_secret: Option<Arc<String>>,
+    /// Remote access: the opt-in TLS listener for paired devices.
+    pub remote: Arc<crate::remote::RemoteService>,
 }
 
 pub struct RpcServer {
@@ -132,7 +134,10 @@ impl RpcServer {
             notifications,
             shutdown: shutdown.clone(),
             window_secret: window_secret.map(Arc::new),
+            remote: crate::remote::RemoteService::load(data_dir),
         };
+        // Off unless the user turned it on; a failure shows in `remote.status`.
+        state.remote.apply(&state).await;
         let app = Router::new()
             .route("/ws", get(ws_handler))
             .route("/healthz", get(|| async { "ok" }))
@@ -183,7 +188,7 @@ struct WsQuery {
 }
 
 /// Who a connection acts for, by the token it connected with.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 enum Caller {
     /// The daemon's own token, from `daemon.json`: the app, the CLI. The user.
     User,
@@ -191,6 +196,28 @@ enum Caller {
     /// Aura hands that session's `aura mcp` and nobody else. Checked again
     /// on every request: once the daemon revokes it, the connection closes.
     Session { id: String, token: String },
+    /// A connection to the remote listener: a paired device once it has
+    /// paired or authenticated, nobody before that.
+    Remote(Arc<RemoteConn>),
+}
+
+/// The peer address of a connection to the remote listener.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RemotePeer(pub std::net::SocketAddr);
+
+#[derive(Debug)]
+struct RemoteConn {
+    peer: std::net::SocketAddr,
+    /// The device it authenticated as; None until then.
+    device: parking_lot::Mutex<Option<String>>,
+    /// Closed if not authenticated by then.
+    deadline: tokio::time::Instant,
+}
+
+impl RemoteConn {
+    fn device(&self) -> Option<String> {
+        self.device.lock().clone()
+    }
 }
 
 /// Whether `caller` may call `method` with `params`. A session's tools may
@@ -209,6 +236,13 @@ fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), Dispat
         data: None,
     };
     match caller {
+        Caller::Remote(_) if crate::remote::REMOTE_ALLOWED_METHODS.contains(&method) => Ok(()),
+        Caller::Remote(_) if method == "remote.pair" || method == "remote.auth" => Err(forbidden(
+            "this connection is already authenticated".into(),
+        )),
+        Caller::Remote(_) => Err(forbidden(format!(
+            "{method} is not available to remote devices; use Aura on the computer for it"
+        ))),
         Caller::User if session_tool => Err(forbidden(format!(
             "{method} acts for a session's tools and needs that session's own session token, which Aura hands only to its `aura mcp`"
         ))),
@@ -257,13 +291,298 @@ async fn ws_handler(
         .into_response()
 }
 
+/// The remote listener's routes: the WebSocket at `/` (and `/ws`, as on
+/// loopback). Who connects proves it with `remote.pair` / `remote.auth`.
+pub(crate) fn remote_router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(remote_ws_handler))
+        .route("/ws", get(remote_ws_handler))
+        .with_state(state)
+}
+
+async fn remote_ws_handler(
+    ws: WebSocketUpgrade,
+    axum::Extension(RemotePeer(peer)): axum::Extension<RemotePeer>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let conn = Arc::new(RemoteConn {
+        peer,
+        device: parking_lot::Mutex::new(None),
+        deadline: tokio::time::Instant::now() + crate::remote::AUTH_DEADLINE,
+    });
+    // Enough for a few pasted images in a message; less than loopback's.
+    ws.max_message_size(32 * 1024 * 1024)
+        .on_upgrade(move |socket| handle_socket(socket, state, Caller::Remote(conn)))
+}
+
+/// `session.create` as a remote device may call it: a known project, an
+/// agent, and a few options. No terminals, commands, resumed sessions,
+/// orchestrators or worktree paths of its choosing.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteCreateSession {
+    provider: ProviderKind,
+    #[serde(default)]
+    agent: Option<String>,
+    cwd: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    #[serde(default)]
+    permission_mode: Option<String>,
+    #[serde(default)]
+    initial_prompt: Option<String>,
+    #[serde(default)]
+    worktree: Option<RemoteWorktree>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteWorktree {
+    branch: String,
+    #[serde(default)]
+    base: Option<String>,
+}
+
+/// Whether `cwd` is one of `projects`' folders or inside one.
+fn in_known_project(cwd: &str, projects: &[Project]) -> bool {
+    let path = std::path::Path::new(cwd);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    projects
+        .iter()
+        .any(|p| path.starts_with(std::path::Path::new(&p.path)))
+}
+
+/// A remote device's request, once [`authorize`] let it through: two
+/// methods are narrowed, the rest is the user's [`dispatch`].
+async fn remote_dispatch(
+    state: &AppState,
+    attached: &Arc<parking_lot::Mutex<HashSet<String>>>,
+    req: Request,
+    window: &std::sync::atomic::AtomicBool,
+) -> Result<Value, DispatchError> {
+    let forbidden = |message: String| DispatchError {
+        code: ERR_FORBIDDEN,
+        message,
+        data: None,
+    };
+    match req.method.as_str() {
+        // Without the loopback token, port and data directory.
+        "daemon.info" => ok(json!({
+            "version": state.info.version,
+            "pid": state.info.pid,
+            "started_at": state.info.started_at,
+        })),
+        "session.create" => {
+            let o: RemoteCreateSession = params(&req.params)?;
+            if o.provider == ProviderKind::Terminal {
+                return Err(forbidden(
+                    "remote devices cannot start terminal sessions: pick claude, codex or acp"
+                        .into(),
+                ));
+            }
+            let m = state.manager.clone();
+            let projects = tokio::task::spawn_blocking(move || m.projects())
+                .await
+                .map_err(|e| anyhow!(e))??;
+            if !in_known_project(&o.cwd, &projects) {
+                return Err(forbidden(format!(
+                    "`{}` is not in a known project: pick a path from orchestrator.projects",
+                    o.cwd
+                )));
+            }
+            let opts = CreateSessionOpts {
+                provider: o.provider,
+                agent: o.agent,
+                cwd: o.cwd,
+                title: o.title,
+                workspace: o.workspace,
+                model: o.model,
+                effort: o.effort,
+                permission_mode: o.permission_mode,
+                initial_prompt: o.initial_prompt,
+                worktree: o.worktree.map(|w| WorktreeOpts {
+                    branch: w.branch,
+                    base: w.base,
+                    path: None,
+                }),
+                ..Default::default()
+            };
+            ok(state.manager.create_session(opts).await?)
+        }
+        _ => dispatch(state, attached, req, None, window).await,
+    }
+}
+
+/// Core events to one connection, as `event` notifications.
+fn spawn_event_feed(state: &AppState, ev_tx: mpsc::Sender<Message>) -> tokio::task::JoinHandle<()> {
+    let mut events = state.manager.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(ev) => {
+                    let n = Notification {
+                        method: "event".into(),
+                        params: serde_json::to_value(&ev).unwrap_or(Value::Null),
+                    };
+                    if ev_tx
+                        .send(Message::Text(serde_json::to_string(&n).unwrap()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("client lagged {n} events");
+                    let n = Notification {
+                        method: "lagged".into(),
+                        params: json!({ "count": n }),
+                    };
+                    let _ = ev_tx
+                        .send(Message::Text(serde_json::to_string(&n).unwrap()))
+                        .await;
+                }
+                Err(_) => break,
+            }
+        }
+    })
+}
+
+fn response(id: Value, result: Result<Value, DispatchError>) -> Message {
+    let resp = match result {
+        Ok(v) => Response {
+            id,
+            result: Some(v),
+            error: None,
+        },
+        Err(e) => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: e.code,
+                message: e.message,
+                data: e.data,
+            }),
+        },
+    };
+    Message::Text(serde_json::to_string(&resp).unwrap())
+}
+
+/// Resolves when a remote connection has to close: its device was revoked,
+/// the listener stopped, or it did not authenticate in time. Never for
+/// other connections.
+async fn remote_closed(
+    conn: Option<&Arc<RemoteConn>>,
+    kill: &mut Option<broadcast::Receiver<crate::remote::Kill>>,
+) {
+    let (Some(conn), Some(kill)) = (conn, kill.as_mut()) else {
+        return std::future::pending().await;
+    };
+    let deadline = async {
+        if conn.device().is_some() {
+            std::future::pending::<()>().await
+        } else {
+            tokio::time::sleep_until(conn.deadline).await
+        }
+    };
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => {
+                tracing::info!(peer = %conn.peer, "remote client did not authenticate in time");
+                return;
+            }
+            k = kill.recv() => match k {
+                Ok(crate::remote::Kill::All) | Err(broadcast::error::RecvError::Closed) => return,
+                Ok(crate::remote::Kill::Device(d)) if conn.device().as_deref() == Some(d.as_str()) => return,
+                _ => continue,
+            }
+        }
+    }
+}
+
+/// A request on a remote connection that has not authenticated: only
+/// `remote.pair` and `remote.auth` work. Returns the answer and whether the
+/// connection is now authenticated; anything else closes it.
+fn remote_pre_auth(
+    state: &AppState,
+    conn: &RemoteConn,
+    req: &Request,
+) -> (Result<Value, DispatchError>, bool) {
+    let ip = conn.peer.ip();
+    let refused = |e: crate::remote::RemoteError| DispatchError {
+        code: e.code,
+        message: e.message,
+        data: e.data,
+    };
+    let result = match req.method.as_str() {
+        "remote.pair" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct P {
+                code: String,
+                #[serde(default)]
+                device_name: String,
+            }
+            params::<P>(&req.params).and_then(|P { code, device_name }| {
+                let r = state
+                    .remote
+                    .pair(ip, &code, &device_name)
+                    .map_err(refused)?;
+                *conn.device.lock() = Some(r.device_id.clone());
+                ok(r)
+            })
+        }
+        "remote.auth" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct P {
+                device_id: String,
+                token: String,
+            }
+            params::<P>(&req.params).and_then(|P { device_id, token }| {
+                let r = state.remote.auth(ip, &device_id, &token).map_err(refused)?;
+                *conn.device.lock() = Some(device_id);
+                ok(r)
+            })
+        }
+        other => Err(DispatchError {
+            code: ERR_NOT_AUTHENTICATED,
+            message: format!("{other} needs authentication: call remote.pair or remote.auth first"),
+            data: None,
+        }),
+    };
+    let authed = result.is_ok();
+    (result, authed)
+}
+
 async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
     // Set once this connection presents the window secret (`daemon.window_hello`).
     let window = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    tracing::info!("rpc client connected");
     // A session's tools get answers only: no events, notifications or
-    // terminal output of the user's sessions.
-    let user = caller == Caller::User;
+    // terminal output of the user's sessions. A remote device gets events
+    // once it has authenticated, and never terminal output.
+    let user = matches!(caller, Caller::User);
+    let remote = match &caller {
+        Caller::Remote(c) => Some(c.clone()),
+        _ => None,
+    };
+    match &remote {
+        Some(c) => tracing::info!(peer = %c.peer, "remote client connected"),
+        None => tracing::info!("rpc client connected"),
+    }
     let (mut sink, mut stream) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(4096);
     let attached: Arc<parking_lot::Mutex<HashSet<String>>> = Default::default();
@@ -278,40 +597,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
     });
 
     // Event fan-out.
-    let mut events = state.manager.subscribe();
-    let ev_tx = out_tx.clone();
-    let ev_task = user.then(|| {
-        tokio::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(ev) => {
-                        let n = Notification {
-                            method: "event".into(),
-                            params: serde_json::to_value(&ev).unwrap_or(Value::Null),
-                        };
-                        if ev_tx
-                            .send(Message::Text(serde_json::to_string(&n).unwrap()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("client lagged {n} events");
-                        let n = Notification {
-                            method: "lagged".into(),
-                            params: json!({ "count": n }),
-                        };
-                        let _ = ev_tx
-                            .send(Message::Text(serde_json::to_string(&n).unwrap()))
-                            .await;
-                    }
-                    Err(_) => break,
-                }
-            }
-        })
-    });
+    let mut ev_task = user.then(|| spawn_event_feed(&state, out_tx.clone()));
 
     let extra_task = state.notifications.as_ref().filter(|_| user).map(|sender| {
         let mut rx = sender.subscribe();
@@ -362,7 +648,15 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
         })
     });
 
-    while let Some(Ok(msg)) = stream.next().await {
+    let mut kill = remote.as_ref().map(|_| state.remote.subscribe_kill());
+    loop {
+        let msg = tokio::select! {
+            m = stream.next() => match m {
+                Some(Ok(m)) => m,
+                _ => break,
+            },
+            _ = remote_closed(remote.as_ref(), &mut kill) => break,
+        };
         match msg {
             Message::Text(text) => {
                 let req: Request = match serde_json::from_str(&text) {
@@ -383,6 +677,43 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
                         continue;
                     }
                 };
+                if let Some(conn) = &remote {
+                    match conn.device() {
+                        // Not authenticated: handled here, in order, so
+                        // nothing else runs before it succeeds.
+                        None => {
+                            let (result, authed) = remote_pre_auth(&state, conn, &req);
+                            if authed {
+                                // Subscribed before the answer goes out, so
+                                // the client misses no event after it.
+                                ev_task = Some(spawn_event_feed(&state, out_tx.clone()));
+                                tracing::info!(peer = %conn.peer, device = ?conn.device(), "remote client authenticated");
+                            }
+                            let _ = out_tx
+                                .send(response(req.id.unwrap_or(Value::Null), result))
+                                .await;
+                            if authed {
+                                continue;
+                            }
+                            break;
+                        }
+                        // Revoked since: the connection ends.
+                        Some(device) if !state.remote.device_exists(&device) => {
+                            let _ = out_tx
+                                .send(response(
+                                    req.id.unwrap_or(Value::Null),
+                                    Err(DispatchError {
+                                        code: ERR_AUTH_FAILED,
+                                        message: "this device was revoked: pair it again".into(),
+                                        data: None,
+                                    }),
+                                ))
+                                .await;
+                            break;
+                        }
+                        Some(_) => {}
+                    }
+                }
                 // A revoked token (its session deleted or no longer
                 // orchestrating) ends the connection, whatever it asks.
                 if let Caller::Session { id, token } = &caller {
@@ -412,38 +743,23 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
                 tokio::spawn(async move {
                     let id = req.id.clone();
                     let result = match authorize(&caller, &req.method, &req.params) {
-                        Ok(()) => {
-                            let session = match &caller {
-                                Caller::Session { id, .. } => Some(id.clone()),
-                                Caller::User => None,
-                            };
-                            dispatch(&state, &attached, req, session, &window).await
-                        }
+                        Ok(()) => match &caller {
+                            Caller::Remote(_) => {
+                                remote_dispatch(&state, &attached, req, &window).await
+                            }
+                            Caller::Session { id, .. } => {
+                                dispatch(&state, &attached, req, Some(id.clone()), &window).await
+                            }
+                            Caller::User => dispatch(&state, &attached, req, None, &window).await,
+                        },
                         Err(e) => Err(e),
                     };
                     if let Some(id) = id {
-                        let resp = match result {
-                            Ok(v) => Response {
-                                id,
-                                result: Some(v),
-                                error: None,
-                            },
-                            Err(e) => Response {
-                                id,
-                                result: None,
-                                error: Some(RpcError {
-                                    code: e.code,
-                                    message: e.message,
-                                    data: e.data,
-                                }),
-                            },
-                        };
-                        let _ = out
-                            .send(Message::Text(serde_json::to_string(&resp).unwrap()))
-                            .await;
+                        let _ = out.send(response(id, result)).await;
                     }
                 });
             }
+            // Never from a remote device: it gets no terminal.
             Message::Binary(frame) if user => {
                 if let Some((FRAME_PTY_INPUT, sid, data)) = decode_pty_frame(&frame) {
                     if let Err(e) = state.manager.pty_input(&sid, data) {
@@ -461,9 +777,15 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
     for task in [ev_task, pty_task].into_iter().flatten() {
         task.abort();
     }
+    if remote.is_some() {
+        let _ = out_tx.send(Message::Close(None)).await;
+    }
     drop(out_tx);
     let _ = writer.await;
-    tracing::info!("rpc client disconnected");
+    match &remote {
+        Some(c) => tracing::info!(peer = %c.peer, "remote client disconnected"),
+        None => tracing::info!("rpc client disconnected"),
+    }
 }
 
 struct DispatchError {
@@ -566,6 +888,33 @@ async fn dispatch(
             "window": window.load(std::sync::atomic::Ordering::SeqCst),
         })),
         "daemon.ping" => ok("pong"),
+        "remote.pair" | "remote.auth" => Err(DispatchError {
+            code: ERR_FORBIDDEN,
+            message: format!(
+                "{} is for devices on the remote listener, not this connection",
+                req.method
+            ),
+            data: None,
+        }),
+        // Remote access management: the user's, on this machine. Remote
+        // devices and session tools never get here (see `authorize`).
+        "remote.status" => ok(state.remote.status()),
+        "remote.configure" => {
+            let change: crate::remote::RemoteConfigure = params(p)?;
+            ok(state.remote.configure(state, change).await?)
+        }
+        "remote.startPairing" => ok(state.remote.start_pairing()?),
+        "remote.listDevices" => ok(state.remote.list_devices()),
+        "remote.revokeDevice" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct P {
+                device_id: String,
+            }
+            let P { device_id } = params(p)?;
+            state.remote.revoke_device(&device_id)?;
+            ok(true)
+        }
         "daemon.shutdown" => {
             let _ = state.shutdown.send(());
             ok(true)
