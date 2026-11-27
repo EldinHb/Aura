@@ -26,6 +26,13 @@
 .prs-chip-merged { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
 .prs-chip-closed { background: var(--md-error-container); color: var(--md-on-error-container); }
 
+.prs-meta-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-top: 2px; }
+.prs-meta-row > .prs-meta { flex: 1 1 auto; }
+.prs-unlink { flex: none; margin-left: auto; padding: 0; border: 0; background: none; font: inherit; font-size: var(--fs-label-s); color: var(--fg-muted); cursor: pointer; }
+.prs-unlink:hover { color: var(--fg); text-decoration: underline; }
+.prs-link-form { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0 0 10px; }
+.prs-link-form label { font-size: var(--fs-label-s); font-weight: 500; color: var(--fg-muted); }
+.prs-link-form input { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; font-size: var(--fs-label-m); }
 .prs-meta, .prs-sources { min-width: 0; margin-top: 2px; font-size: var(--fs-label-s); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prs-source { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-2); cursor: pointer; text-align: left; }
 .prs-source:hover { text-decoration: underline; }

@@ -9,6 +9,7 @@ import type { PrEntry, PrSource, PrState, PrStatus, Reviewer } from "../shared/t
 import { getCtx } from "./ctx";
 import { ago, BLOCKER_LABEL, CHECKS_LABEL, checkCounts, checksTone, readinessTone, REVIEW_LABEL, reviewTone, STATE_LABEL } from "./labels";
 import { splitPulls, updatedAt } from "./order";
+import { LinkForm, unlink } from "./LinkPr";
 import { SquashMerge } from "./SquashMerge";
 import { openPrPage } from "./page/PrPageView";
 import { useNow, usePullStatus } from "./usePullStatus";
@@ -19,6 +20,7 @@ export const DONE_OPEN_KEY = "doneExpanded";
 export function PrStatusSection({ session }: InspectorSectionProps) {
   const { view, error, refreshing, refresh } = usePullStatus(session.id);
   const now = useNow(5_000);
+  const [linking, setLinking] = useState(false);
   // Hidden until the session tree has a PR: most sessions never open one.
   if (!view || view.pulls.length === 0) return null;
   const read = updatedAt(view.pulls);
@@ -29,10 +31,16 @@ export function PrStatusSection({ session }: InspectorSectionProps) {
         <h4>Pull requests</h4>
         <div className="prs-head-meta">
           {read && <span className="prs-updated" title={new Date(read).toLocaleString()}>updated {ago(read, now)}</span>}
+          <button className="btn small prs-refresh" data-command="pr-status.link" title="Link a pull request to this session" aria-expanded={linking}
+            onClick={() => setLinking(!linking)}>Link PR…</button>
           <button className="btn small prs-refresh" data-command="pr-status.refresh" aria-label="Refresh pull request status" title="Refresh"
             disabled={refreshing} onClick={() => void refresh()}>{refreshing ? "…" : "↻"}</button>
         </div>
       </div>
+      {linking && <LinkForm sessionId={session.id} done={(linked) => {
+        setLinking(false);
+        if (linked) void refresh();
+      }} />}
       {view.blocked && (
         <p className="notice prs-note" role="status"><span className="dot warn" aria-hidden /> <span>Not updating: {view.blocked}</span></p>
       )}
@@ -40,7 +48,8 @@ export function PrStatusSection({ session }: InspectorSectionProps) {
       {active.length > 0 && (
         <div className="prs-cards">
           {active.map((entry) => (
-            <PrCard key={entry.ref.url} entry={entry} rootId={session.id} now={now} onMerged={() => void refresh()} explained={!!view.blocked || !!error} />
+            <PrCard key={entry.ref.url} entry={entry} rootId={session.id} now={now} onMerged={() => void refresh()} explained={!!view.blocked || !!error}
+              onUnlink={() => void unlink(entry.ref).then(refresh)} />
           ))}
         </div>
       )}
@@ -54,7 +63,9 @@ function StateChip({ state }: { state: PrState }) {
 }
 
 /** `explained`: the section already says why it is not updating, so a card does not repeat it. */
-function PrCard({ entry, rootId, now, onMerged, explained }: { entry: PrEntry; rootId: string; now: number; onMerged: () => void; explained: boolean }) {
+function PrCard({ entry, rootId, now, onMerged, explained, onUnlink }: {
+  entry: PrEntry; rootId: string; now: number; onMerged: () => void; explained: boolean; onUnlink: () => void;
+}) {
   const { ref, status } = entry;
   const title = status?.title || `${ref.repo}#${ref.number}`;
   return (
@@ -66,7 +77,10 @@ function PrCard({ entry, rootId, now, onMerged, explained }: { entry: PrEntry; r
         <ExternalLink href={ref.url} className="prs-github" aria-label={`Open #${ref.number} on GitHub`} title="Open on GitHub">↗</ExternalLink>
       </div>
       {/* Without data the title already is "repo#n". */}
-      {status && <div className="prs-meta" title={`${ref.repo} #${ref.number}`}>{ref.repo} #{ref.number}</div>}
+      <div className="prs-meta-row">
+        {status && <span className="prs-meta" title={`${ref.repo} #${ref.number}`}>{ref.repo} #{ref.number}</span>}
+        <button className="prs-unlink" aria-label={`Unlink #${ref.number}`} title="Unlink: stop showing this pull request here" onClick={onUnlink}>Unlink</button>
+      </div>
       <Sources sources={ref.sources} rootId={rootId} />
       {!status && !entry.error && <p className="prs-line prs-muted">Loading…</p>}
       {entry.error && !(explained && !status) && (

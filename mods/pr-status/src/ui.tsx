@@ -5,6 +5,7 @@ import { useStore } from "@aura/host";
 import "./ui.css";
 import { setCtx } from "./ui/ctx";
 import { PrStatusSection } from "./ui/PrStatusSection";
+import { LINK_DIALOG, LinkDialog } from "./ui/LinkPr";
 import { PAGE_VIEW, PrPageView } from "./ui/page/PrPageView";
 import { keepOpenSessions } from "./ui/openSessions";
 
@@ -15,6 +16,18 @@ export function activate(ctx: UiApi) {
     ctx.ui.inspectorSection({ id: "status", order: -10, component: PrStatusSection }),
     keepOpenSessions(ctx),
     ctx.ui.view({ id: PAGE_VIEW, title: "Pull request", component: PrPageView }),
+    ctx.ui.dialog({ id: LINK_DIALOG, component: LinkDialog }),
+    ctx.commands.register({
+      id: "link",
+      title: "Link a pull request…",
+      keywords: ["pull request", "PR", "GitHub", "link"],
+      group: "Session",
+      when: "hasSelection",
+      run: () => {
+        const id = useStore.getState().selectedId;
+        if (id) ctx.openDialog(LINK_DIALOG, { sessionId: id });
+      },
+    }),
     ctx.commands.register({
       id: "refresh",
       title: "Refresh PR status",
