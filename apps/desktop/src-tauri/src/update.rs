@@ -153,6 +153,10 @@ pub struct Facts {
     pub app_bundle: Option<PathBuf>,
     /// macOS: the bundle runs from a location macOS randomised (App Translocation).
     pub translocated: bool,
+    /// macOS: the path Aura was started by goes through a symbolic link (`/tmp`
+    /// is one), which Tauri refuses to resolve the app by, for installing and
+    /// for relaunching.
+    pub symlinked: bool,
     /// The location the update is written to is on a read-only file system
     /// (a mounted disk image, say).
     pub read_only: bool,
@@ -194,6 +198,9 @@ pub fn decide(f: &Facts) -> Support {
         Os::Mac => {
             if f.app_bundle.is_none() {
                 return manual("This copy of Aura does not run from an app bundle, so it cannot replace itself.");
+            }
+            if f.symlinked {
+                return manual("Aura was opened through a symbolic link, so it cannot replace itself safely. Open Aura.app from its real location (for example Applications) to get updates automatically.");
             }
             if f.translocated {
                 return manual("macOS runs Aura from a temporary read-only copy. Move Aura.app to Applications and open it from there to get updates automatically.");
@@ -268,6 +275,7 @@ fn writable(path: &Path) -> bool {
 }
 
 fn facts<R: Runtime>(_app: &AppHandle<R>) -> Facts {
+    // Tauri's own: what the updater and the relaunch resolve the app by.
     let exe = tauri::utils::platform::current_exe().ok();
     let mut f = Facts {
         bundle: bundle(),
@@ -276,7 +284,12 @@ fn facts<R: Runtime>(_app: &AppHandle<R>) -> Facts {
     #[cfg(target_os = "macos")]
     {
         f.os = Os::Mac;
-        f.app_bundle = exe.as_deref().and_then(app_bundle_of);
+        // Tauri rejects a path through a symlink; the path as started still shows the bundle.
+        f.symlinked = exe.is_none();
+        f.app_bundle = exe
+            .or_else(|| std::env::current_exe().ok())
+            .as_deref()
+            .and_then(app_bundle_of);
         if let Some(app) = &f.app_bundle {
             f.translocated = app.to_string_lossy().contains("/AppTranslocation/");
             f.read_only = app.parent().is_some_and(read_only);
@@ -349,8 +362,7 @@ pub fn update_config(app: AppHandle) -> UpdateConfig {
 
 /// Ask the release manifest for a newer stable version. `None` when this is
 /// the latest. A package already downloaded for the same version is kept.
-#[tauri::command]
-pub async fn update_check(
+async fn check(
     app: AppHandle,
     pending: tauri::State<'_, Pending>,
 ) -> Result<Option<UpdateInfo>, UpdateError> {
@@ -378,8 +390,7 @@ pub async fn update_check(
 }
 
 /// Download the update found by the last check and verify its signature.
-#[tauri::command]
-pub async fn update_download(
+async fn download(
     pending: tauri::State<'_, Pending>,
     on_event: Channel<DownloadEvent>,
 ) -> Result<(), UpdateError> {
@@ -432,11 +443,7 @@ pub async fn update_download(
 /// installer takes over and this process exits (the installer starts Aura
 /// again); elsewhere it returns and the webview relaunches the app. When the
 /// install fails, the daemon is started again before the error is returned.
-#[tauri::command]
-pub async fn update_install(
-    app: AppHandle,
-    pending: tauri::State<'_, Pending>,
-) -> Result<(), UpdateError> {
+async fn install(app: AppHandle, pending: tauri::State<'_, Pending>) -> Result<(), UpdateError> {
     if let Support::Manual { reason } = support(&app) {
         return Err(UpdateError::new(ErrorKind::Permission, reason));
     }
@@ -486,6 +493,38 @@ pub async fn update_install(
     Ok(())
 }
 
+/// Every failure is logged here: the webview shows only those the user asked for.
+fn logged<T>(what: &str, result: Result<T, UpdateError>) -> Result<T, UpdateError> {
+    if let Err(e) = &result {
+        tracing::warn!(kind = ?e.kind, "update {what} failed: {}", e.message);
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn update_check(
+    app: AppHandle,
+    pending: tauri::State<'_, Pending>,
+) -> Result<Option<UpdateInfo>, UpdateError> {
+    logged("check", check(app, pending).await)
+}
+
+#[tauri::command]
+pub async fn update_download(
+    pending: tauri::State<'_, Pending>,
+    on_event: Channel<DownloadEvent>,
+) -> Result<(), UpdateError> {
+    logged("download", download(pending, on_event).await)
+}
+
+#[tauri::command]
+pub async fn update_install(
+    app: AppHandle,
+    pending: tauri::State<'_, Pending>,
+) -> Result<(), UpdateError> {
+    logged("install", install(app, pending).await)
+}
+
 /// Register the managed state the commands use.
 pub fn manage<R: Runtime>(app: &tauri::App<R>) {
     app.manage(Pending::default());
@@ -518,6 +557,13 @@ mod tests {
         };
         assert!(
             matches!(decide(&translocated), Support::Manual { reason } if reason.contains("Applications"))
+        );
+        let linked = Facts {
+            symlinked: true,
+            ..mac(true)
+        };
+        assert!(
+            matches!(decide(&linked), Support::Manual { reason } if reason.contains("symbolic link"))
         );
         let dmg = Facts {
             read_only: true,
