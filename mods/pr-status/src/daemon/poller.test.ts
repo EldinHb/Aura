@@ -3,7 +3,7 @@ import { createTestHost } from "@aura/mod-sdk/testing";
 import { activate } from "../daemon";
 import type { SessionView } from "../shared/types";
 import { fakeGithub, Notified, prNode, run, session } from "../test/fixtures";
-import { baseDelay, BRANCH_RETRY_MS, CLOSED_POLL_MS, DISCOVERY_PER_TICK, FAST_POLL_MS, LEASE_MS, MAX_BACKOFF_MS, nextDelay, POLL_MS, RETAIN_MS, TICK_MS } from "./poller";
+import { baseDelay, BRANCH_RETRY_MS, DISCOVERY_GAP_MS, MAX_CACHED, CLOSED_POLL_MS, DISCOVERY_PER_TICK, FAST_POLL_MS, LEASE_MS, MAX_BACKOFF_MS, nextDelay, POLL_MS, RETAIN_MS, TICK_MS } from "./poller";
 
 const URL1 = "https://github.com/acme/api/pull/1";
 const URL2 = "https://github.com/acme/api/pull/2";
@@ -324,14 +324,15 @@ describe("PrPoller", () => {
     expect(lookups()).toBe(DISCOVERY_PER_TICK);
     await t.renew();
     expect(lookups()).toBe(DISCOVERY_PER_TICK);
-    t.advance(3 * TICK_MS);
+    t.advance(4 * TICK_MS);
     await t.renew();
     expect(lookups()).toBe(2 * DISCOVERY_PER_TICK);
-    t.advance(3 * TICK_MS);
+    t.advance(4 * TICK_MS);
     await t.renew();
     expect(lookups()).toBe(5);
-    // Every lookup failed (GitHub is down here): none is tried again before BRANCH_RETRY_MS.
-    for (let i = 0; i < 5; i++) {
+    // Every lookup failed (GitHub is down here): none is tried again before BRANCH_RETRY_MS
+    // (the first two were made 40 s ago).
+    for (let i = 0; i < 3; i++) {
       t.advance(TICK_MS);
       await t.renew();
     }
@@ -351,6 +352,118 @@ describe("PrPoller", () => {
     expect(t.poller.cached()).toMatchObject({ entries: 1, trees: 0 });
     t.advance(RETAIN_MS);
     await t.poller.tick();
-    expect(t.poller.cached()).toEqual({ entries: 0, branches: 0, repos: 0, trees: 0 });
+    expect(t.poller.cached()).toEqual({ entries: 0, branches: 0, repos: 0, trees: 0, queued: 0, folders: 0 });
+  });
+
+  describe("second review", () => {
+    it("keeps a watched card's data while GitHub is blocked, however long (item 1)", async () => {
+      await t.watch();
+      t.fake.state.blocked = "API rate limit reached; waiting.";
+      for (let i = 0; i < 15; i++) {
+        t.advance(POLL_MS);
+        await t.renew();
+      }
+      const view = await t.host.call<SessionView>("view", { sessionId: "lead" });
+      expect(view.pulls[0]).toMatchObject({ status: { state: "open" }, readAt: "2026-11-27T10:00:00.000Z" });
+      expect(t.poller.cached().entries).toBe(1);
+    });
+
+    it("keeps every watched PR past MAX_CACHED and reads none of them again early (item 1)", async () => {
+      const many = Array.from({ length: MAX_CACHED + 20 }, (_, i) => i + 1);
+      many.forEach((n) => (t.fake.state.nodes[n] = prNode({ number: n })));
+      t.linked.lead = many.map((n) => `https://github.com/acme/api/pull/${n}`);
+      t.poller.invalidate();
+      await t.watch();
+      const first = t.reads().length;
+      expect(first).toBe(MAX_CACHED + 20);
+      t.advance(TICK_MS);
+      await t.renew();
+      await t.renew();
+      expect(t.reads()).toHaveLength(first);
+      expect(t.poller.cached().entries).toBe(MAX_CACHED + 20);
+    });
+
+    it("gives callers that joined a collection before an invalidation the newer tree (item 2)", async () => {
+      await t.watch();
+      t.setHold(true);
+      t.poller.invalidate();
+      const a = t.poller.view("lead");
+      const b = t.poller.view("lead");
+      await new Promise((r) => setTimeout(r, 0));
+      expect(t.held).toHaveLength(1);
+      t.linked.lead = [URL2];
+      t.poller.invalidate();
+      t.setHold(false);
+      t.held.splice(0).forEach((release) => release());
+      expect((await a).pulls.map((p) => p.ref.url)).toEqual([URL2]);
+      expect((await b).pulls.map((p) => p.ref.url)).toEqual([URL2]);
+    });
+
+    it("keeps a lookup's answer when the tree is collected again meanwhile (item 3)", async () => {
+      t.branches.feature = URL2;
+      t.fake.state.nodes[2] = prNode({ number: 2 });
+      // Every lookup is answered only after the trees were collected again (a finished turn).
+      const lookup = t.githubCalls.length;
+      t.host.provideMod("github", ((orig) => async (name: string, params: any) => {
+        if (name === "branch_pull") {
+          t.poller.invalidate();
+          await t.poller.view("lead");
+        }
+        return orig(name, params);
+      })((name: string, params: any) => (name === "branch_pull" ? (t.branches[params.branch] ? { url: t.branches[params.branch] } : null)
+        : name === "sessions.prs" ? structuredClone(t.linked) : name === "links.all" ? t.links : name === "repo" ? "acme/api" : null)));
+      await t.watch();
+      expect(t.githubCalls.length).toBe(lookup);
+      const view = await t.host.call<SessionView>("view", { sessionId: "lead" });
+      expect(view.pulls.map((p) => p.ref.url)).toEqual([URL1, URL2]);
+      expect(t.poller.cached().queued).toBe(0);
+    });
+
+    it("stops looking up a tree's branches once nobody watches it (item 4)", async () => {
+      t.host.state.sessions.push(session("solo", { title: "Solo" }), ...["w2", "w3", "w4"].map((id) => session(id, { orchestrator_id: "lead" })));
+      const lookups = () => t.githubCalls.filter((c) => c === "branch_pull").length;
+      t.host.provideMod("github", (name, params) => {
+        t.githubCalls.push(name);
+        if (name === "sessions.prs") return {};
+        if (name === "links.all") return {};
+        if (name === "repo") return "acme/api";
+        if (name === "branch_pull") return null;
+        throw new Error(`unexpected ${name} ${JSON.stringify(params)}`);
+      });
+      await t.watch();
+      expect(lookups()).toBe(DISCOVERY_PER_TICK);
+      expect(t.poller.cached()).toMatchObject({ queued: 5 - DISCOVERY_PER_TICK, folders: 5 });
+      // The user selects another session: the lead's watch goes, the solo session's starts.
+      await t.host.call("unwatch", { viewer: "v1" });
+      await t.host.call("watch", { viewer: "v2", sessionId: "solo", refresh: true });
+      expect(t.poller.cached()).toMatchObject({ folders: 1 });
+      for (let i = 0; i < 5; i++) {
+        t.advance(DISCOVERY_GAP_MS);
+        await t.host.call("watch", { viewer: "v2", sessionId: "solo", refresh: false });
+      }
+      // Only the solo session's own folder was looked up after the switch.
+      expect(lookups()).toBe(DISCOVERY_PER_TICK + 1);
+      expect(t.poller.cached().queued).toBe(0);
+    });
+
+    it("spaces lookup rounds by the full paced gap, whoever runs the round (item 5)", async () => {
+      t.host.state.sessions.push(...["w2", "w3", "w4"].map((id) => session(id, { orchestrator_id: "lead" })));
+      const lookups = () => t.githubCalls.filter((c) => c === "branch_pull").length;
+      t.branches.feature = null;
+      t.host.api.git.branchStatus = async () => ({ branch: "main", head: "h", upstream: null, upstream_branch: null, upstream_repo: null, ahead: 0, behind: 0, changed: 0 });
+      await t.watch();
+      expect(lookups()).toBe(DISCOVERY_PER_TICK);
+      // RPC-driven rounds back to back (renewals, refreshes) do not look up more.
+      await t.renew();
+      await t.host.call("refresh", { sessionId: "lead" });
+      await t.renew();
+      expect(lookups()).toBe(DISCOVERY_PER_TICK);
+      t.advance(DISCOVERY_GAP_MS - 1);
+      await t.renew();
+      expect(lookups()).toBe(DISCOVERY_PER_TICK);
+      t.advance(1);
+      await t.renew();
+      expect(lookups()).toBe(2 * DISCOVERY_PER_TICK);
+    });
   });
 });

@@ -22,9 +22,11 @@ export const COLLECT_TTL_MS = 60_000;
 export const BRANCH_TTL_MS = 5 * 60_000;
 /** A branch lookup that failed is tried again after this long. */
 export const BRANCH_RETRY_MS = 60_000;
-/** Branch lookups per round, at most; rounds with lookups are paced like a TICK_MS poll. */
+/** Branch lookups per round, at most. */
 export const DISCOVERY_PER_TICK = 2;
-/** What nobody looked at for this long is forgotten; each cache keeps at most MAX_CACHED. */
+/** Rounds with lookups are this far apart at least, stretched by `api.pace`, whoever runs the round. */
+export const DISCOVERY_GAP_MS = 5_000;
+/** What no watched tree holds and nobody looked at for this long is forgotten; each cache keeps at most MAX_CACHED of those. */
 export const RETAIN_MS = 10 * 60_000;
 export const MAX_CACHED = 200;
 /** Notifications are dated by GitHub's clock; one this much older than a read may still be news to it. */
@@ -67,6 +69,14 @@ interface BranchTarget {
   headRepo: string | null;
   /** Branch, upstream and head: a lookup for another stamp answers another question. */
   stamp: string;
+  /** The folder's epoch when queued; a folder dropped from the queue meanwhile has a newer one. */
+  epoch: number;
+}
+
+/** A collected tree: its PRs, and its sessions' folders (for the branch caches it keeps in use). */
+interface Tree {
+  refs: PrRef[];
+  folders: string[];
 }
 
 interface BranchFound {
@@ -95,16 +105,18 @@ export class PrPoller {
   private readonly now: () => number;
   private viewers = new Map<string, { sessionId: string; until: number }>();
   private entries = new Map<string, Entry>();
-  private trees = new Map<string, { refs: PrRef[]; at: number }>();
+  private trees = new Map<string, Tree & { at: number }>();
   /** Bumped by every invalidation: a collection started before one is not kept. */
   private generation = 0;
-  private collecting = new Map<string, { generation: number; refs: Promise<PrRef[]> }>();
+  private collecting = new Map<string, { generation: number; tree: Promise<Tree> }>();
   private branches = new Map<string, BranchFound>();
   private repos = new Map<string, { repo: string | null; at: number; used: number }>();
   /** Branch lookups waiting, by folder; the latest target of a folder wins. */
   private discovery = new Map<string, BranchTarget>();
   private discoverAt = 0;
-  /** Folders of the sessions collected, so a removed session's caches can go. */
+  /** Bumped when a folder leaves the discovery queue unanswered: its lookup running then is obsolete. */
+  private epochs = new Map<string, number>();
+  /** Folders of the sessions in watched trees, so a removed session's caches can go. */
   private folders = new Map<string, string>();
   private forced = new Set<string>();
   private blocked: string | null = null;
@@ -160,7 +172,7 @@ export class PrPoller {
     if (cwd && ![...this.folders.values()].includes(cwd)) {
       this.branches.delete(cwd);
       this.repos.delete(cwd);
-      this.discovery.delete(cwd);
+      this.dropTarget(cwd);
     }
   }
 
@@ -199,7 +211,10 @@ export class PrPoller {
 
   /** How many PRs, branch lookups and folders are remembered; for tests. */
   cached() {
-    return { entries: this.entries.size, branches: this.branches.size, repos: this.repos.size, trees: this.trees.size };
+    return {
+      entries: this.entries.size, branches: this.branches.size, repos: this.repos.size, trees: this.trees.size,
+      queued: this.discovery.size, folders: this.folders.size,
+    };
   }
 
   private async round(): Promise<void> {
@@ -207,16 +222,27 @@ export class PrPoller {
     for (const [viewer, w] of this.viewers) if (w.until <= now) this.viewers.delete(viewer);
     const watched = [...new Set([...this.viewers.values()].map((w) => w.sessionId))];
     for (const id of this.trees.keys()) if (!watched.includes(id)) this.trees.delete(id);
-    this.evict(now);
-    if (watched.length === 0) return;
 
     const changed = new Set<string>();
     const trees = new Map<string, PrRef[]>();
+    const folders = new Set<string>();
     for (const id of watched) {
       const before = this.trees.get(id)?.refs;
-      trees.set(id, await this.refsOf(id));
-      if (!sameRefs(before, trees.get(id)!)) changed.add(id);
+      const tree = await this.treeOf(id);
+      trees.set(id, tree.refs);
+      tree.folders.forEach((f) => folders.add(f));
+      if (!sameRefs(before, tree.refs)) changed.add(id);
     }
+    // What the watched trees hold is in use, GitHub blocked or not; only the rest may be forgotten.
+    const active = new Set<string>();
+    for (const refs of trees.values()) for (const ref of refs) active.add(prKey(ref.url));
+    for (const key of active) {
+      const e = this.entries.get(key);
+      if (e) e.seen = now;
+    }
+    this.prune(folders);
+    this.evict(now, active, folders);
+    if (watched.length === 0) return;
 
     const blocked = await this.gh.blocked().catch((e) => messageOf(e));
     if (blocked !== this.blocked) {
@@ -227,10 +253,6 @@ export class PrPoller {
 
     const visible = new Map<string, PrRef>();
     for (const refs of trees.values()) for (const ref of refs) visible.set(prKey(ref.url), ref);
-    for (const key of visible.keys()) {
-      const e = this.entries.get(key);
-      if (e) e.seen = now;
-    }
     const notified = await this.gh.notified().catch(() => null);
     const due = [...visible.entries()].filter(([key, ref]) => this.isDue(key, ref, notified, now)).map(([, ref]) => ref);
     for (const ref of due) this.forced.delete(prKey(ref.url));
@@ -291,30 +313,40 @@ export class PrPoller {
     if (sessionIds.size) this.aura.emit("changed", { sessionIds: [...sessionIds] });
   }
 
-  /** The session tree's PRs: collected again once COLLECT_TTL_MS old or invalidated, one collection at a time. */
+  /** The session tree's PRs. */
   private async refsOf(sessionId: string): Promise<PrRef[]> {
+    return (await this.treeOf(sessionId)).refs;
+  }
+
+  /**
+   * The session tree: collected again once COLLECT_TTL_MS old or invalidated, one collection
+   * at a time. Every caller, also one joining a running collection, gets a tree collected
+   * after the latest invalidation: a collection that started before one is run again.
+   */
+  private treeOf(sessionId: string): Promise<Tree> {
     const saved = this.trees.get(sessionId);
-    if (saved && this.now() - saved.at < COLLECT_TTL_MS) return saved.refs;
+    if (saved && this.now() - saved.at < COLLECT_TTL_MS) return Promise.resolve(saved);
     const running = this.collecting.get(sessionId);
-    if (running && running.generation === this.generation) return running.refs;
+    if (running && running.generation === this.generation) return running.tree;
     const generation = this.generation;
-    const refs = this.collect(sessionId);
-    this.collecting.set(sessionId, { generation, refs });
-    try {
-      const found = await refs;
-      // Invalidated meanwhile: these links may be older than the change, so collect again.
-      if (generation !== this.generation) return this.refsOf(sessionId);
-      this.trees.set(sessionId, { refs: found, at: this.now() });
-      return found;
-    } finally {
-      if (this.collecting.get(sessionId)?.refs === refs) this.collecting.delete(sessionId);
-    }
+    const tree: Promise<Tree> = this.collect(sessionId)
+      .then((found) => {
+        // Invalidated meanwhile: these links may be older than the change.
+        if (generation !== this.generation) return this.treeOf(sessionId);
+        this.trees.set(sessionId, { ...found, at: this.now() });
+        return found;
+      })
+      .finally(() => {
+        if (this.collecting.get(sessionId)?.tree === tree) this.collecting.delete(sessionId);
+      });
+    this.collecting.set(sessionId, { generation, tree });
+    return tree;
   }
 
   /** The tree's PRs from what is known now: its links, and the branch PRs found so far (others are queued). */
-  private async collect(sessionId: string): Promise<PrRef[]> {
+  private async collect(sessionId: string): Promise<Tree> {
     const tree = sessionTree(await this.aura.sessions.list(), sessionId);
-    if (tree.length === 0) return [];
+    if (tree.length === 0) return { refs: [], folders: [] };
     const [linked, links] = await Promise.all([
       this.github("sessions.prs", {}).catch((e) => warn("linked PRs", e, {})),
       this.github("links.all", {}).catch((e) => warn("session links", e, {})),
@@ -326,7 +358,8 @@ export class PrPoller {
       pulls: strings(links?.[id]?.pulls),
       branch: branch.get(id) ?? null,
     });
-    return collectPulls(tree, prsOf);
+    const folders = tree.flatMap(({ session }) => (session.folderless || !session.cwd ? [] : [session.cwd]));
+    return { refs: collectPulls(tree, prsOf), folders };
   }
 
   /** The PR known for the session's current branch; queues a lookup when there is none yet or it is old. */
@@ -347,7 +380,10 @@ export class PrPoller {
     const now = this.now();
     if (found) found.used = now;
     const fresh = found && found.stamp === stamp && now - found.at < (found.failed ? BRANCH_RETRY_MS : BRANCH_TTL_MS);
-    if (!fresh) this.discovery.set(cwd, { cwd, branch, headRepo: git?.upstream_repo ?? null, stamp });
+    // The same question already queued (or being looked up) stays as it is.
+    if (!fresh && this.discovery.get(cwd)?.stamp !== stamp) {
+      this.discovery.set(cwd, { cwd, branch, headRepo: git?.upstream_repo ?? null, stamp, epoch: this.epochs.get(cwd) ?? 0 });
+    }
     // Until the lookup answers, the PR found for the same branch still stands.
     return found && found.branch === branch ? found.url : null;
   }
@@ -360,14 +396,14 @@ export class PrPoller {
     for (const target of batch) {
       const before = this.branches.get(target.cwd);
       const answer = await this.lookUp(target);
-      // A newer target for the folder (the branch moved) or a forgotten folder: this answer is obsolete.
+      // The branch moved meanwhile (another stamp queued), or the folder left the queue: obsolete.
       const queued = this.discovery.get(target.cwd);
-      if (queued !== target) continue;
+      if (!queued || queued.stamp !== target.stamp || (this.epochs.get(target.cwd) ?? 0) !== target.epoch) continue;
       this.discovery.delete(target.cwd);
       this.branches.set(target.cwd, { ...answer, branch: target.branch, stamp: target.stamp, at: this.now(), used: this.now() });
       if (answer.url !== (before?.branch === target.branch ? before.url : null)) found = true;
     }
-    this.discoverAt = this.now() + (await this.gh.pace(TICK_MS).catch(() => TICK_MS)) - TICK_MS;
+    this.discoverAt = this.now() + (await this.gh.pace(DISCOVERY_GAP_MS).catch(() => DISCOVERY_GAP_MS));
     if (found) this.invalidate();
   }
 
@@ -396,18 +432,36 @@ export class PrPoller {
     return repo;
   }
 
-  /** Forget what nobody looked at for RETAIN_MS, and the oldest beyond MAX_CACHED. */
-  private evict(now: number): void {
-    const keep = <V>(map: Map<string, V>, used: (v: V) => number, drop?: (key: string) => void) => {
-      for (const [key, v] of map) if (now - used(v) >= RETAIN_MS) (map.delete(key), drop?.(key));
-      const over = map.size - MAX_CACHED;
-      if (over > 0) {
-        for (const [key] of [...map].sort(([, a], [, b]) => used(a) - used(b)).slice(0, over)) (map.delete(key), drop?.(key));
+  /** Drop a folder's queued lookup; one running for it now is not kept. */
+  private dropTarget(cwd: string): void {
+    if (!this.discovery.delete(cwd)) return;
+    this.epochs.set(cwd, (this.epochs.get(cwd) ?? 0) + 1);
+  }
+
+  /** Only folders of watched trees are looked up and remembered as a session's. */
+  private prune(folders: Set<string>): void {
+    for (const cwd of [...this.discovery.keys()]) if (!folders.has(cwd)) this.dropTarget(cwd);
+    for (const [id, cwd] of this.folders) if (!folders.has(cwd)) this.folders.delete(id);
+    for (const cwd of [...this.epochs.keys()]) if (!folders.has(cwd)) this.epochs.delete(cwd);
+  }
+
+  /**
+   * Forget what no watched tree holds (`active` PRs, `folders`) once unused for RETAIN_MS, and
+   * the oldest of it beyond MAX_CACHED. What is in use stays, however much there is.
+   */
+  private evict(now: number, active: Set<string>, folders: Set<string>): void {
+    const keep = <V>(map: Map<string, V>, inUse: Set<string>, used: (v: V) => number, drop?: (key: string) => void) => {
+      const idle = [...map].filter(([key]) => !inUse.has(key));
+      const gone = idle.filter(([, v]) => now - used(v) >= RETAIN_MS);
+      const left = idle.filter(([, v]) => now - used(v) < RETAIN_MS).sort(([, a], [, b]) => used(a) - used(b));
+      for (const [key] of [...gone, ...left.slice(0, Math.max(0, left.length - MAX_CACHED))]) {
+        map.delete(key);
+        drop?.(key);
       }
     };
-    keep(this.entries, (e) => e.seen, (key) => this.forced.delete(key));
-    keep(this.branches, (b) => b.used);
-    keep(this.repos, (r) => r.used);
+    keep(this.entries, active, (e) => e.seen, (key) => this.forced.delete(key));
+    keep(this.branches, folders, (b) => b.used);
+    keep(this.repos, folders, (r) => r.used);
   }
 }
 
