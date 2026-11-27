@@ -10,18 +10,18 @@
 //!   dies the pipe closes and the watcher kills the group. (Production only
 //!   runs the helper on Windows; this gives the same behaviour for tests.)
 //!
-//! An elevated process (a per-machine installer started through the UAC
-//! prompt) cannot join the job of an unelevated supervisor, and cannot be
-//! killed by it: [`spawn_elevated`] gives a handle to wait on, and
-//! [`identity`] lets another process tell that it still runs.
+//! Killing a process tree can block: a process with I/O pending in a driver
+//! ends only once that I/O does. So [`Contained::kill_tree`] says whether the
+//! tree did stop within its bound, and a caller that must not go on while it
+//! runs (the update helper) keeps waiting and keeps its guards meanwhile.
+//!
+//! An elevated process (one that needs the UAC prompt) is not supported: it
+//! could not join the job of an unelevated supervisor, nor be stopped by it.
 
-use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
-
-pub mod quote;
 
 /// How often waits poll.
 const POLL: Duration = Duration::from_millis(50);
@@ -119,35 +119,6 @@ pub fn terminate(pid: u32) -> bool {
     imp::terminate(pid)
 }
 
-/// A process started through the UAC prompt (Windows), outside any job.
-pub struct Elevated {
-    #[cfg(windows)]
-    process: windows::Handle,
-    pid: u32,
-}
-
-/// Start `program` with `args` as administrator, asking through the UAC
-/// prompt. Unsupported elsewhere.
-pub fn spawn_elevated(program: &Path, args: &[OsString]) -> io::Result<Elevated> {
-    imp::spawn_elevated(program, args)
-}
-
-impl Elevated {
-    pub fn id(&self) -> u32 {
-        self.pid
-    }
-
-    /// Wait at most `limit`: its exit code, or None if it still runs.
-    pub fn wait_timeout(&self, limit: Duration) -> io::Result<Option<i32>> {
-        imp::elevated_wait(self, limit)
-    }
-
-    /// Try to stop it; an unelevated process usually may not.
-    pub fn terminate(&self) -> bool {
-        imp::elevated_terminate(self)
-    }
-}
-
 #[cfg(unix)]
 mod imp {
     use super::*;
@@ -235,24 +206,6 @@ mod imp {
         // SAFETY: a plain kill(2) on a positive pid.
         pid > 1 && unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) } == 0
     }
-
-    pub fn spawn_elevated(_program: &Path, _args: &[OsString]) -> io::Result<Elevated> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "elevation is a Windows prompt",
-        ))
-    }
-
-    pub fn elevated_wait(_e: &Elevated, _limit: Duration) -> io::Result<Option<i32>> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "elevation is a Windows prompt",
-        ))
-    }
-
-    pub fn elevated_terminate(_e: &Elevated) -> bool {
-        false
-    }
 }
 
 #[cfg(windows)]
@@ -281,7 +234,8 @@ mod windows {
 mod imp {
     use super::windows::{Handle, Job};
     use super::*;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::Foundation::{FILETIME, HANDLE, STILL_ACTIVE};
@@ -297,23 +251,14 @@ mod imp {
     };
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, QueryFullProcessImageNameW,
-        ResumeThread, TerminateProcess, WaitForSingleObject, CREATE_SUSPENDED, PROCESS_NAME_WIN32,
+        ResumeThread, TerminateProcess, CREATE_SUSPENDED, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
     };
-    use windows_sys::Win32::UI::Shell::{
-        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    const WAIT_OBJECT_0: u32 = 0;
     const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
 
     fn last_error() -> io::Error {
         io::Error::last_os_error()
-    }
-
-    fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
-        s.encode_wide().chain(std::iter::once(0)).collect()
     }
 
     pub fn spawn(mut cmd: Command) -> io::Result<Contained> {
@@ -482,53 +427,6 @@ mod imp {
         // SAFETY: a handle opened with PROCESS_TERMINATE.
         unsafe { TerminateProcess(h.0, 1) != 0 }
     }
-
-    pub fn spawn_elevated(program: &Path, args: &[OsString]) -> io::Result<Elevated> {
-        let verb = wide(std::ffi::OsStr::new("runas"));
-        let file = wide(program.as_os_str());
-        let params = wide(&quote::join(args));
-        // SAFETY: the struct is plain data; the strings outlive the call.
-        unsafe {
-            let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
-            info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-            info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-            info.lpVerb = verb.as_ptr();
-            info.lpFile = file.as_ptr();
-            info.lpParameters = params.as_ptr();
-            info.nShow = SW_SHOWNORMAL;
-            if ShellExecuteExW(&mut info) == 0 {
-                return Err(last_error());
-            }
-            if info.hProcess.is_null() {
-                return Err(io::Error::other(
-                    "the elevated installer gave no process to wait on",
-                ));
-            }
-            let process = Handle(info.hProcess);
-            let pid = windows_sys::Win32::System::Threading::GetProcessId(process.0);
-            Ok(Elevated { process, pid })
-        }
-    }
-
-    pub fn elevated_wait(e: &Elevated, limit: Duration) -> io::Result<Option<i32>> {
-        let ms = limit.as_millis().min(u32::MAX as u128 - 1) as u32;
-        // SAFETY: a process handle we own.
-        let r = unsafe { WaitForSingleObject(e.process.0, ms) };
-        if r != WAIT_OBJECT_0 {
-            return Ok(None);
-        }
-        let mut code = 0u32;
-        // SAFETY: as above, with an out pointer to a u32.
-        if unsafe { GetExitCodeProcess(e.process.0, &mut code) } == 0 {
-            return Err(last_error());
-        }
-        Ok(Some(code as i32))
-    }
-
-    pub fn elevated_terminate(e: &Elevated) -> bool {
-        // SAFETY: a process handle we own; failing is allowed (access denied).
-        unsafe { TerminateProcess(e.process.0, 1) != 0 }
-    }
 }
 
 #[cfg(all(test, unix))]
@@ -640,17 +538,6 @@ mod tests {
         let pid = c.id();
         c.wait().unwrap();
         assert_eq!(identity(pid), None);
-    }
-
-    #[test]
-    fn elevation_is_windows_only() {
-        assert_eq!(
-            spawn_elevated(Path::new("/bin/true"), &[])
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::Unsupported
-        );
     }
 }
 

@@ -25,12 +25,15 @@
 //!   running unguarded.
 //! - An installer still running after [`Limits::install`] (30 minutes) is
 //!   stopped with its whole process tree, and the lock is released only once
-//!   that tree has stopped.
-//! - Not for an elevated installer (a per-machine install started through the
-//!   UAC prompt): it cannot join the helper's job, and the helper is not
-//!   allowed to stop it. The helper waits for it as long as it runs, holding
-//!   the lock; if the helper dies first, the marker names the installer
-//!   process, and the install counts as running while that process does.
+//!   that tree has stopped. Stopping can block (a process with I/O pending in
+//!   a driver ends only when that I/O does): if the tree is not confirmed
+//!   stopped, the helper reports the failure, keeps the lock and its job,
+//!   neither checks the files nor starts Aura, and keeps stopping the tree;
+//!   only once it has stopped does it release the lock, and it exits without
+//!   starting Aura.
+//! - Only per-user installs update in place: they need no elevation, so the
+//!   installer can join the helper's job. A per-machine or MSI install gets
+//!   the "download" banner instead (`update::decide`).
 //!
 //! The protocol is plain std, built and tested on every platform; only
 //! Windows uses it.
@@ -185,7 +188,7 @@ pub fn run(
             return 2;
         }
     };
-    let mut guard = match update_lock::begin_install(&args.data_dir, &args.version) {
+    let guard = match update_lock::begin_install(&args.data_dir, &args.version) {
         Ok(g) => g,
         Err(e) => {
             let _ = writeln!(output, "error {e:#}");
@@ -211,8 +214,26 @@ pub fn run(
     let _ = input.read_to_end(&mut rest);
 
     stop_sidecars(args.install_dir());
-    // Returns once the installer and everything it started have stopped.
-    let outcome = run_installer(args, &mut guard, limits);
+    let mut tree = match aura_contain::spawn(installer_command(args)) {
+        Ok(t) => t,
+        Err(e) => return finish(args, guard, folder_lock, Err(start_failure(&e)), limits),
+    };
+    let ran = supervise(&mut tree, args.kind, limits);
+    if !ran.stopped {
+        return hold_until_stopped(&mut tree, args, guard, folder_lock, ran.outcome, limits);
+    }
+    finish(args, guard, folder_lock, ran.outcome, limits)
+}
+
+/// After the installer's whole tree has stopped: check what is installed,
+/// record it, release the lock, start Aura again.
+fn finish(
+    args: &HelperArgs,
+    guard: update_lock::InstallGuard,
+    folder_lock: std::fs::File,
+    outcome: Result<(), String>,
+    limits: Limits,
+) -> i32 {
     let check = check_install(args.install_dir(), &args.relaunch, limits.probe);
     let mut result = InstallResult {
         version: args.version.clone(),
@@ -304,44 +325,104 @@ pub fn installed(kind: InstallerKind, code: Option<i32>) -> bool {
     )
 }
 
+/// What `aura_contain::Contained` does for the helper, so tests can stand in
+/// a tree that will not stop.
+pub(crate) trait Tree {
+    fn wait_timeout(
+        &mut self,
+        limit: Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>>;
+    fn wait_tree(&mut self, limit: Duration) -> bool;
+    fn kill_tree(&mut self, limit: Duration) -> bool;
+}
+
+impl Tree for aura_contain::Contained {
+    fn wait_timeout(
+        &mut self,
+        limit: Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        aura_contain::Contained::wait_timeout(self, limit)
+    }
+    fn wait_tree(&mut self, limit: Duration) -> bool {
+        aura_contain::Contained::wait_tree(self, limit)
+    }
+    fn kill_tree(&mut self, limit: Duration) -> bool {
+        aura_contain::Contained::kill_tree(self, limit)
+    }
+}
+
+/// How a run of the installer ended, and whether its whole tree is confirmed stopped.
+pub(crate) struct Ran {
+    outcome: Result<(), String>,
+    stopped: bool,
+}
+
 const ERROR_ELEVATION_REQUIRED: i32 = 740;
 
-/// Run the installer to the end. Returns once it and everything it started
-/// have stopped (contained), or once it has exited (elevated).
-fn run_installer(
-    args: &HelperArgs,
-    guard: &mut update_lock::InstallGuard,
-    limits: Limits,
-) -> Result<(), String> {
-    let mut contained = match aura_contain::spawn(installer_command(args)) {
-        Ok(c) => c,
-        // A per-machine installer asks for administrator rights, which a
-        // plain CreateProcess cannot give: ask through the UAC prompt.
-        Err(e) if e.raw_os_error() == Some(ERROR_ELEVATION_REQUIRED) => {
-            return run_elevated(args, guard, limits);
-        }
-        Err(e) => return Err(format!("the installer could not be started: {e}")),
-    };
-    let _ = guard.set_installer(contained.id());
-    let status = match contained.wait_timeout(limits.install) {
+fn start_failure(e: &std::io::Error) -> String {
+    if e.raw_os_error() == Some(ERROR_ELEVATION_REQUIRED) {
+        // `update::decide` offers only per-user installs an update in place.
+        "the installer needs administrator rights, which an update in place does not ask for; download it and run it yourself".into()
+    } else {
+        format!("the installer could not be started: {e}")
+    }
+}
+
+/// Wait for the installer and what it started, within `limits`.
+fn supervise(tree: &mut impl Tree, kind: InstallerKind, limits: Limits) -> Ran {
+    let status = match tree.wait_timeout(limits.install) {
         Ok(Some(status)) => status,
         Ok(None) | Err(_) => {
-            contained.kill_tree(limits.leftovers);
-            return Err(format!(
-                "the installer did not finish within {} and was stopped",
-                span(limits.install)
-            ));
+            let stopped = tree.kill_tree(limits.leftovers);
+            return Ran {
+                outcome: Err(format!(
+                    "the installer did not finish within {} and was stopped",
+                    span(limits.install)
+                )),
+                stopped,
+            };
         }
     };
     // What it started (an uninstaller of the previous version, say) finishes too.
-    if !contained.wait_tree(limits.leftovers) {
-        contained.kill_tree(limits.leftovers);
-    }
-    if installed(args.kind, status.code()) {
+    let stopped = tree.wait_tree(limits.leftovers) || tree.kill_tree(limits.leftovers);
+    let outcome = if installed(kind, status.code()) {
         Ok(())
     } else {
         Err(describe_failure(status.code()))
-    }
+    };
+    Ran { outcome, stopped }
+}
+
+/// The installer's tree is not confirmed stopped: report that, and keep the
+/// update lock and the job (so nothing starts, and nothing is checked or
+/// started) while trying to stop it, as long as it takes. Once it has
+/// stopped, release the lock and exit without starting Aura: what is
+/// installed is unknown, and the next start says so.
+fn hold_until_stopped(
+    tree: &mut impl Tree,
+    args: &HelperArgs,
+    guard: update_lock::InstallGuard,
+    folder_lock: std::fs::File,
+    outcome: Result<(), String>,
+    limits: Limits,
+) -> i32 {
+    let why = outcome
+        .err()
+        .unwrap_or_else(|| "the installer finished".into());
+    let result = InstallResult {
+        version: args.version.clone(),
+        ok: false,
+        message: Some(format!(
+            "{why}, but not everything it started could be stopped (Windows may be waiting on its I/O), so Aura is as the installer left it; restart the computer if Aura does not open"
+        )),
+        installed_version: None,
+        complete: false,
+    };
+    let _ = update_lock::write_result(&args.data_dir, &result);
+    while !tree.kill_tree(limits.leftovers) {}
+    guard.release();
+    let _ = folder_lock.unlock();
+    3
 }
 
 /// "30 minutes", "1 minute", "5 seconds".
@@ -360,43 +441,6 @@ fn describe_failure(code: Option<i32>) -> String {
         Some(1) | Some(2) => "the installer was cancelled or stopped before it finished".into(),
         Some(c) => format!("the installer stopped with exit code {c}"),
         None => "the installer was stopped".into(),
-    }
-}
-
-/// Through the UAC prompt, outside the helper's job. The helper waits on it,
-/// holding the lock; past the limit it tries to stop it, and as it usually
-/// may not, keeps waiting: the lock goes only once the installer has exited.
-fn run_elevated(
-    args: &HelperArgs,
-    guard: &mut update_lock::InstallGuard,
-    limits: Limits,
-) -> Result<(), String> {
-    let cmd = installer_command(args);
-    let program = PathBuf::from(cmd.get_program());
-    let list: Vec<OsString> = cmd.get_args().map(OsString::from).collect();
-    let elevated = aura_contain::spawn_elevated(&program, &list)
-        .map_err(|e| format!("the installer could not be started as administrator: {e}"))?;
-    let _ = guard.set_installer(elevated.id());
-    let mut stopped = false;
-    loop {
-        match elevated.wait_timeout(limits.install) {
-            Ok(Some(code)) if stopped => {
-                let _ = code;
-                return Err(format!(
-                    "the installer did not finish within {} and was stopped",
-                    span(limits.install)
-                ));
-            }
-            Ok(Some(code)) => {
-                return if installed(args.kind, Some(code)) {
-                    Ok(())
-                } else {
-                    Err(describe_failure(Some(code)))
-                }
-            }
-            Ok(None) => stopped |= elevated.terminate(),
-            Err(e) => return Err(format!("waiting for the installer: {e}")),
-        }
     }
 }
 
@@ -573,7 +617,7 @@ pub fn prepare(
     std::fs::create_dir_all(&dir)?;
     let owner =
         serde_json::json!({ "owner": OWNER, "version": version, "pid": std::process::id() });
-    std::fs::write(dir.join(FOLDER_OWNER), owner.to_string())?;
+    update_lock::write_atomic(&dir.join(FOLDER_OWNER), owner.to_string().as_bytes())?;
     std::fs::write(dir.join(FOLDER_LOCK), b"")?;
     let installer_path = dir.join(match kind {
         InstallerKind::Nsis => "Aura-setup.exe",
@@ -947,21 +991,101 @@ mod tests {
         assert_eq!(cmd.get_args().last().unwrap(), "/promptrestart");
     }
 
+    /// A tree that refuses to stop until `kill_tree` has been asked `stubborn` times.
+    struct Stuck {
+        stubborn: usize,
+        kills: usize,
+        /// Called on each kill attempt, to look at the world meanwhile.
+        on_kill: Box<dyn FnMut()>,
+    }
+
+    impl Tree for Stuck {
+        fn wait_timeout(
+            &mut self,
+            _limit: Duration,
+        ) -> std::io::Result<Option<std::process::ExitStatus>> {
+            Ok(None)
+        }
+        fn wait_tree(&mut self, _limit: Duration) -> bool {
+            false
+        }
+        fn kill_tree(&mut self, _limit: Duration) -> bool {
+            self.kills += 1;
+            (self.on_kill)();
+            self.kills > self.stubborn
+        }
+    }
+
+    const QUICK: Limits = Limits {
+        install: Duration::from_millis(10),
+        leftovers: Duration::from_millis(10),
+        probe: Duration::from_secs(5),
+    };
+
     #[test]
-    fn the_elevated_msi_command_line_keeps_a_path_with_spaces() {
-        let args = HelperArgs {
-            data_dir: "/d".into(),
-            version: "9.9.9".into(),
-            installer: r"C:\Users\Jane Doe\AppData\Local\Temp\aura-update-9.9.9-1\Aura.msi".into(),
-            kind: InstallerKind::Msi,
-            relaunch: r"C:\Program Files\Aura\aura-desktop.exe".into(),
+    fn says_when_the_tree_is_not_confirmed_stopped() {
+        let mut tree = Stuck {
+            stubborn: 1,
+            kills: 0,
+            on_kill: Box::new(|| {}),
         };
-        let cmd = installer_command(&args);
-        let list: Vec<OsString> = cmd.get_args().map(OsString::from).collect();
-        assert_eq!(
-            aura_contain::quote::join(&list),
-            r#"/i "C:\Users\Jane Doe\AppData\Local\Temp\aura-update-9.9.9-1\Aura.msi" /passive /promptrestart"#
+        let ran = supervise(&mut tree, InstallerKind::Nsis, QUICK);
+        assert!(!ran.stopped);
+        assert!(ran.outcome.unwrap_err().contains("did not finish"));
+    }
+
+    #[test]
+    fn an_unstopped_tree_keeps_the_lock_and_starts_nothing() {
+        let (dir, args) = setup("stuck", "exit 0");
+        let folder = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(args.folder().join("held"))
+            .unwrap();
+        let guard = update_lock::begin_install(&args.data_dir, "9.9.9").unwrap();
+        let data_dir = args.data_dir.clone();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log = seen.clone();
+        let mut tree = Stuck {
+            stubborn: 3,
+            kills: 0,
+            on_kill: Box::new(move || {
+                // While the tree is not stopped: still locked, and the failure recorded.
+                let locked = update_lock::install_in_progress(&data_dir).is_some();
+                let reported = std::fs::read(update_lock::result_path(&data_dir)).is_ok();
+                log.borrow_mut().push((locked, reported));
+            }),
+        };
+        let code = hold_until_stopped(
+            &mut tree,
+            &args,
+            guard,
+            folder,
+            Err("the installer did not finish".into()),
+            QUICK,
         );
+        assert_eq!(code, 3);
+        assert_eq!(tree.kills, 4);
+        assert!(
+            seen.borrow()
+                .iter()
+                .all(|&(locked, reported)| locked && reported),
+            "{:?}",
+            seen.borrow()
+        );
+        // Released once it stopped; Aura was not started, the files not checked.
+        assert_eq!(update_lock::install_in_progress(&args.data_dir), None);
+        assert!(!dir.join("app-started").exists());
+        let result = update_lock::take_result(&args.data_dir).unwrap();
+        assert!(!result.ok && !result.complete && result.installed_version.is_none());
+        assert!(result.message.unwrap().contains("could be stopped"));
+    }
+
+    #[test]
+    fn an_installer_that_wants_administrator_rights_is_refused_plainly() {
+        let e = std::io::Error::from_raw_os_error(ERROR_ELEVATION_REQUIRED);
+        assert!(start_failure(&e).contains("administrator rights"));
     }
 
     #[test]

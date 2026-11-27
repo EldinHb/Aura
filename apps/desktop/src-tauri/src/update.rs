@@ -173,6 +173,11 @@ pub struct Facts {
     /// Linux: a graphical way to ask for the administrator password exists
     /// (`pkexec`, `zenity` or `kdialog`), which installing a package needs.
     pub graphical_sudo: bool,
+    /// Windows: installed for all users (under Program Files), which needs
+    /// administrator rights to update.
+    pub per_machine: bool,
+    /// Windows: this user can write to the install folder.
+    pub install_dir_writable: bool,
 }
 
 // Each build constructs its own platform's; the tests construct them all.
@@ -220,8 +225,14 @@ pub fn decide(f: &Facts) -> Support {
             // user) is fine: the updater asks for an administrator's password.
             Support::InPlace
         }
+        // Only a per-user NSIS install updates in place: it needs no
+        // administrator rights, so the installer runs inside the update
+        // helper's job (see update_helper). The installer installs per user
+        // (tauri.conf.json: nsis.installMode currentUser).
         Os::Windows => match f.bundle {
-            Some(Bundle::Nsis) | Some(Bundle::Msi) => Support::InPlace,
+            Some(Bundle::Nsis) if !f.per_machine && f.install_dir_writable => Support::InPlace,
+            Some(Bundle::Nsis) => manual("Aura is installed for all users, and updating it needs administrator rights. Download the new version and run its installer."),
+            Some(Bundle::Msi) => manual("Aura was installed from the .msi package, which installs for all users and needs administrator rights to update. Download the new version and run its installer."),
             _ => manual("This copy of Aura was not installed with the Aura installer, so it cannot replace itself."),
         },
         Os::Linux => match f.bundle {
@@ -305,8 +316,15 @@ fn facts<R: Runtime>(_app: &AppHandle<R>) -> Facts {
     }
     #[cfg(windows)]
     {
-        let _ = exe;
         f.os = Os::Windows;
+        if let Some(dir) = exe.as_deref().and_then(Path::parent) {
+            let roots: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"]
+                .iter()
+                .filter_map(|v| std::env::var_os(v).map(PathBuf::from))
+                .collect();
+            f.per_machine = under_any(dir, &roots);
+            f.install_dir_writable = dir_writable(dir);
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -324,6 +342,35 @@ fn facts<R: Runtime>(_app: &AppHandle<R>) -> Facts {
             .any(|tool| crate::which(tool).is_some());
     }
     f
+}
+
+/// Whether `path` lies under one of `roots`, ignoring case (Windows paths).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn under_any(path: &Path, roots: &[PathBuf]) -> bool {
+    let path = path.to_string_lossy().to_lowercase();
+    roots.iter().any(|r| {
+        let root = r.to_string_lossy().to_lowercase();
+        let root = root.trim_end_matches(['\\', '/']);
+        !root.is_empty() && path.starts_with(root) && path[root.len()..].starts_with(['\\', '/'])
+    })
+}
+
+/// Whether this user can create a file in `dir` (a probe file, removed at once).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn dir_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".aura-write-test-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(f) => {
+            drop(f);
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 pub fn support<R: Runtime>(app: &AppHandle<R>) -> Support {
@@ -863,15 +910,78 @@ mod tests {
     }
 
     #[test]
-    fn windows_updates_installer_installs_only() {
-        let win = |bundle| Facts {
+    fn windows_updates_only_a_per_user_nsis_install_in_place() {
+        let win = |bundle, per_machine, install_dir_writable| Facts {
             os: Os::Windows,
             bundle,
+            per_machine,
+            install_dir_writable,
             ..Default::default()
         };
-        assert_eq!(decide(&win(Some(Bundle::Nsis))), Support::InPlace);
-        assert_eq!(decide(&win(Some(Bundle::Msi))), Support::InPlace);
-        assert!(matches!(decide(&win(None)), Support::Manual { .. }));
+        assert_eq!(
+            decide(&win(Some(Bundle::Nsis), false, true)),
+            Support::InPlace
+        );
+        assert!(
+            matches!(decide(&win(Some(Bundle::Nsis), true, true)), Support::Manual { reason } if reason.contains("all users"))
+        );
+        assert!(
+            matches!(decide(&win(Some(Bundle::Nsis), false, false)), Support::Manual { reason } if reason.contains("administrator"))
+        );
+        assert!(
+            matches!(decide(&win(Some(Bundle::Msi), false, true)), Support::Manual { reason } if reason.contains(".msi"))
+        );
+        assert!(matches!(
+            decide(&win(None, false, true)),
+            Support::Manual { .. }
+        ));
+    }
+
+    #[test]
+    fn tells_a_per_machine_install_folder() {
+        let roots = [
+            PathBuf::from(r"C:\Program Files"),
+            PathBuf::from(r"C:\Program Files (x86)\"),
+        ];
+        assert!(under_any(Path::new(r"C:\Program Files\Aura"), &roots));
+        assert!(under_any(Path::new(r"c:\program files (x86)\Aura"), &roots));
+        assert!(!under_any(
+            Path::new(r"C:\Users\jane\AppData\Local\Aura"),
+            &roots
+        ));
+        assert!(!under_any(Path::new(r"C:\Program FilesX\Aura"), &roots));
+        assert!(!under_any(
+            Path::new(r"C:\Program Files\Aura"),
+            &[PathBuf::new()]
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tells_a_writable_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("aura-writable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(dir_writable(&d));
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            0,
+            "the probe is gone"
+        );
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(!dir_writable(&d));
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn new_windows_installs_are_per_user() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            conf["bundle"]["windows"]["nsis"]["installMode"],
+            "currentUser"
+        );
     }
 
     #[test]

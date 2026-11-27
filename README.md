@@ -193,28 +193,37 @@ How each system updates:
 | Installed from | Update |
 |---|---|
 | macOS `.dmg` | Replaces `Aura.app` where it is. If that folder needs an administrator, macOS asks for the password. |
-| Windows installer (`-setup.exe`) | Runs the new installer with only a progress bar, then starts Aura again. If the installer is cancelled or fails, Aura starts again and says which version is installed, or that the install is incomplete and should be run again. An `.msi` install updates with the new `.msi`. |
+| Windows installer (`-setup.exe`) | Installs for your user only (no administrator rights). Runs the new installer with only a progress bar, then starts Aura again. If the installer is cancelled or fails, Aura starts again and says which version is installed, or that the install is incomplete and should be run again. |
+| Windows `.msi`, or an install for all users | Not updated in place, since that needs administrator rights: the banner offers the download, and you run the new installer yourself. |
 | Linux AppImage | Replaces the AppImage file, if you can write to it and its folder. |
 | Linux `.deb` / `.rpm` | Installs the new package, asking for your password through `pkexec` (or `zenity` / `kdialog`). |
 
 Where Aura cannot replace itself (opened straight from the disk image, from a
 location macOS moved it to or through a symbolic link, an AppImage in a read-only folder, a `.deb` without a way
-to ask for your password), the banner says why and links to the release to install it
+to ask for your password, a Windows install for all users or from the `.msi`), the banner says why and links to the release to install it
 by hand.
 
 While an update installs, the `aura` command and the daemon refuse to start ("Aura is
 installing version X.Y.Z…"), so nothing holds on to the files being replaced; they
 work again once Aura has restarted. On Windows the installer runs in a job that ends
 with Aura's update helper, and one still running after 30 minutes is stopped with
-everything it started. An installer that asked for administrator rights can't be
-stopped by the helper: it keeps the update lock until it finishes, also if the helper
-goes away. After a failed or cancelled install, Aura checks what is installed and says
+everything it started. If Windows cannot confirm that everything stopped (a process can
+hang on pending I/O), the lock stays and Aura is not started again until it has; the
+next start says what happened. After a failed or cancelled install, Aura checks what is installed and says
 which version you have, or that the install is incomplete and should be run again.
 
 The Windows installer itself closes any program that has `aurad.exe` or `aura.exe`
 open before it replaces them (through Windows' Restart Manager), not only Aura's own
 processes. Updates Aura starts itself stop exactly the processes running those two
 files first, so this only matters for an installer you start by hand.
+
+**Known limits**, accepted for now:
+
+- A new window that opens while the daemon is being restarted, and is closed again
+  before it has found the daemon, can still connect afterwards in the background.
+- Windows: the clean-up of earlier updates' temporary folders and a helper starting up are not
+  fully coordinated: in a narrow window right after an update is prepared, a clean-up
+  could remove that update's folder, and the install then fails and says so.
 
 **Upgrading from 0.4.0 or earlier:** those versions cannot update themselves. Install
 the new version once by hand from the

@@ -14,13 +14,11 @@
 //!   process tree has stopped).
 //! - **A dead holder never blocks Aura**: the lock lives on the file
 //!   descriptor and the OS releases it when its holder exits, however it exits.
-//! - **An installer that outlives its holder still counts.** The marker
-//!   names the installer process (its pid and start time). An installer in
-//!   the helper's job dies with the helper; an elevated one (started through
-//!   the UAC prompt, outside any job) does not, so while the process the
-//!   marker names still runs, the install counts as running, lock or not.
-//! - A marker whose lock is free and whose installer has stopped is left
-//!   over from a crash, and is removed.
+//!   The installer runs in the helper's job and dies with it (only per-user
+//!   installs, which need no elevation, update in place).
+//! - A marker whose lock is free is left over from a crash, and is removed,
+//!   under the probe's own hold on the lock, so it is never a new holder's.
+//! - Markers and results are written whole: to a temporary file, then renamed.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -34,31 +32,6 @@ pub struct InstallMarker {
     pub started_at: u64,
     /// The process holding the lock.
     pub pid: u32,
-    /// The installer, once it runs.
-    #[serde(default)]
-    pub installer: Option<RunningProcess>,
-}
-
-/// A process, told apart from any later one with its pid (see `aura_contain::identity`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunningProcess {
-    pub pid: u32,
-    pub identity: String,
-}
-
-impl RunningProcess {
-    /// Process `pid` as it runs now, if it does.
-    pub fn of(pid: u32) -> Option<Self> {
-        Some(Self {
-            pid,
-            identity: aura_contain::identity(pid)?,
-        })
-    }
-
-    /// Whether this very process still runs.
-    pub fn running(&self) -> bool {
-        aura_contain::identity(self.pid).as_deref() == Some(self.identity.as_str())
-    }
 }
 
 pub fn lock_path(data_dir: &Path) -> PathBuf {
@@ -86,6 +59,27 @@ fn open_lock(data_dir: &Path) -> std::io::Result<std::fs::File> {
         .open(lock_path(data_dir))
 }
 
+/// Write `bytes` to `path` whole: into a temporary file next to it, then
+/// renamed over it, so a reader never sees half of it.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 fn read_marker(data_dir: &Path) -> Option<InstallMarker> {
     std::fs::read(marker_path(data_dir))
         .ok()
@@ -97,20 +91,9 @@ fn read_marker(data_dir: &Path) -> Option<InstallMarker> {
 pub struct InstallGuard {
     file: Option<std::fs::File>,
     data_dir: PathBuf,
-    marker: InstallMarker,
 }
 
 impl InstallGuard {
-    /// Record the installer process, so the install still counts if it
-    /// outlives this guard's process.
-    pub fn set_installer(&mut self, pid: u32) -> std::io::Result<()> {
-        self.marker.installer = RunningProcess::of(pid);
-        std::fs::write(
-            marker_path(&self.data_dir),
-            serde_json::to_vec(&self.marker)?,
-        )
-    }
-
     /// End the install: remove the marker and release the lock. Call only
     /// once the installer and everything it started have stopped.
     pub fn release(mut self) {
@@ -142,31 +125,33 @@ pub fn begin_install(data_dir: &Path, version: &str) -> anyhow::Result<InstallGu
         }
         Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
     }
-    // An installer left running by a holder that died (an elevated one) is
-    // still installing.
-    if let Some(m) = read_marker(data_dir) {
-        if m.installer.as_ref().is_some_and(RunningProcess::running) {
-            let _ = file.unlock();
-            anyhow::bail!("another Aura update is being installed (its installer still runs)")
-        }
-    }
+
     let marker = InstallMarker {
         version: version.to_string(),
         started_at: now(),
         pid: std::process::id(),
-        installer: None,
     };
-    std::fs::write(marker_path(data_dir), serde_json::to_vec(&marker)?)?;
+    if let Err(e) = write_atomic(&marker_path(data_dir), &serde_json::to_vec(&marker)?) {
+        let _ = file.unlock();
+        return Err(anyhow::Error::from(e).context("record the install in update.json"));
+    }
     Ok(InstallGuard {
         file: Some(file),
         data_dir: data_dir.to_path_buf(),
-        marker,
     })
 }
 
-/// The install under way, if one is: its lock is held, or the installer it
-/// names still runs.
+/// The install under way, if one is: its lock is held.
 pub fn install_in_progress(data_dir: &Path) -> Option<InstallMarker> {
+    install_in_progress_probing(data_dir, || {})
+}
+
+/// [`install_in_progress`], calling `while_held` while the probe holds the
+/// lock (tests: another process trying to start an install right then).
+fn install_in_progress_probing(
+    data_dir: &Path,
+    while_held: impl FnOnce(),
+) -> Option<InstallMarker> {
     // No lock file: nothing was ever installed from here.
     if !lock_path(data_dir).exists() {
         return None;
@@ -180,25 +165,20 @@ pub fn install_in_progress(data_dir: &Path) -> Option<InstallMarker> {
                 version: String::new(),
                 started_at: now(),
                 pid: 0,
-                installer: None,
             },
         )),
         Err(std::fs::TryLockError::Error(_)) => None,
-        // Free: its holder is gone. Unlock now rather than on close: a process
-        // another thread forks meanwhile shares this descriptor until it execs,
-        // and would keep the lock held past our return.
+        // Free: its holder is gone. A marker is a crash's leftover; it is
+        // removed while this probe still holds the lock, so no new holder can
+        // have written it meanwhile. Then unlocked explicitly, not on close: a
+        // process another thread forks meanwhile shares this descriptor until
+        // it execs, and would keep the lock held past our return.
         Ok(()) => {
-            let _ = file.unlock();
-            let marker = read_marker(data_dir)?;
-            if marker
-                .installer
-                .as_ref()
-                .is_some_and(RunningProcess::running)
-            {
-                return Some(marker);
+            while_held();
+            if marker_path(data_dir).exists() {
+                let _ = std::fs::remove_file(marker_path(data_dir));
             }
-            // Left over from a holder that died: nothing runs any more.
-            let _ = std::fs::remove_file(marker_path(data_dir));
+            let _ = file.unlock();
             None
         }
     }
@@ -255,7 +235,7 @@ pub fn result_path(data_dir: &Path) -> PathBuf {
 }
 
 pub fn write_result(data_dir: &Path, result: &InstallResult) -> std::io::Result<()> {
-    std::fs::write(result_path(data_dir), serde_json::to_vec(result)?)
+    write_atomic(&result_path(data_dir), &serde_json::to_vec(result)?)
 }
 
 /// The result of the last install, removed once read.
@@ -308,7 +288,6 @@ mod tests {
             version: "0.5.0".into(),
             started_at: 1,
             pid: 1,
-            installer: None,
         };
         std::fs::write(marker_path(&d), serde_json::to_vec(&ancient).unwrap()).unwrap();
         assert_eq!(install_in_progress(&d), Some(ancient));
@@ -324,7 +303,6 @@ mod tests {
             version: "0.5.0".into(),
             started_at: now(),
             pid: 1,
-            installer: None,
         };
         std::fs::write(marker_path(&d), serde_json::to_vec(&marker).unwrap()).unwrap();
         assert_eq!(install_in_progress(&d), None);
@@ -332,30 +310,67 @@ mod tests {
     }
 
     #[test]
-    fn a_free_lock_with_a_live_installer_counts_and_a_dead_one_does_not() {
-        let d = dir("installer");
+    fn a_probe_never_removes_the_marker_of_an_install_that_starts_meanwhile() {
+        // A crash's leftover marker, and a probe that finds the lock free.
+        let d = dir("race");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(lock_path(&d), b"").unwrap();
-        let mut installer = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let marker = InstallMarker {
-            version: "0.5.0".into(),
-            started_at: now(),
-            pid: 1,
-            installer: RunningProcess::of(installer.id()),
-        };
-        assert!(marker.installer.is_some());
-        std::fs::write(marker_path(&d), serde_json::to_vec(&marker).unwrap()).unwrap();
-        assert_eq!(install_in_progress(&d), Some(marker));
-        let err = begin_install(&d, "0.5.1").unwrap_err();
-        assert!(err.to_string().contains("installer still runs"), "{err}");
-        installer.kill().unwrap();
-        installer.wait().unwrap();
-        assert_eq!(install_in_progress(&d), None);
-        assert!(!marker_path(&d).exists());
-        drop(begin_install(&d, "0.5.1").unwrap());
+        std::fs::write(
+            marker_path(&d),
+            br#"{"version":"0.4.0","started_at":1,"pid":1}"#,
+        )
+        .unwrap();
+        let mut started = None;
+        let seen = install_in_progress_probing(&d, || {
+            // Another process starts an install right then: it cannot until
+            // the probe is done with the leftover.
+            started = Some(begin_install(&d, "0.5.0").is_err());
+        });
+        assert_eq!(seen, None);
+        assert_eq!(
+            started,
+            Some(true),
+            "the probe held the lock through its clean-up"
+        );
+        // Once the probe is done, a new install starts and keeps its marker.
+        let guard = begin_install(&d, "0.5.0").unwrap();
+        assert_eq!(
+            install_in_progress(&d).map(|m| m.version),
+            Some("0.5.0".into())
+        );
+        assert!(marker_path(&d).exists());
+        guard.release();
+    }
+
+    #[test]
+    fn writes_whole_files_and_leaves_no_temporary_one() {
+        let d = dir("atomic");
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("update-result.json");
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        let names: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["update-result.json"]);
+        // A failed write says so and leaves nothing behind.
+        let missing = d.join("no-such-dir").join("x.json");
+        assert!(write_atomic(&missing, b"x").is_err());
+    }
+
+    #[test]
+    fn a_marker_that_cannot_be_written_is_no_install() {
+        let d = dir("unwritable");
+        std::fs::create_dir_all(&d).unwrap();
+        // update.json is a directory: the marker cannot be written there.
+        std::fs::create_dir_all(marker_path(&d)).unwrap();
+        let err = begin_install(&d, "0.5.0").unwrap_err();
+        assert!(format!("{err:#}").contains("update.json"), "{err:#}");
+        // And the lock it took is released.
+        std::fs::remove_dir(marker_path(&d)).unwrap();
+        drop(begin_install(&d, "0.5.0").unwrap());
     }
 
     #[test]
@@ -364,7 +379,6 @@ mod tests {
             version: "0.5.0".into(),
             started_at: 0,
             pid: 0,
-            installer: None,
         };
         assert!(installing_message(&m).contains("0.5.0"));
     }

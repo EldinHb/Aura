@@ -207,8 +207,8 @@ async fn ensure_daemon() -> Result<Connection> {
     // installer runs, say): aurad would refuse to start until it has finished.
     if aura_rpc::update_lock::install_in_progress(&dir).is_some() {
         tracing::info!("an update is being installed; waiting for it before starting the daemon");
-        // The helper stops an installer after its limit; past that (an elevated
-        // installer it may not stop) aurad still refuses, and says why.
+        // The helper stops an installer after its limit; past that (a tree
+        // Windows has not let it stop yet) aurad still refuses, and says why.
         let waited = aura_rpc::update_lock::wait_for_install(
             &dir,
             std::time::Duration::from_millis(500),
