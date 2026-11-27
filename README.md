@@ -192,7 +192,7 @@ How each system updates:
 | Installed from | Update |
 |---|---|
 | macOS `.dmg` | Replaces `Aura.app` where it is. If that folder needs an administrator, macOS asks for the password. |
-| Windows installer (`-setup.exe`) | Runs the new installer with only a progress bar, which then starts Aura again. An `.msi` install updates with the new `.msi`. |
+| Windows installer (`-setup.exe`) | Runs the new installer with only a progress bar, then starts Aura again. If the installer is cancelled or fails, Aura starts again on the version you had and says what went wrong. An `.msi` install updates with the new `.msi`. |
 | Linux AppImage | Replaces the AppImage file, if you can write to it and its folder. |
 | Linux `.deb` / `.rpm` | Installs the new package, asking for your password through `pkexec` (or `zenity` / `kdialog`). |
 
@@ -200,6 +200,11 @@ Where Aura cannot replace itself (opened straight from the disk image, from a
 location macOS moved it to or through a symbolic link, an AppImage in a read-only folder, a `.deb` without a way
 to ask for your password), the banner says why and links to the release to install it
 by hand.
+
+While an update installs, the `aura` command and the daemon refuse to start ("Aura is
+installing version X.Y.Z…"), so nothing holds on to the files being replaced; they
+work again once Aura has restarted. An install that hangs stops blocking them after
+30 minutes.
 
 **Upgrading from 0.4.0 or earlier:** those versions cannot update themselves. Install
 the new version once by hand from the
@@ -969,8 +974,10 @@ and uploads it with the release; installed copies read it at
 version as soon as the release is published. Each platform gets an
 `{os}-{arch}-{bundle}` entry, so an MSI, NSIS, `.deb` or `.rpm` install updates with
 its own kind, and an `{os}-{arch}` fallback (the NSIS installer on Windows, the
-AppImage on Linux). A release with an unsigned installer or a missing platform is not
-published.
+AppImage on Linux). Before it publishes, the script downloads every installer and
+verifies its signature against the public key in `tauri.conf.json`, and that it was
+signed for the release's version: the checks the app makes. A release with an
+unsigned or wrongly signed installer, or a missing platform, is not published.
 
 #### The updater signing key
 
@@ -1002,10 +1009,11 @@ announces, so an old, validly signed release cannot be passed off as a new one.
 under a test name and identifier (`AuraUpdateTest`, `nl.havick.aura.updatetest`), serves
 the second from a local `latest.json`, and checks that the first finds, downloads and
 verifies it, stops its daemon, replaces itself, restarts as the new version and starts
-the new daemon. Everything stays under `/private/tmp/aura-update-e2e` with its own data
+the new daemon; and that a copy opened through a symbolic link is offered the update
+without installing it. Everything stays under `/private/tmp/aura-update-e2e` with its own data
 directory; an installed Aura and `~/.aura` are not touched. It needs the signing key
 (above). The local manifest only works in builds with the `updater-test` Cargo
-feature, which releases never enable.
+feature, which releases never enable, and only under the test identifier.
 
 ## License
 

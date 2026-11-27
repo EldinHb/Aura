@@ -130,6 +130,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
+log "a copy opened through a symlink is offered the release page"
+# /tmp is a symlink to /private/tmp: Tauri cannot resolve the app by that path,
+# so this copy cannot replace itself, but must still learn of B.
+LINKED="/tmp/${WORK#/private/tmp/}/A/$NAME.app/Contents/MacOS/$(basename "$EXE")"
+AURA_DATA_DIR="$WORK/data" AURA_UPDATER_ENDPOINT="http://127.0.0.1:$PORT/latest.json" \
+  AURA_UPDATER_TEST_AUTO_RESTART=1 RUST_LOG=info \
+  nohup "$LINKED" > "$WORK/app-linked.log" 2>&1 &
+LINKED_PID=$!
+for _ in $(seq 1 40); do grep -q "update available" "$WORK/app-linked.log" && break; sleep 1; done
+sleep 3 # long enough for an install to start, which must not happen
+kill "$LINKED_PID" 2>/dev/null || true
+wait "$LINKED_PID" 2>/dev/null || true
+AURA_DATA_DIR="$WORK/data" "$APP/Contents/MacOS/aura" daemon stop >/dev/null 2>&1 || true
+
 log "running A from $APP"
 AURA_DATA_DIR="$WORK/data" AURA_UPDATER_ENDPOINT="http://127.0.0.1:$PORT/latest.json" \
   AURA_UPDATER_TEST_AUTO_RESTART=1 RUST_LOG=info \
@@ -152,8 +166,12 @@ done
 
 log "results"
 fail=0
+# The app's log, without the colours tracing puts around field names.
+plain() { sed $'s/\x1b\\[[0-9;]*m//g' "$1"; }
 check() { if eval "$2"; then echo "ok    $1"; else echo "FAIL  $1"; fail=1; fi; }
 B_DAEMON=$(daemon_field pid)
+check "a copy opened through a symlink learned of $B_VERSION, as not installable" 'plain "$WORK/app-linked.log" | grep -q "update available.*version=$B_VERSION.*in_place=false"'
+check "and installed nothing" '! grep -q "installing the update" "$WORK/app-linked.log"'
 check "app bundle at $APP is now $B_VERSION" '[ "$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")" = "$B_VERSION" ]'
 check "A's process ($A_PID) exited" '! kill -0 "$A_PID" 2>/dev/null'
 check "the app runs again from $APP" '[ -n "$(pgrep -f "^$EXE")" ]'
@@ -163,6 +181,7 @@ check "the new daemon uses $WORK/data" 'ps -o command= -p "$B_DAEMON" | grep -q 
 check "the new daemon is B's binary" 'ps -o command= -p "$B_DAEMON" | grep -q "^$APP/Contents/MacOS/aurad"'
 check "the manifest and B's package were downloaded" 'grep -q "GET /latest.json" "$WORK/server.log" && grep -q "GET /$NAME.app.tar.gz" "$WORK/server.log"'
 check "the plain darwin-$ARCH entry was not used" '! grep -q "missing.tar.gz" "$WORK/server.log"'
+check "no update lock is left behind" '[ ! -e "$WORK/data/update.json" ]'
 check "the shell verified, stopped the daemon and installed" 'grep -q "update downloaded and verified" "$WORK/app.log" && grep -q "daemon stopped, installing the update" "$WORK/app.log"'
 echo
 echo "logs: $WORK/app.log $WORK/server.log"
