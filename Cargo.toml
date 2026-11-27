@@ -64,3 +64,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Build scripts and proc macros run on the build machine and never ship.
+# Stripping them makes the linker of recent Xcode (ld-27106, macOS 27) write
+# proc-macro dylibs that fail to load ("mis-aligned LINKEDIT string pool").
+[profile.release.build-override]
+strip = false
