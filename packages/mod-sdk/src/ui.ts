@@ -21,7 +21,7 @@ export interface CommandDef {
   title: string;
   group: string;
   keywords?: string[];
-  /** A `when` expression, e.g. "focus:sidebar && !inputFocused && mod.github.prSelected". */
+  /** A `when` expression: comma-separated terms that must all hold, e.g. "focus:sidebar, !inputFocused, mod.github.prSelected". */
   when?: string;
   hidden?: boolean;
   run: (arg?: unknown) => void | Promise<void>;

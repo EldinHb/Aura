@@ -1,0 +1,17 @@
+{
+  // Checks the no-build mod that `aura mods new` scaffolds (crates/aura-cli/templates/mod)
+  // against types/aura-mod.d.ts, the way an editor checks a scaffolded mod.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": []
+  },
+  "files": ["types/aura-mod.d.ts", "../../crates/aura-cli/templates/mod/daemon.js", "../../crates/aura-cli/templates/mod/ui.js"]
+}

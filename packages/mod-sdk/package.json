@@ -18,6 +18,11 @@
     "esbuild": "^0.25.0"
   },
   "devDependencies": {
-    "@types/react": "^19.3.0"
+    "@types/react": "^19.3.0",
+    "typescript": "^5.6"
+  },
+  "scripts": {
+    "typecheck": "node gen-dts.mjs --check && tsc -p tsconfig.nobuild.json",
+    "dts": "node gen-dts.mjs"
   }
 }
