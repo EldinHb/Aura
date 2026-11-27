@@ -215,7 +215,7 @@ export class PrPoller {
   /** Read back the branch PRs and PR statuses kept from before a restart; forget folders no session uses. */
   private async restore(): Promise<void> {
     const now = this.now();
-    await this.sources.load(new Set((await this.aura.sessions.list()).map((x) => x.id)));
+    await this.sources.ready;
     for (const [key, p] of await this.storedPulls.all()) {
       this.entries.set(key, { ref: p.ref, status: p.status, readAt: p.readAt, error: null, failures: 0, nextAt: 0, final: p.status.state === "merged", noted: null, seen: now });
       this.storedSeen.set(key, p.seen);

@@ -392,7 +392,12 @@ describe("PrPoller", () => {
     it("keeps every watched PR past MAX_CACHED and reads none of them again early (item 1)", async () => {
       const many = Array.from({ length: MAX_CACHED + 20 }, (_, i) => i + 1);
       many.forEach((n) => (t.fake.state.nodes[n] = prNode({ number: n })));
-      await t.setLinked("lead", many.map((n) => `https://github.com/acme/api/pull/${n}`));
+      // More than a session may link (100): split over the lead, its worker and its conversation.
+      const url = (n: number) => `https://github.com/acme/api/pull/${n}`;
+      await t.setLinked("lead", many.slice(0, 100).map(url));
+      await t.setLinked("worker", many.slice(100, 200).map(url));
+      t.host.fire({ type: "item_completed", session_id: "lead", item: { kind: "agent_message", text: many.slice(200).map(url).join(" "), data: {} } } as any);
+      await new Promise((r) => setTimeout(r, 0));
       t.poller.invalidate();
       await t.watch();
       const first = t.reads().length;

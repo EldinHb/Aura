@@ -6,7 +6,7 @@ import type { SessionView } from "../shared/types";
 import { fakeGithub, prNode, session } from "../test/fixtures";
 import { ghReply, rate } from "../test/gh";
 import { branchPull, branchQuestion, githubRepo, parseRemotes, parseStatus } from "./branch";
-import { itemText, MAX_DETECTED, prUrlsIn, Sources } from "./sources";
+import { itemText, MAX_DETECTED, MAX_DOC, MAX_LIST, MAX_URL, prUrlsIn, Sources } from "./sources";
 
 describe("PR URLs in a conversation", () => {
   it("finds github.com PR URLs once each, canonical", () => {
@@ -31,11 +31,57 @@ describe("PR URLs in a conversation", () => {
     // Bounded, and read back after a restart; a session that no longer exists is forgotten.
     for (let i = 10; i < 10 + MAX_DETECTED + 5; i++) await sources.detect("s1", `https://github.com/acme/api/pull/${i}`);
     await sources.detect("gone", "https://github.com/acme/api/pull/5");
+    host.state.sessions = [session("s1")];
     const again = new Sources(host.api);
-    await again.load(new Set(["s1"]));
+    await again.ready;
     expect(again.linkedOf("s1")).toHaveLength(1 + MAX_DETECTED);
     expect(again.linkedOf("gone")).toEqual([]);
     expect(host.collections.get("sessions")?.has("gone")).toBe(false);
+  });
+});
+
+describe("Sources: start-up and bounds (review items 4 and 6)", () => {
+  it("loses nothing changed while what was kept is still being read", async () => {
+    const host = createTestHost({ id: "pr-status" });
+    host.state.sessions = [session("s1")];
+    await host.api.storage.collection("sessions").put("s1", { detected: [], linked: ["https://github.com/acme/api/pull/1"], hidden: [] });
+    // The session list arrives late: the read of what was kept is still running.
+    let release!: () => void;
+    const list = host.api.sessions.list;
+    host.api.sessions.list = () => new Promise((r) => (release = () => r(list())));
+    const sources = new Sources(host.api);
+    const changes = Promise.all([
+      sources.detect("s1", "https://github.com/acme/api/pull/2"),
+      sources.link("s1", "https://github.com/acme/api/pull/3"),
+      sources.link("s1", "https://github.com/acme/api/pull/4"),
+      sources.unlink("s1", "https://github.com/acme/api/pull/9"),
+    ]);
+    release();
+    await changes;
+    const urls = ["https://github.com/acme/api/pull/1", "https://github.com/acme/api/pull/3", "https://github.com/acme/api/pull/4", "https://github.com/acme/api/pull/2"];
+    expect(sources.linkedOf("s1")).toEqual(urls);
+    host.api.sessions.list = list;
+    const again = new Sources(host.api);
+    await again.ready;
+    expect(again.linkedOf("s1")).toEqual(urls);
+    expect(again.isHidden("s1", "https://github.com/acme/api/pull/9")).toBe(true);
+  });
+
+  it("refuses long URLs and links or unlinks past the caps, and keeps the stored document small", async () => {
+    const host = createTestHost({ id: "pr-status" });
+    const sources = new Sources(host.api);
+    const long = `https://github.com/acme/${"r".repeat(MAX_URL)}/pull/1`;
+    await expect(sources.link("s1", long)).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining(`${MAX_URL} characters`) });
+    expect(await sources.detect("s1", `see ${long}`)).toBe(false);
+    for (let i = 1; i <= MAX_LIST; i++) await sources.link("s1", `https://github.com/acme/api/pull/${i}`);
+    await expect(sources.link("s1", "https://github.com/acme/api/pull/999")).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining(`At most ${MAX_LIST}`) });
+    for (let i = 1; i <= MAX_LIST; i++) await sources.unlink("s1", `https://github.com/acme/web/pull/${i}`);
+    await expect(sources.unlink("s1", "https://github.com/acme/web/pull/999")).rejects.toMatchObject({ code: "invalid" });
+    // Detections still fit: the oldest give way.
+    for (let i = 0; i < 80; i++) await sources.detect("s1", `https://github.com/acme/a-very-long-repository-name-for-the-test/pull/${10_000 + i}`);
+    const stored = host.collections.get("sessions")!.get("s1");
+    expect(JSON.stringify(stored).length).toBeLessThanOrEqual(MAX_DOC);
+    expect(sources.linkedOf("s1")).toContain("https://github.com/acme/a-very-long-repository-name-for-the-test/pull/10079");
   });
 });
 
