@@ -3,6 +3,7 @@
 // says plainly when gh is missing, signed out or its token expired, polls notifications
 // conditionally, and checks the signed-in account right before a write made for one.
 import type { DaemonApi } from "@aura/mod-sdk";
+import type { ProcessResult } from "@aura/mod-sdk/daemon";
 import { LOGIN_EXPIRED, NO_GH, Notified, pace, RateLimited, RejectedRequest, type Budget, type Github } from "@aura/github-client";
 
 export const NOT_SIGNED_IN = "GitHub CLI is not signed in. Run `gh auth login`; Aura reconnects by itself.";
@@ -103,17 +104,26 @@ export class GhCli implements Github, Pinning {
    * resource is spent, at most MAX_CONCURRENT at once, pinned to github.com, with `token` (if
    * given) in the environment only.
    */
-  private async gh(args: string[], o: { resource: string | null; stdin?: string; token?: string }) {
-    const pause = this.paused(o.resource);
-    if (pause) throw pause;
+  private async gh(args: string[], o: { resource: string | null; stdin?: string; token?: string; settle?: (out: ProcessResult) => void }) {
+    const early = this.paused(o.resource);
+    if (early) throw early;
     while (this.running >= MAX_CONCURRENT) await new Promise<void>((resolve) => this.waiting.push(resolve));
     this.running++;
     try {
+      // Checked again right before sending: an answer that came in while this call waited may have paused all.
+      const pause = this.paused(o.resource);
+      if (pause) throw pause;
       const env = o.token ? { ...PINNED_ENV, GH_TOKEN: o.token, GITHUB_TOKEN: null } : PINNED_ENV;
-      return await this.aura.process.run("gh", args, { stdin: o.stdin, env, timeoutMs: 60_000 });
-    } catch {
-      this.problem = { reason: NO_GH, at: this.now() };
-      throw new RejectedRequest(NO_GH);
+      let out: ProcessResult;
+      try {
+        out = await this.aura.process.run("gh", args, { stdin: o.stdin, env, timeoutMs: 60_000 });
+      } catch {
+        this.problem = { reason: NO_GH, at: this.now() };
+        throw new RejectedRequest(NO_GH);
+      }
+      // The answer's rate limits count before the slot goes to the next call.
+      o.settle?.(out);
+      return out;
     } finally {
       this.running--;
       this.waiting.shift()?.();
@@ -123,30 +133,56 @@ export class GhCli implements Github, Pinning {
   /** Run `gh api -i <args>` against github.com; GitHub's answer, whatever its status. */
   async api(args: string[], stdin?: string, token?: string): Promise<GhReply> {
     const resource = args[0] === "graphql" ? "graphql" : "core";
-    const out = await this.gh(["api", "--hostname", HOST, "-i", ...args], { resource, stdin, token });
-    const reply = parseReply(out.stdout);
-    if (!reply) {
+    let reply: GhReply | null = null;
+    const out = await this.gh(["api", "--hostname", HOST, "-i", ...args], {
+      resource, stdin, token,
+      settle: (o) => {
+        reply = parseReply(o.stdout);
+        if (reply) this.note(reply);
+      },
+    });
+    // Set by `settle`, inside the gate.
+    const answer = reply as GhReply | null;
+    if (!answer) {
       const e = noResponse(out.stderr);
       if (e instanceof RejectedRequest) this.problem = { reason: e.message, at: this.now() };
       throw e;
     }
-    this.budget(reply.headers);
     // Refused: the login (or its rights) may have changed; ask who is signed in next time.
-    if (reply.status === 401 || reply.status === 403) this.login = null;
-    if (reply.status === 401) {
+    if (answer.status === 401 || answer.status === 403) this.login = null;
+    if (answer.status === 401) {
       this.problem = { reason: LOGIN_EXPIRED, at: this.now() };
       throw new RejectedRequest(LOGIN_EXPIRED);
     }
     this.problem = null;
-    return reply;
+    return answer;
   }
 
+  /** What an answer says of the rate limits: the budget it reports, and a pause it asks for. */
+  private note(reply: GhReply): void {
+    const h = reply.headers;
+    this.budget(h);
+    const spent = h["x-ratelimit-remaining"] === "0";
+    if ((reply.status === 403 || reply.status === 429) && (spent || "retry-after" in h || /rate limit/i.test(reply.body))) {
+      // A secondary limit without Retry-After: a minute, as GitHub's docs advise.
+      const wait = "retry-after" in h ? Number(h["retry-after"]) * 1000 : spent ? Number(h["x-ratelimit-reset"]) * 1000 - this.now() : 60_000;
+      this.pausedUntil = Math.max(this.pausedUntil, this.now() + (Number.isFinite(wait) ? Math.max(0, wait) : 60_000));
+    }
+  }
+
+  /**
+   * Keep a resource's budget as an answer reports it. Answers can arrive out of order: within the
+   * same reset window the lowest `remaining` stands, and an older window does not replace a newer.
+   */
   private budget(h: Record<string, string>): void {
     const resource = h["x-ratelimit-resource"];
     const limit = Number(h["x-ratelimit-limit"]);
     const remaining = Number(h["x-ratelimit-remaining"]);
     const reset = Number(h["x-ratelimit-reset"]);
     if (!resource || ![limit, remaining, reset].every(Number.isFinite)) return;
+    const known = this.budgets.get(resource);
+    if (known && reset < known.reset) return;
+    if (known && reset === known.reset && remaining >= known.remaining) return;
     this.budgets.set(resource, { resource, limit, remaining, reset });
   }
 
@@ -163,10 +199,8 @@ export class GhCli implements Github, Pinning {
     const spent = h["x-ratelimit-remaining"] === "0";
     if ((reply.status === 403 || reply.status === 429) && (spent || "retry-after" in h || /rate limit/i.test(message))) {
       // A secondary limit without Retry-After: a minute, as GitHub's docs advise.
-      const wait = "retry-after" in h ? Number(h["retry-after"]) * 1000 : spent ? Number(h["x-ratelimit-reset"]) * 1000 - this.now() : 60_000;
-      const ms = Number.isFinite(wait) ? Math.max(0, wait) : 60_000;
-      this.pausedUntil = Math.max(this.pausedUntil, this.now() + ms);
-      return new RateLimited(message, ms, spent && !("retry-after" in h));
+      // The gate's pause was set when the answer came in (note); the error says how long.
+      return new RateLimited(message, Math.max(0, this.pausedUntil - this.now()), spent && !("retry-after" in h));
     }
     if ([400, 403, 404, 405, 422, 429].includes(reply.status)) return new RejectedRequest(message);
     return new Error(message);
@@ -209,7 +243,10 @@ export class GhCli implements Github, Pinning {
   /** "github.com:<login>" of gh's signed-in account (kept for ACCOUNT_MS). */
   async account(fresh = false): Promise<string> {
     if (!fresh && this.login && this.now() - this.login.at < ACCOUNT_MS) return this.login.value;
-    this.login = { value: await this.whoAmI(), at: this.now() };
+    const value = await this.whoAmI();
+    // Another account has budgets of its own.
+    if (this.login && this.login.value !== value) this.budgets.clear();
+    this.login = { value, at: this.now() };
     return this.login.value;
   }
 
@@ -232,7 +269,12 @@ export class GhCli implements Github, Pinning {
     if (!token) throw new RejectedRequest(NOT_SIGNED_IN);
     try {
       const login = await this.whoAmI(token);
-      if (login !== account) throw new RejectedRequest(`GitHub account changed: gh is signed in as ${login.split(":")[1]} now`);
+      if (login !== account) {
+        // The account kept for reads is stale too: the next read asks again, so the cards (and a
+        // new confirmation) show who is signed in now.
+        this.login = null;
+        throw new RejectedRequest(`GitHub account changed: gh is signed in as ${login.split(":")[1]} now`);
+      }
       const t = token;
       const view: Github = {
         request: (method, path, body) => this.send(method, path, body, t),

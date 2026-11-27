@@ -249,4 +249,68 @@ describe("GhCli", () => {
       expect(most).toBe(MAX_CONCURRENT);
     });
   });
+
+  describe("re-review", () => {
+    /** A host whose gh calls wait until released, answering what `answer` says for each, in order. */
+    function held() {
+      const host = createTestHost({ id: "pr-status" });
+      const pending: Array<(reply: ReturnType<typeof ghReply>) => void> = [];
+      host.process.route((bin, args) => (bin === "gh" && args[0] === "api" ? new Promise((resolve) => pending.push(resolve)) : undefined));
+      return { host, gh: new GhCli(host.api), pending, sent: () => host.record.processes.length };
+    }
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+
+    it("does not send queued calls after an answer paused the gate (item 1)", async () => {
+      const t = held();
+      const calls = Array.from({ length: 16 }, (_, i) => t.gh.request("GET", `repos/acme/api/pulls/${i}`).then(() => "ok", (e) => e));
+      await tick();
+      expect(t.sent()).toBe(MAX_CONCURRENT);
+      // The first answer: a 429 with Retry-After. The 12 waiting calls must not go out.
+      t.pending.shift()!(ghReply({ status: 429, headers: { "Retry-After": 120 }, body: { message: "Too many requests" } }));
+      await tick();
+      for (const release of t.pending.splice(0)) release(ghReply({ body: {} }));
+      const results = await Promise.all(calls);
+      expect(t.sent()).toBe(MAX_CONCURRENT);
+      expect(results.filter((r) => r instanceof RateLimited)).toHaveLength(13);
+      expect(await t.gh.blocked()).toMatch(/paused until/);
+    });
+
+    it("keeps the lowest remaining of a reset window, whatever order answers arrive in (item 2)", async () => {
+      const t = held();
+      const reset = 1_900_000_000;
+      const first = t.gh.request("POST", "graphql", { query: "q" });
+      const second = t.gh.request("POST", "graphql", { query: "q" });
+      await tick();
+      // The newer answer (0 left) arrives first, the older (1 left) after it.
+      t.pending.shift()!(ghReply({ headers: rate("graphql", 0, 5000, reset), body: { data: {} } }));
+      await tick();
+      t.pending.shift()!(ghReply({ headers: rate("graphql", 1, 5000, reset), body: { data: {} } }));
+      await Promise.all([first, second]);
+      expect(await t.gh.blocked()).toMatch(/rate limit is reached/);
+      await expect(t.gh.request("POST", "graphql", { query: "q" })).rejects.toBeInstanceOf(RateLimited);
+      // A new window replaces it; an older one does not.
+      const next = t.gh.request("GET", "repos/acme/api");
+      await tick();
+      t.pending.shift()!(ghReply({ headers: rate("graphql", 4999, 5000, reset + 3600), body: {} }));
+      await next;
+      expect(await t.gh.blocked()).toBeNull();
+    });
+
+    it("asks who is signed in again once a merge found another account (item 3)", async () => {
+      const host = createTestHost({ id: "pr-status" });
+      let active = "sam";
+      host.process.route((bin, args, o) => {
+        if (bin !== "gh") return undefined;
+        if (args[0] === "auth") return { stdout: `tok-${active}\n` };
+        const as = o.env?.GH_TOKEN ? String(o.env.GH_TOKEN).slice(4) : active;
+        return ghReply({ body: { login: as } });
+      });
+      const gh = new GhCli(host.api);
+      expect(await gh.account()).toBe("github.com:sam");
+      active = "other";
+      await expect(gh.pinned("github.com:sam", async () => "wrote")).rejects.toBeInstanceOf(RejectedRequest);
+      // Not the old account for another 15 minutes: the cards now show who is signed in.
+      expect(await gh.account()).toBe("github.com:other");
+    });
+  });
 });
