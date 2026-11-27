@@ -314,7 +314,8 @@ export function Sidebar() {
   const collapsedGroups = useStore((s) => s.collapsedGroups);
   const tasks = useSchedules((s) => s.tasks);
   const allSessions = useStore((s) => s.sessions);
-  const nestedState = useStore(useShallow((s) => [s.expandedOrchestras, s.collapsedSubOrchestras, s.sidebarFilter, s.showArchived, s.sessionOrder]));
+  // Everything selectNestedRows reads; the selection keeps a worker past the cap listed.
+  const nestedState = useStore(useShallow((s) => [s.expandedOrchestras, s.collapsedSubOrchestras, s.sidebarFilter, s.showArchived, s.sessionOrder, s.selectedId, s.sidebarCursor]));
   const collapsedSub = useStore((s) => s.collapsedSubOrchestras);
   const setOrchestraExpanded = useStore((s) => s.setOrchestraExpanded);
   const selectedId = useStore((s) => s.modView ? null : s.selectedId);

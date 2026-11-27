@@ -520,3 +520,15 @@ it("lets ⌘K pick from both tabs, folded sections included", () => {
   expect(rows()).toEqual(["g2"]);
   expect(selectListedSessions(useStore.getState()).map((s) => s.id)).toEqual(["g2", "a", "g1", "n2", "n1", "o", "ow"]);
 });
+
+it("renders a worker past the nested cap once it is selected in an expanded leader", () => {
+  const list = [session("lead", "Lead", { orchestrator: true }), ...Array.from({ length: 10 }, (_, i) => session(`w${i}`, `Worker ${i}`, { orchestrator_id: "lead", created_at: `2026-09-30T00:0${i}:00Z` }))];
+  useStore.setState({ sessions: Object.fromEntries(list.map((s) => [s.id, s])), sessionOrder: list.map((s) => s.id), expandedOrchestras: ["lead"], client: null });
+  render(<Sidebar />);
+  expect(rows()).toEqual(["lead", "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"]);
+  expect(screen.getByRole("button", { name: "Open workers panel" })).toBeTruthy();
+  // From ⌘K, the inbox or the rail: the leader is already expanded, so only the selection changes.
+  act(() => useStore.getState().select("w9"));
+  expect(rows()).toEqual(["lead", "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w9"]);
+  expect(document.querySelector('[data-session-id="w9"]')?.classList.contains("selected")).toBe(true);
+});
