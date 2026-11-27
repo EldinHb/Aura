@@ -333,6 +333,15 @@ export class PrPoller {
     this.evict(now, active, folders);
     if (watched.length === 0) return;
 
+    // Without a PR on screen no PR is read, and no notification or gh check asked for; only a
+    // watched session's branch may still be looked up (its PR is what would show).
+    const visible = new Map<string, PrRef>();
+    for (const refs of trees.values()) for (const ref of refs) visible.set(prKey(ref.url), ref);
+    if (visible.size === 0) {
+      this.announce(changed);
+      return this.discover();
+    }
+
     const blocked = await this.gh.blocked().catch((e) => messageOf(e));
     if (blocked !== this.blocked) {
       this.blocked = blocked;
@@ -340,10 +349,7 @@ export class PrPoller {
     }
     if (blocked) return this.announce(changed);
 
-    const visible = new Map<string, PrRef>();
-    for (const refs of trees.values()) for (const ref of refs) visible.set(prKey(ref.url), ref);
-    // Notifications only matter for PRs on screen; a session without any asks GitHub nothing.
-    const notified = visible.size ? await this.gh.notified().catch(() => null) : null;
+    const notified = await this.gh.notified().catch(() => null);
     const due = [...visible.entries()].filter(([key, ref]) => this.isDue(key, ref, notified, now)).map(([, ref]) => ref);
     for (const ref of due) this.forced.delete(prKey(ref.url));
 

@@ -68,6 +68,8 @@ export class GhCli implements Github, Pinning {
   /** Why gh cannot be used now (missing, signed out, expired), and when that was last checked. */
   private problem: { reason: string; at: number } | null = null;
   private login: { value: string; at: number } | null = null;
+  /** gh answered at least once (or `gh auth status` said it works): no check needed before reading. */
+  private verified = false;
   private notes: { at: number; everyMs: number; lastModified: string | null; last: Notified | null } | null = null;
   /** No request before this (ms): a Retry-After, or a spent primary limit until its reset. */
   private pausedUntil = 0;
@@ -155,6 +157,7 @@ export class GhCli implements Github, Pinning {
       throw new RejectedRequest(LOGIN_EXPIRED);
     }
     this.problem = null;
+    this.verified = true;
     return answer;
   }
 
@@ -298,18 +301,20 @@ export class GhCli implements Github, Pinning {
 
   /** Why GitHub is left alone now: gh missing, signed out, an expired token, a pause, or a spent rate limit. */
   async blocked(): Promise<string | null> {
-    if (this.problem) {
-      if (this.now() - this.problem.at < RECHECK_MS) return this.problem.reason;
-      // Looked at again: `gh auth status` tells whether it works now.
+    // Before the first read, and a minute after a problem: `gh auth status` tells whether gh works,
+    // so the first answer already says why nothing can be read.
+    if (this.problem ? this.now() - this.problem.at >= RECHECK_MS : !this.verified) {
       try {
         const out = await this.gh(["auth", "status", "--hostname", HOST], { resource: null });
-        if (out.code === 0) this.problem = null;
-        else this.problem = { reason: /expired|invalid/i.test(out.stderr + out.stdout) ? LOGIN_EXPIRED : NOT_SIGNED_IN, at: this.now() };
+        if (out.code === 0) {
+          this.problem = null;
+          this.verified = true;
+        } else this.problem = { reason: /expired|invalid/i.test(out.stderr + out.stdout) ? LOGIN_EXPIRED : NOT_SIGNED_IN, at: this.now() };
       } catch {
         this.problem = { reason: NO_GH, at: this.now() };
       }
-      if (this.problem) return this.problem.reason;
     }
+    if (this.problem) return this.problem.reason;
     if (this.now() < this.pausedUntil) return `GitHub asked to wait; paused until ${clock(this.pausedUntil)}.`;
     const nowSec = this.now() / 1000;
     for (const b of this.budgets.values()) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createTestHost } from "@aura/mod-sdk/testing";
 import { NO_GH, type Github } from "@aura/github-client";
+import { NOT_SIGNED_IN } from "./ghcli";
 import { activate } from "../daemon";
 import type { SessionView } from "../shared/types";
 import { fakeGithub, prNode, session } from "../test/fixtures";
@@ -128,7 +129,7 @@ describe("the PR of a session's branch", () => {
 });
 
 /** A host where everything goes through aura.process: gh's answers from `fake`, git from canned output. */
-function selfContained(opts: { gh?: "missing" } = {}) {
+function selfContained(opts: { gh?: "missing"; auth?: { code: number; stderr?: string } } = {}) {
   const host = createTestHost({ id: "pr-status" });
   const fake = fakeGithub({ 9: prNode({ number: 9, title: "From the worker" }) });
   const calls: string[] = [];
@@ -137,6 +138,7 @@ function selfContained(opts: { gh?: "missing" } = {}) {
     calls.push(`${bin} ${[args[0], ...args.slice(3, 5)].join(" ")}`);
     if (bin === "git") return { code: 128, stderr: "not a git repository" };
     if (opts.gh === "missing") throw new Error("gh: not found");
+    if (args[0] === "auth" && args[1] === "status") return opts.auth ?? { code: 0, stdout: "✓ Logged in to github.com account sam" };
     if (args[0] === "api" && args[4] === "graphql") return ghReply({ headers: rate("graphql", 4990), body: await fake.gh.request("POST", "graphql", JSON.parse(o.stdin!)) });
     if (args[0] === "api" && args[4] === "user") return ghReply({ headers: rate("core", 4990), body: { login: "sam" } });
     if (args[0] === "api" && args[4].startsWith("notifications")) return ghReply({ headers: rate("core", 4990), body: [] });
@@ -173,13 +175,31 @@ describe("self-contained: no other mod, only aura.process", () => {
     dispose();
   });
 
-  it("says why it is not updating when gh is missing", async () => {
-    const t = selfContained({ gh: "missing" });
-    const { dispose } = activate(t.host.api, { loop: false });
+  it("says on the very first answer why it is not updating, without per-card errors (QA item 3)", async () => {
+    for (const [opts, reason] of [[{ gh: "missing" as const }, NO_GH], [{ auth: { code: 1, stderr: "You are not logged into any GitHub hosts." } }, NOT_SIGNED_IN]] as const) {
+      const t = selfContained(opts);
+      const { dispose } = activate(t.host.api, { loop: false });
+      await t.host.call("links.add", { sessionId: "lead", url: "https://github.com/acme/api/pull/9" });
+      const first = await t.host.call<SessionView>("watch", { viewer: "v", sessionId: "lead", refresh: true });
+      expect(first.blocked).toBe(reason);
+      expect(first.pulls.map((p) => p.error)).toEqual([null]);
+      expect(t.calls.filter((c) => c.startsWith("gh api"))).toEqual([]);
+      dispose();
+    }
+  });
+
+  it("spawns no gh while nothing is watched, nor for a watched session without PRs (QA item 2)", async () => {
+    const t = selfContained();
+    const { poller, dispose } = activate(t.host.api, { loop: false });
+    for (let i = 0; i < 5; i++) await poller.tick();
+    // A session without PRs (and outside git) is watched: still nothing.
+    await t.host.call("watch", { viewer: "v", sessionId: "lead", refresh: true });
+    for (let i = 0; i < 5; i++) await poller.tick();
+    expect(t.calls.filter((c) => c.startsWith("gh"))).toEqual([]);
+    // A PR to show: now gh is used.
     await t.host.call("links.add", { sessionId: "lead", url: "https://github.com/acme/api/pull/9" });
     await t.host.call("watch", { viewer: "v", sessionId: "lead", refresh: true });
-    const view = await t.host.call<SessionView>("watch", { viewer: "v", sessionId: "lead", refresh: false });
-    expect(view.blocked).toBe(NO_GH);
+    expect(t.calls.filter((c) => c.startsWith("gh")).length).toBeGreaterThan(0);
     dispose();
   });
 });
