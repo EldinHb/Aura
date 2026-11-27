@@ -307,7 +307,8 @@ module. So:
 | `ctx.toast(message, "info" \| "warn" \| "error")` | A snackbar |
 | `ctx.confirm({ title, message, danger })` | Resolves `true` or `false` |
 | `ctx.notify(title, body, target)` / `ctx.onNotificationClick(fn)` | Desktop notifications |
-| `ctx.openView(id, props)` / `ctx.closeView()` / `ctx.activeView()` | Open a registered view in a main-area tab |
+| `ctx.openView(id, props, { preview? })` / `ctx.closeView()` / `ctx.activeView()` | Open a registered view in a main-area tab. By default it takes the preview tab, which the next preview replaces; `{ preview: false }` gives it a tab of its own that stays. The same view and props (or `props.key`) shows the tab it already has |
+| `ctx.sessions.open()` / `ctx.sessions.onOpenChange(fn)` | The ids of the sessions open in this window (each session's main-area tab, in order, and the selected session), and a callback when that list changes; read-only. Not on Aura 0.4.0: check `ctx.sessions` exists |
 | `ctx.openDialog(id, props)` | Open a registered dialog |
 | `ctx.window` | `"main"` or `"session"` (a detached session window); announce things from `"main"` only |
 | `ctx.suppressTurnToast(fn)` | Hide Aura's "turn finished" toast for sessions `fn(session)` returns true for |

@@ -112,6 +112,12 @@ declare namespace Aura {
    */
   cwd: string, title: string | null, group: string | null, 
   /**
+   * The workspace to create the session in. None (or empty) puts it in the
+   * workspace the user was last active in. A worker always goes into its
+   * orchestrator's workspace, whatever this says.
+   */
+  workspace: string | null, 
+  /**
    * Structured (default for AI providers) or Terminal.
    */
   mode: SessionMode | null, 
@@ -200,7 +206,7 @@ declare namespace Aura {
    * Normalized event stream. Every event carries `session_id` so clients can
    * route without inspecting the payload.
    */
-  export type Event = { "type": "session_created", session: Session, } | { "type": "session_updated", session: Session, } | { "type": "session_removed", session_id: string, } | { "type": "turn_started", session_id: string, turn: Turn, } | { "type": "turn_completed", session_id: string, turn: Turn, } | { "type": "item_started", session_id: string, item: Item, } | { "type": "item_delta", session_id: string, item_id: string, delta: ItemDelta, } | { "type": "item_completed", session_id: string, item: Item, } | { "type": "approval_requested", session_id: string, approval: Approval, } | { "type": "approval_resolved", session_id: string, approval_id: string, decision: ApprovalDecision, } | { "type": "user_input_requested", session_id: string, request: UserInputRequest, } | { "type": "user_input_resolved", session_id: string, request_id: string, response: UserInputResponse, } | { "type": "notice", session_id: string, level: NoticeLevel, message: string, } | { "type": "provider_info", session_id: string, info: Record<string, unknown>, } | { "type": "native_id", session_id: string, native_id: string, } | { "type": "usage", session_id: string, usage: Usage, } | { "type": "process_exited", session_id: string, exit_code: number | null, message: string | null, } | { "type": "setting_changed", session_id: string, setting: Setting, } | { "type": "notices_cleared", session_id: string, } | { "type": "feature_updated", session_id: string, feature: Feature, } | { "type": "specialist_suggestions_updated", suggestions: Array<SpecialistSuggestion>, };
+  export type Event = { "type": "session_created", session: Session, } | { "type": "session_updated", session: Session, } | { "type": "session_removed", session_id: string, } | { "type": "turn_started", session_id: string, turn: Turn, } | { "type": "turn_completed", session_id: string, turn: Turn, } | { "type": "item_started", session_id: string, item: Item, } | { "type": "item_delta", session_id: string, item_id: string, delta: ItemDelta, } | { "type": "item_completed", session_id: string, item: Item, } | { "type": "approval_requested", session_id: string, approval: Approval, } | { "type": "approval_resolved", session_id: string, approval_id: string, decision: ApprovalDecision, } | { "type": "user_input_requested", session_id: string, request: UserInputRequest, } | { "type": "user_input_resolved", session_id: string, request_id: string, response: UserInputResponse, } | { "type": "notice", session_id: string, level: NoticeLevel, message: string, } | { "type": "provider_info", session_id: string, info: Record<string, unknown>, } | { "type": "native_id", session_id: string, native_id: string, } | { "type": "usage", session_id: string, usage: Usage, } | { "type": "process_exited", session_id: string, exit_code: number | null, message: string | null, } | { "type": "setting_changed", session_id: string, setting: Setting, } | { "type": "notices_cleared", session_id: string, } | { "type": "feature_updated", session_id: string, feature: Feature, } | { "type": "specialist_suggestions_updated", suggestions: Array<SpecialistSuggestion>, } | { "type": "workspaces_changed", workspaces: Array<Workspace>, };
 
   export type Feature = { 
   /**
@@ -422,7 +428,13 @@ declare namespace Aura {
   /**
    * The provider's own identifier (Claude session id, Codex thread id). None until known.
    */
-  native_id: string | null, cwd: string, worktree: WorktreeInfo | null, title: string, group: string | null, status: SessionStatus, mode: SessionMode, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 
+  native_id: string | null, cwd: string, worktree: WorktreeInfo | null, title: string, group: string | null, 
+  /**
+   * The id of the [`Workspace`] the session is in; every session is in
+   * exactly one. Sessions stored before workspaces read as empty and are
+   * put in the default workspace when the daemon loads them.
+   */
+  workspace: string, status: SessionStatus, mode: SessionMode, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 
   /**
    * Command for terminal sessions (argv). For structured sessions this is the
    * command used when switching to terminal mode.
@@ -488,7 +500,16 @@ declare namespace Aura {
   /**
    * That task's name when it started the session, for labels.
    */
-  scheduled_task_name: string | null, };
+  scheduled_task_name: string | null, 
+  /**
+   * The scheduled task whose run this session is part of: set on the run
+   * itself (with `scheduled_task_id`) and on every worker under it, at any
+   * depth, when they start. Kept when the run's orchestrator is deleted,
+   * so a surviving worker is still known as part of a scheduled run.
+   * Unlike `scheduled_task_id`, it does not make the session one of the
+   * task's runs (its history, its overlap check).
+   */
+  scheduled_run?: string, };
 
   export type SessionMode = "structured" | "terminal";
 
@@ -611,6 +632,20 @@ declare namespace Aura {
    * No longer open without an answer: the feature was delivered.
    */
   withdrawn: boolean, };
+
+  /**
+   * A named container the user works in. Every session is in exactly one
+   * (see [`Session::workspace`]); the app shows one workspace at a time.
+   */
+  export type Workspace = { id: string, 
+  /**
+   * Unique, ignoring case; trimmed, 1 to 40 characters.
+   */
+  name: string, created_at: string, 
+  /**
+   * Order in the app's workspace list, lowest first.
+   */
+  position: number, };
 
   export type WorktreeInfo = { repo_root: string, path: string, branch: string, };
 
@@ -1089,6 +1124,14 @@ declare namespace Aura {
       onChange(fn: (key: string, value: Json) => void): Disposer;
     };
 
+    /** The sessions open in this window, read-only. */
+    sessions: {
+      /** Ids of the sessions open here: each session's main-area tab (in tab order), and the selected session. */
+      open(): string[];
+      /** Called with `open()` whenever that list changes (a tab opened or closed, another session selected). */
+      onOpenChange(fn: (ids: string[]) => void): Disposer;
+    };
+
     commands: { register(cmd: CommandDef): Disposer; run(id: string, arg?: unknown): void };
     keys: {
       bind(binding: KeyBindingDef): Disposer;
@@ -1119,7 +1162,13 @@ declare namespace Aura {
       dialog(def: { id: string; component: ComponentType<DialogProps> }): Disposer;
     };
 
-    openView(id: string, props?: unknown): void;
+    /**
+     * Open one of this mod's views in a main-area tab. By default it is the preview tab, which the
+     * next preview replaces (as a session picked in the sidebar is); `{ preview: false }` gives it
+     * a tab of its own that stays. Either way the same view with the same props (or the same
+     * `props.key`) shows the tab it already has.
+     */
+    openView(id: string, props?: unknown, opts?: { preview?: boolean }): void;
     closeView(): void;
     /** The mod view that is open, if it is one of this mod's. */
     activeView(): { id: string; props: any } | null;

@@ -16,7 +16,7 @@ const mods = new URL("../../../../mods/", import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, mods), "utf8");
 
 function session(id: string, over: Partial<Session>): Session {
-  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/customer-portal-backend", worktree: null, group: "wortell", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(600), last_activity: at(2), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, usage, ...over };
+  return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/customer-portal-backend", worktree: null, group: "wortell", workspace: "default", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(600), last_activity: at(2), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, usage, ...over };
 }
 const lead = "9a1b2c3d-0000-4000-8000-000000000101";
 const worker = "9a1b2c3d-0000-4000-8000-000000000102";

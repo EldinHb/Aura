@@ -666,12 +666,17 @@ async fn only_the_half_whose_file_changed_reloads() {
     call(h, "mods.approve", json!({"id": "halves"}))
         .await
         .unwrap();
+    // The UI half's revision. `mods.ui_source` answers only while the mod
+    // runs, so wait out a restart (one a change below starts, or the
+    // watcher's late look at the files written above).
     let rev = || async {
-        call(h, "mods.ui_source", json!({"id": "halves"}))
-            .await
-            .unwrap()["rev"]
-            .as_u64()
-            .unwrap()
+        for _ in 0..200 {
+            if let Ok(v) = call(h, "mods.ui_source", json!({"id": "halves"})).await {
+                return v["rev"].as_u64().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("mods.ui_source did not answer within 5s");
     };
     assert_eq!(
         call(h, "mod.halves.bump", json!({})).await.unwrap(),

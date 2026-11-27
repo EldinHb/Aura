@@ -710,7 +710,7 @@ and errors in the window itself. It keeps 5 files of 5 MB (`aura-desktop.log`, t
 See [`PLAN.md`](PLAN.md) for the full architecture and
 [`docs/protocol/`](docs/protocol) for the captured Claude Code and Codex protocols.
 
-## Mods
+## Mods and themes
 
 Features beyond running agents come as **mods**: packages with a part that runs
 inside the daemon (in a sandbox, allowed only what its manifest lists) and a part
