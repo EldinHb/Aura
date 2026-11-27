@@ -36,6 +36,8 @@ export function parseReply(stdout: string): GhReply | null {
   return { status: Number(m[1]), headers, body: end < 0 ? "" : text.slice(end + 2) };
 }
 
+const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
 const json = (body: string): any => {
   const t = body.trim();
   return t ? JSON.parse(t) : null;
@@ -47,20 +49,36 @@ function noResponse(stderr: string): Error {
   return new Error(stderr.trim().split("\n").slice(-1)[0] || "GitHub CLI failed");
 }
 
-export class GhCli implements Github {
+/** The only host this mod talks to; gh is told so on every call, whatever GH_HOST says. */
+export const HOST = "github.com";
+/** gh calls at once, at most. */
+export const MAX_CONCURRENT = 4;
+/** What could send gh to another host or have it use another identity: removed from its environment. */
+const PINNED_ENV: Record<string, string | null> = { GH_HOST: null, GH_ENTERPRISE_TOKEN: null, GITHUB_ENTERPRISE_TOKEN: null };
+
+/** Something that can run a merge as one account: with one token, read once, for every request. */
+export interface Pinning {
+  pinned<T>(account: string, fn: (gh: Github) => Promise<T>): Promise<T>;
+}
+
+export class GhCli implements Github, Pinning {
   private readonly now: () => number;
   private budgets = new Map<string, Budget>();
   /** Why gh cannot be used now (missing, signed out, expired), and when that was last checked. */
   private problem: { reason: string; at: number } | null = null;
   private login: { value: string; at: number } | null = null;
   private notes: { at: number; everyMs: number; lastModified: string | null; last: Notified | null } | null = null;
+  /** No request before this (ms): a Retry-After, or a spent primary limit until its reset. */
+  private pausedUntil = 0;
+  private running = 0;
+  private waiting: Array<() => void> = [];
 
   constructor(private readonly aura: DaemonApi, opts: { now?: () => number } = {}) {
     this.now = opts.now ?? Date.now;
   }
 
   host(): string {
-    return "github.com";
+    return HOST;
   }
 
   memo(): null {
@@ -71,15 +89,41 @@ export class GhCli implements Github {
     throw new Error("diff is not read by this mod");
   }
 
-  /** Run `gh api -i <args>`; GitHub's answer, whatever its status. */
-  async api(args: string[], stdin?: string): Promise<GhReply> {
-    let out;
+  /** A rate-limit pause in force for `resource` (or for all), as the error a request gets. */
+  private paused(resource: string | null): RateLimited | null {
+    const now = this.now();
+    if (now < this.pausedUntil) return new RateLimited(`GitHub asked to wait; paused until ${clock(this.pausedUntil)}`, this.pausedUntil - now, false);
+    const b = resource ? this.budgets.get(resource) : undefined;
+    if (b && b.remaining === 0 && b.reset * 1000 > now) return new RateLimited(`GitHub's ${resource} rate limit is spent until ${clock(b.reset * 1000)}`, b.reset * 1000 - now, true);
+    return null;
+  }
+
+  /**
+   * The gate every gh call goes through: refused while paused or while the call's rate-limit
+   * resource is spent, at most MAX_CONCURRENT at once, pinned to github.com, with `token` (if
+   * given) in the environment only.
+   */
+  private async gh(args: string[], o: { resource: string | null; stdin?: string; token?: string }) {
+    const pause = this.paused(o.resource);
+    if (pause) throw pause;
+    while (this.running >= MAX_CONCURRENT) await new Promise<void>((resolve) => this.waiting.push(resolve));
+    this.running++;
     try {
-      out = await this.aura.process.run("gh", ["api", "-i", ...args], { stdin, timeoutMs: 60_000 });
+      const env = o.token ? { ...PINNED_ENV, GH_TOKEN: o.token, GITHUB_TOKEN: null } : PINNED_ENV;
+      return await this.aura.process.run("gh", args, { stdin: o.stdin, env, timeoutMs: 60_000 });
     } catch {
       this.problem = { reason: NO_GH, at: this.now() };
       throw new RejectedRequest(NO_GH);
+    } finally {
+      this.running--;
+      this.waiting.shift()?.();
     }
+  }
+
+  /** Run `gh api -i <args>` against github.com; GitHub's answer, whatever its status. */
+  async api(args: string[], stdin?: string, token?: string): Promise<GhReply> {
+    const resource = args[0] === "graphql" ? "graphql" : "core";
+    const out = await this.gh(["api", "--hostname", HOST, "-i", ...args], { resource, stdin, token });
     const reply = parseReply(out.stdout);
     if (!reply) {
       const e = noResponse(out.stderr);
@@ -106,7 +150,7 @@ export class GhCli implements Github {
     this.budgets.set(resource, { resource, limit, remaining, reset });
   }
 
-  /** An answer of 400 and up as the client's errors: rate limits, refusals, failures. */
+  /** An answer of 400 and up as the client's errors: rate limits (which pause the gate), refusals, failures. */
   private failure(reply: GhReply): Error {
     let said: string | null = null;
     try {
@@ -118,36 +162,54 @@ export class GhCli implements Github {
     const h = reply.headers;
     const spent = h["x-ratelimit-remaining"] === "0";
     if ((reply.status === 403 || reply.status === 429) && (spent || "retry-after" in h || /rate limit/i.test(message))) {
-      const wait = "retry-after" in h ? Number(h["retry-after"]) * 1000 : spent ? Number(h["x-ratelimit-reset"]) * 1000 - this.now() : null;
-      return new RateLimited(message, wait !== null && Number.isFinite(wait) ? Math.max(0, wait) : null, spent && !("retry-after" in h));
+      // A secondary limit without Retry-After: a minute, as GitHub's docs advise.
+      const wait = "retry-after" in h ? Number(h["retry-after"]) * 1000 : spent ? Number(h["x-ratelimit-reset"]) * 1000 - this.now() : 60_000;
+      const ms = Number.isFinite(wait) ? Math.max(0, wait) : 60_000;
+      this.pausedUntil = Math.max(this.pausedUntil, this.now() + ms);
+      return new RateLimited(message, ms, spent && !("retry-after" in h));
     }
     if ([400, 403, 404, 405, 422, 429].includes(reply.status)) return new RejectedRequest(message);
     return new Error(message);
   }
 
-  async request(method: string, path: string, body?: unknown): Promise<any> {
-    const endpoint = path.startsWith("https://") ? new URL(path).pathname.replace(/^\//, "") + new URL(path).search : path;
+  request(method: string, path: string, body?: unknown): Promise<any> {
+    return this.send(method, path, body);
+  }
+
+  /** A request, with `token` (a pinned merge's) instead of gh's active login. */
+  private async send(method: string, path: string, body: unknown, token?: string): Promise<any> {
+    const url = path.startsWith("https://") ? new URL(path) : null;
+    if (url && url.hostname !== HOST && url.hostname !== `api.${HOST}`) throw new RejectedRequest(`Not a ${HOST} URL`);
+    const endpoint = url ? url.pathname.replace(/^\//, "") + url.search : path;
     const args = [endpoint, "-X", method];
     if (body !== undefined) args.push("--input", "-");
-    const reply = await this.api(args, body === undefined ? undefined : JSON.stringify(body));
+    const reply = await this.api(args, body === undefined ? undefined : JSON.stringify(body), token);
     if (reply.status >= 400) throw this.failure(reply);
     const data = json(reply.body);
     if (path === "graphql" && data && !data.data && Array.isArray(data.errors)) {
       const message = data.errors.map((e: any) => e?.message).filter(Boolean).join("; ");
-      if (data.errors.some((e: any) => e?.type === "RATE_LIMITED")) throw new RateLimited(message, null, true);
+      if (data.errors.some((e: any) => e?.type === "RATE_LIMITED")) {
+        this.pausedUntil = Math.max(this.pausedUntil, this.now() + 60_000);
+        throw new RateLimited(message, 60_000, true);
+      }
       throw new Error(message || "GitHub did not answer the query");
     }
     return data;
   }
 
-  /** "github.com:<login>" of gh's signed-in account. */
-  async account(fresh = false): Promise<string> {
-    if (!fresh && this.login && this.now() - this.login.at < ACCOUNT_MS) return this.login.value;
-    const reply = await this.api(["user"]);
+  /** "github.com:<login>" of the account gh uses (or `token` is for). */
+  private async whoAmI(token?: string): Promise<string> {
+    const reply = await this.api(["user"], undefined, token);
     if (reply.status >= 400) throw this.failure(reply);
     const login = json(reply.body)?.login;
     if (typeof login !== "string" || !login) throw new Error("GitHub did not say who is signed in");
-    this.login = { value: `${this.host()}:${login}`, at: this.now() };
+    return `${HOST}:${login}`;
+  }
+
+  /** "github.com:<login>" of gh's signed-in account (kept for ACCOUNT_MS). */
+  async account(fresh = false): Promise<string> {
+    if (!fresh && this.login && this.now() - this.login.at < ACCOUNT_MS) return this.login.value;
+    this.login = { value: await this.whoAmI(), at: this.now() };
     return this.login.value;
   }
 
@@ -158,13 +220,47 @@ export class GhCli implements Github {
     return this.request(method, path, body);
   }
 
-  /** Why GitHub is left alone now: gh missing, signed out, an expired token, or a spent rate limit. */
+  /**
+   * Run `fn` as `account`, with one token for all of it: read once (`gh auth token`), checked to
+   * be `account`'s, and given to every request through the environment (GH_TOKEN), so switching
+   * gh's account meanwhile changes nothing. The token is never in an argument, a log or storage,
+   * and is let go when `fn` is done.
+   */
+  async pinned<T>(account: string, fn: (gh: Github) => Promise<T>): Promise<T> {
+    const out = await this.gh(["auth", "token", "--hostname", HOST], { resource: null });
+    let token: string | null = out.code === 0 ? out.stdout.trim() : "";
+    if (!token) throw new RejectedRequest(NOT_SIGNED_IN);
+    try {
+      const login = await this.whoAmI(token);
+      if (login !== account) throw new RejectedRequest(`GitHub account changed: gh is signed in as ${login.split(":")[1]} now`);
+      const t = token;
+      const view: Github = {
+        request: (method, path, body) => this.send(method, path, body, t),
+        requestFor: async (acc, method, path, body) => {
+          if (acc !== account) throw new RejectedRequest("GitHub account changed");
+          return this.send(method, path, body, t);
+        },
+        account: async () => account,
+        diff: () => this.diff(),
+        host: () => HOST,
+        blocked: () => this.blocked(),
+        pace: (base) => this.pace(base),
+        notified: async () => null,
+        memo: () => null,
+      };
+      return await fn(view);
+    } finally {
+      token = null;
+    }
+  }
+
+  /** Why GitHub is left alone now: gh missing, signed out, an expired token, a pause, or a spent rate limit. */
   async blocked(): Promise<string | null> {
     if (this.problem) {
       if (this.now() - this.problem.at < RECHECK_MS) return this.problem.reason;
       // Looked at again: `gh auth status` tells whether it works now.
       try {
-        const out = await this.aura.process.run("gh", ["auth", "status"], { timeoutMs: 30_000 });
+        const out = await this.gh(["auth", "status", "--hostname", HOST], { resource: null });
         if (out.code === 0) this.problem = null;
         else this.problem = { reason: /expired|invalid/i.test(out.stderr + out.stdout) ? LOGIN_EXPIRED : NOT_SIGNED_IN, at: this.now() };
       } catch {
@@ -172,10 +268,11 @@ export class GhCli implements Github {
       }
       if (this.problem) return this.problem.reason;
     }
+    if (this.now() < this.pausedUntil) return `GitHub asked to wait; paused until ${clock(this.pausedUntil)}.`;
     const nowSec = this.now() / 1000;
     for (const b of this.budgets.values()) {
       if ((b.resource === "core" || b.resource === "graphql") && b.remaining === 0 && b.reset > nowSec) {
-        return `GitHub's rate limit is reached; waiting until ${new Date(b.reset * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
+        return `GitHub's rate limit is reached; waiting until ${clock(b.reset * 1000)}.`;
       }
     }
     return null;

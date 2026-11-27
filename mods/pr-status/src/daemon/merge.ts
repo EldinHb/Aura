@@ -5,6 +5,7 @@
 import { errorData, has, list, messageOf, RateLimited, RejectedRequest, refPath, s, show, validateRepo, validateSha, type Github } from "@aura/github-client";
 import type { MergeDefaults, MergeResult, PrStatus } from "../shared/types";
 import { squashState } from "../shared/squash";
+import type { Pinning } from "./ghcli";
 import { readStatuses } from "./status";
 
 /** Thrown to the UI half with a `code` and a message meant for people. */
@@ -96,7 +97,8 @@ function as(gh: Github, account: string): Github {
 export class Merger {
   private running = new Set<string>();
 
-  constructor(private readonly gh: Github) {}
+  /** With `pinned` (GhCli), the whole merge runs on one token read for it; else every request checks the account. */
+  constructor(private readonly gh: Github & Partial<Pinning>) {}
 
   /**
    * Merge as `req.account`, at `req.sha`. Whether that head is current is decided by a fresh read
@@ -107,7 +109,22 @@ export class Merger {
     if (this.running.has(key)) throw mergeError("busy", "This pull request is being merged already");
     this.running.add(key);
     try {
-      const gh = as(this.gh, req.account);
+      if (this.gh.pinned) {
+        try {
+          return await this.gh.pinned(req.account, (pinned) => this.mergeAs(as(pinned, req.account), req));
+        } catch (e) {
+          throw (e as { code?: unknown }).code ? e : mergeFailure(e);
+        }
+      }
+      return await this.mergeAs(as(this.gh, req.account), req);
+    } finally {
+      this.running.delete(key);
+    }
+  }
+
+  /** The merge itself, every request through `gh` (as the account). */
+  private async mergeAs(gh: Github, req: MergeRequest): Promise<MergeResult> {
+    {
       const now = await this.check(gh, req);
       let reply: any;
       try {
@@ -124,8 +141,6 @@ export class Merger {
       const result: MergeResult = { merged: true, sha: s(reply, "sha"), branchDeleted: false, branchError: null };
       if (req.deleteBranch) Object.assign(result, await this.deleteBranch(gh, req, now));
       return result;
-    } finally {
-      this.running.delete(key);
     }
   }
 
