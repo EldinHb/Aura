@@ -3,8 +3,6 @@ import type { Session } from "../../gen";
 import { defaultSettings, useStore } from "../../state/store";
 import { bannerOf, errorMessage, initialState, percent, reduce, showsError, type Action, type UpdateInfo, type UpdateState } from "./machine";
 import {
-  CHECK_INTERVAL_MS,
-  FIRST_CHECK_DELAY_MS,
   checkForUpdates,
   later,
   resetUpdates,
@@ -12,6 +10,7 @@ import {
   startUpdates,
   toUpdateError,
   useUpdates,
+  type InstallResult,
   type UpdateConfig,
   type UpdaterDeps,
 } from "./updates";
@@ -146,6 +145,7 @@ const config = (over: Partial<UpdateConfig> = {}): UpdateConfig => ({
   support: { kind: "inPlace" },
   releasesUrl: "https://github.com/EldinHb/Aura/releases",
   testAutoRestart: false,
+  firstCheckPassed: false,
   ...over,
 });
 
@@ -158,14 +158,27 @@ function fakeShell(over: Partial<UpdaterDeps> = {}) {
       onEvent({ event: "finished" });
     }),
     install: vi.fn(async () => {}),
+    lastResult: vi.fn(async (): Promise<InstallResult | null> => null),
     relaunch: vi.fn(async () => {}),
     openUrl: vi.fn(async (_url: string) => {}),
     now: vi.fn(() => 1000),
+    onTick: vi.fn((tick: () => void) => {
+      ticks.push(tick);
+      return () => ticks.splice(ticks.indexOf(tick), 1);
+    }),
     log: vi.fn(),
     ...over,
   };
   return deps;
 }
+
+/** The shell's tick (10 s after it started, then every 6 hours), as the updater subscribed to it. */
+const ticks: (() => void)[] = [];
+const tick = async () => {
+  for (const t of [...ticks]) t();
+  // Let the check (and download) it started run.
+  await new Promise((r) => setTimeout(r, 0));
+};
 
 const session = (id: string, status: Session["status"]) => ({ id, status }) as Session;
 const toasts = () => useStore.getState().toasts;
@@ -173,6 +186,7 @@ const toasts = () => useStore.getState().toasts;
 describe("updater", () => {
   beforeEach(() => {
     resetUpdates();
+    ticks.length = 0;
     localStorage.clear();
     useStore.setState({ toasts: [], sessions: {}, dialog: { kind: "none" }, settings: { ...defaultSettings } });
   });
@@ -180,30 +194,75 @@ describe("updater", () => {
     vi.useRealTimers();
   });
 
-  it("checks 10 seconds after startup and every 6 hours while the setting is on", async () => {
-    vi.useFakeTimers();
+  it("checks on each tick of the shell while the setting is on", async () => {
     const shell = fakeShell();
     const stop = await startUpdates(shell);
-    await vi.advanceTimersByTimeAsync(FIRST_CHECK_DELAY_MS - 1);
     expect(shell.check).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
+    await tick();
     expect(shell.check).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+    await tick();
     expect(shell.check).toHaveBeenCalledTimes(2);
     useStore.getState().setSettings({ autoCheckUpdates: false });
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS);
+    await tick();
     expect(shell.check).toHaveBeenCalledTimes(2);
     // An automatic check that finds nothing says nothing.
     expect(toasts()).toEqual([]);
     expect(useUpdates.getState().state.lastCheck).toBe(1000);
     stop();
+    expect(ticks).toEqual([]);
+  });
+
+  it("checks at once when the page starts after the first check was due (a reload)", async () => {
+    const shell = fakeShell({ config: vi.fn(async () => config({ firstCheckPassed: true })) });
+    const stop = await startUpdates(shell);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(shell.check).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("says how an install that ran without the app ended, once", async () => {
+    await startUpdates(fakeShell({ lastResult: vi.fn(async () => ({ version: "0.5.0", ok: true, message: null })) }));
+    expect(toasts().map((t) => t.message)).toEqual(["Aura was updated to 0.5.0"]);
+    useStore.setState({ toasts: [] });
+    const failed = fakeShell({ lastResult: vi.fn(async () => ({ version: "0.5.0", ok: false, message: "the installer was cancelled or stopped before it finished" })) });
+    await startUpdates(failed);
+    const [toast] = toasts();
+    expect(toast.level).toBe("error");
+    expect(toast.message).toBe("Could not install Aura 0.5.0: the installer was cancelled or stopped before it finished. Aura is still on the previous version.");
+    expect(toast.actions?.map((a) => a.label)).toEqual(["Download manually"]);
+  });
+
+  it("lets the next check run after one timed out", async () => {
+    const shell = fakeShell({ check: vi.fn(async () => Promise.reject({ kind: "network", message: "operation timed out" })) });
+    await startUpdates(shell);
+    await checkForUpdates(false);
+    expect(useUpdates.getState().state.phase).toMatchObject({ kind: "error", during: "check" });
+    vi.mocked(shell.check).mockResolvedValueOnce(null);
+    await checkForUpdates(true);
+    expect(shell.check).toHaveBeenCalledTimes(2);
+    expect(useUpdates.getState().state.phase.kind).toBe("idle");
+  });
+
+  it("lets the next check run after a download stalled", async () => {
+    const shell = fakeShell({
+      check: vi.fn(async () => info()),
+      download: vi.fn(async () => Promise.reject({ kind: "network", message: "The download of Aura 0.5.0 stalled: nothing arrived for 60 s." })),
+    });
+    await startUpdates(shell);
+    await checkForUpdates(false);
+    // Automatic and a network failure: quiet, and not stuck downloading.
+    expect(useUpdates.getState().state.phase).toMatchObject({ kind: "error", during: "download" });
+    expect(toasts()).toEqual([]);
+    await checkForUpdates(true);
+    expect(shell.download).toHaveBeenCalledTimes(2);
+    expect(toasts().at(-1)?.message).toContain("stalled");
   });
 
   it("never checks by itself in a development build", async () => {
-    vi.useFakeTimers();
-    const shell = fakeShell({ config: vi.fn(async () => config({ autoCheck: false })) });
+    const shell = fakeShell({ config: vi.fn(async () => config({ autoCheck: false, firstCheckPassed: true })) });
     const stop = await startUpdates(shell);
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS * 2);
+    await tick();
+    await tick();
     expect(shell.check).not.toHaveBeenCalled();
     // Asked, it checks.
     await checkForUpdates(true);

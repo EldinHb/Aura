@@ -16,13 +16,15 @@ const info = (support: UpdateInfo["support"] = { kind: "inPlace" }): UpdateInfo 
 
 function shell(found: UpdateInfo): UpdaterDeps & { install: ReturnType<typeof vi.fn>; openUrl: ReturnType<typeof vi.fn> } {
   return {
-    config: async () => ({ currentVersion: "0.4.0", autoCheck: true, support: found.support, releasesUrl: "https://github.com/EldinHb/Aura/releases", testAutoRestart: false }),
+    config: async () => ({ currentVersion: "0.4.0", autoCheck: true, support: found.support, releasesUrl: "https://github.com/EldinHb/Aura/releases", testAutoRestart: false, firstCheckPassed: false }),
     check: async () => found,
     download: async () => {},
     install: vi.fn(async () => {}),
+    lastResult: async () => null,
     relaunch: async () => {},
     openUrl: vi.fn(async () => {}),
     now: () => 1,
+    onTick: () => () => {},
     log: () => {},
   };
 }

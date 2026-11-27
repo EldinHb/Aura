@@ -1,6 +1,7 @@
 /**
  * Runs the update flow (see machine.ts) in the main window: checks 10 s after
- * startup and every 6 hours while "Automatically check for updates" is on,
+ * startup and every 6 hours while "Automatically check for updates" is on (the
+ * shell sends the ticks: WebKit throttles a hidden page's own timers),
  * and when asked (command palette, tray menu, Settings); downloads in the
  * background; installs when the user restarts. The shell does the work
  * (src-tauri/src/update.rs) and stops the daemon before installing.
@@ -25,8 +26,6 @@ import {
   type UpdateState,
 } from "./machine";
 
-export const FIRST_CHECK_DELAY_MS = 10_000;
-export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const LAST_CHECK_KEY = "aura.updates.lastCheck";
 
 export type UpdateConfig = {
@@ -37,7 +36,12 @@ export type UpdateConfig = {
   releasesUrl: string;
   /** Test builds only: restart as soon as the update is ready. */
   testAutoRestart: boolean;
+  /** The first automatic check is already due (the page was reloaded after it). */
+  firstCheckPassed: boolean;
 };
+
+/** How an install that ran without the app ended (Windows: the installer helper). */
+export type InstallResult = { version: string; ok: boolean; message: string | null };
 
 export type DownloadEvent = { event: "progress"; downloaded: number; total: number | null } | { event: "finished" };
 
@@ -47,9 +51,13 @@ export type UpdaterDeps = {
   check: () => Promise<UpdateInfo | null>;
   download: (onEvent: (e: DownloadEvent) => void) => Promise<void>;
   install: () => Promise<void>;
+  /** How the last install that ran without the app ended, once; null if none did. */
+  lastResult: () => Promise<InstallResult | null>;
   relaunch: () => Promise<void>;
   openUrl: (url: string) => Promise<void>;
   now: () => number;
+  /** Call `tick` when an automatic check is due; returns what stops it. */
+  onTick: (tick: () => void) => () => void;
   log: (message: string, error?: unknown) => void;
 };
 
@@ -220,6 +228,26 @@ async function install() {
   }
 }
 
+/** After the Windows installer ran (and the helper started Aura again): say how it went. */
+async function reportLastInstall(d: UpdaterDeps) {
+  let result: InstallResult | null;
+  try {
+    result = await d.lastResult();
+  } catch (e) {
+    d.log("could not read the last install's result", e);
+    return;
+  }
+  if (!result) return d.log("no install ran without the app since the last start");
+  d.log(`the install of Aura ${result.version} ${result.ok ? "succeeded" : "failed"}`, result.ok ? undefined : result.message);
+  if (result.ok) app().toast(`Aura was updated to ${result.version}`);
+  else {
+    const why = (result.message ?? "the installer did not finish").replace(/\.?$/, ".");
+    app().toast(`Could not install Aura ${result.version}: ${why} Aura is still on the previous version.`, "error", {
+      actions: [{ label: "Download manually", run: downloadManually }],
+    });
+  }
+}
+
 /** "Later": hide the banner until the next launch or a newer version. */
 export function later() {
   dispatch({ type: "later" });
@@ -238,16 +266,36 @@ export function tauriDeps(): UpdaterDeps {
       await invoke("update_download", { onEvent: channel });
     },
     install: async () => (await core()).invoke("update_install"),
+    lastResult: async () => (await core()).invoke<InstallResult | null>("update_last_result"),
     relaunch: async () => (await import("@tauri-apps/plugin-process")).relaunch(),
     openUrl: async (url) => (await import("@tauri-apps/plugin-shell")).open(url),
     now: () => Date.now(),
-    log: (message, error) => (error === undefined ? console.info(`[updates] ${message}`) : console.warn(`[updates] ${message}`, error)),
+    onTick: (tick) => {
+      let stopped = false;
+      let unlisten: (() => void) | undefined;
+      void import("@tauri-apps/api/event").then(({ listen }) =>
+        listen("aura://update-tick", tick).then((u) => (stopped ? u() : (unlisten = u))),
+      );
+      return () => {
+        stopped = true;
+        unlisten?.();
+      };
+    },
+    log: (message, error) => {
+      if (error === undefined) console.info(`[updates] ${message}`);
+      else console.warn(`[updates] ${message}`, error);
+      // Into the app's log too: the webview's console is kept nowhere.
+      const detail = error === undefined ? null : error instanceof Error ? error.message : typeof error === "string" ? error : JSON.stringify(error);
+      void core()
+        .then(({ invoke }) => invoke("update_log", { message, error: detail }))
+        .catch(() => {});
+    },
   };
 }
 
 /**
- * Start checking: after `FIRST_CHECK_DELAY_MS`, then every `CHECK_INTERVAL_MS`,
- * while the setting is on and the build allows it. Returns the cleanup.
+ * Start checking on the shell's ticks (10 s after it started, then every 6
+ * hours) while the setting is on and the build allows it. Returns the cleanup.
  */
 export async function startUpdates(d: UpdaterDeps): Promise<() => void> {
   deps = d;
@@ -259,16 +307,17 @@ export async function startUpdates(d: UpdaterDeps): Promise<() => void> {
     return () => {};
   }
   useUpdates.setState({ config });
+  d.log(`Aura ${config.currentVersion}; ${config.autoCheck ? "checking for updates by itself" : "a development build: checking only when asked"}`);
+  await reportLastInstall(d);
   const auto = () => config.autoCheck && app().settings.autoCheckUpdates;
   const tick = () => {
-    if (auto()) void checkForUpdates(false);
+    if (!auto()) return d.log("automatic check skipped: turned off in Settings");
+    d.log("automatic check");
+    void checkForUpdates(false);
   };
-  const first = setTimeout(tick, FIRST_CHECK_DELAY_MS);
-  const every = setInterval(tick, CHECK_INTERVAL_MS);
-  return () => {
-    clearTimeout(first);
-    clearInterval(every);
-  };
+  const stop = d.onTick(tick);
+  if (config.firstCheckPassed) tick();
+  return stop;
 }
 
 /** For tests: forget the updater and its state. */

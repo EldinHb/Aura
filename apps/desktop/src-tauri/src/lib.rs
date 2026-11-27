@@ -10,6 +10,7 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod update;
+pub mod update_helper;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Connection {
@@ -201,6 +202,17 @@ async fn ensure_daemon() -> Result<Connection> {
     }
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
+    // Another process installs an update (Aura reopened while the Windows
+    // installer runs, say): aurad would refuse to start until it has finished.
+    if aura_rpc::update_lock::install_in_progress(&dir).is_some() {
+        tracing::info!("an update is being installed; waiting for it before starting the daemon");
+        aura_rpc::update_lock::wait_for_install(
+            &dir,
+            std::time::Duration::from_millis(500),
+            aura_rpc::update_lock::STALE_AFTER,
+        )
+        .await;
+    }
     if let Some(info) = aura_rpc::read_daemon_info(&dir) {
         // A daemon holds the data directory (dropping the lock at once releases it).
         let held = !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_)));
@@ -295,13 +307,41 @@ async fn spawn_and_connect(dir: &Path) -> Result<Connection> {
     Err(anyhow!("daemon did not start within 15s"))
 }
 
-#[tauri::command]
-async fn connect_daemon() -> Result<Connection, String> {
-    ensure_daemon().await.map_err(|e| format!("{e:#}"))
+/// The daemon the windows were last told about.
+static ANNOUNCED: std::sync::Mutex<Option<(u16, String)>> = std::sync::Mutex::new(None);
+
+/// Whether `conn` is another daemon than the one last announced (and remember it).
+fn daemon_changed(last: &mut Option<(u16, String)>, conn: &Connection) -> bool {
+    let now = (conn.port, conn.token.clone());
+    let changed = last.as_ref().is_some_and(|l| *l != now);
+    *last = Some(now);
+    changed
+}
+
+/// Tell every window when the daemon changed (a restart, a recovery after a
+/// failed update, one window starting a new daemon after the old one died):
+/// each holds a client for the old port and token, and would otherwise stay
+/// disconnected.
+fn announce<R: tauri::Runtime>(app: &tauri::AppHandle<R>, conn: &Connection) {
+    let changed = daemon_changed(
+        &mut ANNOUNCED.lock().unwrap_or_else(|e| e.into_inner()),
+        conn,
+    );
+    if changed {
+        tracing::info!(port = conn.port, "the daemon changed; telling every window");
+        let _ = app.emit("aura://daemon-changed", conn);
+    }
 }
 
 #[tauri::command]
-async fn restart_daemon() -> Result<Connection, String> {
+async fn connect_daemon(app: AppHandle) -> Result<Connection, String> {
+    let conn = ensure_daemon().await.map_err(|e| format!("{e:#}"))?;
+    announce(&app, &conn);
+    Ok(conn)
+}
+
+#[tauri::command]
+async fn restart_daemon(app: AppHandle) -> Result<Connection, String> {
     {
         let _guard = DAEMON_LOCK.lock().await;
         let dir = data_dir();
@@ -311,7 +351,9 @@ async fn restart_daemon() -> Result<Connection, String> {
                 .map_err(|e| format!("{e:#}"))?;
         }
     }
-    ensure_daemon().await.map_err(|e| format!("{e:#}"))
+    let conn = ensure_daemon().await.map_err(|e| format!("{e:#}"))?;
+    announce(&app, &conn);
+    Ok(conn)
 }
 
 #[tauri::command]
@@ -469,6 +511,8 @@ pub fn run() {
             show_main,
             notify_with_target,
             update::update_config,
+            update::update_last_result,
+            update::update_log,
             update::update_check,
             update::update_download,
             update::update_install
@@ -567,6 +611,29 @@ mod tests {
     /// An app update replaces the daemon the previous version left running.
     /// Run by hand, in release mode with the release `aurad` built:
     /// `AURA_TEST_OLD_DAEMON=<aurad of another version> cargo test --release -p aura-desktop -- --ignored`
+    fn conn(port: u16, token: &str) -> Connection {
+        Connection {
+            port,
+            token: token.into(),
+            data_dir: String::new(),
+            daemon_pid: 1,
+            version: VERSION.into(),
+        }
+    }
+
+    #[test]
+    fn announces_only_another_daemon() {
+        let mut last = None;
+        // The first connection is no change: every window connects by itself.
+        assert!(!daemon_changed(&mut last, &conn(1000, "a")));
+        assert!(!daemon_changed(&mut last, &conn(1000, "a")));
+        // A restart: new port and token.
+        assert!(daemon_changed(&mut last, &conn(2000, "b")));
+        assert!(!daemon_changed(&mut last, &conn(2000, "b")));
+        // Same port reused, new token.
+        assert!(daemon_changed(&mut last, &conn(2000, "c")));
+    }
+
     #[tokio::test]
     #[ignore]
     async fn replaces_a_daemon_of_another_version() {
