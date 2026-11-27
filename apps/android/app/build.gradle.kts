@@ -23,12 +23,12 @@ val releaseKeystore: File? = System.getenv("AURA_ANDROID_KEYSTORE")
 
 android {
     namespace = "dev.aura.android"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "dev.aura.android"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
     }
@@ -65,9 +65,8 @@ android {
         warningsAsErrors = false
         abortOnError = true
         checkDependencies = false
-        // Versions are chosen in the version catalog: SDK 36, and the newest
-        // libraries that still compile against it (newer ones need SDK 37).
-        disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion", "OldTargetApi")
+        // Library versions are chosen deliberately in the version catalog.
+        disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
     }
 }
 
