@@ -45,7 +45,8 @@ export function usePrPage(repo: string, number: number, active: boolean) {
   const running = useRef(false);
   const alive = useRef(true);
   const failures = useRef(0);
-  const lastError = useRef<RpcError | null>(null);
+  /** After a failure, no read before this (ms); one deadline for scheduled and notified reads. */
+  const retryAt = useRef(0);
 
   useEffect(() => {
     alive.current = true;
@@ -54,9 +55,11 @@ export function usePrPage(repo: string, number: number, active: boolean) {
     };
   }, []);
 
-  const load = useCallback(async () => {
+  /** Read the page; before the retry deadline only when `force`d (the Refresh button). */
+  const load = useCallback(async (force = false) => {
     const ctx = getCtx();
     if (!ctx || running.current || !alive.current) return;
+    if (!force && Date.now() < retryAt.current) return;
     running.current = true;
     setLoading(true);
     try {
@@ -64,13 +67,13 @@ export function usePrPage(repo: string, number: number, active: boolean) {
       if (!alive.current) return;
       pageRef.current = next;
       failures.current = 0;
-      lastError.current = null;
+      retryAt.current = 0;
       setPage(next);
       setError(null);
     } catch (e) {
       if (!alive.current) return;
       failures.current++;
-      lastError.current = e as RpcError;
+      retryAt.current = Date.now() + retryDelay(failures.current, e as RpcError);
       setError(message(e));
     } finally {
       running.current = false;
@@ -84,7 +87,7 @@ export function usePrPage(repo: string, number: number, active: boolean) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
     const wait = () => {
-      if (failures.current > 0) return retryDelay(failures.current, lastError.current);
+      if (failures.current > 0) return Math.max(0, retryAt.current - Date.now());
       const p = pageRef.current;
       return p ? Math.max(1_000, Date.parse(p.readAt) + p.nextMs - Date.now()) : 0;
     };
@@ -119,7 +122,10 @@ export function usePrPage(repo: string, number: number, active: boolean) {
       const at = await ctx.rpc<string | null>("page.notified", { repo, number }).catch(() => null);
       if (stopped || !at || at === handled) return;
       handled = at;
-      if (Date.parse(at) > Date.parse(pageRef.current.readAt) - NOTIFY_SKEW_MS) void load();
+      if (Date.parse(at) <= Date.parse(pageRef.current.readAt) - NOTIFY_SKEW_MS) return;
+      // Backing off after a failure: the read scheduled at the deadline covers this notification
+      // (and any later one), so it does not read now.
+      if (Date.now() >= retryAt.current) void load();
     };
     const timer = setInterval(() => void check(), NOTIFY_CHECK_MS);
     return () => {
@@ -128,7 +134,7 @@ export function usePrPage(repo: string, number: number, active: boolean) {
     };
   }, [active, repo, number, load]);
 
-  return { page, error, loading, reload: load };
+  return { page, error, loading, reload: () => load(true) };
 }
 
 /** What a files read is for: one comparison of one PR, and the times it was asked to be read again. */

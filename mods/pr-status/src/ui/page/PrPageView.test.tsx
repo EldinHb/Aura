@@ -196,6 +196,31 @@ describe("PrPageView", () => {
       expect(calls(rpc, "page.get")).toBe(3);
     });
 
+    it("defers a notification during a rate-limit back-off to the one read at the deadline (re-review)", async () => {
+      let fail = false;
+      let notified: string | null = null;
+      const limited = () => Promise.reject(Object.assign(new Error("API rate limit exceeded"), { code: "rate_limited", data: { waitMs: 120_000 } }));
+      const { rpc } = fakeCtx((name) => (name === "page.get" ? (fail ? limited() : page({ readAt: new Date(Date.now()).toISOString() })) : name === "page.notified" ? notified : undefined));
+      render(<PrPageView props={props} close={() => {}} active />);
+      await act(async () => {});
+      // The paced refresh fails on a rate limit: no read for two minutes.
+      fail = true;
+      await act(async () => void vi.advanceTimersByTime(60_000));
+      expect(calls(rpc, "page.get")).toBe(2);
+      fail = false;
+      // Notifications arrive meanwhile; none of them reads.
+      notified = new Date(NOW + 70_000).toISOString();
+      await act(async () => void vi.advanceTimersByTime(NOTIFY_CHECK_MS));
+      notified = new Date(NOW + 100_000).toISOString();
+      await act(async () => void vi.advanceTimersByTime(NOTIFY_CHECK_MS * 4));
+      expect(calls(rpc, "page.get")).toBe(2);
+      // At the deadline one read covers them.
+      await act(async () => void vi.advanceTimersByTime(120_000 - NOTIFY_CHECK_MS * 5));
+      expect(calls(rpc, "page.get")).toBe(3);
+      await act(async () => void vi.advanceTimersByTime(NOTIFY_CHECK_MS));
+      expect(calls(rpc, "page.get")).toBe(3);
+    });
+
     it("reads nothing after the tab closed, even for a notification that was on its way (item 4)", async () => {
       let answer!: (at: string) => void;
       const { rpc } = fakeCtx((name) => (name === "page.notified" ? new Promise((r) => (answer = r)) : undefined));
