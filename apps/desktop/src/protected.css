@@ -29,18 +29,89 @@
     content-visibility: visible !important;
   }
 
-  dialog.aura-protected,
+  /* The dialog itself starts from initial values, so it inherits nothing
+     from <body> or <html> (white-space, text-align, hyphens, …: whatever a
+     stylesheet set there); everything inside starts from the browser's own
+     defaults and inherits only from the dialog. */
+  dialog.aura-protected {
+    all: initial !important;
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+  }
   dialog.aura-protected *,
   dialog.aura-protected *::before,
   dialog.aura-protected *::after,
+  dialog.aura-protected *::marker,
   dialog.aura-protected *::first-line,
   dialog.aura-protected *::first-letter,
   dialog.aura-protected::before,
   dialog.aura-protected::after,
+  dialog.aura-protected::first-line,
+  dialog.aura-protected::first-letter,
   dialog.aura-protected::backdrop {
     all: revert !important;
     direction: ltr !important;
     unicode-bidi: isolate !important;
+  }
+
+  /* Text that reads as written: no fill, stroke, masking, shadow, sideways
+     writing, indent or spacing tricks, and fixed fonts. The fonts are generic
+     families, which @font-face cannot redefine (and a theme may not name). */
+  dialog.aura-protected,
+  dialog.aura-protected * {
+    -webkit-text-fill-color: currentColor !important;
+    -webkit-text-stroke: 0 !important;
+    -webkit-text-security: none !important;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    text-shadow: none !important;
+    text-indent: 0 !important;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+    word-spacing: normal !important;
+    font-family: system-ui, sans-serif !important;
+    font-size: 14px !important;
+    font-weight: 400 !important;
+    font-style: normal !important;
+    font-variant: normal !important;
+    font-feature-settings: normal !important;
+    font-variation-settings: normal !important;
+    font-stretch: normal !important;
+    line-height: 1.5 !important;
+    content: normal !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    filter: none !important;
+    transform: none !important;
+    clip-path: none !important;
+    mask: none !important;
+    mix-blend-mode: normal !important;
+    zoom: 1 !important;
+  }
+  /* Nothing generated inside the prompt but list bullets, and those plain. */
+  dialog.aura-protected::before,
+  dialog.aura-protected::after,
+  dialog.aura-protected *::before,
+  dialog.aura-protected *::after {
+    content: none !important;
+    display: none !important;
+  }
+  dialog.aura-protected *::marker {
+    content: normal !important;
+    color: inherit !important;
+    font: inherit !important;
+  }
+  dialog.aura-protected::first-line,
+  dialog.aura-protected::first-letter,
+  dialog.aura-protected *::first-line,
+  dialog.aura-protected *::first-letter {
+    color: inherit !important;
+    font: inherit !important;
+    -webkit-text-fill-color: currentColor !important;
+    letter-spacing: normal !important;
+    word-spacing: normal !important;
+    text-shadow: none !important;
+    text-transform: none !important;
   }
 
   dialog.aura-protected:not([open]) {
@@ -73,10 +144,18 @@
     background: #1d1e25 !important;
     color: #e3e1e9 !important;
   }
+  /* Opaque: nothing behind the prompt (an overlay a stylesheet adds) shows through. */
   dialog.aura-protected::backdrop {
-    background: rgb(0 0 0 / 0.55) !important;
+    background: #121317 !important;
+    opacity: 1 !important;
   }
 
+  dialog.aura-protected p.aura-protected-cannot {
+    color: #b3261e !important;
+  }
+  :root[data-theme="dark"] dialog.aura-protected p.aura-protected-cannot {
+    color: #ffb4ab !important;
+  }
   dialog.aura-protected div,
   dialog.aura-protected p,
   dialog.aura-protected ul,
@@ -113,6 +192,7 @@
   }
   dialog.aura-protected code {
     font-family: ui-monospace, monospace !important;
+    -webkit-text-fill-color: currentColor !important;
     font-size: 12.5px !important;
     word-break: break-all !important;
   }
