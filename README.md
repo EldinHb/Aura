@@ -196,8 +196,8 @@ How each system updates:
 | Linux AppImage | Replaces the AppImage file, if you can write to it and its folder. |
 | Linux `.deb` / `.rpm` | Installs the new package, asking for your password through `pkexec` (or `zenity` / `kdialog`). |
 
-Where Aura cannot replace itself (opened straight from the disk image or from a
-location macOS moved it to, an AppImage in a read-only folder, a `.deb` without a way
+Where Aura cannot replace itself (opened straight from the disk image, from a
+location macOS moved it to or through a symbolic link, an AppImage in a read-only folder, a `.deb` without a way
 to ask for your password), the banner says why and links to the release to install it
 by hand.
 
@@ -1002,7 +1002,7 @@ announces, so an old, validly signed release cannot be passed off as a new one.
 under a test name and identifier (`AuraUpdateTest`, `nl.havick.aura.updatetest`), serves
 the second from a local `latest.json`, and checks that the first finds, downloads and
 verifies it, stops its daemon, replaces itself, restarts as the new version and starts
-the new daemon. Everything stays under `/tmp/aura-update-e2e` with its own data
+the new daemon. Everything stays under `/private/tmp/aura-update-e2e` with its own data
 directory; an installed Aura and `~/.aura` are not touched. It needs the signing key
 (above). The local manifest only works in builds with the `updater-test` Cargo
 feature, which releases never enable.
