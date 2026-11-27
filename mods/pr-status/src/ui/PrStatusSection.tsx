@@ -10,6 +10,7 @@ import { getCtx } from "./ctx";
 import { ago, BLOCKER_LABEL, CHECKS_LABEL, checkCounts, checksTone, readinessTone, REVIEW_LABEL, reviewTone, STATE_LABEL } from "./labels";
 import { splitPulls, updatedAt } from "./order";
 import { SquashMerge } from "./SquashMerge";
+import { openPrPage } from "./page/PrPageView";
 import { useNow, usePullStatus } from "./usePullStatus";
 
 /** `ctx.storage` key: whether "Merged & closed" is unfolded. */
@@ -57,7 +58,9 @@ function PrCard({ entry, rootId, now, onMerged }: { entry: PrEntry; rootId: stri
     <article className="prs-card" aria-label={`Pull request #${ref.number}: ${title}`}>
       <div className="prs-title">
         {status && <StateChip state={status.state} />}
-        <ExternalLink href={ref.url} title={`${ref.repo}#${ref.number}\n${title}`} className="prs-link">{title}</ExternalLink>
+        <button className="prs-link" title={`Open #${ref.number} in a tab\n${title}`}
+          onClick={() => openPrPage({ repo: ref.repo, number: ref.number, url: ref.url, title })}>{title}</button>
+        <ExternalLink href={ref.url} className="prs-github" aria-label={`Open #${ref.number} on GitHub`} title="Open on GitHub">↗</ExternalLink>
       </div>
       <div className="prs-meta" title={`${ref.repo} #${ref.number}`}>{ref.repo} #{ref.number}</div>
       <Sources sources={ref.sources} rootId={rootId} />

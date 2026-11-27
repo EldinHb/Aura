@@ -1,7 +1,8 @@
 # PR status
 
-A card per pull request in the Inspector: the PRs the selected session and all its
-workers work on, with their state, reviewers, checks and whether they can be merged.
+A card per pull request in the Inspector (the selected session's and all its workers'),
+with state, reviewers, checks and merge readiness; its title opens a GitHub-style PR page
+in a main-area tab (`pr` view: conversation, commits, checks, files; `page.*` RPCs).
 Its one write: "Squash and merge" on approved PRs (`merge` RPC: `PUT …/merge` with the shown
 head `sha`; then the head branch is deleted if asked and in the same repository). Depends
 on the `github` mod (token, rate limits, session links); writes go through its transport.
@@ -22,7 +23,6 @@ Pull requests                     updated 12s ago  [↻]
 ```
 Hidden without PRs. Open PRs first: not ready, ready, drafts. Chips: Material 3 containers;
 status words --md-success/-tertiary/-error; classes `prs-`. Blocked: a reason, cards dated.
-
 ## Data
 - PRs: the session plus every session whose `orchestrator_id` chain leads to it. Per
   session: github `sessions.prs` (chosen `links.prs`, else `detected`), `links.all` →

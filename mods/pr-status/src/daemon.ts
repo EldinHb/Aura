@@ -13,11 +13,21 @@
 //   merge {repo, number, sha, account, title, message, deleteBranch}
 //                                          → MergeResult; as `account`, re-checks the PR, squash-merges
 //                                            at head `sha`, then deletes a same-repository head branch when asked
+//   page.get   {repo, number}              → PrPage: the PR page's conversation, commits, checks and status
+//   page.files {repo, number}              → PageFile[]: changed files with their patches
+//   page.notified {repo, number}           → the PR's latest notification time, or null
 // Notification `changed {sessionIds}`: ask `view` again for those sessions.
 import { defineDaemon, type DaemonApi } from "@aura/mod-sdk/daemon";
-import { remoteGithub, type Github } from "@aura/github-client";
+import { messageOf, remoteGithub, type Github } from "@aura/github-client";
 import { Merger, mergeError, mergeRequest, readMergeDefaults } from "./daemon/merge";
+import { readFiles, readPage } from "./daemon/page";
 import { PrPoller } from "./daemon/poller";
+
+function number(params: any): number {
+  const n = params?.number;
+  if (!Number.isSafeInteger(n) || n <= 0) throw Object.assign(new Error("number is required"), { code: "invalid" });
+  return n;
+}
 
 function text(params: any, key: string): string {
   const v = params?.[key];
@@ -39,6 +49,16 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
     }),
     aura.rpc.handle("view", (p) => poller.view(text(p, "sessionId"))),
     aura.rpc.handle("refresh", (p) => poller.refresh(text(p, "sessionId"))),
+    // The PR page (`pr` view).
+    aura.rpc.handle("page.get", (p) => readPage(gh, text(p, "repo"), number(p)).catch((e) => {
+      throw mergeError("failed", messageOf(e));
+    })),
+    aura.rpc.handle("page.files", (p) => readFiles(gh, text(p, "repo"), number(p))),
+    aura.rpc.handle("page.notified", async (p) => {
+      const repo = text(p, "repo");
+      const notified = await gh.notified().catch(() => null);
+      return notified?.pulls[`${repo.toLowerCase()}#${number(p)}`] ?? null;
+    }),
     aura.rpc.handle("merge.defaults", (p) => {
       if (!Number.isSafeInteger(p?.number)) throw mergeError("invalid", "number is required");
       return readMergeDefaults(gh, text(p, "repo"), p.number);

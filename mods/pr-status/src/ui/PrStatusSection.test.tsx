@@ -39,14 +39,16 @@ function entry(over: Partial<PrEntry["ref"]> & { status?: any; error?: string | 
 const stored = new Map<string, unknown>();
 
 function fakeCtx(view: SessionView) {
+  const openView = vi.fn();
   const listeners = new Map<string, (p: any) => void>();
   const rpc = vi.fn(async (name: string, _params?: any) => (name === "unwatch" ? true : view));
   const ctx = {
     rpc, on: (name: string, fn: (p: any) => void) => { listeners.set(name, fn); return () => listeners.delete(name); }, onConnection: () => () => {},
     storage: { get: (k: string) => stored.get(k), set: (k: string, v: unknown) => void stored.set(k, v), delete: (k: string) => void stored.delete(k) },
+    openView,
   };
   setCtx(ctx as unknown as UiApi);
-  return { rpc, emit: (name: string, p: unknown) => listeners.get(name)?.(p) };
+  return { rpc, openView, emit: (name: string, p: unknown) => listeners.get(name)?.(p) };
 }
 
 const lead = session("lead", { title: "Lead" });
@@ -75,7 +77,7 @@ describe("PrStatusSection", () => {
     render(<PrStatusSection session={lead} />);
     const card = await screen.findByRole("article", { name: "Pull request #1: Add rate limiting" });
     expect(within(card).getByText("Open")).toBeTruthy();
-    expect(within(card).getByRole("link", { name: "Add rate limiting" }).getAttribute("href")).toBe("https://github.com/acme/api/pull/1");
+    expect(within(card).getByRole("link", { name: "Open #1 on GitHub" }).getAttribute("href")).toBe("https://github.com/acme/api/pull/1");
     expect(card.textContent).toContain("Not ready: Required reviews missing · Checks failing");
     expect(screen.getByText("updated 30s ago")).toBeTruthy();
 
@@ -84,6 +86,16 @@ describe("PrStatusSection", () => {
     const pending = within(card).getByRole("group", { name: "Still to review" });
     expect(pending.textContent).toContain("bobRe-requested");
     expect(pending.textContent).toContain("acme/core (team)Pending");
+  });
+
+  it("opens the PR's page in a tab from its title, the same tab every time", async () => {
+    const { openView } = fakeCtx({ sessionId: "lead", pulls: [entry()], blocked: null });
+    render(<PrStatusSection session={lead} />);
+    const title = await screen.findByRole("button", { name: "Add rate limiting" });
+    fireEvent.click(title);
+    fireEvent.click(title);
+    const page = { key: "https://github.com/acme/api/pull/1", title: "#1 Add rate limiting", repo: "acme/api", number: 1, url: "https://github.com/acme/api/pull/1" };
+    expect(openView.mock.calls).toEqual([["pr", page], ["pr", page]]);
   });
 
   it("expands the checks to the failing and pending ones, linked", async () => {

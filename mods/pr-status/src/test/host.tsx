@@ -3,8 +3,10 @@
 import type { ComponentProps } from "react";
 import { create } from "zustand";
 
-export const useStore = create<{ selectedId: string | null; select: (id: string | null) => void }>((set) => ({
+export const useStore = create<{ selectedId: string | null; select: (id: string | null) => void; sessions: Record<string, { title: string }>; tabs: unknown[] }>((set) => ({
   selectedId: null,
+  sessions: {},
+  tabs: [],
   select: (selectedId) => set({ selectedId }),
 }));
 
@@ -22,3 +24,11 @@ export function ExternalLink({ href, children, ...props }: ComponentProps<"a"> &
     </a>
   );
 }
+
+/** Markdown as plain text: the tests check what is said, Aura's renderer does the rest. */
+export function Markdown({ text }: { text: string; cwd?: string }) {
+  return <div className="md">{text}</div>;
+}
+
+export * as diff from "../../../../apps/desktop/src/components/diff/parse";
+export { timeAgo, exactTime } from "../../../../apps/desktop/src/lib/time";

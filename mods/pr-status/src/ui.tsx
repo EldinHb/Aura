@@ -1,10 +1,11 @@
-// The pr-status mod's UI half: the "Pull requests" cards in the Inspector, and a command to
-// read the selected session's PRs again.
+// The pr-status mod's UI half: the "Pull requests" cards in the Inspector, a PR page in a
+// main-area tab (`pr` view), and a command to read the selected session's PRs again.
 import { defineUi, type UiApi } from "@aura/mod-sdk/ui";
 import { useStore } from "@aura/host";
 import "./ui.css";
 import { setCtx } from "./ui/ctx";
 import { PrStatusSection } from "./ui/PrStatusSection";
+import { PAGE_VIEW, PrPageView } from "./ui/page/PrPageView";
 import { keepOpenSessions } from "./ui/openSessions";
 
 export function activate(ctx: UiApi) {
@@ -13,6 +14,7 @@ export function activate(ctx: UiApi) {
     // Above the github mod's "Issues & PRs" (order 0): the state of the work comes first.
     ctx.ui.inspectorSection({ id: "status", order: -10, component: PrStatusSection }),
     keepOpenSessions(ctx),
+    ctx.ui.view({ id: PAGE_VIEW, title: "Pull request", component: PrPageView }),
     ctx.commands.register({
       id: "refresh",
       title: "Refresh PR status",

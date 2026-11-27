@@ -4,7 +4,7 @@
 import { BATCH, batchNodes, chunks, has, list, messageOf, requestedReviewers, s, sameText, show, type Github } from "@aura/github-client";
 import type { Blocker, Check, Checks, ChecksState, PrRef, PrState, PrStatus, Readiness, Reviewer, Reviewers, ReviewState } from "../shared/types";
 
-const PAGE = "pageInfo{hasNextPage endCursor}";
+export const PAGE = "pageInfo{hasNextPage endCursor}";
 const CONTEXT = "__typename ... on CheckRun{name status conclusion detailsUrl} ... on StatusContext{context state targetUrl}";
 const REVIEW = "state author{__typename login}";
 const OPINION = "state author{login}";
@@ -76,7 +76,7 @@ export function reviewerGroups(node: any, complete = true): Reviewers {
   };
 }
 
-const FAILED = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"];
+export const FAILED = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"];
 const PASSED = ["SUCCESS", "NEUTRAL", "SKIPPED"];
 
 function checkOf(n: any): Check | null {
@@ -197,7 +197,7 @@ export function toStatus(ref: Pick<PrRef, "url" | "repo" | "number">, node: any,
  * Read the rest of a connection `conn` (as the batch returned it), page by page, appending
  * to its `nodes` and leaving its `pageInfo` at the last page read. False when pages are left.
  */
-async function rest(gh: Github, conn: any, query: string, variables: Record<string, unknown>, pick: (data: any) => any): Promise<boolean> {
+export async function rest(gh: Github, conn: any, query: string, variables: Record<string, unknown>, pick: (data: any) => any): Promise<boolean> {
   for (let page = 1; more(conn); page++) {
     if (page >= MAX_PAGES) return false;
     const reply = await gh.request("POST", "graphql", { query, variables: { ...variables, after: conn.pageInfo.endCursor } });
