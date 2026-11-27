@@ -12,6 +12,7 @@ import dev.aura.android.protocol.Session
 import dev.aura.android.ui.components.UiMessage
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
@@ -61,12 +62,15 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
         val c = container.connection(serverId) ?: return
         viewModelScope.launch {
             try {
-                val projects = async { c.call("orchestrator.projects", JsonObject(emptyMap()), ListSerializer(Project.serializer())) }
-                val providers = async { c.call("provider.list", JsonObject(emptyMap()), ListSerializer(ProviderInfo.serializer())) }
-                _options.value = NewSessionOptions(
-                    projects = projects.await().sortedByDescending { it.lastUsed },
-                    agents = agentChoices(providers.await()),
-                )
+                // A failure of either call ends here, not in the view model's scope.
+                _options.value = coroutineScope {
+                    val projects = async { c.call("orchestrator.projects", JsonObject(emptyMap()), ListSerializer(Project.serializer())) }
+                    val providers = async { c.call("provider.list", JsonObject(emptyMap()), ListSerializer(ProviderInfo.serializer())) }
+                    NewSessionOptions(
+                        projects = projects.await().sortedByDescending { it.lastUsed },
+                        agents = agentChoices(providers.await()),
+                    )
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

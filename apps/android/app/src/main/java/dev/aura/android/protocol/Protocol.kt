@@ -199,4 +199,5 @@ data class Feature(
     val goal: String = "",
     val status: String = "",
     val questions: List<UserQuestion> = emptyList(),
+    @SerialName("updated_at") val updatedAt: String = "",
 )
