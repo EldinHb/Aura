@@ -514,7 +514,7 @@ export class PrPoller {
     const previous = this.branches.get(target.cwd);
     const keep = previous && previous.branch === target.question.branch ? previous.url : null;
     try {
-      return { url: await branchPull(this.aura.process.run, target.question), failed: false };
+      return { url: await branchPull(this.gh, target.question), failed: false };
     } catch (e) {
       return { url: warn(`the branch PR of ${target.cwd}`, e, keep), failed: true };
     }

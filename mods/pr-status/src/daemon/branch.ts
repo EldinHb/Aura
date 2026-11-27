@@ -1,7 +1,8 @@
-// The pull request of a session folder's branch, found with git and the GitHub CLI through
-// `aura.process`: the branch and its upstream from `git status`, the repositories from
-// `git remote -v`, and the PR from `gh pr list --head`.
+// The pull request of a session folder's branch: the branch and its upstream from `git status`,
+// the repositories from `git remote -v` (git through `aura.process`), and the PR from GitHub's
+// `pullRequests(headRefName:)`, filtered by the head's owner (through the gh transport).
 import type { DaemonApi } from "@aura/mod-sdk";
+import type { Github } from "@aura/github-client";
 
 type Run = DaemonApi["process"]["run"];
 
@@ -78,15 +79,34 @@ export async function readRemotes(run: Run, cwd: string): Promise<Record<string,
   return out.code === 0 ? parseRemotes(out.stdout) : {};
 }
 
-export const PR_LIST_FIELDS = "url,state,headRepositoryOwner";
+/** Pages of PRs from a branch name read before concluding there is none of the head owner's. */
+export const BRANCH_PAGES = 10;
 
-/** The URL of the PR from `q.branch` of `q.headOwner` into `q.repo`: the open one, else the newest. */
-export async function branchPull(run: Run, q: BranchQuestion): Promise<string | null> {
-  const out = await run("gh", ["pr", "list", "--repo", q.repo, "--head", q.branch, "--state", "all", "--limit", "20", "--json", PR_LIST_FIELDS], { timeoutMs: 60_000 });
-  if (out.code !== 0) throw new Error(out.stderr.trim() || "gh pr list failed");
-  const list: Array<{ url?: string; state?: string; headRepositoryOwner?: { login?: string } }> = JSON.parse(out.stdout || "[]");
-  // Another fork can have a branch of the same name.
-  const own = list.filter((p) => p.headRepositoryOwner?.login?.toLowerCase() === q.headOwner.toLowerCase());
-  const pick = own.find((p) => p.state === "OPEN") ?? own[0];
-  return typeof pick?.url === "string" ? pick.url : null;
+export const BRANCH_QUERY =
+  "query($owner:String!,$name:String!,$head:String!,$after:String){repository(owner:$owner,name:$name){" +
+  "pullRequests(headRefName:$head,first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{url state headRepositoryOwner{login}}}}}";
+
+/**
+ * The URL of the PR from `q.branch` of `q.headOwner` into `q.repo`: the open one, else the
+ * newest. Other forks can have a branch of the same name, so every page is looked at (up to
+ * BRANCH_PAGES) before concluding the owner has none. GraphQL through the transport's gate.
+ */
+export async function branchPull(gh: Github, q: BranchQuestion): Promise<string | null> {
+  const [owner, name] = q.repo.split("/");
+  const own: Array<{ url: string; state: string }> = [];
+  let after: string | null = null;
+  for (let page = 0; page < BRANCH_PAGES; page++) {
+    const reply = await gh.request("POST", "graphql", { query: BRANCH_QUERY, variables: { owner, name, head: q.branch, after } });
+    if (reply?.errors && !reply?.data?.repository) throw new Error(JSON.stringify(reply.errors));
+    const conn = reply?.data?.repository?.pullRequests;
+    for (const n of conn?.nodes ?? []) {
+      if (typeof n?.url === "string" && n?.headRepositoryOwner?.login?.toLowerCase() === q.headOwner.toLowerCase()) own.push({ url: n.url, state: n.state });
+    }
+    // Newest first: an open PR of the owner on this page is the answer.
+    const open = own.find((p) => p.state === "OPEN");
+    if (open) return open.url;
+    if (!conn?.pageInfo?.hasNextPage) break;
+    after = conn.pageInfo.endCursor;
+  }
+  return own[0]?.url ?? null;
 }

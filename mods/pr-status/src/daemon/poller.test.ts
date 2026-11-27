@@ -17,15 +17,15 @@ async function setup(nodes: Record<number, any> = { 1: prNode({ number: 1 }) }) 
   const host = createTestHost({ id: "pr-status" });
   const fake = fakeGithub(nodes);
   let now = Date.parse("2026-11-27T10:00:00Z");
-  /** `gh pr list --head <branch>`: its PR's URL, null for none; a branch not listed (but main) fails. */
+  /** The branch's PR (GitHub's pullRequests(headRefName:)): its URL, null for none; a branch not listed (but main) fails. */
   const branches: Record<string, string | null> = {};
-  /** "branch_pull" per `gh pr list` call, as the github mod's method was named. */
+  /** "branch_pull" per branch query, as the github mod's method was named. */
   const githubCalls: string[] = [];
   /** Hold `git status` answers until released, to race collections. */
   const held: Array<() => void> = [];
   let hold = false;
   let gitBranch: (cwd: string) => string = (cwd) => (cwd === "/code/worker" ? "feature" : "main");
-  /** Run before each `gh pr list` answers. */
+  /** Run before each branch query answers. */
   const hooks: { beforeLookup?: () => Promise<void> } = {};
   host.state.sessions = [session("lead", { title: "Lead", cwd: "/code/lead" }), session("worker", { title: "Worker", orchestrator_id: "lead", cwd: "/code/worker" })];
   host.process.route(async (bin, args) => {
@@ -34,16 +34,19 @@ async function setup(nodes: Record<number, any> = { 1: prNode({ number: 1 }) }) 
       return hold ? new Promise((resolve) => held.push(() => resolve(answer))) : answer;
     }
     if (bin === "git" && args[2] === "remote") return { stdout: "origin\tgit@github.com:acme/api.git (fetch)\norigin\tgit@github.com:acme/api.git (push)\n" };
-    if (bin === "gh" && args[0] === "pr") {
-      githubCalls.push("branch_pull");
-      await hooks.beforeLookup?.();
-      const branch = args[args.indexOf("--head") + 1];
-      if (branches[branch] === undefined && branch !== "main") return { code: 1, stderr: "GitHub is down" };
-      const url = branches[branch];
-      return { stdout: JSON.stringify(url ? [{ url, state: "OPEN", headRepositoryOwner: { login: "acme" } }] : []) };
-    }
     return undefined;
   });
+  // The branch query goes to GitHub through the transport, as the status reads do.
+  const read = fake.gh.request.bind(fake.gh);
+  fake.gh.request = async (method, path, body: any) => {
+    if (!String(body?.query).includes("pullRequests(headRefName")) return read(method, path, body);
+    githubCalls.push("branch_pull");
+    await hooks.beforeLookup?.();
+    const branch = body.variables.head;
+    if (branches[branch] === undefined && branch !== "main") throw new Error("GitHub is down");
+    const url = branches[branch];
+    return { data: { repository: { pullRequests: { pageInfo: { hasNextPage: false }, nodes: url ? [{ url, state: "OPEN", headRepositoryOwner: { login: "acme" } }] : [] } } } };
+  };
   const { poller, dispose } = activate(host.api, { gh: fake.gh, now: () => now, loop: false });
   const linked: Record<string, string[]> = {};
   /** The session's linked PRs become `urls` (through the links RPCs). */

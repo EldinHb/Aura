@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTestHost } from "@aura/mod-sdk/testing";
-import { NO_GH } from "@aura/github-client";
+import { NO_GH, type Github } from "@aura/github-client";
 import { activate } from "../daemon";
 import type { SessionView } from "../shared/types";
 import { fakeGithub, prNode, session } from "../test/fixtures";
@@ -57,18 +57,27 @@ describe("the PR of a session's branch", () => {
       .toMatchObject({ repo: "acme/api", branch: "local", headOwner: "sam" });
   });
 
-  it("asks gh pr list, picking the open PR of the right fork", async () => {
-    const asked: string[][] = [];
-    const run = async (_bin: string, args: string[]) => {
-      asked.push(args);
-      return { code: 0, stderr: "", stdout: JSON.stringify([
-        { url: "https://github.com/acme/api/pull/3", state: "OPEN", headRepositoryOwner: { login: "someone" } },
-        { url: "https://github.com/acme/api/pull/2", state: "MERGED", headRepositoryOwner: { login: "sam" } },
-        { url: "https://github.com/acme/api/pull/4", state: "OPEN", headRepositoryOwner: { login: "Sam" } },
-      ]) };
-    };
-    expect(await branchPull(run, { repo: "acme/api", branch: "feature/x", headOwner: "sam", stamp: "" })).toBe("https://github.com/acme/api/pull/4");
-    expect(asked[0]).toEqual(["pr", "list", "--repo", "acme/api", "--head", "feature/x", "--state", "all", "--limit", "20", "--json", "url,state,headRepositoryOwner"]);
+  it("asks GitHub for the branch's PRs, page by page, keeping the head owner's (review item 7)", async () => {
+    const asked: any[] = [];
+    // 150 PRs of other forks with the same branch name, newest first; the owner's open one is on page 2.
+    const others = Array.from({ length: 150 }, (_, i) => ({ url: `https://github.com/acme/api/pull/${1000 - i}`, state: "OPEN", headRepositoryOwner: { login: `fork${i}` } }));
+    const all = [...others.slice(0, 120), { url: "https://github.com/acme/api/pull/4", state: "OPEN", headRepositoryOwner: { login: "Sam" } }, { url: "https://github.com/acme/api/pull/2", state: "MERGED", headRepositoryOwner: { login: "sam" } }];
+    const gh = { request: async (_m: string, _p: string, body: any) => {
+      asked.push(body.variables);
+      const start = body.variables.after ? Number(body.variables.after) : 0;
+      const nodes = all.slice(start, start + 100);
+      return { data: { repository: { pullRequests: { pageInfo: { hasNextPage: start + 100 < all.length, endCursor: String(start + 100) }, nodes } } } };
+    } } as unknown as Github;
+    expect(await branchPull(gh, { repo: "acme/api", branch: "feature/x", headOwner: "sam", stamp: "" })).toBe("https://github.com/acme/api/pull/4");
+    expect(asked).toEqual([
+      { owner: "acme", name: "api", head: "feature/x", after: null },
+      { owner: "acme", name: "api", head: "feature/x", after: "100" },
+    ]);
+    // Only other forks' PRs: every page read, then none.
+    all.splice(120);
+    asked.length = 0;
+    expect(await branchPull(gh, { repo: "acme/api", branch: "feature/x", headOwner: "sam", stamp: "" })).toBeNull();
+    expect(asked).toHaveLength(2);
   });
 });
 
@@ -79,12 +88,12 @@ function selfContained(opts: { gh?: "missing" } = {}) {
   const calls: string[] = [];
   host.state.sessions = [session("lead", { cwd: "/code/lead" }), session("worker", { orchestrator_id: "lead", cwd: "/code/worker" })];
   host.process.route(async (bin, args, o) => {
-    calls.push(`${bin} ${args.slice(0, 3).join(" ")}`);
+    calls.push(`${bin} ${[args[0], ...args.slice(3, 5)].join(" ")}`);
     if (bin === "git") return { code: 128, stderr: "not a git repository" };
     if (opts.gh === "missing") throw new Error("gh: not found");
-    if (args[0] === "api" && args[2] === "graphql") return ghReply({ headers: rate("graphql", 4990), body: await fake.gh.request("POST", "graphql", JSON.parse(o.stdin!)) });
-    if (args[0] === "api" && args[2] === "user") return ghReply({ headers: rate("core", 4990), body: { login: "sam" } });
-    if (args[0] === "api" && args[2].startsWith("notifications")) return ghReply({ headers: rate("core", 4990), body: [] });
+    if (args[0] === "api" && args[4] === "graphql") return ghReply({ headers: rate("graphql", 4990), body: await fake.gh.request("POST", "graphql", JSON.parse(o.stdin!)) });
+    if (args[0] === "api" && args[4] === "user") return ghReply({ headers: rate("core", 4990), body: { login: "sam" } });
+    if (args[0] === "api" && args[4].startsWith("notifications")) return ghReply({ headers: rate("core", 4990), body: [] });
     return undefined;
   });
   return { host, fake, calls };
