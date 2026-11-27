@@ -7,7 +7,10 @@ import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Session
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -23,6 +26,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import okhttp3.OkHttpClient
 import kotlin.coroutines.cancellation.CancellationException
+
+/** An event as the server sent it: parsed, and the JSON it came as. */
+data class LiveEvent(val event: Event, val raw: JsonObject)
 
 /** Where a server connection stands. */
 sealed interface ConnectionState {
@@ -58,22 +64,22 @@ class ServerConnection(
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Offline)
     val state: StateFlow<ConnectionState> = _state
 
-    private val _sessions = MutableStateFlow<List<Session>?>(null)
+    // A session's or feature's update carries its time; one from before a reload does not undo it.
+    private val sessionList = LiveList<Session>({ it.id }) { incoming, existing -> incoming.lastActivity >= existing.lastActivity }
+    private val featureList = LiveList<Feature>({ it.ownerId }) { incoming, existing -> incoming.updatedAt >= existing.updatedAt }
 
     /** The server's sessions; null until first loaded. */
-    val sessions: StateFlow<List<Session>?> = _sessions
-
-    private val _features = MutableStateFlow<List<Feature>?>(null)
+    val sessions: StateFlow<List<Session>?> = sessionList.items
 
     /** The server's features, with their owners' questions to the user; null until first loaded. */
-    val features: StateFlow<List<Feature>?> = _features
+    val features: StateFlow<List<Feature>?> = featureList.items
 
-    private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 4096)
+    private val _events = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 4096)
 
-    /** The server's events, live. */
-    val events: SharedFlow<Event> = _events
+    /** The server's events, live, each with the JSON it came as. */
+    val events: SharedFlow<LiveEvent> = _events
 
-    private val _resyncs = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    private val _resyncs = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     /** Each time the connection came (back) online or events were lost: whoever shows server state reloads it. */
     val resyncs: SharedFlow<Unit> = _resyncs
@@ -115,13 +121,19 @@ class ServerConnection(
         ProtocolJson.decodeFromJsonElement(result, call(method, params))
 
     /** Reloads the session list. */
-    suspend fun refreshSessions() {
-        _sessions.value = call("session.list", JsonObject(emptyMap()), ListSerializer(Session.serializer()))
-    }
+    suspend fun refreshSessions() = reload(sessionList, "session.list", Session.serializer())
 
     /** Reloads the features. */
-    suspend fun refreshFeatures() {
-        _features.value = call("feature.list", JsonObject(emptyMap()), ListSerializer(Feature.serializer()))
+    suspend fun refreshFeatures() = reload(featureList, "feature.list", Feature.serializer())
+
+    private suspend fun <T : Any> reload(list: LiveList<T>, method: String, item: KSerializer<T>) {
+        list.beginReload()
+        var snapshot: List<T>? = null
+        try {
+            snapshot = call(method, JsonObject(emptyMap()), ListSerializer(item))
+        } finally {
+            list.endReload(snapshot)
+        }
     }
 
     /** Answers a feature owner's [question] with an [option], [text], or both. */
@@ -132,7 +144,7 @@ class ServerConnection(
             option?.let { put("option", JsonPrimitive(it)) }
             put("text", JsonPrimitive(text))
         }, Feature.serializer())
-        upsertFeature(feature)
+        featureList.upsert(feature)
     }
 
     private suspend fun run() {
@@ -186,55 +198,51 @@ class ServerConnection(
             if (auth.serverId != server.serverId) {
                 return AuthRejected("This is not the server this device paired with.")
             }
-            val listener = scope.launch {
-                s.rpc.notifications.collect { n ->
-                    when (n.method) {
-                        "event" -> (n.params as? JsonObject)?.let(Event::parse)?.let(::onEvent)
-                        "lagged", "notifications.lagged" -> resync()
+            // Everything this connection starts is its child, and ends with it (or with stop()).
+            return coroutineScope {
+                val online = this
+                s.rpc.onOverflow = { resync(online) }
+                launch {
+                    s.rpc.notifications.collect { n ->
+                        when (n.method) {
+                            "event" -> (n.params as? JsonObject)?.let { raw ->
+                                Event.parse(raw)?.let { onEvent(LiveEvent(it, raw), online) }
+                            }
+                            "lagged", "notifications.lagged" -> resync(online)
+                        }
                     }
                 }
+                _state.value = ConnectionState.Online(auth.serverName, auth.version)
+                resync(online)
+                val closed = s.awaitClosed()
+                coroutineContext.cancelChildren()
+                WasOnline(closed)
             }
-            _state.value = ConnectionState.Online(auth.serverName, auth.version)
-            resync()
-            val closed = s.awaitClosed()
-            listener.cancel()
-            return WasOnline(closed)
         } finally {
             s.close()
             if (socket === s) socket = null
         }
     }
 
-    private fun resync() {
+    /** Events may have been lost: reload the lists, and tell those showing a session to reload it. */
+    private fun resync(online: CoroutineScope) {
         _resyncs.tryEmit(Unit)
-        scope.launch { runCatching { refreshSessions() } }
-        scope.launch { runCatching { refreshFeatures() } }
+        online.launch { runCatching { refreshSessions() }.onFailure { if (it is CancellationException) throw it } }
+        online.launch { runCatching { refreshFeatures() }.onFailure { if (it is CancellationException) throw it } }
     }
 
-    private fun onEvent(event: Event) {
-        when (event) {
-            is Event.SessionCreated -> upsert(event.session)
-            is Event.SessionUpdated -> upsert(event.session)
+    private fun onEvent(live: LiveEvent, online: CoroutineScope) {
+        when (val event = live.event) {
+            is Event.SessionCreated -> sessionList.upsert(event.session)
+            is Event.SessionUpdated -> sessionList.upsert(event.session)
             is Event.SessionRemoved -> {
-                _sessions.value = _sessions.value?.filterNot { it.id == event.sessionId }
-                _features.value = _features.value?.filterNot { it.ownerId == event.sessionId }
+                sessionList.remove(event.sessionId)
+                featureList.remove(event.sessionId)
             }
-            is Event.FeatureUpdated -> upsertFeature(event.feature)
+            is Event.FeatureUpdated -> featureList.upsert(event.feature)
             else -> {}
         }
-        _events.tryEmit(event)
-    }
-
-    private fun upsert(session: Session) {
-        val list = _sessions.value ?: return
-        val i = list.indexOfFirst { it.id == session.id }
-        _sessions.value = if (i >= 0) list.toMutableList().also { it[i] = session } else list + session
-    }
-
-    private fun upsertFeature(feature: Feature) {
-        val list = _features.value ?: return
-        val i = list.indexOfFirst { it.ownerId == feature.ownerId }
-        _features.value = if (i >= 0) list.toMutableList().also { it[i] = feature } else list + feature
+        if (!_events.tryEmit(live)) resync(online)
     }
 
     private class AuthRejected(message: String?) : Exception(message)

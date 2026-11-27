@@ -5,6 +5,8 @@ import dev.aura.android.pairing.PairingLink
 import dev.aura.android.protocol.Event
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -178,7 +180,7 @@ class ServerConnectionTest {
             put("type", JsonPrimitive("session_updated"))
             put("session", updated)
         })
-        assertTrue(event.await() is Event.SessionUpdated)
+        assertTrue(event.await().event is Event.SessionUpdated)
         assertEquals("Renamed", c.sessions.value!!.single().title)
         c.stop()
         assertEquals(ConnectionState.Offline, c.state.value)
@@ -200,6 +202,20 @@ class ServerConnectionTest {
         assertEquals("37", sent["option"]!!.jsonPrimitive.content)
         assertEquals("go", sent["text"]!!.jsonPrimitive.content)
         assertTrue("the answered feature replaces the open one", !c.features.value!!.single().questions.single().open)
+    }
+
+    @Test
+    fun `stopping leaves nothing of the connection running`() = runBlocking {
+        aurad.accept(2)
+        val c = ServerConnection(saved(), "good", http, scope)
+        repeat(2) {
+            c.start()
+            c.reach { it is ConnectionState.Online }
+            withTimeout(10_000) { c.sessions.filterNotNull().first() }
+            c.stop()
+        }
+        val children = scope.coroutineContext[Job]!!.children
+        withTimeout(5_000) { while (children.any()) delay(20) }
     }
 
     @Test

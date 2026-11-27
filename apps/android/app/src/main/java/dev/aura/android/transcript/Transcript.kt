@@ -35,7 +35,8 @@ data class Transcript(
             put(merged)
         }
         is Event.ItemCompleted -> put(event.item)
-        is Event.ItemDelta -> items[event.itemId]?.let { put(it.applyDelta(event.delta)) } ?: this
+        // A finished item already has all its text: a delta that comes after it would repeat some.
+        is Event.ItemDelta -> items[event.itemId]?.takeIf { it.status == "in_progress" }?.let { put(it.applyDelta(event.delta)) } ?: this
         is Event.ApprovalRequested -> copy(approvals = approvals.filterNot { it.id == event.approval.id } + event.approval)
         is Event.ApprovalResolved -> copy(approvals = approvals.filterNot { it.id == event.approvalId })
         is Event.InputRequested -> copy(inputs = inputs.filterNot { it.id == event.request.id } + event.request)

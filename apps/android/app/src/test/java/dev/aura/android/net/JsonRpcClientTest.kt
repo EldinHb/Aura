@@ -3,6 +3,7 @@ package dev.aura.android.net
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
@@ -78,6 +79,33 @@ class JsonRpcClientTest {
         val n = got.await()
         assertEquals("event", n.method)
         assertEquals("s", n.params.jsonObject["session_id"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a malformed error fails its call and leaves the client working`() = runTest {
+        for (bad in listOf(
+            """{"code":{"x":1},"message":["not","text"]}""",
+            "\"just a string\"",
+            "42",
+        )) {
+            val answer = async(start = CoroutineStart.UNDISPATCHED) { runCatching { client.call("session.get") } }
+            client.onMessage("""{"id":${lastRequest()["id"]},"error":$bad}""")
+            assertTrue(bad, answer.await().exceptionOrNull() is RpcException)
+        }
+        val ok = async(start = CoroutineStart.UNDISPATCHED) { client.call("daemon.ping") }
+        client.onMessage("""{"id":${lastRequest()["id"]},"result":"pong","error":null}""")
+        assertEquals("pong", ok.await().jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a notification dropped for a slow collector asks for a resync`() = runTest {
+        var overflows = 0
+        client.onOverflow = { overflows++ }
+        val stuck = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) { client.notifications.collect { stuck.await() } }
+        repeat(4100) { client.onMessage("""{"method":"event","params":{"n":$it}}""") }
+        assertTrue("overflowed $overflows times", overflows > 0)
+        collector.cancel()
     }
 
     @Test

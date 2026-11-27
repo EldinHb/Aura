@@ -9,7 +9,6 @@ import dev.aura.android.net.ProtocolJson
 import dev.aura.android.net.ServerConnection
 import dev.aura.android.protocol.Approval
 import dev.aura.android.protocol.ApprovalDecision
-import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.Input
 import dev.aura.android.protocol.Pending
 import dev.aura.android.protocol.Session
@@ -17,10 +16,13 @@ import dev.aura.android.protocol.StoredEvent
 import dev.aura.android.protocol.UserInputRequest
 import dev.aura.android.protocol.UserInputResponse
 import dev.aura.android.transcript.Transcript
+import dev.aura.android.transcript.fetchHistory
+import dev.aura.android.transcript.reconcile
 import dev.aura.android.ui.components.UiMessage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -68,15 +70,15 @@ class SessionViewModel(
     private val _messages = Channel<UiMessage>(Channel.BUFFERED)
     val messages = _messages.receiveAsFlow()
 
-    /** Live events that came while the history loads, applied after it. */
-    private var buffered: MutableList<Event>? = null
+    /** Live events (as received) that came while the history loads, applied after it. */
+    private var buffered: MutableList<JsonObject>? = null
 
     init {
         viewModelScope.launch {
-            connectionFlow.flatMapLatest { it?.events ?: flowOf() }.collect { event ->
-                if (event.sessionId != sessionId) return@collect
+            connectionFlow.flatMapLatest { it?.events ?: flowOf() }.collect { live ->
+                if (live.event.sessionId != sessionId) return@collect
                 val buffer = buffered
-                if (buffer != null) buffer += event else _transcript.update { it?.apply(event) }
+                if (buffer != null) buffer += live.raw else _transcript.update { it?.apply(live.event) }
             }
         }
         viewModelScope.launch {
@@ -87,38 +89,44 @@ class SessionViewModel(
 
     private fun connection(): ServerConnection? = container.connection(serverId)
 
-    /** Loads the history and what waits for the user, then applies what came meanwhile. */
+    /** Loads the whole history and what waits for the user, then applies what came meanwhile. */
     fun load() {
         val c = connection()?.takeIf { it.state.value is ConnectionState.Online } ?: return
         if (buffered != null) return
         buffered = mutableListOf()
         viewModelScope.launch {
             try {
-                val id = buildJsonObject { put("id", JsonPrimitive(sessionId)) }
-                val history = async {
-                    c.call("session.history", buildJsonObject {
-                        put("id", JsonPrimitive(sessionId))
-                        put("after_seq", JsonPrimitive(0))
-                        put("limit", JsonPrimitive(HISTORY_LIMIT))
-                    }, ListSerializer(StoredEvent.serializer()))
+                // A failure of either call ends here, not in the view model's scope.
+                val (history, pending) = coroutineScope {
+                    val history = async {
+                        fetchHistory { after, limit ->
+                            c.call("session.history", buildJsonObject {
+                                put("id", JsonPrimitive(sessionId))
+                                put("after_seq", JsonPrimitive(after))
+                                put("limit", JsonPrimitive(limit))
+                            }, ListSerializer(StoredEvent.serializer()))
+                        }
+                    }
+                    val pending = async { c.call("session.pending", JsonObject(emptyMap()), Pending.serializer()) }
+                    history.await() to pending.await()
                 }
-                val pending = async { c.call("session.pending", JsonObject(emptyMap()), Pending.serializer()) }
-                val events = history.await().mapNotNull { Event.parse(it.event) }
-                val waiting = pending.await()
-                var t = Transcript.of(events).copy(
-                    approvals = waiting.approvals.filter { it.sessionId == sessionId },
-                    inputs = waiting.inputs.filter { it.sessionId == sessionId },
-                )
-                // Text deltas that came meanwhile may already be in the history; the item's completion brings the whole text.
-                buffered.orEmpty().filterNot { it is Event.ItemDelta }.forEach { t = t.apply(it) }
-                _transcript.value = t
-                runCatching { c.call("session.mark_seen", id) }
+                // Applied and cleared at once: anything that comes from here on goes straight in.
+                _transcript.value = reconcile(history, pending, sessionId, buffered.orEmpty())
+                buffered = null
             } catch (e: CancellationException) {
+                buffered = null
                 throw e
             } catch (e: Throwable) {
-                _messages.trySend(UiMessage.Res(R.string.load_failed, listOf(e.message ?: "")))
-            } finally {
                 buffered = null
+                _messages.trySend(UiMessage.Res(R.string.load_failed, listOf(e.message ?: "")))
+                return@launch
+            }
+            try {
+                c.call("session.mark_seen", buildJsonObject { put("id", JsonPrimitive(sessionId)) })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // Seen or not, the transcript is shown; the next open marks it.
             }
         }
     }
@@ -183,7 +191,4 @@ class SessionViewModel(
         }
     }
 
-    private companion object {
-        const val HISTORY_LIMIT = 5000
-    }
 }

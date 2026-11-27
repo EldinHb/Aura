@@ -12,8 +12,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -67,6 +65,12 @@ class JsonRpcClient(
     /** Notifications, as they arrive. Ones that come while nobody collects are dropped. */
     val notifications: SharedFlow<RpcNotification> = _notifications
 
+    /**
+     * Called when a notification was dropped because its collector fell too
+     * far behind: whoever shows server state should reload it, as on `lagged`.
+     */
+    @Volatile var onOverflow: () -> Unit = {}
+
     /** Calls [method] and waits up to [timeoutMs] for its result. */
     suspend fun call(method: String, params: JsonElement = JsonObject(emptyMap()), timeoutMs: Long = DEFAULT_TIMEOUT_MS): JsonElement {
         closed?.let { throw NotConnectedException(it.message ?: "Not connected") }
@@ -89,26 +93,31 @@ class JsonRpcClient(
         }
     }
 
-    /** Takes one text frame from the server. Frames that are not JSON-RPC are ignored. */
+    /**
+     * Takes one text frame from the server. Frames that are not JSON-RPC are
+     * ignored; an answer with a malformed error still fails its call.
+     */
     fun onMessage(text: String) {
-        val msg = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
+        val msg = runCatching { json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return
         val id = (msg["id"] as? JsonPrimitive)?.longOrNull
-        val method = (msg["method"] as? JsonPrimitive)?.contentOrNull
+        val method = (msg["method"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
         when {
-            method != null && id == null -> _notifications.tryEmit(RpcNotification(method, msg["params"] ?: JsonNull))
+            method != null && id == null -> {
+                if (!_notifications.tryEmit(RpcNotification(method, msg["params"] ?: JsonNull))) onOverflow()
+            }
             id != null -> {
                 val answer = pending[id] ?: return
-                val error = msg["error"] as? JsonObject
-                if (error != null) {
-                    answer.completeExceptionally(
+                val error = msg["error"]?.takeUnless { it is JsonNull }
+                when {
+                    error == null -> answer.complete(msg["result"] ?: JsonNull)
+                    error is JsonObject -> answer.completeExceptionally(
                         RpcException(
-                            code = error["code"]?.jsonPrimitive?.intOrNull ?: 0,
-                            message = error["message"]?.jsonPrimitive?.contentOrNull ?: "Error",
+                            code = (error["code"] as? JsonPrimitive)?.intOrNull ?: 0,
+                            message = (error["message"] as? JsonPrimitive)?.contentOrNull ?: "Error",
                             data = error["data"],
                         ),
                     )
-                } else {
-                    answer.complete(msg["result"] ?: JsonNull)
+                    else -> answer.completeExceptionally(RpcException(0, "Malformed error from the server: $error"))
                 }
             }
         }
