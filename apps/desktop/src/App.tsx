@@ -12,7 +12,9 @@ import "./mods/mods.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
-import { connectDaemon, isTauri } from "./lib/connection";
+import { discoverDaemon, isTauri, type ConnInfo } from "./lib/connection";
+import { DaemonLink } from "./lib/daemonLink";
+import { RpcClient } from "./lib/rpc";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
 import { registerGitCommands } from "./commands/git";
@@ -88,18 +90,15 @@ export default function App() {
     return () => { offCore(); offTabs(); offSchedules(); };
   }, []);
 
-  // Connect + subscribe.
+  // Connect + subscribe. The link moves the window to a new client when the
+  // shell says the daemon changed (a restart, a recovery after a failed update).
   useEffect(() => {
     let cancelled = false;
-    let offEvent: (() => void) | null = null;
-    let offState: (() => void) | null = null;
-    let offFocus: (() => void) | null = null;
+    let unlisten: (() => void) | undefined;
     const st = useStore.getState;
-    (async () => {
-      try {
-        st().setConnection("connecting");
-        const client = await connectDaemon();
-        if (cancelled) return client.close();
+    const link = new DaemonLink<RpcClient>({
+      makeClient: (info) => new RpcClient(info.port, info.token),
+      attach: async (client) => {
         st().setClient(client);
         st().setConnection("open");
         const refresh = async () => {
@@ -114,11 +113,11 @@ export default function App() {
           else if (!st().selectedId && !st().modView && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
         };
         await refresh();
-        offEvent = client.onEvent((ev: Event) => {
+        const offEvent = client.onEvent((ev: Event) => {
           st().applyEvent(ev);
           notifyIfNeeded(ev);
         });
-        offState = client.onState((s) => {
+        const offState = client.onState((s) => {
           st().setConnection(s);
           if (s === "open") void refresh();
         });
@@ -133,16 +132,36 @@ export default function App() {
             .catch(() => {});
         };
         window.addEventListener("focus", onWindowFocus);
-        offFocus = () => window.removeEventListener("focus", onWindowFocus);
+        return () => {
+          offEvent();
+          offState();
+          window.removeEventListener("focus", onWindowFocus);
+        };
+      },
+    });
+    const failed = (e: unknown) => st().setConnection("closed", e instanceof Error ? e.message : String(e));
+    (async () => {
+      try {
+        st().setConnection("connecting");
+        const info = await discoverDaemon();
+        if (cancelled) return;
+        await link.switchTo(info);
+        if (cancelled) link.close();
       } catch (e) {
-        st().setConnection("closed", e instanceof Error ? e.message : String(e));
+        if (!cancelled) failed(e);
       }
     })();
+    if (isTauri()) {
+      void import("@tauri-apps/api/event").then(({ listen }) =>
+        listen<ConnInfo>("aura://daemon-changed", (e) => {
+          if (!cancelled) link.switchTo(e.payload).catch(failed);
+        }).then((u) => (cancelled ? u() : (unlisten = u))),
+      );
+    }
     return () => {
       cancelled = true;
-      offEvent?.();
-      offState?.();
-      offFocus?.();
+      link.close();
+      unlisten?.();
     };
   }, []);
 
