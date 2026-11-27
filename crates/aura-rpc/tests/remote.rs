@@ -321,6 +321,8 @@ async fn pair_then_auth_then_list_sessions() {
         )),
         "{uri}"
     );
+    // Bound to one address, there is nothing to fall back to.
+    assert!(!uri.contains("alt="), "{uri}");
 
     // A wrong fingerprint is refused by the client.
     assert!(try_connect(port, &"0".repeat(64)).await.is_err());
@@ -744,4 +746,198 @@ async fn a_taken_port_shows_as_an_error() {
         .await
         .unwrap();
     assert_eq!(status["listening"], json!(true), "{status}");
+}
+
+#[tokio::test]
+async fn a_sessions_tools_may_close_remote_access_but_not_open_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let project = tempfile::tempdir().unwrap();
+    let s: Session = d
+        .local
+        .call_as(
+            "session.create",
+            json!({"provider": "claude", "cwd": project.path().to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let tools = RpcClient::connect(d.server.info.port, &d.manager.session_token(&s.id))
+        .await
+        .unwrap();
+    let forbidden = |r: anyhow::Result<Value>| {
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains(&aura_rpc::ERR_FORBIDDEN.to_string()), "{e}");
+    };
+    forbidden(
+        tools
+            .call("remote.configure", json!({"enabled": true}))
+            .await,
+    );
+    forbidden(tools.call("remote.configure", json!({"port": 9999})).await);
+    forbidden(
+        tools
+            .call("remote.configure", json!({"bindAddress": "0.0.0.0"}))
+            .await,
+    );
+    forbidden(tools.call("remote.startPairing", json!({})).await);
+    forbidden(tools.call("remote.listDevices", json!({})).await);
+
+    // The user turns it on and pairs a device; the agent may close it all.
+    let (port, fp) = enable(&d).await;
+    let (_live, device, _) = pair(&d, port, &fp).await;
+    tools
+        .call("remote.revokeDevice", json!({"deviceId": device}))
+        .await
+        .unwrap();
+    let status = tools
+        .call("remote.configure", json!({"enabled": false}))
+        .await
+        .unwrap();
+    assert_eq!(status["listening"], json!(false));
+}
+
+#[tokio::test]
+async fn a_large_message_before_authentication_closes_the_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let (port, fp) = enable(&d).await;
+    let mut r = connect(port, &fp).await;
+    let big = json!({"id": 1, "method": "remote.auth", "params": {"deviceId": "x".repeat(70 * 1024), "token": "t"}});
+    r.ws.send(Message::Text(big.to_string())).await.unwrap();
+    r.closed().await;
+    // Not counted as a failed attempt, and small requests still work.
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+    assert_eq!(r.ok("daemon.ping", json!({})).await, json!("pong"));
+}
+
+#[tokio::test]
+async fn terminal_sessions_cannot_be_typed_into_remotely() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let project = tempfile::tempdir().unwrap();
+    let term: Session = d
+        .local
+        .call_as(
+            "session.create",
+            json!({"provider": "claude", "mode": "terminal", "command": ["/bin/cat"], "cwd": project.path().to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(term.mode, SessionMode::Terminal);
+    let (port, fp) = enable(&d).await;
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+    assert_eq!(
+        r.err(
+            "session.send",
+            json!({"id": term.id, "input": {"text": "echo pwned"}})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    assert_eq!(
+        r.err("session.interrupt", json!({"id": term.id})).await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    // Still listed, and still stoppable.
+    let sessions: Vec<Session> =
+        serde_json::from_value(r.ok("session.list", json!({})).await).unwrap();
+    assert!(sessions.iter().any(|s| s.id == term.id));
+    r.ok("session.stop", json!({"id": term.id})).await;
+}
+
+#[tokio::test]
+async fn session_create_resolves_symlinks_before_checking_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("sub")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), project.path().join("escape")).unwrap();
+    d.local
+        .call(
+            "session.create",
+            json!({"provider": "claude", "cwd": project.path().to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let (port, fp) = enable(&d).await;
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+    let root = project.path().to_string_lossy().to_string();
+
+    #[cfg(unix)]
+    assert_eq!(
+        r.err(
+            "session.create",
+            json!({"provider": "claude", "cwd": format!("{root}/escape")})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN,
+        "a symlink out of the project"
+    );
+    assert_eq!(
+        r.err(
+            "session.create",
+            json!({"provider": "claude", "cwd": format!("{root}/missing")})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN,
+        "a folder that does not exist"
+    );
+    // Inside: it runs in the resolved folder.
+    let created = r
+        .ok(
+            "session.create",
+            json!({"provider": "claude", "cwd": format!("{root}/sub/../sub")}),
+        )
+        .await;
+    let real = std::fs::canonicalize(project.path().join("sub")).unwrap();
+    assert_eq!(created["cwd"], json!(real.to_string_lossy()));
+}
+
+#[tokio::test]
+async fn slow_or_idle_connections_are_dropped_and_capped() {
+    use tokio::io::AsyncReadExt;
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let (port, fp) = enable(&d).await;
+    d.server
+        .remote
+        .set_connection_limits(Duration::from_millis(500), 3);
+
+    // Paired before the others: an authenticated connection holds no place
+    // and outlives the deadline.
+    let (mut authed, _, _) = pair(&d, port, &fp).await;
+
+    // Gone at the deadline: no TLS at all, TLS but no upgrade, upgraded but
+    // never authenticated.
+    let mut raw = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let mut buf = [0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(3), raw.read(&mut buf))
+        .await
+        .expect("closed by the deadline");
+    assert!(matches!(n, Ok(0) | Err(_)), "{n:?}");
+    let mut idle_ws = connect(port, &fp).await;
+    idle_ws.closed().await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(authed.ok("daemon.ping", json!({})).await, json!("pong"));
+
+    // At most 3 still authenticating: the 4th is refused at once.
+    let mut held = vec![];
+    for _ in 0..3 {
+        held.push(
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap(),
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(try_connect(port, &fp).await.is_err(), "over the cap");
+    // Their places free up when they go (here: at the deadline).
+    drop(held);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let (mut again, _, _) = pair(&d, port, &fp).await;
+    assert_eq!(again.ok("daemon.ping", json!({})).await, json!("pong"));
 }

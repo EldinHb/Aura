@@ -44,6 +44,9 @@ impl Client {
     pub async fn spawn(binary: &str) -> Result<Self> {
         let mut cmd = tokio::process::Command::new(binary);
         cmd.arg("app-server")
+            // One app-server serves every Codex session, so no session id:
+            // what it runs knows it is inside Aura (see `aura remote`).
+            .env("AURA_SESSION", "1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())

@@ -113,6 +113,7 @@ impl ClaudeDriver {
         cmd.args(mcp_args(session));
         cmd.current_dir(&session.cwd);
         cmd.env("AURA_SESSION_ID", &session.id);
+        cmd.env("AURA_SESSION", "1");
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

@@ -33,6 +33,11 @@ aura remote pair       # prints the code, fingerprint, addresses and the aura://
 aura remote devices    # aura remote revoke <deviceId>; aura remote off
 ```
 
+`aura remote on` and `aura remote pair` ask for confirmation at a terminal
+and refuse to run inside an Aura session (when `AURA_SESSION_ID` or
+`AURA_SESSION` is set, which Aura sets for every agent and terminal it
+starts) or without a terminal on stdin.
+
 ## 2. Threat model (short)
 
 - **Network attacker** (same Wi-Fi, café, LAN): sees only TLS. Without the
@@ -49,6 +54,12 @@ aura remote devices    # aura remote revoke <deviceId>; aura remote off
   every session and send agents messages, and agents can run commands. It can
   not change settings, read the file system directly, manage mods, delete
   sessions, update Aura or manage remote access itself.
+- **An agent on the desktop opening remote access**: a session's tools
+  (session tokens) may only turn remote access off and revoke devices;
+  enabling, moving (bind/port) and pairing are refused with -32003. The CLI
+  refuses `on`/`pair` inside an Aura session and without a terminal. This
+  raises the bar; it is not a hard boundary against an agent that runs as the
+  user, strips its environment and reads `daemon.json` itself.
 - Out of scope: a process running as the same user on the desktop (it can
   read the data directory and the local token anyway).
 
@@ -58,10 +69,16 @@ aura remote devices    # aura remote revoke <deviceId>; aura remote off
    {enabled: true}`) and starts pairing (`remote.startPairing`). The app shows
    the returned `uri` as a QR code plus the code, the fingerprint and the
    addresses to pick from.
-2. The phone scans `aura://pair?host=<ip>&port=<port>&fp=<fingerprint>&code=<code>&name=<server name>`.
+2. The phone scans `aura://pair?host=<ip>&port=<port>&fp=<fingerprint>&code=<code>&name=<server name>[&alt=<other addresses>]`.
    Every value is percent-encoded (an IPv6 host's colons as `%3A`, a space in
-   the name as `%20`). `host` is the first of `addresses`; the phone may offer
-   the others when it cannot reach that one.
+   the name as `%20`). `host` is the first of `addresses` (a bare IP, IPv6
+   not bracketed).
+   `alt` is optional: the rest of `addresses`, comma separated, IPv6 ones in
+   brackets (`100.75.1.9,[2001:db8::5]`, sent as
+   `100.75.1.9%2C%5B2001%3Adb8%3A%3A5%5D`). It is left out when there is only
+   one address (e.g. the listener is bound to one IP). Decode the value, split
+   on `,`, strip the brackets; try `host` first, then each `alt` in order,
+   always with the same `port` and `fp`.
 3. The phone opens `wss://host:port/` with TLS, accepting exactly the
    certificate whose SHA-256 is `fp`.
 4. It calls `remote.pair {code, deviceName}` and gets
@@ -72,8 +89,11 @@ aura remote devices    # aura remote revoke <deviceId>; aura remote off
    first. A new `remote.startPairing` replaces the previous code.
 
 Before `remote.pair` or `remote.auth` succeeds, every other method is answered
-with **-32010** and the connection is closed. A connection that does not
-authenticate within 30 seconds is closed. A failed pair/auth answers with the
+with **-32010** and the connection is closed. A connection must have
+authenticated 30 seconds after the TCP connect, TLS handshake and WebSocket
+upgrade included; otherwise it is closed at whatever stage it is. At most 32
+connections may be unauthenticated at once; more are closed right after
+connect (the TLS handshake fails), so retry a little later. A failed pair/auth answers with the
 error and closes the connection.
 
 ## 4. Transport details
@@ -84,6 +104,8 @@ error and closes the connection.
   notifications `{"method": "...", "params": ...}` (no `id`). The
   `"jsonrpc": "2.0"` member is optional on requests and is not sent back,
   same as the loopback API.
+- Message (and frame) limit: 16 MB. Before authentication, any message over
+  64 KB closes the connection without an answer.
 - The server answers WebSocket pings with pongs. There is no app-level
   heartbeat; use WebSocket pings (e.g. OkHttp `pingInterval`).
 - The server never sends binary (PTY) frames to remote clients, and ignores
@@ -120,7 +142,11 @@ Both are refused with -32003 on the loopback listener.
 
 ## 7. Local management methods (loopback only)
 
-Refused with -32003 on the remote listener (and for session tokens).
+Refused with -32003 on the remote listener. A session's tools (session
+tokens) may only call `remote.configure {enabled: false}` (also with
+`serverName`) and `remote.revokeDevice`; enabling, `bindAddress`, `port`,
+`remote.startPairing`, `remote.status` and `remote.listDevices` are refused
+for them with -32003.
 
 ### `remote.status` → `RemoteStatus`
 ```ts
@@ -175,8 +201,8 @@ snake_case field names unless noted.
 | `session.history` | `{id, after_seq?: number = 0, limit?: number = 5000}` | `StoredEvent[]` — `{seq, ts, event}`; page with the last `seq` |
 | `session.pending` | `{}` | `{approvals: Approval[], inputs: UserInputRequest[]}` |
 | `session.attachment` | `{id, attachment}` | `{data: base64, media_type}` — images referenced from a transcript |
-| `session.send` | `{id, input: {text, images?: ImageInput[], steer?: bool}}` | `true` (starts the agent if it is not running). Images must carry `data` (base64) + `media_type`; an image with a `path` is refused with -32003 |
-| `session.interrupt` | `{id}` | `true` |
+| `session.send` | `{id, input: {text, images?: ImageInput[], steer?: bool}}` | `true` (starts the agent if it is not running). Images must carry `data` (base64) + `media_type`; an image with a `path` is refused with -32003. Refused (-32003) for sessions with `mode: "terminal"` |
+| `session.interrupt` | `{id}` | `true`. Refused (-32003) for `mode: "terminal"` sessions |
 | `session.stop` | `{id}` | `true` |
 | `session.respond_approval` | `{id, approval_id, decision: {option, updated_input?, message?}}` | `true` — `option`: `accept`/`accept_for_session`/`decline`/`cancel`/`edit_input` |
 | `session.respond_input` | `{id, response: {request_id, answers: {[questionId]: string[]}, declined?: bool}}` | `true` |
@@ -194,8 +220,10 @@ Only these params are accepted (unknown ones: -32602):
   permission_mode?: string, initial_prompt?: string,
   worktree?: { branch: string, base?: string } }
 ```
-`cwd` must be the `path` of a project from `orchestrator.projects`, or a
-folder inside one; otherwise -32003. `worktree.branch` may not contain `..`
+`cwd` must be an existing folder that, with symlinks resolved, is the `path`
+of a project from `orchestrator.projects` (also resolved) or lies inside one;
+otherwise -32003. The session runs in the resolved folder, so its `cwd` may
+differ from what was sent. `worktree.branch` may not contain `..`
 or start with `/`, `\` or `-` (-32003). Terminal sessions, custom commands,
 resuming native sessions, orchestrators and custom worktree paths are not
 available remotely.
@@ -214,7 +242,8 @@ After authentication the connection receives, unasked:
   re-fetch `session.list` and the open session's `session.history`.
 
 A typical client: `remote.auth` → `session.list` + `session.pending` →
-keep the list fresh from `session_*` events; for an open session,
+keep the list fresh from `session_*` events (terminal-mode sessions are listed and can be stopped,
+but not typed into); for an open session,
 `session.history {id}` then apply that session's item/turn events; show
 `approval_requested` / `user_input_requested` (and `session_updated` with
 `attention: "waiting"`) as notifications.
