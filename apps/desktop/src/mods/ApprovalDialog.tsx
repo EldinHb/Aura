@@ -5,7 +5,8 @@
  * relabel it. `aura mods approve` / `aura themes approve` (and the buttons in
  * Settings) only open it; a click on its Approve button grants.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { isTauri } from "../lib/connection";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
 import { useStore } from "../state/store";
@@ -32,6 +33,32 @@ export function ApprovalDialog() {
   const toast = useStore((s) => s.toast);
   const ref = useRef<HTMLDialogElement>(null);
   const show = !!prompt && (!!mod || !!theme);
+  // Whether this window may grant: it must have presented the window secret
+  // its desktop shell gave the daemon (see lib/connection.ts). Not so when the
+  // daemon was started by `aura` or by an earlier run of the app.
+  const [isWindow, setIsWindow] = useState<boolean | null>(null);
+  const [restarting, setRestarting] = useState(false);
+  useEffect(() => {
+    if (!show) return;
+    setIsWindow(null);
+    useStore
+      .getState()
+      .client?.call<{ window: boolean }>("daemon.window_status", {})
+      .then((s) => setIsWindow(!!s?.window))
+      .catch(() => setIsWindow(false));
+  }, [show, prompt?.kind, prompt?.id]);
+
+  const restartService = async () => {
+    setRestarting(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("restart_daemon");
+      location.reload();
+    } catch (e) {
+      setRestarting(false);
+      toast(String((e as Error)?.message ?? e), "error");
+    }
+  };
 
   useEffect(() => {
     const d = ref.current;
@@ -108,14 +135,28 @@ export function ApprovalDialog() {
       onKeyDown={(e) => e.stopPropagation()}
     >
       {body}
+      {body && isWindow === false && (
+        <p className="aura-protected-cannot">
+          This window can't approve: Aura's background service was not started by this app (the <code>aura</code> command started it, or Aura was
+          restarted since). {isTauri() ? "Restart the background service to approve; running agents stop, and your sessions resume afterwards." : "Start Aura's app to approve."}
+        </p>
+      )}
       {body && (
         <div className="aura-protected-actions">
           <button type="button" data-hint onClick={close}>
             Cancel
           </button>
-          <button type="button" data-hint className="aura-protected-approve" onClick={() => void approve()}>
-            {prompt?.kind === "mod" ? "Approve and start" : "Approve CSS"}
-          </button>
+          {isWindow === false ? (
+            isTauri() && (
+              <button type="button" data-hint className="aura-protected-approve" disabled={restarting} onClick={() => void restartService()}>
+                {restarting ? "Restarting…" : "Restart background service"}
+              </button>
+            )
+          ) : (
+            <button type="button" data-hint className="aura-protected-approve" disabled={isWindow === null} onClick={() => void approve()}>
+              {prompt?.kind === "mod" ? "Approve and start" : "Approve CSS"}
+            </button>
+          )}
         </div>
       )}
     </dialog>,

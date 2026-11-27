@@ -27,27 +27,24 @@ pub struct ExtCall {
     /// The session whose tools made the call, when the connection holds a
     /// session token; None for the user (the app, the CLI).
     pub session: Option<String>,
-    /// The connection comes from Aura's own window: its WebSocket handshake
-    /// carried the app's Origin. The CLI sends none. Only the window may grant
-    /// approvals; see [`is_app_origin`].
+    /// The connection proved it is Aura's own window: it presented the window
+    /// secret (`daemon.window_hello`) that the desktop shell gave this daemon
+    /// on stdin when it spawned it. Only such a connection may grant approvals.
     pub window: bool,
 }
 
-/// Whether `origin` is Aura's own window: the Tauri app, or the Vite dev
-/// server on this machine. A same-user program can forge it, but an agent
-/// running `aura` cannot: it makes the window the one place that grants.
-pub fn is_app_origin(origin: &str) -> bool {
-    let local_port = |rest: &str| {
-        rest.split_once(':').is_some_and(|(host, port)| {
-            matches!(host, "localhost" | "127.0.0.1")
-                && !port.is_empty()
-                && port.chars().all(|c| c.is_ascii_digit())
-        })
-    };
-    matches!(
-        origin,
-        "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost"
-    ) || origin.strip_prefix("http://").is_some_and(local_port)
+/// A fresh random secret (64 hex characters), for tokens and the window secret.
+pub fn random_secret() -> String {
+    random_token()
+}
+
+/// Constant-time comparison, so a wrong guess learns nothing from timing.
+fn same_secret(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 /// Extra method handler registered by the daemon (git, mods, etc.). Return
@@ -73,6 +70,9 @@ pub struct AppState {
     pub ext: Option<ExtHandler>,
     pub notifications: Option<broadcast::Sender<Value>>,
     pub shutdown: broadcast::Sender<()>,
+    /// The window secret, when the desktop shell spawned this daemon. Kept in
+    /// memory only: never written to daemon.json, argv, the environment or a log.
+    pub window_secret: Option<Arc<String>>,
 }
 
 pub struct RpcServer {
@@ -97,6 +97,18 @@ impl RpcServer {
         ext: Option<ExtHandler>,
         notifications: Option<broadcast::Sender<Value>>,
     ) -> Result<RpcServer> {
+        Self::start_full(manager, data_dir, ext, notifications, None).await
+    }
+
+    /// Like [`start_with_notifications`](Self::start_with_notifications), with
+    /// the window secret the desktop shell handed over (see [`AppState::window_secret`]).
+    pub async fn start_full(
+        manager: Manager,
+        data_dir: &std::path::Path,
+        ext: Option<ExtHandler>,
+        notifications: Option<broadcast::Sender<Value>>,
+        window_secret: Option<String>,
+    ) -> Result<RpcServer> {
         std::fs::create_dir_all(data_dir)?;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
         let port = listener.local_addr()?.port();
@@ -119,6 +131,7 @@ impl RpcServer {
             ext,
             notifications,
             shutdown: shutdown.clone(),
+            window_secret: window_secret.map(Arc::new),
         };
         let app = Router::new()
             .route("/ws", get(ws_handler))
@@ -227,12 +240,7 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
-    let window = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|o| o.to_str().ok())
-        .is_some_and(is_app_origin);
     let caller = match q.token.as_deref() {
         Some(t) if t == state.token => Caller::User,
         Some(t) => match state.manager.session_for_token(t) {
@@ -245,11 +253,13 @@ async fn ws_handler(
         None => return (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response(),
     };
     ws.max_message_size(64 * 1024 * 1024)
-        .on_upgrade(move |socket| handle_socket(socket, state, caller, window))
+        .on_upgrade(move |socket| handle_socket(socket, state, caller))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller, window: bool) {
+async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
+    // Set once this connection presents the window secret (`daemon.window_hello`).
+    let window = Arc::new(std::sync::atomic::AtomicBool::new(false));
     tracing::info!("rpc client connected");
     // A session's tools get answers only: no events, notifications or
     // terminal output of the user's sessions.
@@ -398,6 +408,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller, windo
                 let out = out_tx.clone();
                 let attached = attached.clone();
                 let caller = caller.clone();
+                let window = window.clone();
                 tokio::spawn(async move {
                     let id = req.id.clone();
                     let result = match authorize(&caller, &req.method, &req.params) {
@@ -406,7 +417,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller, windo
                                 Caller::Session { id, .. } => Some(id.clone()),
                                 Caller::User => None,
                             };
-                            dispatch(&state, &attached, req, session, window).await
+                            dispatch(&state, &attached, req, session, &window).await
                         }
                         Err(e) => Err(e),
                     };
@@ -505,13 +516,55 @@ async fn dispatch(
     attached: &Arc<parking_lot::Mutex<HashSet<String>>>,
     req: Request,
     session: Option<String>,
-    window: bool,
+    window: &std::sync::atomic::AtomicBool,
 ) -> Result<Value, DispatchError> {
     let m = &state.manager;
     let p = &req.params;
     let b64 = base64::engine::general_purpose::STANDARD;
     match req.method.as_str() {
         "daemon.info" => ok(&*state.info),
+        // The desktop shell's webview proves it is Aura's window. The secret
+        // reached this daemon on stdin from the shell that spawned it and
+        // reaches the webview over Tauri IPC; nothing else has it. A daemon
+        // started any other way (by `aura`, or by an earlier app) has none,
+        // and then nothing can grant approvals until the app restarts it.
+        //
+        // What this does not stop: a program running as the same user that
+        // reads this process's memory (a debugger), or that starts its own
+        // aurad with a secret of its choosing, or that writes Aura's database
+        // directly. Those can do anything the user can; this keeps an agent
+        // running `aura` commands, or a forged connection with only the token
+        // from daemon.json, from approving on the user's behalf.
+        "daemon.window_hello" => {
+            if session.is_some() {
+                return Err(DispatchError {
+                    code: ERR_FORBIDDEN,
+                    message: "only the user's connection may say hello".into(),
+                    data: None,
+                });
+            }
+            let Some(secret) = &state.window_secret else {
+                return Err(DispatchError {
+                    code: ERR_FORBIDDEN,
+                    message: "this daemon was not started by the Aura app, so no window can approve here; restart it from the app".into(),
+                    data: None,
+                });
+            };
+            let given = p.get("secret").and_then(Value::as_str).unwrap_or("");
+            if !same_secret(given, secret) {
+                return Err(DispatchError {
+                    code: ERR_FORBIDDEN,
+                    message: "wrong window secret".into(),
+                    data: None,
+                });
+            }
+            window.store(true, std::sync::atomic::Ordering::SeqCst);
+            ok(json!({"window": true}))
+        }
+        "daemon.window_status" => ok(json!({
+            "secretSet": state.window_secret.is_some(),
+            "window": window.load(std::sync::atomic::Ordering::SeqCst),
+        })),
         "daemon.ping" => ok("pong"),
         "daemon.shutdown" => {
             let _ = state.shutdown.send(());
@@ -1416,7 +1469,7 @@ async fn dispatch(
                     method: other.to_string(),
                     params: p.clone(),
                     session: session.clone(),
-                    window,
+                    window: window.load(std::sync::atomic::Ordering::SeqCst),
                 };
                 if let Some(v) = ext(call).await? {
                     return Ok(v);
@@ -1427,35 +1480,6 @@ async fn dispatch(
                 message: format!("unknown method {other}"),
                 data: None,
             })
-        }
-    }
-}
-
-#[cfg(test)]
-mod origin_tests {
-    use super::is_app_origin;
-
-    #[test]
-    fn only_the_app_is_the_window() {
-        for o in [
-            "tauri://localhost",
-            "http://tauri.localhost",
-            "https://tauri.localhost",
-            "http://localhost:1420",
-            "http://127.0.0.1:5173",
-        ] {
-            assert!(is_app_origin(o), "{o}");
-        }
-        for o in [
-            "",
-            "null",
-            "https://evil.example",
-            "http://localhost",
-            "http://localhost:1420.evil.example",
-            "http://localhost.evil:1420",
-            "file://",
-        ] {
-            assert!(!is_app_origin(o), "{o}");
         }
     }
 }

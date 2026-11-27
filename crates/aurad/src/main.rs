@@ -30,11 +30,36 @@ struct Args {
     /// Start no mods at all.
     #[arg(long)]
     no_mods: bool,
+    /// Read the window secret, one line, from stdin. The desktop app passes it
+    /// when it starts aurad; only a connection that presents it may grant
+    /// approvals. Never given in argv or the environment.
+    #[arg(long)]
+    window_secret_stdin: bool,
+}
+
+/// The window secret from stdin: one line of at least 32 characters.
+fn read_window_secret(mut input: impl std::io::BufRead) -> Result<String> {
+    let mut line = String::new();
+    input
+        .read_line(&mut line)
+        .context("read the window secret from stdin")?;
+    let secret = line.trim().to_string();
+    anyhow::ensure!(
+        secret.len() >= 32,
+        "the window secret on stdin is missing or too short"
+    );
+    Ok(secret)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    // First, before anything else reads stdin.
+    let window_secret = if args.window_secret_stdin {
+        Some(read_window_secret(std::io::stdin().lock())?)
+    } else {
+        None
+    };
     let data_dir = args
         .data_dir
         .clone()
@@ -200,11 +225,12 @@ async fn main() -> Result<()> {
             git_methods(&call.method, call.params).await
         })
     });
-    let server = RpcServer::start_with_notifications(
+    let server = RpcServer::start_full(
         manager.clone(),
         &data_dir,
         Some(ext),
         Some(notifications.clone()),
+        window_secret,
     )
     .await?;
     tracing::info!(
@@ -401,4 +427,20 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     })
     .await??;
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_window_secret;
+
+    #[test]
+    fn the_window_secret_comes_as_one_line() {
+        let secret = "a".repeat(64);
+        assert_eq!(
+            read_window_secret(format!("{secret}\n").as_bytes()).unwrap(),
+            secret
+        );
+        assert!(read_window_secret("short\n".as_bytes()).is_err());
+        assert!(read_window_secret("".as_bytes()).is_err());
+    }
 }

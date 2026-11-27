@@ -152,6 +152,17 @@ then the mod's state is `needs_approval` and none of its code runs.
   If Aura is not open, the mod waits until it is.
 - Tell the user what you made and that Aura is asking. Never try to approve
   around the prompt.
+- Only the Aura app's own window can approve. When the app starts Aura's
+  background service (`aurad`), it hands it a secret on a private pipe; the
+  window proves itself with that secret, which no file, command line or
+  environment variable holds. If the service was started some other way (by
+  an `aura` command, or before the app last restarted), the prompt says the
+  window can't approve and offers to restart the service (running agents
+  stop; sessions resume). What this does not stop: a program running as the
+  same user with debugger access to Aura, or one that edits Aura's database
+  or starts its own service directly. Such a program can do anything the user
+  can; the secret keeps a forged connection, or an agent running `aura`
+  commands, from approving for the user.
 - An approval belongs to the mod's id **and its folder**. Moving or renaming
   the folder, or a different folder claiming the same id, asks again. An id
   cannot change in place: a `mod.json` with a new id is a new mod, which
@@ -415,6 +426,11 @@ To test handler logic without any session, call it: `aura mods call <id> …`.
   of uninterrupted synchronous work, single file, JSON in and out of RPC.
 - RPC calls time out after 15 minutes.
 - UI half: a single ES module file, no imports, Aura's React only.
+- File sizes: `mod.json` at most 256 KB, `daemon.js` and `ui.js` at most
+  4 MB each, `ui.css` at most 1 MB. A larger file is refused unread (the mod
+  shows the reason in `aura mods list`).
+- Log entries are one entry each: a message's control characters show as
+  `\u{..}`, and its later lines are indented under `│`.
 - The daemon half is sandboxed: it reaches only what its permissions allow,
   and no files outside its data folder.
 - The UI half is **not** sandboxed. The slots above are where Aura offers

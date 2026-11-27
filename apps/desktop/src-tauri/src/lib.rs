@@ -16,7 +16,17 @@ pub struct Connection {
     pub data_dir: String,
     pub daemon_pid: u32,
     pub version: String,
+    /// The window secret of a daemon this app process spawned, which the
+    /// webview presents (`daemon.window_hello`) to be allowed to grant
+    /// approvals. None for a daemon this process did not spawn (one the CLI
+    /// started, or one an earlier run of the app left running): no window can
+    /// approve there until the app restarts it (`restart_daemon`).
+    pub window_secret: Option<String>,
 }
+
+/// The daemon this process spawned and the window secret it was handed on
+/// stdin. Memory only: the secret is never in argv, the environment or a file.
+static SPAWNED: std::sync::Mutex<Option<(u32, String)>> = std::sync::Mutex::new(None);
 
 fn data_dir() -> PathBuf {
     aura_rpc::default_data_dir()
@@ -95,8 +105,8 @@ async fn answers_within(port: u16, tries: u32) -> bool {
 fn spawn_daemon(dir: &Path) -> Result<()> {
     let bin = find_daemon_binary().ok_or_else(|| anyhow!("aurad binary not found"))?;
     let mut cmd = std::process::Command::new(&bin);
-    cmd.arg("--data-dir").arg(dir);
-    cmd.stdin(std::process::Stdio::null())
+    cmd.arg("--data-dir").arg(dir).arg("--window-secret-stdin");
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(unix)]
@@ -121,8 +131,17 @@ fn spawn_daemon(dir: &Path) -> Result<()> {
         // console that children inherit, none of them show a window.
         cmd.creation_flags(0x0800_0000 | 0x0000_0200);
     }
-    cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("spawn {}", bin.display()))?;
+    let secret = aura_rpc::server::random_secret();
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().context("aurad's stdin")?;
+        stdin.write_all(format!("{secret}\n").as_bytes())?;
+        // Dropped here: aurad sees the end of its stdin.
+    }
+    *SPAWNED.lock().unwrap() = Some((child.id(), secret));
     Ok(())
 }
 
@@ -135,12 +154,19 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 static DAEMON_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn connection(info: aura_rpc::DaemonInfo) -> Connection {
+    let window_secret = SPAWNED
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|(pid, _)| *pid == info.pid)
+        .map(|(_, s)| s.clone());
     Connection {
         port: info.port,
         token: info.token,
         data_dir: info.data_dir,
         daemon_pid: info.pid,
         version: info.version,
+        window_secret,
     }
 }
 
@@ -521,5 +547,54 @@ mod tests {
         assert_eq!(after["status"], "exited", "{after}");
         let _ = c.call("daemon.shutdown", serde_json::json!({})).await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The daemon this process spawns gets a window secret on stdin, never in
+    /// argv; the webview's connection that presents it is the window, and a
+    /// daemon this process did not spawn hands out none.
+    #[tokio::test]
+    async fn a_spawned_daemon_gets_its_window_secret_on_stdin_only() {
+        let dir = tempfile::tempdir().unwrap();
+        spawn_daemon(dir.path()).unwrap();
+        let (pid, secret) = SPAWNED.lock().unwrap().clone().unwrap();
+        let mut info = None;
+        for _ in 0..150 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            info = aura_rpc::read_daemon_info(dir.path()).filter(|i| i.pid == pid);
+            if info.is_some() {
+                break;
+            }
+        }
+        let info = info.expect("daemon started");
+        let conn = connection(info.clone());
+        assert_eq!(conn.window_secret.as_deref(), Some(secret.as_str()));
+        #[cfg(unix)]
+        {
+            let ps = std::process::Command::new("ps")
+                .args(["-o", "command=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let argv = String::from_utf8_lossy(&ps.stdout);
+            assert!(
+                argv.contains("--window-secret-stdin") && !argv.contains(&secret),
+                "{argv}"
+            );
+        }
+        assert!(
+            !std::fs::read_to_string(aura_rpc::daemon_info_path(dir.path()))
+                .unwrap()
+                .contains(&secret)
+        );
+        let c = aura_rpc::client::RpcClient::connect(info.port, &info.token)
+            .await
+            .unwrap();
+        c.call("daemon.window_hello", serde_json::json!({"secret": secret}))
+            .await
+            .unwrap();
+        // Another daemon (not spawned here) gets no secret from this process.
+        let mut other = info.clone();
+        other.pid += 1;
+        assert_eq!(connection(other).window_secret, None);
+        let _ = c.call("daemon.shutdown", serde_json::json!({})).await;
     }
 }
