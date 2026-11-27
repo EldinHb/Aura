@@ -1,7 +1,9 @@
 // node --test scripts/*.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildManifest, platformOf } from "./updater-manifest.mjs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { buildManifest, digestOf, platformOf, verifyArtifact } from "./updater-manifest.mjs";
 
 // The assets tauri-action uploads for a release of every platform the workflow builds.
 const ASSETS = [
@@ -73,3 +75,55 @@ test("refuses an unsigned artifact", () => {
 test("refuses a release missing a platform", () => {
   assert.throws(() => build({ assets: ASSETS.filter((a) => !a.includes("x64.app")) }), /no signed artifact for darwin-x86_64/);
 });
+
+test("refuses a blank signature", () => {
+  assert.throws(() => build({ signatures: { ...signatures, "Aura_0.5.0_amd64.deb.sig": " \n\t" } }), /no signature for Aura_0.5.0_amd64.deb/);
+});
+
+// Made by `tauri signer` with a throwaway key (scripts/fixtures/updater), as the release workflow signs.
+const fixture = (name) => readFileSync(new URL(`./fixtures/updater/${name}`, import.meta.url));
+const pubkey = fixture("test.key.pub").toString();
+const artifact = fixture("artifact.bin");
+const signed = fixture("artifact.bin.v9.9.9.sig").toString();
+const digest = await digestOf([artifact]);
+const check = (over = {}) => verifyArtifact({ name: "artifact.bin", pubkey, signature: signed, digest, version: "9.9.9", ...over });
+
+test("verifies a signature the Tauri CLI made, and its version", () => {
+  check();
+  check({ version: "v9.9.9" });
+});
+
+test("refuses a file that is not the one signed", async () => {
+  const other = Buffer.from(artifact);
+  other[0] ^= 1;
+  assert.throws(() => check({ digest: Buffer.from(createHashOf(other)) }), /does not match the file/);
+});
+
+test("refuses a signature made for another version", () => {
+  assert.throws(() => check({ version: "9.9.10" }), /signed for version 9.9.9, not 9.9.10/);
+});
+
+test("refuses a signature without a version", () => {
+  assert.throws(() => check({ signature: fixture("artifact.bin.unversioned.sig").toString() }), /carries no version/);
+});
+
+test("refuses a signature by another key", () => {
+  const prod = readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8");
+  assert.throws(() => check({ pubkey: JSON.parse(prod).plugins.updater.pubkey }), /not the updater key/);
+});
+
+test("refuses a tampered trusted comment", () => {
+  const lines = Buffer.from(signed, "base64").toString().split("\n");
+  lines[2] = lines[2].replace("version:9.9.9", "version:9.9.10");
+  const tampered = Buffer.from(lines.join("\n")).toString("base64");
+  assert.throws(() => check({ signature: tampered, version: "9.9.10" }), /trusted comment's signature does not match/);
+});
+
+test("refuses garbage and blank signatures", () => {
+  assert.throws(() => check({ signature: "   " }), /not a minisign signature/);
+  assert.throws(() => check({ signature: Buffer.from("untrusted comment: x\nAAAA\n").toString("base64") }), /malformed/);
+});
+
+function createHashOf(buf) {
+  return createHash("blake2b512").update(buf).digest();
+}
