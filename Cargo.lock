@@ -329,6 +329,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aura-contain"
+version = "0.4.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "aura-core"
 version = "0.4.0"
 dependencies = [
@@ -357,6 +365,7 @@ name = "aura-desktop"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "aura-contain",
  "aura-core",
  "aura-rpc",
  "dirs 5.0.1",
@@ -500,6 +509,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "aura-contain",
  "aura-core",
  "aura-pty",
  "axum",
