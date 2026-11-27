@@ -55,6 +55,7 @@
     <string name="fingerprint_help">64 hexadecimal characters; colons and spaces are ignored</string>
     <string name="pairing_code">Pairing code</string>
     <string name="address">Address</string>
+    <string name="addresses">Addresses, tried in order</string>
     <string name="confirm_title">Is this your server?</string>
     <string name="confirm_body">Check that the fingerprint below is the one Aura shows on your computer. This phone will trust only the server with this certificate.</string>
     <string name="pair">Pair</string>

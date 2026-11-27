@@ -68,11 +68,11 @@ class AddServerViewModel(private val container: AppContainer, initialLink: Strin
         viewModelScope.launch {
             val link = confirm.link
             try {
-                val result = pair(container.http, link, container.deviceName)
+                val (result, host) = pair(container.http, link, container.deviceName)
                 val server = SavedServer(
                     id = UUID.randomUUID().toString(),
                     name = link.name ?: result.serverName,
-                    host = link.host,
+                    host = host,
                     port = link.port,
                     fingerprint = link.fingerprint,
                     serverId = result.serverId,

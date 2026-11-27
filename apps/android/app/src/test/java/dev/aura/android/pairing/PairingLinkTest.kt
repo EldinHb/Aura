@@ -40,6 +40,16 @@ class PairingLinkTest {
     }
 
     @Test
+    fun `fallback addresses are read from alt, unbracketed, after the host`() {
+        val link = PairingLink.parse(
+            "aura://pair?host=192.168.1.20&port=7443&fp=$fp&code=c&alt=100.75.1.9%2C%5B2001%3Adb8%3A%3A5%5D%2C192.168.1.20%2C%2Cbad%2Fhost",
+        ).getOrThrow()
+        assertEquals(listOf("100.75.1.9", "2001:db8::5"), link.alternates)
+        assertEquals(listOf("192.168.1.20", "100.75.1.9", "2001:db8::5"), link.hosts)
+        assertEquals(emptyList<String>(), PairingLink.parse("aura://pair?host=h&port=1&fp=$fp&code=c").getOrThrow().alternates)
+    }
+
+    @Test
     fun `other links are refused`() {
         for (text in listOf(
             "https://pair?host=h&port=1&fp=$fp&code=c",

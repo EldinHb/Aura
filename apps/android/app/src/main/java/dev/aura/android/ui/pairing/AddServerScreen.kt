@@ -230,7 +230,10 @@ private fun ColumnScope.ConfirmServer(step: AddServerStep.Confirm, onPair: () ->
                 Icon(Icons.Outlined.VerifiedUser, contentDescription = null)
                 Text(link.name ?: link.host, style = MaterialTheme.typography.titleMedium)
             }
-            Detail(stringResource(R.string.address), if (':' in link.host) "[${link.host}]:${link.port}" else "${link.host}:${link.port}")
+            Detail(
+                stringResource(if (link.alternates.isEmpty()) R.string.address else R.string.addresses),
+                link.hosts.joinToString("\n") { if (':' in it) "[$it]:${link.port}" else "$it:${link.port}" },
+            )
             Detail(stringResource(R.string.fingerprint), Fingerprint.grouped(link.fingerprint), mono = true)
         }
     }

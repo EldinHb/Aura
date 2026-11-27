@@ -95,9 +95,28 @@ class ServerConnectionTest {
     @Test
     fun `pairing trusts the pinned self-signed certificate and returns the device token`() = runBlocking {
         aurad.accept()
-        val result = pair(http, link(), "Pixel")
-        assertEquals("good", result.token)
-        assertEquals("srv", result.serverId)
+        val paired = pair(http, link(), "Pixel")
+        assertEquals("good", paired.result.token)
+        assertEquals("srv", paired.result.serverId)
+        assertEquals(aurad.host, paired.host)
+        assertEquals(listOf("remote.pair"), aurad.requests)
+    }
+
+    @Test
+    fun `pairing falls back to the next address only when one cannot be reached`() = runBlocking {
+        aurad.accept()
+        val link = link().copy(host = "unreachable.invalid", alternates = listOf(aurad.host))
+        val paired = pair(http, link, "Pixel")
+        assertEquals(aurad.host, paired.host)
+        assertEquals(listOf("remote.pair"), aurad.requests)
+    }
+
+    @Test
+    fun `a server that answers ends the pairing, so the code is sent once`() = runBlocking {
+        aurad.accept()
+        val link = link(code = "000000").copy(alternates = listOf("unreachable.invalid"))
+        val e = runCatching { pair(http, link, "Pixel") }.exceptionOrNull()
+        assertTrue("$e", e is RpcException)
         assertEquals(listOf("remote.pair"), aurad.requests)
     }
 

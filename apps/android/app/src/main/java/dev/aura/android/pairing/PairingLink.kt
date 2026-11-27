@@ -9,8 +9,9 @@ import java.net.URLDecoder
  * What a pairing link carries: where the server listens, the SHA-256 of its
  * certificate, and the one-time code that pairs this device.
  *
- * The link is `aura://pair?host=..&port=..&fp=..&code=..&name=..`; `name`
- * is optional.
+ * The link is `aura://pair?host=..&port=..&fp=..&code=..&name=..&alt=..`;
+ * `name` and `alt` are optional. `alt` lists the server's other addresses,
+ * comma separated, IPv6 ones in brackets, to try when `host` cannot be reached.
  */
 data class PairingLink(
     val host: String,
@@ -18,7 +19,11 @@ data class PairingLink(
     val fingerprint: String,
     val code: String,
     val name: String?,
+    val alternates: List<String> = emptyList(),
 ) {
+    /** Every address to try, in order: [host], then [alternates]. */
+    val hosts: List<String> get() = listOf(host) + alternates
+
     companion object {
         const val SCHEME = "aura"
         const val HOST = "pair"
@@ -40,8 +45,14 @@ data class PairingLink(
                 fingerprint = query["fp"].orEmpty(),
                 code = query["code"].orEmpty(),
                 name = query["name"],
-            )
+            ).map { link -> link.copy(alternates = alternates(query["alt"].orEmpty(), link.host)) }
         }
+
+        /** The `alt` addresses, unbracketed; invalid ones and repeats of [host] are dropped. */
+        private fun alternates(alt: String, host: String): List<String> = alt.split(',')
+            .map { it.trim().removePrefix("[").removeSuffix("]") }
+            .filter { it.isNotEmpty() && it != host && it.none { c -> c.isWhitespace() || c in "/?#" } }
+            .distinct()
 
         /** Checks the fields of a link or of manual entry, and normalizes them. */
         fun of(host: String, port: String, fingerprint: String, code: String, name: String? = null): Result<PairingLink> {
