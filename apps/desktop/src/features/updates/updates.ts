@@ -42,7 +42,31 @@ export type UpdateConfig = {
 };
 
 /** How an install that ran without the app ended (Windows: the installer helper). */
-export type InstallResult = { version: string; ok: boolean; message: string | null };
+export type InstallResult = {
+  /** The version that was being installed. */
+  version: string;
+  /** The installer reported success. */
+  ok: boolean;
+  message: string | null;
+  /** The version the installed app, aurad and aura all report, when they agree. */
+  installed_version?: string | null;
+  /** Those agree and the app's resources are there: Aura is whole. */
+  complete?: boolean;
+};
+
+/** What to tell the user about an install that ran without the app: a failed
+ * installer is not a rollback, so this says what the helper found installed. */
+export function describeInstall(r: InstallResult): { level: "info" | "error"; message: string } {
+  const why = (r.message ?? "the installer did not finish").replace(/\.?$/, ".");
+  if (r.complete === false) {
+    return { level: "error", message: "The update didn't finish — Aura may be incomplete. Download and run the installer again." };
+  }
+  const found = r.installed_version ?? null;
+  if (found === r.version) return { level: "info", message: `Aura was updated to ${r.version}` };
+  if (found) return { level: "error", message: `Could not install Aura ${r.version}: ${why} Aura is on version ${found}.` };
+  // A result without the check (written before it existed).
+  return r.ok ? { level: "info", message: `Aura was updated to ${r.version}` } : { level: "error", message: `Could not install Aura ${r.version}: ${why}` };
+}
 
 export type DownloadEvent = { event: "progress"; downloaded: number; total: number | null } | { event: "finished" };
 
@@ -239,14 +263,13 @@ async function reportLastInstall(d: UpdaterDeps) {
     return;
   }
   if (!result) return d.log("no install ran without the app since the last start");
-  d.log(`the install of Aura ${result.version} ${result.ok ? "succeeded" : "failed"}`, result.ok ? undefined : result.message);
-  if (result.ok) app().toast(`Aura was updated to ${result.version}`);
-  else {
-    const why = (result.message ?? "the installer did not finish").replace(/\.?$/, ".");
-    app().toast(`Could not install Aura ${result.version}: ${why} Aura is still on the previous version.`, "error", {
-      actions: [{ label: "Download manually", run: downloadManually }],
-    });
-  }
+  const told = describeInstall(result);
+  d.log(
+    `the install of Aura ${result.version}: installer ${result.ok ? "succeeded" : "failed"}, installed ${result.installed_version ?? "unknown"}, ${result.complete === false ? "incomplete" : "complete"}`,
+    result.message ?? undefined,
+  );
+  if (told.level === "info") app().toast(told.message);
+  else app().toast(told.message, "error", { actions: [{ label: "Download manually", run: downloadManually }] });
 }
 
 /** "Later": hide the banner until the next launch or a newer version. */

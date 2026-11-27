@@ -9,6 +9,14 @@
 ; Manager closes whatever runs these two files. Sessions keep their state and
 ; resume on the next daemon.
 ;
+; Restart Manager closes every process that holds one of these files, not
+; only processes running them: a program that has aurad.exe or aura.exe open
+; (an antivirus scan, an editor, a backup) is closed too. Picking out only the
+; processes whose image is one of these files is not practical from NSIS. For
+; updates Aura starts itself, the update helper first stops exactly the
+; processes running these two files (by image path), so this guard finds
+; nothing left to close.
+;
 ; Tauri's template includes this after Win\RestartManager.nsh (and LogicLib).
 
 !macro AURA_CLOSE_SIDECARS

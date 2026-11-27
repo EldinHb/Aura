@@ -10,6 +10,7 @@ import {
   startUpdates,
   toUpdateError,
   useUpdates,
+  describeInstall,
   type InstallResult,
   type UpdateConfig,
   type UpdaterDeps,
@@ -221,15 +222,42 @@ describe("updater", () => {
   });
 
   it("says how an install that ran without the app ended, once", async () => {
-    await startUpdates(fakeShell({ lastResult: vi.fn(async () => ({ version: "0.5.0", ok: true, message: null })) }));
+    await startUpdates(fakeShell({ lastResult: vi.fn(async () => ({ version: "0.5.0", ok: true, message: null, installed_version: "0.5.0", complete: true })) }));
     expect(toasts().map((t) => t.message)).toEqual(["Aura was updated to 0.5.0"]);
     useStore.setState({ toasts: [] });
-    const failed = fakeShell({ lastResult: vi.fn(async () => ({ version: "0.5.0", ok: false, message: "the installer was cancelled or stopped before it finished" })) });
-    await startUpdates(failed);
+    const cancelled = fakeShell({
+      lastResult: vi.fn(async () => ({ version: "0.5.0", ok: false, message: "the installer was cancelled or stopped before it finished", installed_version: "0.4.0", complete: true })),
+    });
+    await startUpdates(cancelled);
     const [toast] = toasts();
     expect(toast.level).toBe("error");
-    expect(toast.message).toBe("Could not install Aura 0.5.0: the installer was cancelled or stopped before it finished. Aura is still on the previous version.");
+    expect(toast.message).toBe("Could not install Aura 0.5.0: the installer was cancelled or stopped before it finished. Aura is on version 0.4.0.");
     expect(toast.actions?.map((a) => a.label)).toEqual(["Download manually"]);
+  });
+
+  it("says plainly when a failed install left Aura incomplete", async () => {
+    await startUpdates(
+      fakeShell({ lastResult: vi.fn(async () => ({ version: "0.5.0", ok: false, message: "the installer stopped with exit code 2; aura is missing", installed_version: null, complete: false })) }),
+    );
+    const [toast] = toasts();
+    expect(toast.level).toBe("error");
+    expect(toast.message).toBe("The update didn't finish — Aura may be incomplete. Download and run the installer again.");
+    expect(toast.message).not.toContain("previous version");
+    expect(toast.actions?.map((a) => a.label)).toEqual(["Download manually"]);
+  });
+
+  it("names the version it found, whatever the installer reported", () => {
+    // Exit code 2, but every part is the new version: it did install.
+    expect(describeInstall({ version: "0.5.0", ok: false, message: "exit code 2", installed_version: "0.5.0", complete: true })).toEqual({ level: "info", message: "Aura was updated to 0.5.0" });
+    // Success reported, but the parts disagree.
+    expect(describeInstall({ version: "0.5.0", ok: true, message: "its parts are of different versions", installed_version: null, complete: false }).message).toContain("may be incomplete");
+    // Never claims a version it did not find.
+    for (const r of [
+      { version: "0.5.0", ok: false, message: null },
+      { version: "0.5.0", ok: false, message: "x", installed_version: "0.4.0", complete: true },
+    ]) {
+      expect(describeInstall(r).message).not.toContain("previous version");
+    }
   });
 
   it("lets the next check run after one timed out", async () => {

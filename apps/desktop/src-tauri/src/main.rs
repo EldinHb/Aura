@@ -6,5 +6,9 @@ fn main() {
     if let Some(code) = aura_desktop_lib::update_helper::run_if_requested() {
         std::process::exit(code);
     }
+    // How that helper reads the version of the app it installed.
+    if aura_desktop_lib::update_helper::print_version_if_requested() {
+        return;
+    }
     aura_desktop_lib::run()
 }

@@ -173,7 +173,7 @@ async fn stop_daemon(dir: &Path, info: &aura_rpc::DaemonInfo) -> Result<()> {
     }
     for _ in 0..150 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if !daemon_alive(info.port).await && matches!(aura_rpc::lock_data_dir(dir), Ok(Some(_))) {
+        if !daemon_alive(info.port).await && aura_rpc::data_dir_free(dir) {
             return Ok(());
         }
     }
@@ -207,16 +207,23 @@ async fn ensure_daemon() -> Result<Connection> {
     // installer runs, say): aurad would refuse to start until it has finished.
     if aura_rpc::update_lock::install_in_progress(&dir).is_some() {
         tracing::info!("an update is being installed; waiting for it before starting the daemon");
-        aura_rpc::update_lock::wait_for_install(
+        // The helper stops an installer after its limit; past that (an elevated
+        // installer it may not stop) aurad still refuses, and says why.
+        let waited = aura_rpc::update_lock::wait_for_install(
             &dir,
             std::time::Duration::from_millis(500),
-            aura_rpc::update_lock::STALE_AFTER,
+            update_helper::LIMITS.install + std::time::Duration::from_secs(5 * 60),
         )
         .await;
+        if !waited {
+            return Err(anyhow!(
+                "an update is still being installed; open Aura again once it has finished"
+            ));
+        }
     }
     if let Some(info) = aura_rpc::read_daemon_info(&dir) {
         // A daemon holds the data directory (dropping the lock at once releases it).
-        let held = !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_)));
+        let held = !aura_rpc::data_dir_free(&dir);
         if daemon_alive(info.port).await || (held && answers_within(info.port, 5).await) {
             if !replace_daemon(&info.version) {
                 return Ok(connection(info));
@@ -239,12 +246,12 @@ async fn ensure_daemon() -> Result<Connection> {
 async fn stop_daemon_for_update() -> Result<()> {
     let dir = data_dir();
     if let Some(info) = aura_rpc::read_daemon_info(&dir) {
-        let held = !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_)));
+        let held = !aura_rpc::data_dir_free(&dir);
         if held || daemon_alive(info.port).await {
             stop_daemon(&dir, &info).await?;
         }
     }
-    if !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_))) {
+    if !aura_rpc::data_dir_free(&dir) {
         return Err(anyhow!(
             "The Aura daemon did not stop, so the update was not installed. Stop it with `aura daemon stop` and try again."
         ));

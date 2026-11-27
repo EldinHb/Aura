@@ -193,7 +193,7 @@ How each system updates:
 | Installed from | Update |
 |---|---|
 | macOS `.dmg` | Replaces `Aura.app` where it is. If that folder needs an administrator, macOS asks for the password. |
-| Windows installer (`-setup.exe`) | Runs the new installer with only a progress bar, then starts Aura again. If the installer is cancelled or fails, Aura starts again on the version you had and says what went wrong. An `.msi` install updates with the new `.msi`. |
+| Windows installer (`-setup.exe`) | Runs the new installer with only a progress bar, then starts Aura again. If the installer is cancelled or fails, Aura starts again and says which version is installed, or that the install is incomplete and should be run again. An `.msi` install updates with the new `.msi`. |
 | Linux AppImage | Replaces the AppImage file, if you can write to it and its folder. |
 | Linux `.deb` / `.rpm` | Installs the new package, asking for your password through `pkexec` (or `zenity` / `kdialog`). |
 
@@ -204,8 +204,17 @@ by hand.
 
 While an update installs, the `aura` command and the daemon refuse to start ("Aura is
 installing version X.Y.Z…"), so nothing holds on to the files being replaced; they
-work again once Aura has restarted. An install that hangs stops blocking them after
-30 minutes.
+work again once Aura has restarted. On Windows the installer runs in a job that ends
+with Aura's update helper, and one still running after 30 minutes is stopped with
+everything it started. An installer that asked for administrator rights can't be
+stopped by the helper: it keeps the update lock until it finishes, also if the helper
+goes away. After a failed or cancelled install, Aura checks what is installed and says
+which version you have, or that the install is incomplete and should be run again.
+
+The Windows installer itself closes any program that has `aurad.exe` or `aura.exe`
+open before it replaces them (through Windows' Restart Manager), not only Aura's own
+processes. Updates Aura starts itself stop exactly the processes running those two
+files first, so this only matters for an installer you start by hand.
 
 **Upgrading from 0.4.0 or earlier:** those versions cannot update themselves. Install
 the new version once by hand from the
