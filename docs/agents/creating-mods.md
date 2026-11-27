@@ -25,8 +25,8 @@ A mod may have either half or both. The UI half talks to its daemon half with
 ## Quick start
 
 ```sh
-aura mods new hello-world          # writes ~/.aura/mods/hello-world/ (both halves)
-aura mods approve hello-world      # only with the user's consent: see "Approval"
+aura mods new hello-world          # writes ~/.aura/mods/hello-world/ (both halves); Aura lists it at once
+aura mods approve hello-world      # shows the approval prompt in Aura; the user clicks Approve
 aura mods logs hello-world -f      # follow its log in a second terminal
 aura mods call hello-world hello '{"name":"Ada"}'
 ```
@@ -34,7 +34,8 @@ aura mods call hello-world hello '{"name":"Ada"}'
 The new mod adds a section to the bottom of the sidebar with a "Say hello"
 button that calls the daemon half, a section at the top of the inspector, and
 a "Hello world: say hello" command in the command palette (`⌘K` / `Ctrl+K`).
-Open any file in it, change it, save: Aura reloads the mod within a second.
+Open any file in it, change it, save: Aura reloads the half you changed within
+a second (see "The edit loop").
 
 `aura mods new <id>` options: `--ui` (UI half only), `--daemon` (daemon half
 only; with neither flag it gets both), `--name "Display name"`, `--force`
@@ -144,12 +145,20 @@ Aura asks the user to approve every mod it did not ship with, the first time
 it sees it, and again whenever a new version asks for more permissions. Until
 then the mod's state is `needs_approval` and none of its code runs.
 
-- The user approves in **Settings › Mods** ("Approve and start"), which lists
-  the permissions in plain words, or with `aura mods approve <id>`.
-- Approval is the user's decision. Run `aura mods approve` yourself only when
-  the user asked you to make or install this mod for them; otherwise tell
-  them to approve it in Settings › Mods.
-- A UI half is not sandboxed. Say so when you hand a mod to someone else.
+- **Only the user approves, by clicking in Aura.** `aura mods approve <id>`
+  does not approve anything: it makes Aura's window show the approval prompt
+  for that mod (what it may do, where it lives), and prints "Approve it in
+  Aura". The prompt also opens from Settings › Mods ("Review and approve…").
+  If Aura is not open, the mod waits until it is.
+- Tell the user what you made and that Aura is asking. Never try to approve
+  around the prompt.
+- An approval belongs to the mod's id **and its folder**. Moving or renaming
+  the folder, or a different folder claiming the same id, asks again. An id
+  cannot change in place: a `mod.json` with a new id is a new mod, which
+  needs approval (and an id another folder already uses is refused).
+- The UI half is not sandboxed: it runs in Aura's window with Aura's own
+  rights and can change any screen. That is why approval matters, and why the
+  prompt says so. Say so too when you hand a mod to someone else.
 
 ## The daemon half
 
@@ -302,16 +311,16 @@ Each takes a component and returns a function that removes it.
 
 | Slot | Component props | Where |
 | --- | --- | --- |
-| `ctx.ui.sidebarSection({ id, title?, order?, component })` | `{ focused }` | Bottom of the sidebar |
+| `ctx.ui.sidebarSection({ id, title?, order?, component })` | `{ focused }` | Bottom of the sidebar. `title`: Aura draws it as the section's heading, like its own sections (leave it out to draw your own or none). `order`: lower first |
 | `ctx.ui.inspectorSection({ id, order?, component })` | `{ session }` | Top of the inspector, for the selected session |
 | `ctx.ui.sessionRowChips({ id, order?, component })` | `{ session, selected }` | Chips on every session row in the sidebar; keep them tiny |
 | `ctx.ui.branchDecoration({ id, component })` | `{ cwd, status, place, session }` | Next to a session's git branch (`place`: `"statusbar"`, `"inspector"` or `"row"`) |
 | `ctx.ui.statusBarItem({ id, order?, component })` | `{}` | The status bar at the bottom |
-| `ctx.ui.settingsTab({ id, title, component })` | `{}` | A tab of its own in Settings |
+| `ctx.ui.settingsTab({ id, title, component })` | `{}` | A tab of its own in Settings. `title`: the tab's label |
 | `ctx.ui.newSessionField({ id, component })` | `{ cwd, onChange }` | A field in the New session dialog; `onChange({ prompt?, data? })` adds text to the first prompt and stores `data` on the new session |
 | `ctx.ui.inboxRenderer({ component, open? })` | `{ item }` | How this mod's inbox items (`aura.inbox.set`) look; `open(item)` runs on Enter or click |
 | `ctx.ui.transcriptLinks({ id, detect })` | `detect(text, session)` returns `[{ label, url, kind }]` | Link chips found in agent replies |
-| `ctx.ui.view({ id, title, component })` | `{ props, close, active }` | A full main-area view, opened with `ctx.openView(id, props)` |
+| `ctx.ui.view({ id, title, component })` | `{ props, close, active }` | A full main-area view, opened with `ctx.openView(id, props)`. `title`: the label of its tab |
 | `ctx.ui.dialog({ id, component })` | `{ props, close }` | A dialog, opened with `ctx.openDialog(id, props)` |
 
 ### Aura's components and look
@@ -328,24 +337,77 @@ element so Aura's hint mode can reach it from the keyboard.
 
 ## The edit loop
 
-1. Edit `daemon.js`, `ui.js`, `ui.css` or `mod.json` and save. Aura reloads the
-   mod within about half a second; the log says `files changed; reloading`.
-2. Read the result: `aura mods logs <id>` (add `-f` to follow). It holds the
-   daemon half's `console` output, start-up errors, uncaught errors, and the
-   UI half's load and render errors (lines tagged `ui error`).
-3. Check the state: `aura mods list` shows each mod's state
-   (`running`, `needs_approval`, `failed`, `disabled`) and its error.
-4. Exercise the daemon half directly: `aura mods call <id> <method> '<json>'`.
+1. Save a file. After half a second without further changes (so a save in
+   several steps, or a build, is seen once, finished), Aura reloads **only the
+   half that changed**:
 
-`aura mods reload <id>` forces a reload (for example after editing a file the
-watcher cannot see), and `aura mods rescan` looks for added or removed mod
-folders. A change that adds permissions puts the mod back to
-`needs_approval`. The daemon also writes every mod log line to
-`<data dir>/aurad.log`.
+   | You changed | What reloads | State kept |
+   | --- | --- | --- |
+   | `ui.js` or `ui.css` | the UI half, in every window | the daemon half keeps running, with its in-memory state |
+   | `daemon.js` | the daemon half restarts | the UI half stays loaded |
+   | `mod.json` | both halves | none |
+   | anything else (`types/`, `jsconfig.json`, notes) | nothing | everything |
+
+   A restart of the daemon half loses whatever it kept in variables. Keep
+   what must survive in `aura.storage` (kv and collections), and data about a
+   session in `aura.sessions.data(id)`; both are kept across reloads and
+   restarts of Aura.
+2. Aura checks the new files before it stops anything. A `daemon.js` or
+   `mod.json` that does not load leaves the previous version running, and
+   `aura mods list` shows the reason as `reload error`. A `ui.js` that does
+   not parse is reported with its line and column, for example
+   `ui error: ui.js:12:5: SyntaxError: unexpected token in expression: '<'`,
+   in `aura mods list`, in `aura mods logs <id>` and in Settings › Mods. Errors
+   the window hits while loading or rendering the UI half appear in the log
+   as `ui error` lines, with `ui.js:line:column` when the browser gives one.
+3. Read the result: `aura mods logs <id>` (`-f` follows it and shows every
+   line, repeats included). It holds the daemon half's `console` output,
+   start-up errors, uncaught errors, reload messages, and the UI half's
+   reports (at most 20 per 10 seconds per mod; the log notes how many were
+   dropped).
+4. Check the state: `aura mods list` shows each mod's state (`running`,
+   `needs_approval`, `failed`, `disabled`) and its errors.
+5. Exercise the daemon half directly: `aura mods call <id> <method> '<json>'`.
+
+Other commands: `aura mods reload <id>` restarts both halves (for example
+after editing a file the watcher cannot see), `aura mods rescan` looks for
+added, removed and moved mod folders, `aura mods disable <id>` stops a mod
+and keeps it off across restarts, and `aura mods enable <id>` turns it back
+on. A change that adds permissions puts the mod back to `needs_approval`.
+
+The daemon half's `console` lines also go to `<data dir>/aurad.log`; the UI
+half's reports go only to the mod's own log (`aura mods logs`).
 
 To check the files against the API types without running anything, open the
 folder in an editor that understands `jsconfig.json` (VS Code does), or run
 `npx -p typescript tsc -p .` in the mod folder if Node is available.
+
+### Seeing the UI half
+
+There is no separate preview: the UI half runs only inside Aura's own window,
+where its sidebar section, inspector section and commands appear as soon as
+it loads. Keep Aura open while you work; each save shows there at once. If you
+cannot see the window, rely on `aura mods list` (state and `ui error`) and
+`aura mods logs <id>`, and ask the user to look.
+
+### Testing events
+
+`turn_started`, `turn_completed`, `item_*`, `approval_*` and `usage` come from
+**agent sessions** (Claude, Codex or an ACP agent). A terminal session
+(`aura new --provider terminal`) only produces `session_*` and
+`process_exited` events. To fire a turn cheaply, start a small agent session
+with a one-line prompt in an empty folder, and watch the events:
+
+```sh
+mkdir -p /tmp/aura-event-test
+aura events | grep --line-buffered turn_completed &     # watch (Ctrl+C to stop)
+aura new --provider claude --cwd /tmp/aura-event-test --prompt "Reply with the single word: ok"
+aura send <session id> "Again: reply ok"               # one more turn
+aura rm <session id>                                   # clean up
+```
+
+Each turn uses a little of the user's agent quota; ask before you run many.
+To test handler logic without any session, call it: `aura mods call <id> …`.
 
 ## Limits
 
@@ -353,8 +415,13 @@ folder in an editor that understands `jsconfig.json` (VS Code does), or run
   of uninterrupted synchronous work, single file, JSON in and out of RPC.
 - RPC calls time out after 15 minutes.
 - UI half: a single ES module file, no imports, Aura's React only.
-- A mod cannot change Aura's core screens beyond the slots above, and its
-  daemon half cannot read files outside its data folder.
+- The daemon half is sandboxed: it reaches only what its permissions allow,
+  and no files outside its data folder.
+- The UI half is **not** sandboxed. The slots above are where Aura offers
+  room, but code in `ui.js` runs with the same rights as Aura's own window
+  and could change any screen. That is why every mod Aura did not ship with
+  needs the user's approval, given in a prompt no mod or theme stylesheet can
+  hide or reword.
 - The log keeps the last 300 lines per mod.
 
 ## TypeScript and a bundler (optional)
@@ -515,9 +582,9 @@ Install and try it:
 
 ```sh
 aura mods list                                  # turn-counter: needs_approval
-aura mods approve turn-counter                  # with the user's consent
+aura mods approve turn-counter                  # Aura shows the prompt; the user clicks Approve
 aura mods logs turn-counter                     # "turn-counter ready"
-aura mods call turn-counter counts              # {}  (then finish a turn in any session)
+aura mods call turn-counter counts              # {}  (then finish a turn in an agent session; see "Testing events")
 ```
 
 ## Troubleshooting
@@ -525,12 +592,17 @@ aura mods call turn-counter counts              # {}  (then finish a turn in any
 | Symptom | Cause and fix |
 | --- | --- |
 | Not in `aura mods list` | The folder is not in `<data dir>/mods/` (check `AURA_DATA_DIR`), or `mod.json` is missing. Run `aura mods rescan` |
+| `its id "x" is already used by …` | Another folder holds that id; pick another id |
+| No `turn_completed` events | The session is a terminal session; events come from agent sessions (see "Testing events") |
 | Listed with an error, `broken` | `mod.json` does not parse or names a missing file; the error says which |
-| `needs_approval` | Not approved yet, or its permissions grew. See "Approval" |
+| `needs_approval` | Not approved yet, its permissions grew, or its folder moved. See "Approval" |
+| `needs_window` error | Something tried to approve outside Aura's window. Use `aura mods approve <id>`, which shows the prompt in Aura |
+| `reload error` in `aura mods list` | The new `daemon.js` or `mod.json` does not load; the previous version keeps running until you fix it |
+| `ui error: ui.js:LINE:COL` | `ui.js` does not parse there (often JSX or an `import`; use `h(...)` and `__aura.modules`) |
 | `failed` | The daemon half threw while loading or in `activate`; `aura mods logs <id>` has the stack |
 | `permission_denied` | Add the permission to `mod.json` (the mod then needs approval again) |
 | UI shows nothing | `aura mods logs <id>` for `ui error` lines. Check `export default function activate(ctx)` and that you used `__aura.modules.react` |
 | `Invalid hook call` | A second React: use `__aura.modules.react` only |
 | `X is not defined` in the daemon | A Node or browser API (`fetch`, `require`, `process`); use the `aura.*` equivalent |
 | `the mod ran too long and was interrupted` | A synchronous loop ran over 5 s; make it async or smaller |
-| A change does not show | Check the log for `files changed; reloading`; otherwise `aura mods reload <id>` |
+| A change does not show | Check the log for a reload line (`UI files changed…`, `daemon files changed…`, `mod.json changed…`) or a `reload error`; otherwise `aura mods reload <id>` |

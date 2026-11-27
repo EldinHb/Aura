@@ -24,12 +24,18 @@ Themes appear in **Settings › General › Theme** under "Your themes". Aura
 watches the folder: saving a theme file applies the change to the open windows
 at once, with no reload.
 
+A theme made of tokens only needs no approval. A theme with a CSS file does:
+CSS can restyle any screen, so Aura applies a theme's CSS only after the user
+approved that exact CSS, in a prompt like the one for mods. Until then, and
+whenever the CSS changes afterwards, only its tokens apply. Changing only the
+tokens never asks again.
+
 ## Quick start
 
 ```sh
 aura themes new ocean --base dark     # ~/.aura/themes/ocean.json with every token
 aura themes check ocean               # validate
-aura themes use ocean                 # show it in the open Aura windows
+aura themes use ocean                 # show it in Aura, now and after a restart
 ```
 
 `aura themes new <id>` options: `--base dark|light` (default `dark`), `--name
@@ -40,9 +46,15 @@ with a `"// Group"` comment entry before each group. Change the values you
 want and **delete the lines you do not change**: a token left out keeps the
 base theme's value, and keeps following it when Aura's defaults improve.
 
-`aura themes use <id>` switches every open Aura window; the user can switch
-back in Settings. `aura themes use dark` (or `light`, `system`) returns to a
+`aura themes use <id>` switches every open Aura window and is kept, like a
+choice in Settings: windows opened later and Aura after a restart show it too.
+It refuses (exit code 1) a theme that does not exist or cannot be used, with
+the reason; run `aura themes check <id>` for the details. The user can switch
+back in Settings; `aura themes use dark` (or `light`, `system`) returns to a
 built-in theme. `aura themes list` shows all themes and whether each is valid.
+
+`aura themes approve <id>` makes Aura's window show the approval prompt for a
+theme's CSS; only the user's click there approves it.
 
 ## The file format
 
@@ -77,7 +89,13 @@ names in `<id>.css` may change between versions.
 ## Validation
 
 Aura checks a theme each time it changes. `aura themes check <id>` prints the
-same result and exits with 1 when the theme cannot be used.
+same result and exits with 1 when the theme cannot be used. Give it an id
+(looked up the way Aura finds themes, including `<mod id>:<name>` for a mod's
+theme) or a path to a `.json` file (`./mine.json`, checked on its own; its
+file name must still be a valid id).
+
+Aura reads CSS the way a browser does: escapes are decoded first, so
+`u\72l(`, `\75 rl(` and `@im\70ort` count as `url(` and `@import`.
 
 Errors make the theme unusable. Aura then shows its base theme (or dark), and
 Settings › General shows the reason under the picker:
@@ -85,22 +103,32 @@ Settings › General shows the reason under the picker:
 - the JSON does not parse, or is not an object
 - `name` missing or empty; `base` missing or not `dark`/`light`
 - `tokens` is not an object
-- a value contains `{`, `}` or `!important`
-- a `url()` that is not a `data:` URL, `@import`, `image-set()` or any other
-  link (`https://`, `//host`): a theme never loads anything from the web or
-  from disk. Embed images and fonts as `data:` URLs
-- `<id>.json` larger than 128 KB, or `<id>.css` larger than 256 KB
+- a token value that is not one CSS value: a `;`, `{`, `}` or `!important`
+  outside quotes and brackets (`"red;display:none"` is refused)
+- a resource that is not a `data:` URL: in `url()`, `src()`, `image()`,
+  `image-set()` or `cross-fade()`, in a token or in the CSS (also inside
+  `@font-face`). A theme never loads anything from the web or from disk;
+  embed images and fonts as `data:` URLs
+- `@import`, and `@layer` (Aura uses cascade layers to keep its approval
+  prompts out of every theme's reach)
+- `<id>.json` larger than 128 KB, or `<id>.css` larger than 256 KB (Aura
+  never reads more than that)
+- a file that is not a regular file, or a symlink that points outside the
+  themes folder (a symlink to another file in the same folder is fine)
 
 Warnings leave the theme usable and are shown too:
 
-- a token name Aura does not have (it is ignored; check the spelling against
-  the reference below)
+- a token name Aura does not have (it is ignored). When it is close to a real
+  one, the warning says which: `--md-primay is not an Aura token; ignored. Did
+  you mean --md-primary?`
 - a value that is not a string, is empty, or longer than 4000 characters
   (ignored)
 - an unknown top-level field
 
-The CSS file is not parsed beyond those checks; a CSS syntax mistake only
-drops the broken rule, as in any stylesheet.
+Beyond those checks the CSS is not judged; a CSS syntax mistake only drops
+the broken rule, as in any stylesheet. Whatever a theme's CSS does, Aura's
+approval prompts stay as they are: they are drawn above everything and
+styled in a layer no theme can override.
 
 ## How to design one
 
@@ -154,7 +182,8 @@ drops the broken rule, as in any stylesheet.
 
 A mod can ship themes: put `<name>.json` (and `<name>.css`) in a `themes/`
 folder inside the mod. They are listed as `<mod id>:<name>` while the mod is
-enabled and approved, and follow the same rules. See `aura guide mods`.
+enabled and approved, and follow the same rules, including the approval of
+their CSS. See `aura guide mods`.
 
 ## Two complete examples
 

@@ -29,10 +29,12 @@ aura guide mods                 how to write a mod (read this before writing one
 aura guide themes               how to write a theme, with every token
 aura mods new <id>              scaffold a mod that needs no build step
 aura mods list                  installed mods and their state
-aura mods approve <id>          approve a mod's permissions and start it
+aura mods approve <id>          show a mod's approval prompt in Aura (only the user's click approves)
+aura mods enable|disable <id>   turn a mod on or off (off stays off across restarts)
 aura mods logs <id> -f          follow a mod's log (console output and errors)
 aura mods call <id> <method>    call a mod's daemon method
 aura themes new <id>            scaffold a theme with every token
 aura themes check <id>          validate a theme
-aura themes use <id>            switch the open windows to a theme
+aura themes use <id>            show a theme in Aura, kept across restarts
+aura themes approve <id>        show the approval prompt for a theme's CSS
 ```
