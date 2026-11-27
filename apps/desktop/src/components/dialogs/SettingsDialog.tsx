@@ -13,13 +13,14 @@ import { useGroups } from "../../state/groups";
 import { ModSettingsTab, ModsSettings, useModSettingsTabs } from "../../mods/ModsSettings";
 import { MAX_SOUND_FILE, SOUND_CHOICES, playSound } from "../../lib/sound";
 import { SpecialistsTab } from "./SpecialistsTab";
+import { RemoteTab } from "./RemoteTab";
 import { AutonomyPicker } from "../AutonomyPicker";
 import { checkForUpdates, useUpdates } from "../../features/updates/updates";
 import { cssLayersSupported, isBuiltinTheme, NO_LAYERS_NOTE, resolveTheme, useThemes } from "../../state/themes";
 import { openApprovalPrompt } from "../../mods/ApprovalDialog";
 
-type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "mods";
-const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "mods"];
+type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "remote" | "mods";
+const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "remote", "mods"];
 /** A core tab, or a mod's ("<modId>:<id>"). */
 type Tab = string;
 
@@ -27,7 +28,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
   const [tab, setTab] = useState<Tab>(initial ?? "general");
   const modTabs = useModSettingsTabs();
   const TABS: Tab[] = [...CORE_TABS, ...modTabs.map((t) => t.key)];
-  const label = (t: Tab) => modTabs.find((m) => m.key === t)?.title ?? t[0].toUpperCase() + t.slice(1);
+  const label = (t: Tab) => modTabs.find((m) => m.key === t)?.title ?? (t === "remote" ? "Remote access" : t[0].toUpperCase() + t.slice(1));
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const t = (e.target as HTMLElement).tagName;
     const inField = t === "INPUT" || t === "TEXTAREA" || t === "SELECT";
@@ -70,6 +71,7 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
         {tab === "orchestrators" && <OrchestratorsTab />}
         {tab === "specialists" && <SpecialistsTab />}
         {tab === "groups" && <GroupsTab />}
+        {tab === "remote" && <RemoteTab />}
         {tab === "mods" && <ModsSettings />}
         {modTabs.some((m) => m.key === tab) && <ModSettingsTab tabKey={tab} />}
       </div>

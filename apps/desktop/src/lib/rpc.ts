@@ -48,6 +48,7 @@ import type {
   Workspace,
   BulkDeleteResult,
 } from "../gen";
+import type { PairingInfo, RemoteConfig, RemoteDevice, RemoteStatus } from "./remote";
 
 export const FRAME_PTY_OUTPUT = 1;
 export const FRAME_PTY_INPUT = 2;
@@ -386,6 +387,21 @@ export class RpcClient {
   /** Forget a group and take its sessions out of it. */
   deleteGroup(name: string) {
     return this.call<boolean>("group.delete", { name });
+  }
+  remoteStatus() {
+    return this.call<RemoteStatus>("remote.status");
+  }
+  remoteConfigure(config: RemoteConfig) {
+    return this.call<unknown>("remote.configure", config);
+  }
+  remoteStartPairing() {
+    return this.call<PairingInfo>("remote.startPairing");
+  }
+  remoteListDevices() {
+    return this.call<RemoteDevice[]>("remote.listDevices");
+  }
+  remoteRevokeDevice(deviceId: string) {
+    return this.call<boolean>("remote.revokeDevice", { deviceId });
   }
   /** Every workspace, in order (`position`). Never empty: the daemon makes "Default" when there is none. */
   workspaces() {

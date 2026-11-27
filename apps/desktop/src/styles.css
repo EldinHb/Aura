@@ -1130,3 +1130,10 @@ input[type=checkbox], input[type=radio] { accent-color: var(--md-primary); }
 .theme-field select { max-width: 50%; }
 .theme-field small { line-height: 1.4; }
 .theme-field .theme-problem { color: var(--err); }
+.remote-tab .row-controls, .pair-body .row-controls { display: flex; gap: 8px; align-items: center; }
+.remote-tab .row-controls .grow { flex: 1; min-width: 0; }
+.remote-tab .acp-agent { padding: 6px 0; }
+.pair-body { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.pair-body .field { align-self: stretch; margin-bottom: 0; }
+.pair-qr { background: #fff; border-radius: var(--shape-md); }
+.pair-code { font-family: var(--mono); font-size: 32px; font-weight: 600; letter-spacing: 0.12em; user-select: text; }
