@@ -2,32 +2,36 @@ import { SessionRowModChips, SidebarModSections } from "../mods/Slots";
 import { ScheduleSidebar } from "../features/schedules/ScheduleSidebar";
 import { openSchedules, useSchedules } from "../features/schedules/state";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useStore, selectVisibleSessions, selectSessionSections, selectOrchestra, selectTabActivity, canReorder, groupKey, hasHeading, isNestedWorker, orchestratorsOf, ORCHESTRATORS_SECTION, TASK_SECTION, STATE_SECTION, CATEGORY_LABEL, type AppState, type SessionCategory, type SidebarTab } from "../state/store";
+import { useStore, selectVisibleSessions, selectSessionSections, selectNestedRows, selectTabActivity, canReorder, groupKey, hasHeading, leaderOf, rollupOf, treeOf, waitsOnUser, inActiveWorkspace, isLeader, tabOf, ORCHESTRATORS_SECTION, TASK_SECTION, STATE_SECTION, CATEGORY_LABEL, type AppState, type NestedRow, type SessionCategory, type SidebarTab } from "../state/store";
 import { folderOf } from "../lib/sessionFolder";
 import type { Session } from "../gen";
 import { basename, relTime } from "../lib/platform";
-import { registerCommands } from "../lib/commands";
+import { registerCommands, runCommand } from "../lib/commands";
 import { setFocus } from "../commands/core";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import { useSessionBranch } from "../state/branchStatus";
 import { GitCounts, branchName } from "./BranchStatus";
-import { statusClass } from "../lib/sessionStatus";
+import { stateWord, statusClass } from "../lib/sessionStatus";
 import { ATTENTION, hiddenAttention, useViewedSessionId } from "../state/attention";
 import { useFeature } from "../state/features";
 import { openQuestions } from "../lib/features";
+import { openWorkerThread } from "../state/workerThreads";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { StatusRail, focusRail } from "./StatusRail";
 
-/** Every row of the tab shown, those of folded sections and the workers of collapsed orchestrators included. */
+/** Every leader row of the tab shown, those of folded sections included. */
 const selectAllRows = (st: AppState) => selectSessionSections(st, true).flatMap(([, list]) => list);
 /** The section of each of those rows. */
 const selectRowSections = (st: AppState) => selectSessionSections(st, true).flatMap(([g, list]) => list.map(() => g));
 
 /** The id the sidebar keyboard is on, when its section is folded: the section's heading stands in for it. */
 function foldedSectionOf(st: AppState, id: string | null): string | null {
-  if (!id || st.sidebarFilter.trim()) return null;
+  if (!id || st.sidebarFilter.trim() || !st.sessions[id]) return null;
+  const leader = leaderOf(st.sessions[id], st.sessions);
   const sections = selectSessionSections(st, true);
   const keys = sections.map(([g]) => g);
-  const section = sections.find(([, list]) => list.some((s) => s.id === id))?.[0];
+  const section = sections.find(([, list]) => list.includes(leader))?.[0];
   return section !== undefined && hasHeading(section, keys) && st.collapsedGroups.includes(groupKey(st.sidebarTab, section)) ? section : null;
 }
 
@@ -37,24 +41,33 @@ function focusedHeading(): { tab: SidebarTab; section: string } | null {
   return el ? { tab: el.dataset.groupTab as SidebarTab, section: el.dataset.groupSection ?? "" } : null;
 }
 
-/** The session the sidebar keyboard acts on, or the orchestrator showing it when it is collapsed away. */
-function sidebarCurrent(st: AppState, sessions: Session[]): Session | undefined {
+/**
+ * The rows the sidebar keyboard moves through from `current`: every leader,
+ * and the nested rows of `current`'s leader only. Workers are reached from
+ * their leader.
+ */
+function navRows(st: AppState, current: Session | undefined): Session[] {
+  const leader = current ? leaderOf(current, st.sessions) : undefined;
+  return selectVisibleSessions(st).flatMap((l) => (l === leader ? [l, ...selectNestedRows(st, l.id).rows.map((r) => r.session)] : [l]));
+}
+
+/** The session the sidebar keyboard acts on: the row it is on, or the leader showing it when it is collapsed away. */
+function sidebarCurrent(st: AppState): Session | undefined {
   const id = st.sidebarCursor ?? st.selectedId;
-  const s = sessions.find((v) => v.id === id);
-  if (s || !id || !st.sessions[id]) return s;
-  const section = selectSessionSections(st, true).find(([, list]) => list.some((l) => l.id === id))?.[1] ?? [];
-  return orchestratorsOf(st.sessions[id], section).find((o) => sessions.includes(o));
+  const s = id ? st.sessions[id] : undefined;
+  if (!s || !inActiveWorkspace(st, s)) return undefined;
+  const leader = leaderOf(s, st.sessions);
+  if (!selectVisibleSessions(st).includes(leader)) return undefined;
+  return leader === s || selectNestedRows(st, leader.id).rows.some((r) => r.session === s) ? s : leader;
 }
 
 /**
- * The quiet second line: agent, orchestrator mark, workers hidden under a
- * collapsed orchestrator, then folder or worktree, branch state, terminal mode
- * and model with its effort, which give way first. An orchestrator without a folder has none
- * of the folder's. Then the session's issues and PRs.
+ * The quiet second line: agent, orchestrator mark, a leader's workers chip,
+ * then folder or worktree, branch state, terminal mode and model with its
+ * effort, which give way first. An orchestrator without a folder has none of
+ * the folder's. Then the session's issues and PRs.
  */
-function SessionRowDetails({ session: s, selected, hidden, nested }: { session: Session; selected: boolean; hidden: Session[]; nested: boolean }) {
-  // A worker listed away from its orchestrator (they are in different states) says whose it is.
-  const lead = useStore((st) => (!nested && s.orchestrator_id ? st.sessions[s.orchestrator_id]?.title ?? null : null));
+function SessionRowDetails({ session: s, selected, workers }: { session: Session; selected: boolean; workers: React.ReactNode }) {
   const { git } = useSessionBranch(s, selected);
   const branch = (git && branchName(git)) ?? s.worktree?.branch;
   const agent = s.agent ?? s.provider;
@@ -70,8 +83,7 @@ function SessionRowDetails({ session: s, selected, hidden, nested }: { session: 
         )}
         {s.feature_owner && <FeatureChip ownerId={s.id} />}
         {s.specialist_name && s.specialist_name !== s.title && <span className="chip specialist" title={`Hired as ${s.specialist_name}`}>{s.specialist_name}</span>}
-        {hidden.length > 0 && <HiddenWorkers hidden={hidden} />}
-        {lead && <span className="chip lead" title={`Works for ${lead}`}>↳ {lead}</span>}
+        {workers}
         {s.group && <span className="chip group" title={`Group: ${s.group}`}>{s.group}</span>}
         <span className="where">
           {!s.worktree && folderOf(s) !== null && basename(s.cwd)}
@@ -87,7 +99,6 @@ function SessionRowDetails({ session: s, selected, hidden, nested }: { session: 
   );
 }
 
-/** A feature owner's state when it is news: decisions waiting on the user, or the feature delivered. */
 function FeatureChip({ ownerId }: { ownerId: string }) {
   const feature = useFeature(ownerId);
   const open = openQuestions(feature).length;
@@ -96,18 +107,50 @@ function FeatureChip({ ownerId }: { ownerId: string }) {
   return null;
 }
 
-/** The "+N" chip of a collapsed orchestrator, marked when a worker under it waits on the user or has news. */
-function HiddenWorkers({ hidden }: { hidden: Session[] }) {
-  const attention = hiddenAttention(hidden);
-  const lines = hidden.map((w) => (w.attention ? `${w.title} · ${ATTENTION[w.attention].label.toLowerCase()}` : w.title));
+/** What a leader's workers do, in a few words: "N workers", then the most urgent clause. */
+export function workersSummary(tree: Session[]): { text: string; needs: number; working: number } {
+  const needs = tree.filter(waitsOnUser).length;
+  const working = tree.filter((w) => w.status === "running").length;
+  const head = `${tree.length} ${tree.length === 1 ? "worker" : "workers"}`;
+  return { text: needs ? `${head} · ${needs} ${needs === 1 ? "needs" : "need"} you` : working ? `${head} · ${working} working` : head, needs, working };
+}
+
+/**
+ * A leader's workers chip: how many workers it has and the most urgent of
+ * what they do, marked when one waits on the user or has news. Clicking it
+ * opens or closes the nested list.
+ */
+function WorkersChip({ leader, tree, expanded, onToggle }: { leader: Session; tree: Session[]; expanded: boolean; onToggle: () => void }) {
+  const attention = hiddenAttention(tree);
+  const { text, needs, working } = workersSummary(tree);
+  const lines = tree.map((w) => `${w.title} · ${stateWord(w)}`);
   return (
-    <span className={clsx("chip", "workers", hidden.some((w) => w.pending_count > 0) && "warn")} title={lines.join("\n")}>
-      +{hidden.length}
-      {attention && <span className={clsx("attention", ATTENTION[attention].className)} role="img" aria-label={`Hidden workers: ${ATTENTION[attention].label.toLowerCase()}`} />}
-    </span>
+    <button
+      type="button"
+      className={clsx("chip", "workers", needs > 0 && "warn")}
+      title={lines.join("\n")}
+      data-hint
+      aria-expanded={expanded}
+      aria-label={`${text}. ${expanded ? "Hide" : "Show"} the workers of ${leader.title}`}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+    >
+      {text}
+      {!needs && working > 0 && <span className="dot ok pulse" aria-hidden />}
+      {attention && <span className={clsx("attention", ATTENTION[attention].className)} role="img" aria-label={`Workers: ${ATTENTION[attention].label.toLowerCase()}`} />}
+    </button>
   );
 }
 
+/** "2 waiting on you: 1 here, 1 in Tester": where a leader's pending approvals and questions are. */
+function pendingTitle(leader: Session, tree: Session[]): string {
+  const total = leader.pending_count + tree.reduce((n, w) => n + w.pending_count, 0);
+  const parts = [leader.pending_count > 0 && `${leader.pending_count} here`, ...tree.filter((w) => w.pending_count > 0).map((w) => `${w.pending_count} in ${w.title}`)].filter(Boolean);
+  return `${total} waiting on you: ${parts.join(", ")}`;
+}
 
 const TABS: { tab: SidebarTab; label: string; command: string }[] = [
   { tab: "sessions", label: "Sessions", command: "sidebar.tab.sessions" },
@@ -181,16 +224,18 @@ function SidebarTabs() {
 
 /**
  * A section's heading. Clicking it, or Enter / Space on it, folds the
- * section to the heading, which then shows how many sessions it holds and
- * whether one of them works or waits on the user.
+ * section to the heading, which then shows how many leaders it holds and
+ * whether one of their trees works or waits on the user.
  */
 function SectionHeading({ tab, section, label, list, folded, current, viewedId, children }: {
   tab: SidebarTab; section: string; label: string; list: Session[]; folded: boolean; current: boolean; viewedId: string | null; children?: React.ReactNode;
 }) {
   const setGroupCollapsed = useStore((s) => s.setGroupCollapsed);
-  const working = list.filter((s) => s.status === "running").length;
-  const pending = list.reduce((n, s) => n + s.pending_count, 0);
-  const attention = hiddenAttention(list.map((s) => (s.id === viewedId ? { ...s, attention: null } : s)));
+  const sessions = useStore((s) => s.sessions);
+  const trees = list.map((s) => [s, ...treeOf(s.id, sessions)]);
+  const working = list.filter((s) => rollupOf(s, sessions) === "working").length;
+  const pending = trees.flat().reduce((n, s) => n + s.pending_count, 0);
+  const attention = hiddenAttention(trees.flat().map((s) => (s.id === viewedId ? { ...s, attention: null } : s)));
   const what = [`${list.length} ${list.length === 1 ? "session" : "sessions"}`, working > 0 && `${working} working`, pending > 0 && `${pending} waiting on you`, attention && ATTENTION[attention].label.toLowerCase()].filter(Boolean).join(", ");
   return (
     <div className={clsx("section-heading", folded && "folded", current && "cursor")}>
@@ -218,6 +263,49 @@ function SectionHeading({ tab, section, label, list, folded, current, viewedId, 
   );
 }
 
+/** Leaders in other workspaces that match the filter: the sidebar points at ⌘K for them. */
+function useMatchesElsewhere(filter: string): number {
+  return useStore((st) => {
+    const q = filter.trim().toLowerCase();
+    if (!q || !st.workspaces.length) return 0;
+    const match = (s: Session) => s.title.toLowerCase().includes(q) || (folderOf(s) ?? "").toLowerCase().includes(q) || (s.group ?? "").toLowerCase().includes(q);
+    return Object.values(st.sessions).filter((s) => !s.archived && !inActiveWorkspace(st, s) && isLeader(s, st.sessions) && tabOf(s, st.sessions) === st.sidebarTab && (match(s) || treeOf(s.id, st.sessions).some(match))).length;
+  });
+}
+
+/** What an empty list says: per tab, per workspace, and when a filter matches nothing here. */
+function EmptyList({ tab, filter }: { tab: SidebarTab; filter: string }) {
+  const workspace = useStore((s) => s.workspaces.find((w) => w.id === s.activeWorkspace) ?? null);
+  const elsewhere = useMatchesElsewhere(filter);
+  const where = workspace ? ` in ${workspace.name}` : "";
+  if (tab === "scheduled" && !filter) {
+    return (
+      <div className="empty" style={{ height: "auto", padding: 20 }}>
+        <span>No sessions from scheduled tasks yet{where}.</span>
+        <span>Each run of a scheduled task is listed here, by task.</span>
+        <button type="button" className="btn small" data-command="schedules.open" onClick={() => openSchedules()}>Scheduled tasks…</button>
+      </div>
+    );
+  }
+  if (filter) {
+    return (
+      <div className="empty" style={{ height: "auto", padding: 20 }}>
+        <span>No {tab === "scheduled" ? "scheduled " : ""}sessions match.</span>
+        {elsewhere > 0 && <span className="dim">{elsewhere} match in other workspaces — <kbd>⌘K</kbd> to search all.</span>}
+      </div>
+    );
+  }
+  return (
+    <div className="empty" style={{ height: "auto", padding: 20 }}>
+      <span>{workspace ? `No sessions in ${workspace.name} yet.` : "No sessions."}</span>
+      <span>Press <kbd>⌘N</kbd> to {workspace ? "start one here" : "create one"}.</span>
+      {workspace && (
+        <button type="button" className="btn small" data-hint data-command="workspace.gather" onClick={() => void runCommand("workspace.gather")}>Move sessions here…</button>
+      )}
+    </div>
+  );
+}
+
 export function Sidebar() {
   const sessions = useStore(useShallow(selectVisibleSessions));
   const rows = useStore(useShallow(selectAllRows));
@@ -225,8 +313,10 @@ export function Sidebar() {
   const tab = useStore((s) => s.sidebarTab);
   const collapsedGroups = useStore((s) => s.collapsedGroups);
   const tasks = useSchedules((s) => s.tasks);
-  const collapsedOrchestras = useStore((s) => s.collapsedOrchestras);
-  const setOrchestraCollapsed = useStore((s) => s.setOrchestraCollapsed);
+  const allSessions = useStore((s) => s.sessions);
+  const nestedState = useStore(useShallow((s) => [s.expandedOrchestras, s.collapsedSubOrchestras, s.sidebarFilter, s.showArchived, s.sessionOrder]));
+  const collapsedSub = useStore((s) => s.collapsedSubOrchestras);
+  const setOrchestraExpanded = useStore((s) => s.setOrchestraExpanded);
   const selectedId = useStore((s) => s.modView ? null : s.selectedId);
   const cursor = useStore((s) => s.sidebarCursor);
   const filter = useStore((s) => s.sidebarFilter);
@@ -239,8 +329,7 @@ export function Sidebar() {
   const viewedId = useViewedSessionId();
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Sections in ⌘1–9 order, with the rows of folded sections and collapsed
-  // workers in to count them.
+  // Sections in ⌘1–9 order, with the rows of folded sections in to count them.
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
     rows.forEach((s, i) => {
@@ -253,8 +342,14 @@ export function Sidebar() {
   const keys = useMemo(() => groups.map(([g]) => g), [groups]);
   const visibleIds = useMemo(() => new Set(sessions.map((s) => s.id)), [sessions]);
   const taskNames = useMemo(() => new Map(tasks.map((t) => [t.id, t.name])), [tasks]);
+  // Each leader's nested rows: its tree while expanded, the workers that wait on the user while collapsed.
+  const nested = useMemo(() => {
+    void nestedState;
+    const st = useStore.getState();
+    return new Map(sessions.map((s) => [s.id, selectNestedRows(st, s.id)]));
+  }, [sessions, allSessions, nestedState]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Drag a row onto another row of the same group to reorder.
+  // Drag a leader onto another leader of the same section to reorder.
   const drag = useRef<{ id: string; startY: number; active: boolean } | null>(null);
   const suppressClick = useRef(false);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -264,10 +359,11 @@ export function Sidebar() {
       const d = drag.current;
       const id = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-session-id]")?.dataset.sessionId;
       if (!d || !id || id === d.id) return null;
-      const list = selectVisibleSessions(useStore.getState());
+      const st = useStore.getState();
+      const list = selectVisibleSessions(st);
       const from = list.findIndex((s) => s.id === d.id);
       const to = list.findIndex((s) => s.id === id);
-      return from >= 0 && to >= 0 && canReorder(list[from], list[to]) ? { id, below: to > from } : null;
+      return from >= 0 && to >= 0 && canReorder(list[from], list[to], st.sessions) ? { id, below: to > from } : null;
     };
     const end = () => {
       drag.current = null;
@@ -308,31 +404,37 @@ export function Sidebar() {
     const move = (delta: number) => {
       const st = useStore.getState();
       if (st.focus !== "sidebar") return false;
-      const all = selectVisibleSessions(st);
-      const current = sidebarCurrent(st, all);
-      // Up and down step over the workers of other orchestras; they are reached from
-      // their orchestrator. First and last still go to the ends of the sidebar.
-      const orchestra = current && selectOrchestra(st, current.id);
-      const sessions = Math.abs(delta) > 1 ? all : selectSessionSections(st).flatMap(([, list]) => list.filter((s) => orchestra?.includes(s) || orchestratorsOf(s, list).length === 0));
+      const current = sidebarCurrent(st);
+      // Up and down move between leaders and walk the nested list of the current one;
+      // other leaders' workers are reached from their leader. First and last go to the
+      // first and last leader.
+      const sessions = Math.abs(delta) > 1 ? selectVisibleSessions(st) : navRows(st, current);
       const count = sessions.length;
-      if (!count) return true;
+      if (!count) {
+        if (delta === 1) focusRail();
+        return true;
+      }
       let cur = current ? sessions.indexOf(current) : -1;
       const id = st.sidebarCursor ?? st.selectedId;
       if (cur < 0 && foldedSectionOf(st, id) !== null) {
         // On a folded section's heading: step to the rows around it.
         const full = selectSessionSections(st, true).flatMap(([, list]) => list);
-        const above = full.slice(0, full.findIndex((s) => s.id === id)).filter((s) => sessions.includes(s)).length;
+        const leader = st.sessions[id!] ? leaderOf(st.sessions[id!], st.sessions) : undefined;
+        const above = full.slice(0, leader ? full.indexOf(leader) : 0).filter((s) => sessions.includes(s)).length;
         if (delta < 0 && above === 0 && Math.abs(delta) === 1) return true;
         cur = delta > 0 ? above - 1 : above;
       }
+      // Down past the last row goes on into the status rail.
+      if (delta === 1 && cur === count - 1 && focusRail()) return true;
       const next = Math.max(0, Math.min(count - 1, cur < 0 && !(delta > 0 && foldedSectionOf(st, id) !== null) ? 0 : cur + delta));
       // Mods' sidebar sections (pull requests, …) keep their own keys while focused.
       go(sessions[next].id);
       return true;
     };
-    // Tree keys: right opens an orchestrator, then steps to its first worker;
-    // left closes it, or steps from a worker up to its orchestrator.
-    // On a section's heading, or a row at the top of a section, they fold and unfold the section.
+    // Tree keys: right opens a leader, then steps to its first worker; left closes it,
+    // or steps from a worker up to its orchestrator. An orchestrator under a leader opens
+    // and closes the same way. On a section's heading, or a leader at the top of a
+    // section, they fold and unfold the section.
     const tree = (dir: -1 | 1) => {
       const st = useStore.getState();
       if (st.focus !== "sidebar") return;
@@ -347,28 +449,42 @@ export function Sidebar() {
         if (dir > 0) st.setGroupCollapsed(st.sidebarTab, folded, false);
         return;
       }
-      const current = sidebarCurrent(st, selectVisibleSessions(st));
-      const all = selectSessionSections(st, true);
-      const entry = current && all.find(([, list]) => list.includes(current));
-      const section = entry?.[1];
-      if (!current || !section) return;
-      const foldable = hasHeading(entry[0], all.map(([g]) => g)) && !st.sidebarFilter.trim();
-      const workers = section.filter((w) => w.orchestrator_id === current.id && w !== current);
-      const collapsed = st.collapsedOrchestras.includes(current.id);
-      if (dir > 0) {
-        if (workers.length && collapsed) st.setOrchestraCollapsed(current.id, false);
-        else if (workers.length) go(workers[0].id);
-      } else if (workers.length && !collapsed) {
-        st.setOrchestraCollapsed(current.id, true);
-        go(current.id);
-      } else {
-        const parent = orchestratorsOf(current, section)[0];
-        if (parent) go(parent.id);
-        // The cursor stays on the row; the heading shows it while the section is folded.
-        else if (foldable) {
+      const current = sidebarCurrent(st);
+      if (!current) return;
+      const leader = leaderOf(current, st.sessions);
+      const nestedRows = selectNestedRows(st, leader.id);
+      const rows = nestedRows.rows.map((r) => r.session);
+      if (current === leader) {
+        const all = selectSessionSections(st, true);
+        const entry = all.find(([, list]) => list.includes(current));
+        const foldable = !!entry && hasHeading(entry[0], all.map(([g]) => g)) && !st.sidebarFilter.trim();
+        if (dir > 0) {
+          if (nestedRows.total && !nestedRows.expanded) st.setOrchestraExpanded(leader.id, true);
+          else if (nestedRows.expanded && rows.length) go(rows[0].id);
+        } else if (nestedRows.total && nestedRows.expanded) {
+          st.setOrchestraExpanded(leader.id, false);
+          go(leader.id);
+        } else if (foldable && entry) {
+          // The cursor stays on the row; the heading shows it while the section is folded.
           st.setSidebarCursor(current.id);
           st.setGroupCollapsed(st.sidebarTab, entry[0], true);
         }
+        return;
+      }
+      const children = treeOf(current.id, st.sessions).filter((w) => w.orchestrator_id === current.id);
+      const open = nestedRows.expanded && !st.collapsedSubOrchestras.includes(current.id);
+      if (dir > 0) {
+        if (!children.length || !nestedRows.expanded) return;
+        if (!open) st.setOrchestraExpanded(current.id, true);
+        else {
+          const first = rows.find((r) => r.orchestrator_id === current.id);
+          if (first) go(first.id);
+        }
+      } else if (children.length && open) {
+        st.setOrchestraExpanded(current.id, false);
+      } else {
+        const parent = current.orchestrator_id ? st.sessions[current.orchestrator_id] : undefined;
+        go(parent && rows.includes(parent) ? parent.id : leader.id);
       }
     };
     const showTab = (tab: SidebarTab) => {
@@ -380,8 +496,8 @@ export function Sidebar() {
       { id: "sidebar.nav.up", title: "Sidebar: previous", group: "Navigation", hidden: true, run: () => void move(-1) },
       { id: "sidebar.nav.first", title: "Sidebar: first", group: "Navigation", hidden: true, run: () => void move(-1e9) },
       { id: "sidebar.nav.last", title: "Sidebar: last", group: "Navigation", hidden: true, run: () => void move(1e9) },
-      { id: "sidebar.nav.collapse", title: "Sidebar: collapse orchestrator or section / go to orchestrator", group: "Navigation", hidden: true, run: () => tree(-1) },
-      { id: "sidebar.nav.expand", title: "Sidebar: expand orchestrator or section / go to first worker", group: "Navigation", hidden: true, run: () => tree(1) },
+      { id: "sidebar.nav.collapse", title: "Sidebar: collapse leader or section / go to orchestrator", group: "Navigation", hidden: true, run: () => tree(-1) },
+      { id: "sidebar.nav.expand", title: "Sidebar: expand leader or section / go to first worker", group: "Navigation", hidden: true, run: () => tree(1) },
       { id: "sidebar.tab.sessions", title: "Sidebar: Sessions tab", group: "View", keywords: ["sessions", "list"], run: () => showTab("sessions") },
       { id: "sidebar.tab.scheduled", title: "Sidebar: Scheduled tab (sessions scheduled tasks started)", group: "View", keywords: ["scheduled", "cron", "runs"], run: () => showTab("scheduled") },
       { id: "sidebar.tab.next", title: "Sidebar: switch between Sessions and Scheduled", group: "View", run: () => showTab(useStore.getState().sidebarTab === "sessions" ? "scheduled" : "sessions") },
@@ -390,11 +506,12 @@ export function Sidebar() {
   }, [select, setCursor]);
 
   useEffect(() => {
-    const el = listRef.current?.querySelector<HTMLElement>(`[data-session-id="${cursor ?? selectedId}"]`) ?? listRef.current?.querySelector<HTMLElement>(".section-heading.cursor");
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-session-id="${cursor ?? selectedId}"]`) ?? listRef.current?.querySelector<HTMLElement>(".session-row.cursor, .section-heading.cursor");
     el?.scrollIntoView?.({ block: "nearest" });
   }, [cursor, selectedId, collapsedGroups, tab]);
 
   const marked = cursor ?? selectedId;
+  const markedLeader = marked && allSessions[marked] ? leaderOf(allSessions[marked], allSessions).id : null;
   const label = (group: string, list: Session[]) => {
     if (group.startsWith(STATE_SECTION)) return CATEGORY_LABEL[group.slice(STATE_SECTION.length) as SessionCategory] ?? group;
     if (group === ORCHESTRATORS_SECTION) return "Orchestrators";
@@ -404,13 +521,65 @@ export function Sidebar() {
     }
     return group || "Sessions";
   };
+  const open = (id: string) => {
+    if (suppressClick.current) return;
+    select(id);
+    setFocus("main");
+  };
+
+  /** A worker's row in its leader's nested list: no ⌘-digit, not draggable. */
+  const workerRow = ({ session: s, depth }: NestedRow, leader: Session, peek: boolean, task: string | null) => {
+    const children = treeOf(s.id, allSessions).filter((w) => w.orchestrator_id === s.id);
+    const subOpen = !peek && !collapsedSub.includes(s.id);
+    const attention = s.id !== viewedId ? s.attention : null;
+    return (
+      <div
+        key={s.id}
+        className={clsx("session-row", "worker", peek && waitsOnUser(s) && "needs-you", s.id === selectedId && "selected", s.id === cursor && cursor !== selectedId && "cursor", s.archived && "archived", attention && "unseen")}
+        data-session-id={s.id}
+        data-leader-id={leader.id}
+        style={{ "--depth": depth } as CSSProperties}
+        data-hint
+        data-command="session.select"
+        onClick={() => open(s.id)}
+        title={folderOf(s) ?? "Orchestrator: belongs to no folder"}
+      >
+        <span className={clsx("dot", statusClass(s))} />
+        <div className="session-row-body">
+          <div className="title-line">
+            {!peek && children.length > 0 && (
+              <button
+                className={clsx("orchestra-toggle", !subOpen && "collapsed")}
+                data-hint
+                aria-expanded={subOpen}
+                aria-label={`${subOpen ? "Hide" : "Show"} the workers of ${s.title}`}
+                title={subOpen ? "Hide workers" : "Show workers"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOrchestraExpanded(s.id, !subOpen);
+                }}
+              />
+            )}
+            <span className="title" title={s.title}>{task && s.scheduled_task_name && s.title.startsWith(`${s.scheduled_task_name} · `) ? s.title.slice(s.scheduled_task_name.length + 3) : s.title}</span>
+            {attention && <span className={clsx("attention", ATTENTION[attention].className)} role="img" aria-label={ATTENTION[attention].label} title={ATTENTION[attention].label} />}
+            {s.archived && <span className="chip">archived</span>}
+            {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
+            <span className="age">{relTime(s.last_activity)}</span>
+          </div>
+          <SessionRowDetails session={s} selected={s.id === selectedId} workers={null} />
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className={clsx("region sidebar", focus === "sidebar" && "focused")} data-region="sidebar" tabIndex={0} onFocus={() => useStore.getState().setFocus("sidebar")}>
+      <WorkspaceSwitcher />
       <div className="sidebar-head">
         <input
           data-sidebar-filter
           placeholder="Filter sessions  /"
+          aria-label="Filter sessions"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           onKeyDown={(e) => {
@@ -421,24 +590,13 @@ export function Sidebar() {
             }
           }}
         />
-        <button className="btn small" data-command="session.new" title="New session" onClick={() => void import("../lib/commands").then((m) => m.runCommand("session.new"))}>
+        <button className="btn small" data-command="session.new" title="New session" aria-label="New session" onClick={() => void runCommand("session.new")}>
           +
         </button>
       </div>
       <SidebarTabs />
       <div className={clsx("session-list", dragging && "dragging")} ref={listRef} id="sidebar-session-list" role="tabpanel" aria-labelledby={`sidebar-tab-${tab}`}>
-        {groups.length === 0 && (tab === "scheduled" && !filter ? (
-          <div className="empty" style={{ height: "auto", padding: 20 }}>
-            <span>No sessions from scheduled tasks yet.</span>
-            <span>Each run of a scheduled task is listed here, by task.</span>
-            <button type="button" className="btn small" data-command="schedules.open" onClick={() => openSchedules()}>Scheduled tasks…</button>
-          </div>
-        ) : (
-          <div className="empty" style={{ height: "auto", padding: 20 }}>
-            <span>No {tab === "scheduled" ? "scheduled " : ""}sessions{filter ? " match" : ""}.</span>
-            {!filter && tab === "sessions" && <span>Press <kbd>⌘N</kbd> to create one.</span>}
-          </div>
-        ))}
+        {groups.length === 0 && <EmptyList tab={tab} filter={filter} />}
         {groups.map(([group, list]) => {
           const name = label(group, list);
           const folded = !filter && collapsedGroups.includes(groupKey(tab, group));
@@ -447,7 +605,7 @@ export function Sidebar() {
           <div key={group || "__none"} role="group" className={group.startsWith(STATE_SECTION) ? `state-section ${group.slice(STATE_SECTION.length)}` : undefined} aria-label={hasHeading(group, keys) ? name : undefined}>
             {/* Below the orchestrators, the other ungrouped sessions need a heading of their own. */}
             {hasHeading(group, keys) && (
-              <SectionHeading tab={tab} section={group} label={name} list={list} folded={folded} current={folded && list.some((s) => s.id === marked)} viewedId={viewedId}>
+              <SectionHeading tab={tab} section={group} label={name} list={list} folded={folded} current={folded && list.some((s) => s.id === markedLeader)} viewedId={viewedId}>
                 {task && taskNames.has(task) && (
                   <button type="button" className="section-action" data-hint data-command="schedules.open-task" title={`Edit the scheduled task “${name}”`} aria-label={`Edit the scheduled task ${name}`} onClick={() => openSchedules(task)}>
                     Edit task
@@ -458,66 +616,96 @@ export function Sidebar() {
             {list.map((s) => {
               if (!visibleIds.has(s.id)) return null;
               const idx = sessions.indexOf(s);
-              const depth = orchestratorsOf(s, list).length;
-              const workers = list.filter((w) => w.orchestrator_id === s.id && w !== s);
-              const collapsed = workers.length > 0 && collapsedOrchestras.includes(s.id);
-              const hidden = collapsed ? list.filter((l) => !visibleIds.has(l.id) && orchestratorsOf(l, list).includes(s)) : [];
-              const attention = s.id !== viewedId ? s.attention : null;
+              const tree = treeOf(s.id, allSessions);
+              const shownTree = tree.map((w) => (w.id === viewedId ? { ...w, attention: null } : w));
+              const n = nested.get(s.id) ?? { rows: [], expanded: false, more: 0, overflow: false, total: 0 };
+              const expanded = n.expanded && tree.length > 0;
+              const toggle = () => setOrchestraExpanded(s.id, !n.expanded);
+              const ownAttention = s.id !== viewedId ? s.attention : null;
+              const attention = hiddenAttention([{ ...s, attention: ownAttention }, ...shownTree]);
+              const pending = s.pending_count + tree.reduce((sum, w) => sum + w.pending_count, 0);
+              const inside = !n.rows.some((r) => r.session.id === marked) && markedLeader === s.id && marked !== s.id;
+              const summary = tree.length ? workersSummary(tree) : null;
+              const a11y = `${s.title}, ${stateWord(s)}.${summary ? ` ${summary.text.replace(" · ", ": ")}. ${expanded ? "Expanded" : "Collapsed"}.` : ""}`;
               return (
-                <div
-                  key={s.id}
-                  className={clsx(
-                    "session-row",
-                    s.id === selectedId && "selected",
-                    s.id === cursor && cursor !== selectedId && "cursor",
-                    s.archived && "archived",
-                    attention && "unseen",
-                    isNestedWorker(s, list) && "worker",
-                    hidden.some((w) => w.id === selectedId || w.id === cursor) && "cursor",
-                    s.id === dragging && "drag-source",
-                    dropTarget?.id === s.id && (dropTarget.below ? "drop-below" : "drop-above"),
-                  )}
-                  data-session-id={s.id}
-                  style={depth > 1 ? ({ "--depth": depth } as CSSProperties) : undefined}
-                  data-hint
-                  data-command="session.select"
-                  onPointerDown={(e) => {
-                    if (e.button === 0) drag.current = { id: s.id, startY: e.clientY, active: false };
-                  }}
-                  onClick={() => {
-                    if (suppressClick.current) return;
-                    select(s.id);
-                    setFocus("main");
-                  }}
-                  title={folderOf(s) ?? "Orchestrator: belongs to no folder"}
-                >
-                  <span className={clsx("dot", statusClass(s))} />
-                  <div className="session-row-body">
-                    <div className="title-line">
-                      {workers.length > 0 && (
-                        <button
-                          className={clsx("orchestra-toggle", collapsed && "collapsed")}
-                          data-hint
-                          aria-expanded={!collapsed}
-                          aria-label={`${collapsed ? "Show" : "Hide"} the workers of ${s.title}`}
-                          title={collapsed ? "Show workers" : "Hide workers"}
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setOrchestraCollapsed(s.id, !collapsed);
-                          }}
-                        />
-                      )}
-                      {s.pinned && <span className="pin" title="pinned">📌</span>}
-                      <span className="title" title={s.title}>{task && s.scheduled_task_name && s.title.startsWith(`${s.scheduled_task_name} · `) ? s.title.slice(s.scheduled_task_name.length + 3) : s.title}</span>
-                      {attention && <span className={clsx("attention", ATTENTION[attention].className)} role="img" aria-label={ATTENTION[attention].label} title={ATTENTION[attention].label} />}
-                      {s.archived && <span className="chip">archived</span>}
-                      {s.pending_count > 0 && <span className="badge">{s.pending_count}</span>}
-                      {idx < 9 && <kbd>{idx + 1}</kbd>}
-                      <span className="age">{relTime(s.last_activity)}</span>
+                <div key={s.id} className="leader" data-leader={s.id}>
+                  <div
+                    className={clsx(
+                      "session-row",
+                      s.id === selectedId && "selected",
+                      s.id === cursor && cursor !== selectedId && "cursor",
+                      s.archived && "archived",
+                      ownAttention && "unseen",
+                      inside && "cursor",
+                      s.id === dragging && "drag-source",
+                      dropTarget?.id === s.id && (dropTarget.below ? "drop-below" : "drop-above"),
+                    )}
+                    data-session-id={s.id}
+                    aria-label={a11y}
+                    data-hint
+                    data-command="session.select"
+                    onPointerDown={(e) => {
+                      if (e.button === 0) drag.current = { id: s.id, startY: e.clientY, active: false };
+                    }}
+                    onClick={() => open(s.id)}
+                    title={folderOf(s) ?? "Orchestrator: belongs to no folder"}
+                  >
+                    <span className={clsx("dot", statusClass(s))} />
+                    <div className="session-row-body">
+                      <div className="title-line">
+                        {tree.length > 0 && (
+                          <button
+                            className={clsx("orchestra-toggle", !expanded && "collapsed")}
+                            data-hint
+                            aria-expanded={expanded}
+                            aria-label={`${expanded ? "Hide" : "Show"} the workers of ${s.title}`}
+                            title={expanded ? "Hide workers" : "Show workers"}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggle();
+                            }}
+                          />
+                        )}
+                        {s.pinned && <span className="pin" title="pinned">📌</span>}
+                        <span className="title" title={s.title}>{task && s.scheduled_task_name && s.title.startsWith(`${s.scheduled_task_name} · `) ? s.title.slice(s.scheduled_task_name.length + 3) : s.title}</span>
+                        {attention && <span className={clsx("attention", ATTENTION[attention].className)} role="img" aria-label={ATTENTION[attention].label} title={ATTENTION[attention].label} />}
+                        {s.archived && <span className="chip">archived</span>}
+                        {pending > 0 && <span className="badge" title={pendingTitle(s, tree)}>{pending}</span>}
+                        {s.orchestrator && tree.length > 0 && (
+                          <button
+                            type="button"
+                            className="row-action"
+                            data-hint
+                            data-command="workers.cleanup-orchestrator"
+                            title={`Clean up the workers of ${s.title}`}
+                            aria-label={`Clean up the workers of ${s.title}`}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              useStore.getState().openDialog({ kind: "workers-cleanup", orchestratorId: s.id });
+                            }}
+                          >
+                            Clean up
+                          </button>
+                        )}
+                        {idx < 9 && <kbd>{idx + 1}</kbd>}
+                        <span className="age">{relTime(s.last_activity)}</span>
+                      </div>
+                      <SessionRowDetails session={s} selected={s.id === selectedId} workers={tree.length > 0 && <WorkersChip leader={s} tree={shownTree} expanded={expanded} onToggle={toggle} />} />
                     </div>
-                    <SessionRowDetails session={s} selected={s.id === selectedId} hidden={hidden} nested={isNestedWorker(s, list)} />
                   </div>
+                  {n.rows.map((r) => workerRow(r, s, !n.expanded, task))}
+                  {!n.expanded && n.rows.length > 0 && n.more > 0 && (
+                    <button type="button" className="nested-more dim" data-hint onClick={toggle} aria-label={`Show all ${n.total} workers of ${s.title}`}>
+                      +{n.more} more {n.more === 1 ? "worker" : "workers"}
+                    </button>
+                  )}
+                  {n.overflow && (
+                    <button type="button" className="nested-more dim" data-hint data-command="orchestrator.workers" onClick={() => openWorkerThread(s.id)}>
+                      Open workers panel
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -526,8 +714,10 @@ export function Sidebar() {
         })}
         {showArchived && <div className="section-title">showing archived</div>}
       </div>
+      <StatusRail />
       <ScheduleSidebar />
       <SidebarModSections focused={focus === "sidebar"} />
     </div>
   );
 }
+

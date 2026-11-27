@@ -33,7 +33,7 @@ beforeEach(() => {
   useStore.setState({
     sessions: { a: session("a", { status: "running" }), b: session("b") }, sessionOrder: ["a", "b"],
     selectedId: null, modView: null, tabs: [], activeTab: null, recentTabs: [], closedTabs: [],
-    sidebarFilter: "", showArchived: false, collapsedOrchestras: [], collapsedGroups: [], transcripts: {},
+    sidebarFilter: "", showArchived: false, expandedOrchestras: [], collapsedSubOrchestras: [], workspaces: [], collapsedGroups: [], transcripts: {},
   });
   st().openTab({ kind: "session", sessionId: "a" }, { preview: false });
   st().openTab({ kind: "mod", modId: "pull-requests", viewId: "pull", props: { number: 7 } }, { preview: false });

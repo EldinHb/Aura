@@ -14,11 +14,12 @@ import type {
   StoredEvent,
   Turn,
   UserInputRequest,
+  Workspace,
 } from "../gen";
 import type { RpcClient, ConnectionState } from "../lib/rpc";
 /** Sessions from an older daemon may lack `attention`. */
 const normalizeSession = (session: Session): Session => ({ ...session, attention: session.attention ?? null });
-import { folderOf } from "../lib/sessionFolder";
+import { folderOf, workersUnder } from "../lib/sessionFolder";
 import { planContent, type SessionPlan } from "../views/sessionPlans";
 import { dropFeature, setFeature, setRoleSuggestions } from "./features";
 import * as T from "./tabs";
@@ -75,11 +76,23 @@ export type Dialog =
   | { kind: "sandbox"; sessionId: string }
   | { kind: "slash"; sessionId: string }
   | { kind: "steps"; sessionId: string; groupId: string }
-  | { kind: "confirm"; title: string; message: string; onConfirm: () => void; danger?: boolean }
+  /** `confirmLabel` names the confirm button ("Confirm" by default); `focusCancel` starts on Cancel. */
+  | { kind: "confirm"; title: string; message: string; onConfirm: () => void; danger?: boolean; confirmLabel?: string; focusCancel?: boolean }
+  /** Create a workspace, or rename `id`. */
+  | { kind: "workspace-edit"; id?: string }
+  /** Delete workspace `id`, moving what it holds to another. */
+  | { kind: "workspace-delete"; id: string }
+  /** Move session `sessionId` (and its workers) to another workspace. */
+  | { kind: "workspace-move"; sessionId: string }
+  /** Move sessions of other workspaces into the active one. */
+  | { kind: "workspace-gather" }
+  /** Delete worker sessions: of one orchestrator, or of the active workspace (`scope`). */
+  | { kind: "workers-cleanup"; orchestratorId?: string; scope?: "workspace" | "all" }
   | { kind: "image"; caption: string; preview: string | null; load?: () => Promise<Blob> }
   | { kind: "help" };
 
-export type Toast = { id: number; level: "info" | "warn" | "error"; message: string };
+/** `action`: a button on the toast, such as "Go there"; running it dismisses the toast. */
+export type Toast = { id: number; level: "info" | "warn" | "error"; message: string; action?: { label: string; run: () => void } };
 
 export type WhichKeyState = { prefix: string[]; candidates: { key: string; label: string }[] } | null;
 
@@ -123,8 +136,16 @@ export type AppState = {
   cursorItemId: string | null;
   /** highlighted session row in sidebar (may differ from selected) */
   sidebarCursor: string | null;
-  /** Orchestrators whose workers the sidebar hides. Saved across restarts. */
-  collapsedOrchestras: string[];
+  /** Leaders whose workers the sidebar lists; the others show only the workers that wait on the user. Saved across restarts. */
+  expandedOrchestras: string[];
+  /** Orchestrators under a leader whose workers the sidebar hides; they open with their leader otherwise. Saved across restarts. */
+  collapsedSubOrchestras: string[];
+  /** Every workspace, in order. Empty against a daemon from before workspaces: nothing is scoped then. */
+  workspaces: Workspace[];
+  /** The workspace the sidebar shows. Per window, saved across restarts. */
+  activeWorkspace: string | null;
+  /** The session last selected in each workspace, to come back to on switching. Saved across restarts. */
+  lastSelectedByWorkspace: Record<string, string>;
   /** The sidebar tab shown. Saved across restarts. */
   sidebarTab: SidebarTab;
   /** Sidebar sections folded to their heading, by `groupKey`. Saved across restarts. */
@@ -175,7 +196,7 @@ export type AppState = {
   closeDialog: () => void;
   openModView: (v: ModView) => void;
   closeModView: () => void;
-  toast: (message: string, level?: Toast["level"]) => void;
+  toast: (message: string, level?: Toast["level"], action?: Toast["action"]) => void;
   dismissToast: (id: number) => void;
   setInspectorOpen: (open: boolean) => void;
   setSidebarCollapsed: (c: boolean) => void;
@@ -183,7 +204,11 @@ export type AppState = {
   setShowArchived: (v: boolean) => void;
   setCursorItem: (id: string | null) => void;
   setSidebarCursor: (id: string | null) => void;
-  setOrchestraCollapsed: (id: string, collapsed: boolean) => void;
+  /** Open or close the nested list of a leader, or of an orchestrator under one. */
+  setOrchestraExpanded: (id: string, expanded: boolean) => void;
+  setWorkspaces: (list: Workspace[]) => void;
+  /** Show workspace `id`: back to the session last selected there, the filter cleared. */
+  switchWorkspace: (id: string) => void;
   setSidebarTab: (tab: SidebarTab) => void;
   /** Fold or unfold the section `section` of `tab` (see `groupKey`). */
   setGroupCollapsed: (tab: SidebarTab, section: string, collapsed: boolean) => void;
@@ -346,7 +371,12 @@ function applyToTranscript(t: Transcript, ev: Event): Transcript {
 
 const ORDER_KEY = "aura.session-order.v1";
 const SETTINGS_KEY = "aura.settings.v1";
-const COLLAPSED_KEY = "aura.sidebar-collapsed.v1";
+/** Before leaders-only: the orchestrators collapsed. Dropped, so every leader starts collapsed. */
+const OLD_COLLAPSED_KEY = "aura.sidebar-collapsed.v1";
+const EXPANDED_KEY = "aura.sidebar-expanded.v1";
+const SUB_COLLAPSED_KEY = "aura.sidebar-collapsed-sub.v1";
+const WORKSPACE_KEY = "aura.workspace";
+const LAST_SELECTED_KEY = "aura.workspace-last-selected.v1";
 const TAB_KEY = "aura.sidebar-tab.v1";
 const GROUPS_KEY = "aura.sidebar-collapsed-groups.v1";
 
@@ -407,7 +437,11 @@ export const useStore = create<AppState>((set, get) => ({
   showArchived: false,
   cursorItemId: null,
   sidebarCursor: null,
-  collapsedOrchestras: loadCollapsed(),
+  expandedOrchestras: loadExpanded(),
+  collapsedSubOrchestras: loadIds(SUB_COLLAPSED_KEY),
+  workspaces: [],
+  activeWorkspace: loadWorkspace(),
+  lastSelectedByWorkspace: loadLastSelected(),
   sidebarTab: loadTab(),
   collapsedGroups: loadIds(GROUPS_KEY),
   settings: loadSettings(),
@@ -421,7 +455,8 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       sessions,
       sessionOrder: saveOrder(mergeOrder(get().sessionOrder, list)),
-      collapsedOrchestras: saveCollapsed(get().collapsedOrchestras.filter((c) => sessions[c])),
+      expandedOrchestras: saveIds(EXPANDED_KEY, get().expandedOrchestras.filter((c) => sessions[c])),
+      collapsedSubOrchestras: saveIds(SUB_COLLAPSED_KEY, get().collapsedSubOrchestras.filter((c) => sessions[c])),
     });
     if (tabsRestorePending) get().restoreTabs();
     // Tabs of sessions deleted while Aura was away close.
@@ -457,35 +492,42 @@ export const useStore = create<AppState>((set, get) => ({
     const list = selectVisibleSessions(st);
     const from = list.findIndex((s) => s.id === id);
     const to = list.findIndex((s) => s.id === targetId);
-    if (from < 0 || to < 0 || from === to || !canReorder(list[from], list[to])) return;
+    if (from < 0 || to < 0 || from === to || !canReorder(list[from], list[to], st.sessions)) return;
     const order = st.sessionOrder.filter((o) => o !== id);
     // Moving up lands above the target, moving down lands below it.
     order.splice(order.indexOf(targetId) + (to > from ? 1 : 0), 0, id);
     set({ sessionOrder: saveOrder(order) });
   },
   moveSessionBy: (id, delta) => {
-    // Step over the rows it cannot swap with, such as the workers under an orchestrator.
+    // Step over the rows it cannot swap with, such as pinned sessions.
     const list = selectVisibleSessions(get());
     const from = list.findIndex((s) => s.id === id);
     if (from < 0) return;
     for (let i = from + delta; i >= 0 && i < list.length; i += delta) {
-      if (canReorder(list[from], list[i])) return get().moveSessionTo(id, list[i].id);
+      if (canReorder(list[from], list[i], get().sessions)) return get().moveSessionTo(id, list[i].id);
     }
   },
-  // Selecting a worker of a collapsed orchestrator, from a report or a link, opens its group;
-  // a session on the other tab, or in a folded section, from ⌘K or a notification, shows its tab and section.
+  // Selecting a worker of a collapsed leader, from a report or a link, opens its leader;
+  // a session in another workspace, on the other tab, or in a folded section, from ⌘K or a
+  // notification, shows its workspace, tab and section.
   select: (id) => {
-    const st = get();
+    let st = get();
     const s = id ? st.sessions[id] : undefined;
+    if (s && st.workspaces.some((w) => w.id === s.workspace) && s.workspace !== activeWorkspaceOf(st)) {
+      enterWorkspace(s.workspace);
+      st = get();
+    }
     const tab = s ? tabOf(s, st.sessions) : st.sidebarTab;
     const key = s ? groupKey(tab, sectionIn(s, st)) : null;
     const groups = key && st.collapsedGroups.includes(key) ? saveIds(GROUPS_KEY, st.collapsedGroups.filter((g) => g !== key)) : st.collapsedGroups;
     // Its tab shows, opened as a preview tab when it has none (see state/tabs.ts).
     const tabs = id ? T.openTab(tabsOf(st), { kind: "session", sessionId: id }, true) : T.activateTab(tabsOf(st), null);
+    const ws = s && st.workspaces.length ? s.workspace : null;
     set({
       ...tabsPatch(st, tabs),
       modView: null, selectedId: id, cursorItemId: null, sidebarCursor: id,
-      collapsedOrchestras: revealIn(st, id), collapsedGroups: groups, sidebarTab: tab === st.sidebarTab ? tab : saveTab(tab),
+      ...revealIn(st, id), collapsedGroups: groups, sidebarTab: tab === st.sidebarTab ? tab : saveTab(tab),
+      ...(ws && id && st.lastSelectedByWorkspace[ws] !== id ? { lastSelectedByWorkspace: saveLastSelected({ ...st.lastSelectedByWorkspace, [ws]: id }) } : {}),
     });
   },
   openTab: (target, opts) => {
@@ -576,8 +618,11 @@ export const useStore = create<AppState>((set, get) => ({
       setRoleSuggestions(ev.suggestions);
       return;
     }
-    // Belongs to no session. The workspace list itself is the switcher's to keep (not built yet).
-    if (ev.type === "workspaces_changed") return;
+    // Belongs to no session.
+    if (ev.type === "workspaces_changed") {
+      st.setWorkspaces(ev.workspaces);
+      return;
+    }
     const sid = ev.session_id;
     const t = st.transcripts[sid] ?? emptyTranscript();
     set({ transcripts: { ...st.transcripts, [sid]: applyToTranscript(t, ev) } });
@@ -616,10 +661,10 @@ export const useStore = create<AppState>((set, get) => ({
     if (active?.kind === "mod") set(tabsPatch(st, T.closeTab(tabsOf(st), active.key)));
     else set({ modView: null });
   },
-  toast: (message, level = "info") => {
+  toast: (message, level = "info", action) => {
     const id = toastId++;
-    set({ toasts: [...get().toasts, { id, level, message }] });
-    setTimeout(() => get().dismissToast(id), level === "error" ? 8000 : 4000);
+    set({ toasts: [...get().toasts, { id, level, message, ...(action ? { action } : {}) }] });
+    setTimeout(() => get().dismissToast(id), level === "error" || action ? 8000 : 4000);
   },
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
@@ -628,9 +673,33 @@ export const useStore = create<AppState>((set, get) => ({
   setShowArchived: (showArchived) => set({ showArchived }),
   setCursorItem: (cursorItemId) => set({ cursorItemId }),
   setSidebarCursor: (sidebarCursor) => set({ sidebarCursor }),
-  setOrchestraCollapsed: (id, collapsed) => {
-    const rest = get().collapsedOrchestras.filter((c) => c !== id);
-    set({ collapsedOrchestras: saveCollapsed(collapsed ? [...rest, id] : rest) });
+  setOrchestraExpanded: (id, expanded) => {
+    const st = get();
+    const s = st.sessions[id];
+    // A leader is listed open; an orchestrator under one is open unless closed.
+    if (!s || leaderOf(s, st.sessions) === s) {
+      const rest = st.expandedOrchestras.filter((c) => c !== id);
+      set({ expandedOrchestras: saveIds(EXPANDED_KEY, expanded ? [...rest, id] : rest) });
+    } else {
+      const rest = st.collapsedSubOrchestras.filter((c) => c !== id);
+      set({ collapsedSubOrchestras: saveIds(SUB_COLLAPSED_KEY, expanded ? rest : [...rest, id]) });
+    }
+  },
+  setWorkspaces: (workspaces) => {
+    const st = get();
+    const active = workspaces.some((w) => w.id === st.activeWorkspace) ? st.activeWorkspace : workspaces[0]?.id ?? null;
+    set({ workspaces, activeWorkspace: active === st.activeWorkspace ? active : saveWorkspace(active) });
+  },
+  switchWorkspace: (id) => {
+    const st = get();
+    if (!st.workspaces.some((w) => w.id === id)) return;
+    enterWorkspace(id);
+    const after = get();
+    const last = after.lastSelectedByWorkspace[id];
+    const back = last && after.sessions[last]?.workspace === id ? last : null;
+    const first = back ?? selectVisibleSessions(after)[0]?.id ?? null;
+    // An empty workspace shows its empty state; the tabs open stay as they are.
+    if (first) after.select(first);
   },
   setSidebarTab: (tab) => {
     if (tab !== get().sidebarTab) set({ sidebarTab: saveTab(tab), sidebarCursor: null });
@@ -667,11 +736,11 @@ export function mergeOrder(order: string[], list: Session[]): string[] {
 }
 
 /**
- * Sessions can only be reordered among their own section, pinned among pinned,
- * and workers among the workers of the same orchestrator.
+ * Sessions can only be reordered among their own section and pinned among
+ * pinned. Only leaders are reordered; workers keep their orchestrator's order.
  */
-export function canReorder(a: Session, b: Session): boolean {
-  return categoryOf(a) === categoryOf(b) && a.pinned === b.pinned && (a.orchestrator_id ?? null) === (b.orchestrator_id ?? null);
+export function canReorder(a: Session, b: Session, sessions: Record<string, Session>): boolean {
+  return leaderOf(a, sessions) === a && leaderOf(b, sessions) === b && rollupOf(a, sessions) === rollupOf(b, sessions) && a.pinned === b.pinned;
 }
 
 function loadOrder(): string[] {
@@ -701,38 +770,89 @@ if (typeof window !== "undefined") {
   });
 }
 
-function loadCollapsed(): string[] {
+function loadExpanded(): string[] {
   try {
-    const saved: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
-    return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveCollapsed(ids: string[]): string[] {
-  try {
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(ids));
+    localStorage.removeItem(OLD_COLLAPSED_KEY);
   } catch {
     /* ignore */
   }
-  return ids;
+  return loadIds(EXPANDED_KEY);
 }
 
-/** The collapsed orchestrators without the ones `id` is nested under. */
-function revealIn(st: AppState, id: string | null): string[] {
-  const ancestors = new Set<string>();
-  for (let s = id ? st.sessions[id] : undefined; s?.orchestrator_id && !ancestors.has(s.orchestrator_id); s = st.sessions[s.orchestrator_id]) {
-    ancestors.add(s.orchestrator_id);
+/** The fold state that shows `id`: its leader expanded, the orchestrators between them open. */
+function revealIn(st: AppState, id: string | null): Pick<AppState, "expandedOrchestras" | "collapsedSubOrchestras"> {
+  const s = id ? st.sessions[id] : undefined;
+  const leader = s ? leaderOf(s, st.sessions) : undefined;
+  if (!s || !leader || leader === s) return { expandedOrchestras: st.expandedOrchestras, collapsedSubOrchestras: st.collapsedSubOrchestras };
+  const between = new Set<string>();
+  for (let o = s.orchestrator_id ? st.sessions[s.orchestrator_id] : undefined; o && o !== leader && !between.has(o.id); o = o.orchestrator_id ? st.sessions[o.orchestrator_id] : undefined) between.add(o.id);
+  const sub = st.collapsedSubOrchestras.filter((c) => !between.has(c));
+  return {
+    expandedOrchestras: st.expandedOrchestras.includes(leader.id) ? st.expandedOrchestras : saveIds(EXPANDED_KEY, [...st.expandedOrchestras, leader.id]),
+    collapsedSubOrchestras: sub.length === st.collapsedSubOrchestras.length ? st.collapsedSubOrchestras : saveIds(SUB_COLLAPSED_KEY, sub),
+  };
+}
+
+/** The active workspace as the sidebar uses it: null (nothing scoped) against a daemon without workspaces. */
+function activeWorkspaceOf(st: AppState): string | null {
+  return st.workspaces.length ? st.activeWorkspace : null;
+}
+
+/** The workspace new sessions go into: the active one, or null against a daemon without workspaces. */
+export function activeWorkspaceId(st: AppState): string | null {
+  return activeWorkspaceOf(st);
+}
+
+/** Make `id` the active workspace, tell the daemon, and clear the filter; the selection is the caller's. */
+function enterWorkspace(id: string) {
+  const st = useStore.getState();
+  if (st.activeWorkspace !== id) useStore.setState({ activeWorkspace: saveWorkspace(id), sidebarFilter: "", sidebarCursor: null });
+  st.client?.touchWorkspace(id).catch((error: unknown) => console.warn(`Could not tell the daemon about workspace ${id}:`, error));
+}
+
+function loadWorkspace(): string | null {
+  try {
+    return localStorage.getItem(WORKSPACE_KEY);
+  } catch {
+    return null;
   }
-  const kept = st.collapsedOrchestras.filter((c) => !ancestors.has(c));
-  return kept.length === st.collapsedOrchestras.length ? st.collapsedOrchestras : saveCollapsed(kept);
 }
 
-// Another window collapsed or expanded an orchestrator or a section, or switched tabs; follow it.
+function saveWorkspace(id: string | null): string | null {
+  try {
+    if (id) localStorage.setItem(WORKSPACE_KEY, id);
+  } catch {
+    /* ignore */
+  }
+  return id;
+}
+
+function loadLastSelected(): Record<string, string> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(LAST_SELECTED_KEY) ?? "{}");
+    return saved && typeof saved === "object" && !Array.isArray(saved)
+      ? Object.fromEntries(Object.entries(saved).filter((e): e is [string, string] => typeof e[1] === "string"))
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLastSelected(map: Record<string, string>): Record<string, string> {
+  try {
+    localStorage.setItem(LAST_SELECTED_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+  return map;
+}
+
+// Another window expanded or collapsed an orchestrator or a section, or switched tabs; follow it.
+// The active workspace is per window, so it is not followed.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
-    if (e.key === COLLAPSED_KEY) useStore.setState({ collapsedOrchestras: loadCollapsed() });
+    if (e.key === EXPANDED_KEY) useStore.setState({ expandedOrchestras: loadIds(EXPANDED_KEY) });
+    if (e.key === SUB_COLLAPSED_KEY) useStore.setState({ collapsedSubOrchestras: loadIds(SUB_COLLAPSED_KEY) });
     if (e.key === GROUPS_KEY) useStore.setState({ collapsedGroups: loadIds(GROUPS_KEY) });
     if (e.key === TAB_KEY) useStore.setState({ sidebarTab: loadTab() });
   });
@@ -848,11 +968,11 @@ export function tabOf(s: Session, sessions: Record<string, Session>): SidebarTab
   return scheduledTaskOf(s, sessions) ? "scheduled" : "sessions";
 }
 
-/** The section of `s` on its own tab. */
+/** The section of `s` on its own tab: its leader's. */
 function sectionIn(s: Session, st: AppState): string {
   const task = scheduledTaskOf(s, st.sessions);
   if (task) return TASK_SECTION + task;
-  return STATE_SECTION + categoryOf(s);
+  return STATE_SECTION + rollupOf(leaderOf(s, st.sessions), st.sessions);
 }
 
 /**
@@ -864,39 +984,95 @@ export function hasHeading(section: string, sections: string[]): boolean {
 }
 
 /**
- * The sidebar section of `s` among the `shown` sessions: a worker's is its
- * orchestrator's when they share a group, an orchestrator in no group has the
- * orchestrators section, and any other session its group.
+ * The leader of `s`: the top of its `orchestrator_id` chain, or `s` itself
+ * when it has no orchestrator. A worker whose orchestrator is gone leads, and
+ * so does each of orchestrators that point at each other (their chain has no top).
  */
-export function sectionOf(s: Session, shown: Map<string, Session>): string {
+export function leaderOf(s: Session, sessions: Record<string, Session>): Session {
   let top = s;
   const seen = new Set([s.id]);
-  for (let o = top.orchestrator_id ? shown.get(top.orchestrator_id) : undefined; o && !seen.has(o.id) && (o.group ?? "") === (top.group ?? ""); o = o.orchestrator_id ? shown.get(o.orchestrator_id) : undefined) {
+  for (let o = top.orchestrator_id ? sessions[top.orchestrator_id] : undefined; o; o = o.orchestrator_id ? sessions[o.orchestrator_id] : undefined) {
+    if (seen.has(o.id)) return s;
     seen.add(o.id);
     top = o;
   }
-  return top.orchestrator && !top.group ? ORCHESTRATORS_SECTION : top.group ?? "";
+  return top;
+}
+
+/** Whether `s` is a leader: it heads its own row in the sidebar. */
+export function isLeader(s: Session, sessions: Record<string, Session>): boolean {
+  return leaderOf(s, sessions) === s;
+}
+
+/** Whether `s` waits on the user: a question or approval is open, or it says it waits. Finished or failed is not waiting. */
+export function waitsOnUser(s: Pick<Session, "status" | "attention" | "pending_count">): boolean {
+  return s.pending_count > 0 || s.status === "waiting_approval" || s.status === "waiting_input" || s.attention === "waiting";
+}
+
+/** The workers of leader `id` the sidebar counts: every one under it, archived ones left out. */
+export function treeOf(id: string, sessions: Record<string, Session>): Session[] {
+  return workersUnder(id, sessions).filter((w) => !w.archived);
 }
 
 /**
- * The sections of a sidebar tab, top to bottom. On the Sessions tab: the
- * orchestrators in no group, then the other ungrouped sessions, then each
- * group in the order its first session appears; within a section, pinned
- * sessions come first, then the saved order. On the Scheduled tab: a section
- * per task, the one that ran last first, each with its newest session first.
- * Workers of a collapsed orchestrator and the rows of a folded section are
- * left out, unless `withCollapsed` or a filter is set; a folded section is
- * then left out whole. `tab` null lists both tabs, Sessions first.
+ * The state a leader's row is sectioned by, for its whole tree: it needs the
+ * user if it does itself, or a worker waits on the user (a finished or failed
+ * worker reports to its orchestrator, not to the user); it works while anyone
+ * in the tree does; it is idle otherwise.
+ */
+export function rollupOf(leader: Session, sessions: Record<string, Session>): SessionCategory {
+  const tree = treeOf(leader.id, sessions);
+  if (categoryOf(leader) === "waiting" || tree.some(waitsOnUser)) return "waiting";
+  if (leader.status === "running" || tree.some((w) => w.status === "running")) return "working";
+  return "idle";
+}
+
+/** How urgently a session needs the user, lowest first: an open question or approval, waiting, failed, finished; null when it does not. */
+export function urgencyOf(s: Session): number | null {
+  if (s.pending_count > 0 || s.status === "waiting_approval" || s.status === "waiting_input") return 0;
+  if (s.attention === "waiting") return 1;
+  if (s.attention === "failed") return 2;
+  if (s.attention === "done") return 3;
+  return null;
+}
+
+/** Whether `s` is in the workspace the sidebar shows; everything is against a daemon without workspaces. */
+export function inActiveWorkspace(st: AppState, s: Session): boolean {
+  const active = activeWorkspaceOf(st);
+  return active === null || s.workspace === active;
+}
+
+/** Whether `s` or a worker in its tree matches the sidebar filter `q` (lowercase). */
+function matchesFilter(s: Session, q: string): boolean {
+  return s.title.toLowerCase().includes(q) || (folderOf(s) ?? "").toLowerCase().includes(q) || (s.group ?? "").toLowerCase().includes(q) || (s.scheduled_task_name ?? "").toLowerCase().includes(q);
+}
+
+/**
+ * The leaders of a sidebar tab, by section, top to bottom. On the Sessions
+ * tab: waiting for you, working, idle, by each leader's roll-up (see
+ * `rollupOf`); within a section, pinned leaders come first, then the saved
+ * order. On the Scheduled tab: a section per task, the one that ran last
+ * first, each with its newest run first. Workers have no rows here (see
+ * `selectNestedRows`). Only the active workspace's leaders are listed. A
+ * leader matches the filter when it or one of its workers does. The rows of a
+ * folded section are left out, unless `withCollapsed` or a filter is set; a
+ * folded section is then left out whole. `tab` null lists both tabs,
+ * Sessions first.
  */
 export function selectSessionSections(st: AppState, withCollapsed = false, tab: SidebarTab | null = st.sidebarTab): [string, Session[]][] {
-  if (tab === null) return [...selectSessionSections(st, withCollapsed, "sessions"), ...selectSessionSections(st, withCollapsed, "scheduled")];
-  const q = st.sidebarFilter.trim().toLowerCase();
+  return sectionsOf(st, withCollapsed, tab, true);
+}
+
+function sectionsOf(st: AppState, withCollapsed: boolean, tab: SidebarTab | null, scoped: boolean): [string, Session[]][] {
+  if (tab === null) return [...sectionsOf(st, withCollapsed, "sessions", scoped), ...sectionsOf(st, withCollapsed, "scheduled", scoped)];
+  const q = scoped ? st.sidebarFilter.trim().toLowerCase() : "";
   const shown: Session[] = [];
   for (const id of st.sessionOrder) {
     const s = st.sessions[id];
     if (!s || (!st.showArchived && s.archived)) continue;
-    if (tabOf(s, st.sessions) !== tab) continue;
-    if (q && !s.title.toLowerCase().includes(q) && !(folderOf(s) ?? "").toLowerCase().includes(q) && !(s.group ?? "").toLowerCase().includes(q) && !(s.scheduled_task_name ?? "").toLowerCase().includes(q)) continue;
+    if (!isLeader(s, st.sessions) || tabOf(s, st.sessions) !== tab) continue;
+    if (scoped && !inActiveWorkspace(st, s)) continue;
+    if (q && !matchesFilter(s, q) && !treeOf(s.id, st.sessions).some((w) => matchesFilter(w, q))) continue;
     shown.push(s);
   }
   const sections = new Map<string, Session[]>();
@@ -909,100 +1085,181 @@ export function selectSessionSections(st: AppState, withCollapsed = false, tab: 
       sections.get(key)!.push(s);
     }
   } else {
-    // By state: what waits on the user, what works, what is idle. A worker
-    // stays under its orchestrator only while both are in the same state.
+    // By the state of the leader's whole tree: what waits on the user, what works, what is idle.
     for (const c of CATEGORIES) sections.set(STATE_SECTION + c, []);
-    for (const s of shown) sections.get(STATE_SECTION + categoryOf(s))!.push(s);
+    for (const s of shown) sections.get(STATE_SECTION + rollupOf(s, st.sessions))!.push(s);
   }
   const keys = [...sections].filter(([, list]) => list.length > 0).map(([g]) => g);
   const folded = new Set(withCollapsed || q ? [] : st.collapsedGroups);
   return [...sections]
     .filter(([g, list]) => list.length > 0 && !(hasHeading(g, keys) && folded.has(groupKey(tab, g))))
-    .map(([g, list]) => {
-      const rows = nestWorkers([...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)]);
-      if (withCollapsed || q || st.collapsedOrchestras.length === 0) return [g, rows];
-      const collapsed = new Set(st.collapsedOrchestras);
-      return [g, rows.filter((s) => !orchestratorsOf(s, rows).some((o) => collapsed.has(o.id)))];
-    });
+    .map(([g, list]) => [g, [...list.filter((s) => s.pinned), ...list.filter((s) => !s.pinned)]]);
 }
 
-/** Whether `s` is shown under its orchestrator: both in the same section. */
-export function isNestedWorker(s: Session, list: Session[]): boolean {
-  return !!s.orchestrator_id && list.some((o) => o.id === s.orchestrator_id);
-}
+/** The nested list stops at this many rows; past it, a row opens the workers panel. */
+export const NESTED_CAP = 8;
+
+/** A row of a leader's nested list: a worker at `depth` (1 under the leader). */
+export type NestedRow = { session: Session; depth: number };
 
 /**
- * Workers follow their orchestrator, in their own order, and a worker that
- * orchestrates in turn is followed by its own workers.
+ * The workers listed under leader `leaderId`. Expanded: its whole tree in
+ * worker order, depth first (an orchestrator under it shows its own workers
+ * unless closed), at most `NESTED_CAP` rows with `overflow` set past that.
+ * Collapsed: the peek, the workers that wait on the user (and, while
+ * filtering, those that match), with `more` the workers left out.
  */
-function nestWorkers(list: Session[]): Session[] {
-  const out: Session[] = [];
-  const placed = new Set<string>();
-  const place = (s: Session) => {
-    if (placed.has(s.id)) return;
-    placed.add(s.id);
-    out.push(s);
-    for (const w of list) if (w.orchestrator_id === s.id) place(w);
-  };
-  for (const s of list) if (!isNestedWorker(s, list)) place(s);
-  // Orchestrators that point at each other have no top; keep them, last.
-  for (const s of list) place(s);
-  return out;
-}
-
-/** The orchestrators `s` is nested under in `list`, nearest first. */
-export function orchestratorsOf(s: Session, list: Session[]): Session[] {
-  const out: Session[] = [];
-  for (let o = list.find((l) => l.id === s.orchestrator_id); o && o !== s && !out.includes(o); o = list.find((l) => l.id === o!.orchestrator_id)) out.push(o);
-  return out;
-}
-
-/**
- * The orchestra `id` belongs to as the sidebar shows it: its top orchestrator
- * and every visible worker under it. Null when `id` has no orchestra there,
- * which includes an orchestrator whose workers are collapsed.
- */
-export function selectOrchestra(st: AppState, id: string): Session[] | null {
-  for (const [, list] of selectSessionSections(st)) {
-    const s = list.find((l) => l.id === id);
-    if (!s) continue;
-    const top = orchestratorsOf(s, list).at(-1) ?? s;
-    const members = list.filter((l) => l === top || orchestratorsOf(l, list).includes(top));
-    return members.length > 1 ? members : null;
+export function selectNestedRows(st: AppState, leaderId: string): { rows: NestedRow[]; expanded: boolean; more: number; overflow: boolean; total: number } {
+  const all = treeOf(leaderId, st.sessions).filter((w) => st.showArchived || !w.archived);
+  const total = all.length;
+  const expanded = st.expandedOrchestras.includes(leaderId);
+  if (!expanded) {
+    const q = st.sidebarFilter.trim().toLowerCase();
+    const rows = all.filter((w) => waitsOnUser(w) || (q && matchesFilter(w, q))).map((session) => ({ session, depth: 1 }));
+    return { rows, expanded, more: total - rows.length, overflow: false, total };
   }
-  return null;
+  const order = new Map(st.sessionOrder.map((id, i) => [id, i]));
+  const rank = (s: Session) => order.get(s.id) ?? Number.MAX_SAFE_INTEGER;
+  const rows: NestedRow[] = [];
+  const placed = new Set<string>([leaderId]);
+  const place = (parent: string, depth: number) => {
+    const under = all.filter((w) => w.orchestrator_id === parent && !placed.has(w.id)).sort((a, b) => Number(b.pinned) - Number(a.pinned) || rank(a) - rank(b));
+    for (const w of under) {
+      placed.add(w.id);
+      rows.push({ session: w, depth });
+      if (!st.collapsedSubOrchestras.includes(w.id)) place(w.id, depth + 1);
+    }
+  };
+  place(leaderId, 1);
+  const overflow = rows.length > NESTED_CAP;
+  return { rows: overflow ? rows.slice(0, NESTED_CAP) : rows, expanded, more: 0, overflow, total };
 }
 
-/** Visible sessions in the order the sidebar shows them; ⌘1–9 index into this. */
+/** Leaders in the order the sidebar shows them; ⌘1–9 and ⌘[ / ⌘] index into this. */
 export function selectVisibleSessions(st: AppState): Session[] {
   return selectSessionSections(st).flatMap(([, list]) => list);
 }
 
 /**
- * Every session the sidebar lists, on both tabs, folded away or not, in
- * sidebar order: what ⌘K picks from. Picking one shows it (see `select`).
+ * Every session, in every workspace, on both tabs, folded away or not: each
+ * leader in sidebar order followed by its workers. What ⌘K picks from;
+ * picking one shows it (see `select`).
  */
 export function selectListedSessions(st: AppState): Session[] {
-  return selectSessionSections(st, true, null).flatMap(([, list]) => list);
+  return sectionsOf(st, true, null, false).flatMap(([, list]) => list.flatMap((s) => [s, ...workersUnder(s.id, st.sessions).filter((w) => st.showArchived || !w.archived)]));
 }
 
 /**
- * What the sessions on `tab` need from the user, for the tab's badge: their
- * pending approvals and questions, and the most urgent attention marker.
+ * What the sessions on `tab` in the active workspace need from the user, for
+ * the tab's badge: their pending approvals and questions, and the most urgent
+ * attention marker.
  */
 export function selectTabActivity(st: AppState, tab: SidebarTab, viewedId: string | null = null): { count: number; pending: number; working: number; attention: Session["attention"] } {
   let count = 0, pending = 0, working = 0;
   let attention: Session["attention"] = null;
-  const rank = (a: Session["attention"]) => (a === "waiting" ? 3 : a === "failed" ? 2 : a ? 1 : 0);
   for (const s of Object.values(st.sessions)) {
-    if (s.archived || tabOf(s, st.sessions) !== tab) continue;
+    if (s.archived || tabOf(s, st.sessions) !== tab || !inActiveWorkspace(st, s)) continue;
     count++;
     pending += s.pending_count;
     if (s.status === "running") working++;
     const a = s.id === viewedId ? null : s.attention;
-    if (rank(a) > rank(attention)) attention = a;
+    if (rankAttention(a) > rankAttention(attention)) attention = a;
   }
   return { count, pending, working, attention };
+}
+
+const rankAttention = (a: Session["attention"]) => (a === "waiting" ? 3 : a === "failed" ? 2 : a ? 1 : 0);
+
+/** What a workspace holds, scheduled runs left out: its leaders, how many work, what waits on the user. */
+export type WorkspaceActivity = { sessions: number; working: number; pending: number; attention: Session["attention"] };
+
+/** The activity of every workspace, by id, for the switcher. */
+export function selectWorkspaceActivity(st: AppState, viewedId: string | null = null): Record<string, WorkspaceActivity> {
+  const out: Record<string, WorkspaceActivity> = {};
+  for (const w of st.workspaces) out[w.id] = { sessions: 0, working: 0, pending: 0, attention: null };
+  for (const s of Object.values(st.sessions)) {
+    const a = out[s.workspace];
+    if (!a || s.archived || scheduledTaskOf(s, st.sessions)) continue;
+    a.pending += s.pending_count;
+    const att = s.id === viewedId ? null : s.attention;
+    if (rankAttention(att) > rankAttention(a.attention)) a.attention = att;
+    if (!isLeader(s, st.sessions)) continue;
+    a.sessions++;
+    if (rollupOf(s, st.sessions) === "working") a.working++;
+  }
+  return out;
+}
+
+/** A leader in the status rail. `target` is what opening the row selects: the leader, or the worker that waits on the user. */
+export type RailRow = {
+  leader: Session;
+  target: Session;
+  workspace: Workspace | null;
+  /** Pending approvals and questions over the whole tree. */
+  pending: number;
+  attention: Session["attention"];
+  urgency: number;
+  /** The workers that wait on the user. */
+  waitingWorkers: Session[];
+};
+
+function railRow(st: AppState, leader: Session, viewedId: string | null): RailRow {
+  const tree = treeOf(leader.id, st.sessions);
+  const waitingWorkers = tree.filter(waitsOnUser).sort((a, b) => (urgencyOf(a) ?? 9) - (urgencyOf(b) ?? 9) || b.last_activity.localeCompare(a.last_activity));
+  const own = categoryOf(leader) === "waiting" ? urgencyOf(leader) : null;
+  const first = waitingWorkers[0];
+  const target = own === null && first ? first : leader;
+  let attention: Session["attention"] = null;
+  for (const s of [leader, ...tree]) {
+    const a = s.id === viewedId ? null : s.attention;
+    if (rankAttention(a) > rankAttention(attention)) attention = a;
+  }
+  return {
+    leader, target, waitingWorkers, attention,
+    workspace: st.workspaces.find((w) => w.id === leader.workspace) ?? null,
+    pending: leader.pending_count + tree.reduce((n, w) => n + w.pending_count, 0),
+    urgency: Math.min(own ?? 9, first ? urgencyOf(first) ?? 9 : 9),
+  };
+}
+
+/**
+ * The status rail's Elsewhere block: leaders in the other workspaces that
+ * need the user, by urgency then latest activity, and those whose whole tree
+ * is idle, latest first. Scheduled runs and archived sessions are left out.
+ * Null while there is only one workspace.
+ */
+export function selectRail(st: AppState, viewedId: string | null = null): { needsYou: RailRow[]; idle: RailRow[] } | null {
+  if (st.workspaces.length < 2) return null;
+  const needsYou: RailRow[] = [];
+  const idle: RailRow[] = [];
+  for (const s of Object.values(st.sessions)) {
+    if (s.archived || s.workspace === st.activeWorkspace || !isLeader(s, st.sessions) || scheduledTaskOf(s, st.sessions)) continue;
+    const state = rollupOf(s, st.sessions);
+    if (state === "waiting") needsYou.push(railRow(st, s, viewedId));
+    else if (state === "idle") idle.push(railRow(st, s, viewedId));
+  }
+  needsYou.sort((a, b) => a.urgency - b.urgency || b.leader.last_activity.localeCompare(a.leader.last_activity) || a.leader.id.localeCompare(b.leader.id));
+  idle.sort((a, b) => b.leader.last_activity.localeCompare(a.leader.last_activity) || a.leader.id.localeCompare(b.leader.id));
+  return { needsYou, idle };
+}
+
+/**
+ * The status rail's Scheduled runs block: top-level runs in every workspace
+ * that need the user (by urgency) or work (newest first). Idle runs are on the
+ * Scheduled tab only.
+ */
+export function selectScheduledRail(st: AppState, viewedId: string | null = null): RailRow[] {
+  const rows: { row: RailRow; state: SessionCategory }[] = [];
+  for (const s of Object.values(st.sessions)) {
+    if (s.archived || !isLeader(s, st.sessions) || !scheduledTaskOf(s, st.sessions)) continue;
+    const state = rollupOf(s, st.sessions);
+    if (state !== "idle") rows.push({ row: railRow(st, s, viewedId), state });
+  }
+  rows.sort((a, b) => (a.state === b.state ? 0 : a.state === "waiting" ? -1 : 1)
+    || (a.state === "waiting" ? a.row.urgency - b.row.urgency : 0)
+    || b.row.leader.created_at.localeCompare(a.row.leader.created_at)
+    || a.row.leader.id.localeCompare(b.row.leader.id));
+  return rows.map((r) => r.row);
 }
 
 export function selectPendingCount(st: AppState): number {

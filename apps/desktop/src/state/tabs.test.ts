@@ -22,7 +22,7 @@ beforeEach(() => {
   useStore.setState({
     sessions: Object.fromEntries(ids.map((id) => [id, session(id)])), sessionOrder: ids,
     selectedId: null, modView: null, tabs: [], activeTab: null, recentTabs: [], closedTabs: [],
-    sidebarFilter: "", showArchived: false, collapsedOrchestras: [], collapsedGroups: [], transcripts: {},
+    sidebarFilter: "", showArchived: false, expandedOrchestras: [], collapsedSubOrchestras: [], workspaces: [], collapsedGroups: [], transcripts: {},
   });
   // The first `setSessions` of a run restores the saved tabs; get that out of the way.
   st().restoreTabs();

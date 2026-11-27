@@ -56,7 +56,7 @@ beforeEach(() => {
       quiet: session("quiet"),
     },
     sessionOrder: ["done", "failed", "waiting", "quiet"], transcripts: {}, sidebarFilter: "", showArchived: false,
-    collapsedOrchestras: [], selectedId: null, sidebarCursor: null, modView: null, settings: defaultSettings,
+    expandedOrchestras: [], collapsedSubOrchestras: [], workspaces: [], selectedId: null, sidebarCursor: null, modView: null, settings: defaultSettings,
     dialog: { kind: "none" }, paletteOpen: false,
   });
 });
@@ -119,21 +119,28 @@ it("does not clear a session hidden behind a mod's view", () => {
   expect(useStore.getState().sessions.done.attention).toBe("done");
 });
 
-it("marks the hidden-workers chip of a collapsed orchestrator with the most urgent kind under it", () => {
+it("marks a leader's workers chip with the most urgent kind under it, and rolls up only a worker that waits", () => {
   useStore.setState({
     sessions: {
-      // All waiting, so the orchestra shares a section and its workers can be folded under it.
-      lead: session("lead", { orchestrator: true, attention: "done" }),
+      lead: session("lead", { orchestrator: true }),
       w1: session("w1", { orchestrator_id: "lead", attention: "done" }),
       w2: session("w2", { orchestrator_id: "lead", attention: "waiting", pending_count: 1 }),
     },
-    sessionOrder: ["lead", "w1", "w2"], collapsedOrchestras: ["lead"],
+    sessionOrder: ["lead", "w1", "w2"],
   });
   render(<Sidebar />);
   const chip = document.querySelector<HTMLElement>('[data-session-id="lead"] .chip.workers');
   expect(chip?.querySelector(".attention")?.className).toBe("attention waiting");
-  expect(chip?.querySelector(".attention")?.getAttribute("aria-label")).toBe("Hidden workers: waiting on you since you last looked");
-  expect(chip?.title).toBe("w1 · finished since you last looked\nw2 · waiting on you since you last looked");
+  expect(chip?.querySelector(".attention")?.getAttribute("aria-label")).toBe("Workers: waiting on you since you last looked");
+  expect(chip?.title).toBe("w1 · finished\nw2 · waiting on you");
+  // The leader's row carries the tree's marker and pending count.
+  expect(marker("lead")?.className).toBe("attention waiting");
+  expect(document.querySelector('[data-session-id="lead"] .title-line .badge')?.getAttribute("title")).toBe("1 waiting on you: 1 in w2");
+
+  // A finished worker alone does not put its leader in Waiting for you.
+  act(() => useStore.getState().upsertSession(session("w2", { orchestrator_id: "lead" })));
+  expect([...document.querySelectorAll(".section-label")].map((el) => el.textContent)).toEqual(["Idle"]);
+  expect(marker("lead")?.className).toBe("attention done");
 });
 
 it("counts what the inbox lists: waiting approvals and questions, and what mods report unread", () => {

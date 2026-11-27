@@ -100,9 +100,13 @@ export default function App() {
         st().setClient(client);
         st().setConnection("open");
         const refresh = async () => {
-          const [providers, sessions, info] = await Promise.all([client.providers(), client.sessions(), client.daemonInfo()]);
+          // A daemon from before workspaces has none to list: the sidebar is then not scoped.
+          const [providers, sessions, info, workspaces] = await Promise.all([client.providers(), client.sessions(), client.daemonInfo(), client.workspaces().catch(() => [])]);
           st().setProviders(providers);
+          st().setWorkspaces(workspaces);
           st().setSessions(sessions);
+          const active = st().activeWorkspace;
+          if (workspaces.length && active) client.touchWorkspace(active).catch((error: unknown) => console.warn("Could not tell the daemon the active workspace:", error));
           useStore.setState({ daemonVersion: info.version });
           // A daemon from before feature owners has none to list.
           client.features().then(setFeatures, () => {});
