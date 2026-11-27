@@ -9,7 +9,8 @@ use tokio::sync::broadcast;
 fn write_mod(root: &Path, id: &str, manifest: Value, daemon: &str) {
     let dir = root.join(id);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut m = json!({"id": id, "name": id, "version": "1.0.0", "apiVersion": 1, "daemon": "daemon.js"});
+    let mut m =
+        json!({"id": id, "name": id, "version": "1.0.0", "apiVersion": 1, "daemon": "daemon.js"});
     for (k, v) in manifest.as_object().unwrap() {
         m[k] = v.clone();
     }
@@ -113,7 +114,10 @@ async fn mods_call_each_other_within_their_permissions() {
     assert_eq!(err.code, "permission_denied");
     let err = call(h, "mod.base.nope", json!({})).await.unwrap_err();
     assert_eq!(err.downcast::<crate::ModError>().unwrap().code, "not_found");
-    assert_eq!(h.handle("something.else", &json!({}), None).await.unwrap(), None);
+    assert_eq!(
+        h.handle("something.else", &json!({}), None).await.unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -130,23 +134,41 @@ async fn user_mods_wait_for_approval_and_bundled_ones_do_not() {
     assert_eq!(status(&list, "b")["state"], "needs_approval");
     assert!(call(h, "mod.b.ping", json!({})).await.is_err());
     call(h, "mods.approve", json!({"id": "b"})).await.unwrap();
-    assert_eq!(call(h, "mod.b.ping", json!({})).await.unwrap(), json!("pong"));
+    assert_eq!(
+        call(h, "mod.b.ping", json!({})).await.unwrap(),
+        json!("pong")
+    );
 
     call(h, "mods.disable", json!({"id": "a"})).await.unwrap();
     let list = call(h, "mods.list", json!({})).await.unwrap();
     assert_eq!(status(&list, "a")["state"], "disabled");
     assert!(call(h, "mod.a.ping", json!({})).await.is_err());
     call(h, "mods.enable", json!({"id": "a"})).await.unwrap();
-    assert_eq!(call(h, "mod.a.ping", json!({})).await.unwrap(), json!("pong"));
+    assert_eq!(
+        call(h, "mod.a.ping", json!({})).await.unwrap(),
+        json!("pong")
+    );
 }
 
 #[tokio::test]
 async fn a_missing_dependency_or_failing_mod_does_not_stop_the_rest() {
     let s = setup(
         &[
-            ("lonely", json!({"dependsOn": {"ghost": "^1"}}), "export default () => {}"),
-            ("broken", json!({}), "export default () => { throw new Error('kaput'); }"),
-            ("fine", json!({}), r#"export default (aura) => { aura.rpc.handle("ok", () => 1); }"#),
+            (
+                "lonely",
+                json!({"dependsOn": {"ghost": "^1"}}),
+                "export default () => {}",
+            ),
+            (
+                "broken",
+                json!({}),
+                "export default () => { throw new Error('kaput'); }",
+            ),
+            (
+                "fine",
+                json!({}),
+                r#"export default (aura) => { aura.rpc.handle("ok", () => 1); }"#,
+            ),
         ],
         &[],
     )
@@ -154,8 +176,14 @@ async fn a_missing_dependency_or_failing_mod_does_not_stop_the_rest() {
     let h = &s.host;
     let list = call(h, "mods.list", json!({})).await.unwrap();
     assert_eq!(status(&list, "lonely")["state"], "failed");
-    assert!(status(&list, "lonely")["error"].as_str().unwrap().contains("ghost"));
-    assert!(status(&list, "broken")["error"].as_str().unwrap().contains("kaput"));
+    assert!(status(&list, "lonely")["error"]
+        .as_str()
+        .unwrap()
+        .contains("ghost"));
+    assert!(status(&list, "broken")["error"]
+        .as_str()
+        .unwrap()
+        .contains("kaput"));
     assert_eq!(call(h, "mod.fine.ok", json!({})).await.unwrap(), json!(1));
 }
 
@@ -190,11 +218,28 @@ async fn storage_settings_and_session_data() {
         // `missing` is undefined, so it is not in the JSON at all.
         json!({"a": {"n": 1}, "keys": ["a"], "all": [["x", [1, 2]]], "color": "red"})
     );
-    call(h, "mods.settings.set", json!({"id": "store", "key": "color", "value": "blue"})).await.unwrap();
+    call(
+        h,
+        "mods.settings.set",
+        json!({"id": "store", "key": "color", "value": "blue"}),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(call(h, "mod.store.seen", json!({})).await.unwrap(), json!(["color", "blue"]));
-    assert_eq!(call(h, "mods.settings.get", json!({"id": "store"})).await.unwrap()["color"], "blue");
-    assert_eq!(call(h, "mod.store.noSession", json!({})).await.unwrap(), json!("not_found"));
+    assert_eq!(
+        call(h, "mod.store.seen", json!({})).await.unwrap(),
+        json!(["color", "blue"])
+    );
+    assert_eq!(
+        call(h, "mods.settings.get", json!({"id": "store"}))
+            .await
+            .unwrap()["color"],
+        "blue"
+    );
+    assert_eq!(
+        call(h, "mod.store.noSession", json!({})).await.unwrap(),
+        json!("not_found")
+    );
     let _ = &s.manager;
 }
 
@@ -216,7 +261,9 @@ async fn emits_reach_the_ui_and_listening_mods() {
         &[],
     )
     .await;
-    call(&s.host, "mod.talker.say", json!({"x": 1})).await.unwrap();
+    call(&s.host, "mod.talker.say", json!({"x": 1}))
+        .await
+        .unwrap();
     let mut seen = false;
     for _ in 0..20 {
         while let Ok(n) = s.notes.try_recv() {
@@ -270,13 +317,21 @@ async fn orchestrator_tools_are_listed_and_called_per_session() {
     assert_eq!(tools.as_array().unwrap().len(), 1);
     assert_eq!(tools[0]["name"], "pull_requests_reviews_list");
     let r = h
-        .handle("mods.tools.call", &json!({"name": "pull_requests_reviews_list", "args": {"a": 1}}), Some("s-1"))
+        .handle(
+            "mods.tools.call",
+            &json!({"name": "pull_requests_reviews_list", "args": {"a": 1}}),
+            Some("s-1"),
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(r, json!({"args": {"a": 1}, "session": "s-1"}));
     assert!(h
-        .handle("mods.tools.call", &json!({"name": "pull_requests_reviews_list"}), None)
+        .handle(
+            "mods.tools.call",
+            &json!({"name": "pull_requests_reviews_list"}),
+            None
+        )
         .await
         .is_err());
 }
@@ -306,7 +361,9 @@ async fn ui_source_is_served_for_running_mods() {
         tx,
     )
     .await;
-    let src = call(&h, "mods.ui_source", json!({"id": "view"})).await.unwrap();
+    let src = call(&h, "mods.ui_source", json!({"id": "view"}))
+        .await
+        .unwrap();
     assert_eq!(src["js"], "export default () => {}");
     assert_eq!(src["css"], ".x{}");
     assert_eq!(src["version"], "1.2.3");
@@ -343,11 +400,28 @@ async fn files_stay_inside_the_mods_data_folder() {
         call(h, "mod.files.roundtrip", json!({})).await.unwrap(),
         json!({"text": "hi", "listed": [{"name": "b.txt", "dir": false}], "gone": false, "after": false})
     );
-    assert_eq!(call(h, "mod.files.escape", json!({"path": "../../secret"})).await.unwrap(), json!("permission_denied"));
-    let outside = if cfg!(windows) { r"C:\Windows\win.ini" } else { "/etc/passwd" };
-    assert_eq!(call(h, "mod.files.escape", json!({"path": outside})).await.unwrap(), json!("permission_denied"));
+    assert_eq!(
+        call(h, "mod.files.escape", json!({"path": "../../secret"}))
+            .await
+            .unwrap(),
+        json!("permission_denied")
+    );
+    let outside = if cfg!(windows) {
+        r"C:\Windows\win.ini"
+    } else {
+        "/etc/passwd"
+    };
+    assert_eq!(
+        call(h, "mod.files.escape", json!({"path": outside}))
+            .await
+            .unwrap(),
+        json!("permission_denied")
+    );
     // Cancelling needs the agents permission.
-    assert_eq!(call(h, "mod.files.cancelNothing", json!({})).await.unwrap(), json!("permission_denied"));
+    assert_eq!(
+        call(h, "mod.files.cancelNothing", json!({})).await.unwrap(),
+        json!("permission_denied")
+    );
 }
 
 /// Wait up to `secs` for a notification `method`.
@@ -393,7 +467,10 @@ async fn themes_are_listed_validated_and_watched() {
     .unwrap();
 
     let dirs = call(h, "mods.dirs", json!({})).await.unwrap();
-    assert_eq!(dirs["user"], s._tmp.path().join("user").to_string_lossy().as_ref());
+    assert_eq!(
+        dirs["user"],
+        s._tmp.path().join("user").to_string_lossy().as_ref()
+    );
     assert_eq!(dirs["dev"], Value::Null);
 
     let themes = h.themes_dir();
