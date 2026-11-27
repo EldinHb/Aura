@@ -576,6 +576,8 @@ export const useStore = create<AppState>((set, get) => ({
       setRoleSuggestions(ev.suggestions);
       return;
     }
+    // Belongs to no session. The workspace list itself is the switcher's to keep (not built yet).
+    if (ev.type === "workspaces_changed") return;
     const sid = ev.session_id;
     const t = st.transcripts[sid] ?? emptyTranscript();
     set({ transcripts: { ...st.transcripts, [sid]: applyToTranscript(t, ev) } });

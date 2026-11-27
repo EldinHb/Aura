@@ -14,7 +14,13 @@ agent: string | null,
 /**
  * The provider's own identifier (Claude session id, Codex thread id). None until known.
  */
-native_id: string | null, cwd: string, worktree: WorktreeInfo | null, title: string, group: string | null, status: SessionStatus, mode: SessionMode, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 
+native_id: string | null, cwd: string, worktree: WorktreeInfo | null, title: string, group: string | null, 
+/**
+ * The id of the [`Workspace`] the session is in; every session is in
+ * exactly one. Sessions stored before workspaces read as empty and are
+ * put in the default workspace when the daemon loads them.
+ */
+workspace: string, status: SessionStatus, mode: SessionMode, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 
 /**
  * Command for terminal sessions (argv). For structured sessions this is the
  * command used when switching to terminal mode.

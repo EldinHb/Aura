@@ -16,6 +16,12 @@ agent: string | null,
  */
 cwd: string, title: string | null, group: string | null, 
 /**
+ * The workspace to create the session in. None (or empty) puts it in the
+ * workspace the user was last active in. A worker always goes into its
+ * orchestrator's workspace, whatever this says.
+ */
+workspace: string | null, 
+/**
  * Structured (default for AI providers) or Terminal.
  */
 mode: SessionMode | null, 

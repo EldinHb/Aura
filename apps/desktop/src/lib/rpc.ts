@@ -45,6 +45,8 @@ import type {
   SpecialistSuggestion,
   SuggestionRun,
   SuggestionSettings,
+  Workspace,
+  BulkDeleteResult,
 } from "../gen";
 
 export const FRAME_PTY_OUTPUT = 1;
@@ -385,6 +387,35 @@ export class RpcClient {
   deleteGroup(name: string) {
     return this.call<boolean>("group.delete", { name });
   }
+  /** Every workspace, in order (`position`). Never empty: the daemon makes "Default" when there is none. */
+  workspaces() {
+    return this.call<Workspace[]>("workspace.list");
+  }
+  /** The name is trimmed and must be 1–40 characters, unique ignoring case; the error says which rule failed. */
+  createWorkspace(name: string) {
+    return this.call<Workspace>("workspace.create", { name });
+  }
+  renameWorkspace(id: string, name: string) {
+    return this.call<Workspace>("workspace.rename", { id, name });
+  }
+  /**
+   * Delete a workspace. Its sessions and scheduled tasks move to `move_to`, which is required when it
+   * holds any; no session is deleted. The last workspace cannot be deleted. Returns the workspaces left.
+   */
+  deleteWorkspace(id: string, move_to: string | null = null) {
+    return this.call<Workspace[]>("workspace.delete", { id, move_to });
+  }
+  /** The user is now working in workspace `id`: sessions created without a workspace (API, MCP, mods) go there. */
+  touchWorkspace(id: string) {
+    return this.call<boolean>("workspace.touch", { id });
+  }
+  /**
+   * Move a session to `workspace` with every worker under it. Fails for a worker whose orchestrator
+   * exists: workers stay with their orchestrator. Returns the session and its workers, the session first.
+   */
+  setWorkspace(id: string, workspace: string) {
+    return this.call<Session[]>("session.set_workspace", { id, workspace });
+  }
   setPinned(id: string, pinned: boolean) {
     return this.call<Session>("session.set_pinned", { id, pinned });
   }
@@ -403,6 +434,14 @@ export class RpcClient {
   }
   deleteSession(id: string, remove_worktree = false) {
     return this.call<boolean>("session.delete", { id, remove_worktree });
+  }
+  /**
+   * Delete each session, with the workers under it, on its own; one that fails does not stop the rest.
+   * `deleted` lists every session removed (workers included); `failed` each one that could not be, with why.
+   * An id already deleted with an earlier one's workers is skipped.
+   */
+  deleteSessions(ids: string[], remove_worktree = false) {
+    return this.call<BulkDeleteResult>("session.delete_many", { ids, remove_worktree });
   }
   switchMode(id: string, mode: SessionMode) {
     return this.call<Session>("session.switch_mode", { id, mode });

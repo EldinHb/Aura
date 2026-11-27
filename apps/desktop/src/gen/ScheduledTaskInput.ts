@@ -22,4 +22,9 @@ feature_goal?: string,
  * For a feature owner: its own autonomy; null follows the setting for
  * every feature owner. Missing leaves it as it is.
  */
-autonomy?: Autonomy | null, worktree?: boolean, branch_prefix?: string, group?: string, enabled?: boolean, schedule?: Schedule, missed?: MissedRuns, allow_overlap?: boolean, };
+autonomy?: Autonomy | null, worktree?: boolean, branch_prefix?: string, group?: string, 
+/**
+ * The workspace its runs belong to. Missing on a new task: the user's
+ * last active workspace, or for an orchestrator's task its own.
+ */
+workspace?: string, enabled?: boolean, schedule?: Schedule, missed?: MissedRuns, allow_overlap?: boolean, };
