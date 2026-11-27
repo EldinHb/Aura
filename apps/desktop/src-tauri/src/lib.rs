@@ -9,6 +9,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod update;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Connection {
     pub port: u16,
@@ -190,6 +192,13 @@ async fn stop_unresponsive(dir: &Path, info: &aura_rpc::DaemonInfo) -> Result<()
 
 async fn ensure_daemon() -> Result<Connection> {
     let _guard = DAEMON_LOCK.lock().await;
+    // The daemon was stopped so its binary can be replaced; the relaunched
+    // app starts the new one.
+    if update::installing() {
+        return Err(anyhow!(
+            "Aura is installing an update and restarts in a moment"
+        ));
+    }
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
     if let Some(info) = aura_rpc::read_daemon_info(&dir) {
@@ -208,6 +217,69 @@ async fn ensure_daemon() -> Result<Connection> {
         }
     }
     spawn_and_connect(&dir).await
+}
+
+/// Stop the daemon so an update can replace its binary, and confirm it is
+/// gone: unlike a restart, a daemon still running here makes the installer
+/// fail (Windows locks a running `.exe`) or leaves the old daemon serving the
+/// new app. The caller holds `DAEMON_LOCK`.
+async fn stop_daemon_for_update() -> Result<()> {
+    let dir = data_dir();
+    if let Some(info) = aura_rpc::read_daemon_info(&dir) {
+        let held = !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_)));
+        if held || daemon_alive(info.port).await {
+            stop_daemon(&dir, &info).await?;
+        }
+    }
+    if !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_))) {
+        return Err(anyhow!(
+            "The Aura daemon did not stop, so the update was not installed. Stop it with `aura daemon stop` and try again."
+        ));
+    }
+    #[cfg(windows)]
+    wait_until_replaceable().await?;
+    Ok(())
+}
+
+/// Windows refuses to overwrite a running `.exe`: wait until `aurad.exe` and
+/// `aura.exe` beside the app have exited (the daemon's process lingers a
+/// moment after it releases the data dir; an `aura` command may run in a
+/// terminal). Built everywhere so it is type-checked on every host.
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn wait_until_replaceable() -> Result<()> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    else {
+        return Ok(());
+    };
+    let locked = || {
+        ["aurad.exe", "aura.exe"]
+            .into_iter()
+            .filter(|name| {
+                // Opening for writing changes nothing, but fails while the image runs.
+                matches!(
+                    std::fs::OpenOptions::new().write(true).open(dir.join(name)),
+                    Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..50 {
+        if locked().is_empty() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let still = locked();
+    if still.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{} is still running, so the installer could not replace it. Close any `aura` command in a terminal and try again.",
+        still.join(" and ")
+    ))
 }
 
 async fn spawn_and_connect(dir: &Path) -> Result<Connection> {
@@ -374,6 +446,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main(app);
         }))
@@ -393,13 +467,25 @@ pub fn run() {
             set_badge,
             open_session_window,
             show_main,
-            notify_with_target
+            notify_with_target,
+            update::update_config,
+            update::update_check,
+            update::update_download,
+            update::update_install
         ])
         .setup(|app| {
+            update::manage(app);
             // Tray. Built here rather than via the `trayIcon` config block: Tauri
             // creates one tray per source and keeps them in a list, so declaring it
             // in both places put two identical icons in the menu bar.
             let show = MenuItem::with_id(app, "show", "Show Aura", true, None::<&str>)?;
+            let updates = MenuItem::with_id(
+                app,
+                "check-updates",
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(
                 app,
                 "quit",
@@ -407,7 +493,7 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &updates, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("icon"))
                 .icon_as_template(true)
@@ -416,6 +502,11 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => focus_main(app),
+                    // The main window runs the check and shows the result.
+                    "check-updates" => {
+                        focus_main(app);
+                        let _ = app.emit_to("main", "aura://check-updates", ());
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })

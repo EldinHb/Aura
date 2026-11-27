@@ -47,7 +47,15 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-"
-    }
+    },
+    "createUpdaterArtifacts": true
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY3REI1NkYxMDJFODc3RDYKUldUV2QrZ0M4VmJiWjVhckl5TktnN3Z1Wnc1YjBJRUR3VEJxdUtyYS9uZ21aZUN2THRTRlMxczcK",
+      "endpoints": ["https://github.com/EldinHb/Aura/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "windows": { "installMode": "passive" }
+    }
+  }
 }

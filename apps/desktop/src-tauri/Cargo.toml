@@ -24,6 +24,10 @@ tauri-plugin-os = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-opener = "2"
+# Self-update from signed GitHub release artifacts, and relaunch after it.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+url = "2"
 aura-rpc = { workspace = true }
 aura-core = { workspace = true }
 serde = { workspace = true }
@@ -33,3 +37,11 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+# End-to-end tests of the updater only: honours AURA_UPDATER_ENDPOINT (a local
+# release manifest) and AURA_UPDATER_TEST_AUTO_RESTART. Never enabled for a release.
+updater-test = []
