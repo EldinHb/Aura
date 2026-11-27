@@ -313,4 +313,17 @@ describe("GhCli", () => {
       expect(await gh.account()).toBe("github.com:other");
     });
   });
+
+  it("asks gh about the active account only, so another account's expired token does not block (review)", async () => {
+    const host = createTestHost({ id: "pr-status" });
+    host.process.route((bin, args) => {
+      if (bin !== "gh") return undefined;
+      // `gh auth status` exits 1 when any account has a problem; with --active only the active one counts.
+      if (args[0] === "auth") return args.includes("--active") ? { code: 0, stdout: "✓ Logged in to github.com account sam" } : { code: 1, stderr: "X Failed to log in to github.com account old (keyring)\n  - The token in keyring is invalid." };
+      return ghReply({ body: {} });
+    });
+    const gh = new GhCli(host.api);
+    expect(await gh.blocked()).toBeNull();
+    expect(host.record.processes[0].args).toEqual(["auth", "status", "--active", "--hostname", "github.com"]);
+  });
 });

@@ -305,7 +305,8 @@ export class GhCli implements Github, Pinning {
     // so the first answer already says why nothing can be read.
     if (this.problem ? this.now() - this.problem.at >= RECHECK_MS : !this.verified) {
       try {
-        const out = await this.gh(["auth", "status", "--hostname", HOST], { resource: null });
+        // Only the active account: another (inactive) account's expired token is not this one's problem.
+        const out = await this.gh(["auth", "status", "--active", "--hostname", HOST], { resource: null });
         if (out.code === 0) {
           this.problem = null;
           this.verified = true;
