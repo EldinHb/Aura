@@ -21,6 +21,7 @@ mod orchestrator;
 mod specialists;
 mod suggest;
 mod team;
+mod workspaces;
 pub use features::{AskSpec, CheckpointOutcome, HireSpec, ReportSpec};
 pub use orchestrator::{
     agent_line, describe_projects, describe_workers, parse_agent, report_message, Project,
@@ -28,6 +29,7 @@ pub use orchestrator::{
 };
 pub use suggest::SuggestionRun;
 pub use team::MeetingSpec;
+pub use workspaces::{DEFAULT_WORKSPACE_NAME, LAST_ACTIVE_WORKSPACE_KEY, WORKSPACE_NAME_MAX};
 
 /// Git worktree creation is provided by `aura-git`; the manager only needs this.
 pub trait WorktreeBackend: Send + Sync {
@@ -80,6 +82,14 @@ struct Sourced {
     event: Event,
 }
 
+/// What deleting a session and the sessions under it did.
+struct TreeDeletion {
+    deleted: Vec<SessionId>,
+    failed: Vec<(Session, anyhow::Error)>,
+    /// Workers under a session that failed, kept with it.
+    kept: Vec<Session>,
+}
+
 /// A session was created but its agent did not start. The session is kept,
 /// in the error state; `session_id` says which. Reads as the cause.
 #[derive(Debug)]
@@ -118,6 +128,12 @@ struct Inner {
     gates: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
     /// Serialises read-modify-write updates of the group registry.
     groups: Mutex<()>,
+    /// Serialises changes to the workspace registry, and the placing of
+    /// sessions in workspaces (see `workspaces`). Taken before `sessions`.
+    workspaces: Mutex<()>,
+    /// Serialises read-modify-write updates of scheduled task records: the
+    /// scheduler's, and a workspace's tasks moving when it is deleted.
+    scheduled_tasks: Mutex<()>,
     /// Serialises read-modify-write updates of feature records.
     features: Mutex<()>,
     /// Serialises changes to the stored specialists.
@@ -160,6 +176,8 @@ impl Manager {
             applying: Mutex::new(()),
             gates: Mutex::new(HashMap::new()),
             groups: Mutex::new(()),
+            workspaces: Mutex::new(()),
+            scheduled_tasks: Mutex::new(()),
             features: Mutex::new(()),
             specialists: Mutex::new(()),
             suggestions: Mutex::new(()),
@@ -174,6 +192,12 @@ impl Manager {
     }
 
     // ---------------------------------------------------------------- queries
+
+    /// Held while a scheduled task record is read, changed and saved; see
+    /// [`crate::ScheduleService`].
+    pub(crate) fn lock_scheduled_tasks(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.inner.scheduled_tasks.lock()
+    }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.inner.events.subscribe()
@@ -516,6 +540,9 @@ impl Manager {
                 self.remember_group(&s);
             }
         }
+        // Sessions and scheduled tasks from before workspaces go in the default one.
+        self.backfill_workspaces()
+            .context("put sessions and scheduled tasks in a workspace")?;
         // The user's answers that went with the old daemon before their owner took them.
         self.requeue_undelivered();
         Ok(n)
@@ -568,6 +595,7 @@ impl Manager {
                 bail!("session {o} is not an orchestrator");
             }
         }
+        self.check_requested_workspace(&opts)?;
         let provider = self.provider(opts.provider)?;
         if opts.provider == ProviderKind::Acp && opts.agent.as_deref().unwrap_or("").is_empty() {
             bail!("ACP sessions need an agent (e.g. `gemini`)");
@@ -621,15 +649,32 @@ impl Manager {
             }
             session.command = Some(argv);
         }
-        self.inner.store.upsert_session(&session)?;
         // Held from before anyone can see the session until its first agent
         // is in place: a message meanwhile waits for it, and goes to it,
         // rather than start a second agent beside it.
         let gate = self.gate(&session.id).await;
-        self.inner
-            .sessions
-            .lock()
-            .insert(session.id.clone(), session.clone());
+        // Placed and stored under the workspace lock, so it never lands in a
+        // workspace deleted meanwhile, and a worker never misses its
+        // orchestrator's move to another workspace.
+        let stored = {
+            let _workspaces = self.inner.workspaces.lock();
+            self.place_new_session_locked(&session)
+                .and_then(|ws| {
+                    session.workspace = ws;
+                    self.inner.store.upsert_session(&session)
+                })
+                .map(|()| {
+                    self.inner
+                        .sessions
+                        .lock()
+                        .insert(session.id.clone(), session.clone());
+                })
+        };
+        if let Err(e) = stored {
+            drop(gate);
+            self.inner.gates.lock().remove(&session.id);
+            return Err(e);
+        }
         // Its prompt carries the goal, so the record is there before it starts.
         if session.feature_owner {
             let feature = crate::features::Feature::new(
@@ -713,6 +758,8 @@ impl Manager {
                     cwd: s.cwd.clone(),
                     title: Some(format!("{} (fork)", s.title)),
                     group: s.group.clone(),
+                    // A fork stays in its source's workspace.
+                    workspace: Some(s.workspace.clone()),
                     mode: Some(SessionMode::Structured),
                     command: None,
                     model: s.model.clone(),
@@ -1170,7 +1217,70 @@ impl Manager {
     /// workers stay with it.
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> Result<()> {
         self.get_session(id)?;
-        let mut deleted: HashSet<SessionId> = HashSet::new();
+        let TreeDeletion { failed, kept, .. } = self.delete_tree(id, remove_worktree).await;
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let mut msg = format!(
+            "could not delete {}",
+            failed
+                .iter()
+                .map(|(s, e)| format!("{} ({}): {e:#}", s.title, s.id))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        if !kept.is_empty() {
+            msg.push_str(&format!(
+                ". The workers under {0} are kept with {0}: {1}",
+                if failed.len() == 1 { "it" } else { "them" },
+                kept.iter()
+                    .map(|s| format!("{} ({})", s.title, s.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        bail!(msg)
+    }
+
+    /// Delete each of `ids` as [`Manager::delete`] does, workers and all, and
+    /// say per session what happened. One that cannot be deleted does not
+    /// stop the rest; one already deleted with an earlier one's workers is
+    /// skipped, not counted as failed. `remove_worktree` applies to the
+    /// sessions named, not to the workers that go with them.
+    pub async fn delete_many(&self, ids: &[String], remove_worktree: bool) -> BulkDeleteResult {
+        let mut deleted: Vec<SessionId> = vec![];
+        let mut failed: Vec<BulkDeleteFailure> = vec![];
+        let mut done: HashSet<&str> = HashSet::new();
+        for id in ids {
+            if !done.insert(id) || deleted.contains(id) {
+                continue;
+            }
+            if self.get_session(id).is_err() {
+                failed.push(BulkDeleteFailure {
+                    id: id.clone(),
+                    error: format!("unknown session {id}"),
+                });
+                continue;
+            }
+            let tree = self.delete_tree(id, remove_worktree).await;
+            deleted.extend(tree.deleted);
+            for (s, e) in tree.failed {
+                failed.retain(|f| f.id != s.id);
+                failed.push(BulkDeleteFailure {
+                    id: s.id,
+                    error: format!("{e:#}"),
+                });
+            }
+        }
+        // One that failed under an earlier session and was named again later
+        // may have gone the second time.
+        failed.retain(|f| !deleted.contains(&f.id));
+        BulkDeleteResult { deleted, failed }
+    }
+
+    /// Delete `id` and every session under it; see [`Manager::delete`].
+    async fn delete_tree(&self, id: &str, remove_worktree: bool) -> TreeDeletion {
+        let mut deleted: Vec<SessionId> = vec![];
         let mut failed: Vec<(Session, anyhow::Error)> = vec![];
         // Workers under a session that failed, left attached to it.
         let mut kept: Vec<Session> = vec![];
@@ -1191,9 +1301,7 @@ impl Manager {
                     continue;
                 }
                 match self.remove_session(&s, remove_worktree && s.id == id).await {
-                    Ok(true) => {
-                        deleted.insert(s.id);
-                    }
+                    Ok(true) => deleted.push(s.id),
                     Ok(false) => {}
                     Err(e) => failed.push((s, e)),
                 }
@@ -1216,9 +1324,6 @@ impl Manager {
                 queue.extend(self.with_workers(&s.id));
             }
         }
-        if failed.is_empty() {
-            return Ok(());
-        }
         for (s, _) in &failed {
             if s.orchestrator_id
                 .as_ref()
@@ -1227,25 +1332,11 @@ impl Manager {
                 let _ = self.update_session(&s.id, |s| s.orchestrator_id = None);
             }
         }
-        let mut msg = format!(
-            "could not delete {}",
-            failed
-                .iter()
-                .map(|(s, e)| format!("{} ({}): {e:#}", s.title, s.id))
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
-        if !kept.is_empty() {
-            msg.push_str(&format!(
-                ". The workers under {0} are kept with {0}: {1}",
-                if failed.len() == 1 { "it" } else { "them" },
-                kept.iter()
-                    .map(|s| format!("{} ({})", s.title, s.id))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        TreeDeletion {
+            deleted,
+            failed,
+            kept,
         }
-        bail!(msg)
     }
 
     /// Delete one session. False when it was already gone.

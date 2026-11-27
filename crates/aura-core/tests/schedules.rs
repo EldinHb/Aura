@@ -2050,3 +2050,126 @@ async fn a_tasks_history_is_cleared_whole_or_only_what_failed_or_was_skipped() {
         .get_session(started.session_id.as_deref().unwrap())
         .is_ok());
 }
+
+#[tokio::test]
+async fn a_tasks_runs_belong_to_its_workspace() {
+    let w = World::new();
+    let default = w.m.list_workspaces().unwrap()[0].id.clone();
+    let chores = w.m.create_workspace("Chores").unwrap();
+    let elsewhere = w.m.create_workspace("Elsewhere").unwrap();
+
+    // The user's task goes where the user works, unless it names a workspace.
+    w.m.touch_workspace(&chores.id).unwrap();
+    let t = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                // Each run below starts while the one before still works.
+                allow_overlap: Some(true),
+                ..w.input("quick: check", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    assert_eq!(t.workspace, chores.id);
+    let named = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                workspace: Some(elsewhere.id.clone()),
+                ..w.input("quick: check", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    assert_eq!(named.workspace, elsewhere.id);
+    for bad in ["nope", ""] {
+        assert!(w
+            .svc
+            .create(
+                ScheduledTaskInput {
+                    workspace: Some(bad.into()),
+                    ..w.input("quick: check", every_hour())
+                },
+                &Editor::User,
+            )
+            .is_err());
+    }
+
+    // Its runs are in its workspace, wherever the user is now.
+    w.m.touch_workspace(&default).unwrap();
+    let run = w.svc.run_now(&t.id).await.unwrap();
+    let s = w.m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    assert_eq!(s.workspace, chores.id);
+
+    // The user moves it in the Schedules dialog; an unknown one is refused.
+    let moved = w
+        .svc
+        .update(
+            &t.id,
+            ScheduledTaskInput {
+                workspace: Some(elsewhere.id.clone()),
+                ..Default::default()
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    assert_eq!(moved.workspace, elsewhere.id);
+    assert!(w
+        .svc
+        .update(
+            &t.id,
+            ScheduledTaskInput {
+                workspace: Some("nope".into()),
+                ..Default::default()
+            },
+            &Editor::User,
+        )
+        .is_err());
+    let run = w.svc.run_now(&t.id).await.unwrap();
+    let s = w.m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    assert_eq!(s.workspace, elsewhere.id);
+
+    // Deleting its workspace moves it along.
+    w.m.delete_workspace(&elsewhere.id, Some(&chores.id))
+        .unwrap();
+    assert_eq!(w.svc.get(&t.id).unwrap().workspace, chores.id);
+
+    // One whose workspace is gone anyway runs in the default workspace.
+    let mut stray = w.svc.get(&t.id).unwrap();
+    stray.workspace = "gone".into();
+    w.store.save_scheduled_task(&stray).unwrap();
+    w.m.touch_workspace(&chores.id).unwrap();
+    let run = w.svc.run_now(&t.id).await.unwrap();
+    let s = w.m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    assert_eq!(s.workspace, default);
+}
+
+#[tokio::test]
+async fn an_orchestrators_tasks_go_in_its_workspace_and_only_the_user_moves_them() {
+    let w = World::new();
+    let lead = orchestrator(&w, None);
+    let team = w.m.create_workspace("Team").unwrap();
+    w.m.set_session_workspace(&lead.id, &team.id).unwrap();
+    w.m.touch_workspace(&w.m.list_workspaces().unwrap()[0].id)
+        .unwrap();
+    let by = Editor::Orchestrator(Box::new(w.m.get_session(&lead.id).unwrap()));
+    let t = w
+        .svc
+        .create(w.input("quick: triage", every_hour()), &by)
+        .unwrap();
+    assert_eq!(t.workspace, team.id);
+    let err = w
+        .svc
+        .update(
+            &t.id,
+            ScheduledTaskInput {
+                workspace: Some(team.id.clone()),
+                ..Default::default()
+            },
+            &by,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("the user's to choose"), "{err}");
+}

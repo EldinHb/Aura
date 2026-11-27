@@ -7152,3 +7152,468 @@ async fn a_restart_after_a_live_rounds_deadline_keeps_the_answers_its_transcript
         "not asked again"
     );
 }
+
+// ------------------------------------------------------------- workspaces
+
+fn names(list: &[Workspace]) -> Vec<&str> {
+    list.iter().map(|w| w.name.as_str()).collect()
+}
+
+/// A session as stored by an earlier Aura: `id`, under orchestrator `under`.
+fn stored_session(id: &str, orchestrator: bool, under: Option<&str>) -> Session {
+    let mut s = Session::new(&CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: "/tmp".into(),
+        orchestrator,
+        orchestrator_id: under.map(Into::into),
+        ..Default::default()
+    });
+    s.id = id.into();
+    s
+}
+
+#[tokio::test]
+async fn workspaces_have_unique_names_and_aura_keeps_at_least_one() {
+    let (m, _calls, _starts, _store) = setup();
+    let mut rx = m.subscribe();
+    // None stored: the default one is made.
+    let list = m.list_workspaces().unwrap();
+    assert_eq!(names(&list), vec![DEFAULT_WORKSPACE_NAME]);
+    assert_eq!(m.list_workspaces().unwrap(), list, "made once");
+
+    let client = m.create_workspace("  Client X  ").unwrap();
+    assert_eq!(client.name, "Client X", "trimmed");
+    let research = m.create_workspace("Research").unwrap();
+    assert!(client.position < research.position);
+    assert_eq!(
+        names(&m.list_workspaces().unwrap()),
+        vec!["Default", "Client X", "Research"]
+    );
+    for (bad, why) in [
+        ("client x", "already exists"),
+        ("   ", "needs a name"),
+        (&"x".repeat(41), "at most 40"),
+    ] {
+        let err = m.create_workspace(bad).unwrap_err().to_string();
+        assert!(err.contains(why), "{bad}: {err}");
+    }
+    assert!(
+        m.create_workspace(&"é".repeat(40)).is_ok(),
+        "40 characters, not bytes"
+    );
+
+    // A rename may change the case of its own name, not take another's.
+    assert_eq!(
+        m.rename_workspace(&client.id, "CLIENT X").unwrap().name,
+        "CLIENT X"
+    );
+    let err = m
+        .rename_workspace(&client.id, "research")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("“Research” already exists"), "{err}");
+    assert!(m.rename_workspace("nope", "Y").is_err());
+
+    // Every change is announced with the whole list.
+    let announced: Vec<Vec<Workspace>> = drain(&mut rx)
+        .await
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::WorkspacesChanged { workspaces } => Some(workspaces),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced.len(), 5, "{announced:?}");
+    assert_eq!(announced.last().unwrap(), &m.list_workspaces().unwrap());
+
+    // The last one cannot go.
+    for w in m.list_workspaces().unwrap().into_iter().skip(1) {
+        m.delete_workspace(&w.id, None).unwrap();
+    }
+    let only = &m.list_workspaces().unwrap()[0];
+    let err = m.delete_workspace(&only.id, None).unwrap_err().to_string();
+    assert!(err.contains("needs at least one"), "{err}");
+}
+
+#[tokio::test]
+async fn a_store_from_before_workspaces_loads_into_a_default_workspace() {
+    let store = Arc::new(MemoryStore::default());
+    let mut lead = stored_session("lead", true, None);
+    lead.group = Some("backend".into());
+    lead.pinned = true;
+    let worker = stored_session("w1", false, Some("lead"));
+    let mut plain = stored_session("plain", false, None);
+    plain.archived = true;
+    // As an earlier Aura stored them: without the field at all.
+    for s in [&lead, &worker, &plain] {
+        let mut json = serde_json::to_value(s).unwrap();
+        json.as_object_mut().unwrap().remove("workspace");
+        let old: Session = serde_json::from_value(json).unwrap();
+        assert_eq!(old.workspace, "");
+        store.upsert_session(&old).unwrap();
+    }
+    let task_json = serde_json::json!({
+        "id": "t1", "name": "Nightly", "prompt": "check", "agent": "claude",
+        "model": null, "effort": null, "permission_mode": null, "sandbox_mode": null,
+        "cwd": "/tmp", "enabled": true,
+        "schedule": { "unit": "hours", "every": 1 },
+        "created_at": "2026-11-01T08:00:00Z", "updated_at": "2026-11-01T08:00:00Z",
+        "anchor": "2026-11-01T08:00:00Z"
+    });
+    store
+        .save_feature_record("scheduled_tasks", "t1", &task_json.to_string())
+        .unwrap();
+    assert_eq!(store.scheduled_tasks().unwrap()[0].workspace, "");
+
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let list = m.list_workspaces().unwrap();
+    assert_eq!(names(&list), vec!["Default"]);
+    let default = &list[0].id;
+    for s in [&lead, &worker, &plain] {
+        let now = m.get_session(&s.id).unwrap();
+        assert_eq!(&now.workspace, default, "{}", s.id);
+        // Nothing else changes: the sidebar looks as before.
+        assert_eq!(
+            (now.group, now.pinned, now.archived, now.last_activity),
+            (s.group.clone(), s.pinned, s.archived, s.last_activity)
+        );
+        assert_eq!(
+            &store
+                .list_sessions()
+                .unwrap()
+                .iter()
+                .find(|x| x.id == s.id)
+                .unwrap()
+                .workspace,
+            default,
+            "stored"
+        );
+    }
+    assert_eq!(&store.scheduled_tasks().unwrap()[0].workspace, default);
+
+    // Idempotent: a second start makes no second default.
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    assert_eq!(m.list_workspaces().unwrap(), list);
+
+    // A session in a workspace gone meanwhile follows its orchestrator, or goes to the first.
+    let other = m.create_workspace("Other").unwrap();
+    m.set_session_workspace("lead", &other.id).unwrap();
+    for id in ["w1", "plain"] {
+        let mut s = store
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap();
+        s.workspace = "gone".into();
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    assert_eq!(m.get_session("w1").unwrap().workspace, other.id);
+    assert_eq!(&m.get_session("plain").unwrap().workspace, default);
+}
+
+#[tokio::test]
+async fn sessions_go_where_they_are_asked_or_where_the_user_last_was() {
+    let (m, _calls, _starts, _store) = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let create = |workspace: Option<&str>| {
+        let m = m.clone();
+        let opts = CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            workspace: workspace.map(Into::into),
+            ..Default::default()
+        };
+        async move { m.create_session(opts).await }
+    };
+    // Nothing yet: the default workspace is made for it.
+    let first = create(None).await.unwrap();
+    let default = m.list_workspaces().unwrap()[0].id.clone();
+    assert_eq!(first.workspace, default);
+
+    let client = m.create_workspace("Client").unwrap();
+    let research = m.create_workspace("Research").unwrap();
+    assert_eq!(create(Some(&client.id)).await.unwrap().workspace, client.id);
+    // Without one: the last active workspace.
+    m.touch_workspace(&research.id).unwrap();
+    assert_eq!(
+        m.last_active_workspace().as_deref(),
+        Some(research.id.as_str())
+    );
+    assert_eq!(create(None).await.unwrap().workspace, research.id);
+    assert_eq!(create(Some("")).await.unwrap().workspace, research.id);
+    // One that does not exist is refused, and is no place to be active in.
+    let err = create(Some("nope")).await.unwrap_err().to_string();
+    assert!(err.contains("no workspace `nope`"), "{err}");
+    assert!(m.touch_workspace("nope").is_err());
+
+    // A fork stays in its source's workspace, wherever the user is.
+    let in_client = create(Some(&client.id)).await.unwrap();
+    wait_native_id(&m, &in_client.id).await;
+    assert_eq!(m.fork(&in_client.id).await.unwrap().workspace, client.id);
+}
+
+#[tokio::test]
+async fn workers_start_in_their_orchestrators_workspace() {
+    let (m, _calls, _provider) = orchestrator_setup();
+    m.enable_orchestration("/opt/aura/aura".into(), "/data".into());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let client = m.create_workspace("Client").unwrap();
+    let elsewhere = m.create_workspace("Elsewhere").unwrap();
+    let orch = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: cwd.clone(),
+            orchestrator: true,
+            workspace: Some(client.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The user works elsewhere meanwhile.
+    m.touch_workspace(&elsewhere.id).unwrap();
+    // As the `start_session` tool does.
+    let worker = m
+        .start_worker(
+            &orch.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "x".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(worker.workspace, client.id);
+    // A worker made through the API goes there too, whatever it asks for.
+    let direct = m
+        .create_session(CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd,
+            orchestrator_id: Some(orch.id.clone()),
+            workspace: Some(elsewhere.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(direct.workspace, client.id);
+}
+
+#[tokio::test]
+async fn hired_specialists_join_their_owners_workspace() {
+    let (m, _calls, _provider) = owner_setup(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let team = m.create_workspace("Team").unwrap();
+    let owner = m
+        .create_session(CreateSessionOpts {
+            workspace: Some(team.id.clone()),
+            ..owner_opts(&cwd, "Ship it")
+        })
+        .await
+        .unwrap();
+    m.touch_workspace(&m.list_workspaces().unwrap()[0].id)
+        .unwrap();
+    m.save_specialist(specialist("designer", "Design every state."))
+        .unwrap();
+    // As the `hire` tool does.
+    let w = m
+        .hire(
+            &owner.id,
+            HireSpec {
+                specialist: "designer".into(),
+                worker: WorkerSpec {
+                    prompt: "design the toggle".into(),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(w.workspace, team.id);
+}
+
+#[tokio::test]
+async fn moving_an_orchestrator_moves_every_session_under_it() {
+    let store = Arc::new(MemoryStore::default());
+    for s in [
+        stored_session("lead", true, None),
+        stored_session("w1", true, Some("lead")),
+        stored_session("w1a", false, Some("w1")),
+        stored_session("w2", false, Some("lead")),
+        stored_session("plain", false, None),
+        stored_session("orphan", false, Some("deleted-long-ago")),
+    ] {
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let default = m.list_workspaces().unwrap()[0].id.clone();
+    let infra = m.create_workspace("Infra").unwrap();
+    let before = m.get_session("w1a").unwrap().last_activity;
+
+    let moved = m.set_session_workspace("lead", &infra.id).unwrap();
+    assert_eq!(
+        moved.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["lead", "w1", "w2", "w1a"]
+    );
+    for id in ["lead", "w1", "w1a", "w2"] {
+        assert_eq!(m.get_session(id).unwrap().workspace, infra.id, "{id}");
+        let stored = store.list_sessions().unwrap();
+        assert_eq!(
+            stored.iter().find(|s| s.id == id).unwrap().workspace,
+            infra.id
+        );
+    }
+    assert_eq!(m.get_session("plain").unwrap().workspace, default);
+    assert_eq!(
+        m.get_session("w1a").unwrap().last_activity,
+        before,
+        "a move is not activity"
+    );
+
+    // A worker stays with its orchestrator, even one that orchestrates.
+    for id in ["w1", "w2"] {
+        let err = m
+            .set_session_workspace(id, &default)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("workers stay with their orchestrator"),
+            "{err}"
+        );
+    }
+    assert_eq!(m.get_session("w1").unwrap().workspace, infra.id);
+    // One whose orchestrator is gone moves on its own.
+    assert_eq!(
+        m.set_session_workspace("orphan", &infra.id).unwrap().len(),
+        1
+    );
+    // Nowhere to go.
+    assert!(m.set_session_workspace("lead", "nope").is_err());
+    assert!(m.set_session_workspace("nope", &infra.id).is_err());
+    // Moving to where it is already changes nothing, and says so.
+    let mut rx = m.subscribe();
+    assert_eq!(m.set_session_workspace("lead", &infra.id).unwrap().len(), 4);
+    assert!(drain(&mut rx).await.is_empty());
+}
+
+#[tokio::test]
+async fn deleting_a_workspace_moves_its_sessions_and_tasks_and_deletes_none() {
+    let store = Arc::new(MemoryStore::default());
+    for s in [
+        stored_session("lead", true, None),
+        stored_session("w1", false, Some("lead")),
+        stored_session("stay", false, None),
+    ] {
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let default = m.list_workspaces().unwrap()[0].id.clone();
+    let old = m.create_workspace("Old").unwrap();
+    let target = m.create_workspace("Target").unwrap();
+    let empty = m.create_workspace("Empty").unwrap();
+    m.set_session_workspace("lead", &old.id).unwrap();
+    let mut task: ScheduledTask = serde_json::from_value(serde_json::json!({
+        "id": "t1", "name": "Nightly", "prompt": "check", "agent": "claude",
+        "model": null, "effort": null, "permission_mode": null, "sandbox_mode": null,
+        "cwd": "/tmp", "enabled": true,
+        "schedule": { "unit": "hours", "every": 1 },
+        "created_at": "2026-11-01T08:00:00Z", "updated_at": "2026-11-01T08:00:00Z",
+        "anchor": "2026-11-01T08:00:00Z"
+    }))
+    .unwrap();
+    task.workspace = old.id.clone();
+    store.save_scheduled_task(&task).unwrap();
+    m.touch_workspace(&old.id).unwrap();
+
+    // Holding something, it needs a place to move it to.
+    let err = m.delete_workspace(&old.id, None).unwrap_err().to_string();
+    assert!(
+        err.contains("“Old” holds 2 sessions and 1 scheduled task") && err.contains("`move_to`"),
+        "{err}"
+    );
+    assert!(m.delete_workspace(&old.id, Some(&old.id)).is_err());
+    assert!(m.delete_workspace(&old.id, Some("nope")).is_err());
+    assert_eq!(m.list_workspaces().unwrap().len(), 4, "nothing deleted");
+
+    let left = m.delete_workspace(&old.id, Some(&target.id)).unwrap();
+    assert_eq!(names(&left), vec!["Default", "Target", "Empty"]);
+    assert_eq!(left, m.list_workspaces().unwrap());
+    assert_eq!(m.list_sessions().len(), 3, "no session deleted");
+    for id in ["lead", "w1"] {
+        assert_eq!(m.get_session(id).unwrap().workspace, target.id, "{id}");
+    }
+    assert_eq!(m.get_session("stay").unwrap().workspace, default);
+    assert_eq!(store.scheduled_tasks().unwrap()[0].workspace, target.id);
+    // The user was active there: now in the workspace that took its sessions.
+    assert_eq!(
+        m.last_active_workspace().as_deref(),
+        Some(target.id.as_str())
+    );
+
+    // An empty one goes without a target.
+    m.delete_workspace(&empty.id, None).unwrap();
+    assert_eq!(
+        names(&m.list_workspaces().unwrap()),
+        vec!["Default", "Target"]
+    );
+    assert!(m.delete_workspace(&empty.id, None).is_err(), "gone");
+}
+
+#[tokio::test]
+async fn deleting_many_sessions_says_what_happened_to_each() {
+    let store = Arc::new(StuckSession {
+        inner: MemoryStore::default(),
+        stuck: "w1".into(),
+    });
+    for s in [
+        stored_session("lead", true, None),
+        stored_session("w1", true, Some("lead")),
+        stored_session("w1a", false, Some("w1")),
+        stored_session("w2", false, Some("lead")),
+        stored_session("plain", false, None),
+        stored_session("other", false, None),
+    ] {
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let ids: Vec<String> = ["lead", "w2", "plain", "missing", "plain"]
+        .map(String::from)
+        .to_vec();
+    let result = m.delete_many(&ids, false).await;
+
+    let mut deleted = result.deleted.clone();
+    deleted.sort();
+    // w2 went with lead: skipped when its turn came, not failed.
+    assert_eq!(deleted, vec!["lead", "plain", "w2"]);
+    assert_eq!(
+        result
+            .failed
+            .iter()
+            .map(|f| (f.id.as_str(), f.error.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("w1", "disk full"), ("missing", "unknown session missing")]
+    );
+    // What could not go stays, detached from the orchestrator that went; its
+    // own worker stays with it, in neither list.
+    let mut left: Vec<String> = m.list_sessions().into_iter().map(|s| s.id).collect();
+    left.sort();
+    assert_eq!(left, vec!["other", "w1", "w1a"]);
+    assert_eq!(m.get_session("w1").unwrap().orchestrator_id, None);
+    assert_eq!(
+        m.get_session("w1a").unwrap().orchestrator_id.as_deref(),
+        Some("w1")
+    );
+
+    // Nothing asked for, nothing done.
+    assert_eq!(m.delete_many(&[], false).await, BulkDeleteResult::default());
+}

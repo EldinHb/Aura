@@ -390,6 +390,7 @@ mod tests {
             worktree: true,
             branch_prefix: None,
             group: Some("Chores".into()),
+            workspace: String::new(),
             enabled: true,
             schedule: Schedule::Weeks {
                 every: 1,

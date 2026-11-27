@@ -71,6 +71,10 @@ pub struct ScheduledTaskInput {
     pub branch_prefix: Option<String>,
     #[ts(optional)]
     pub group: Option<String>,
+    /// The workspace its runs belong to. Missing on a new task: the user's
+    /// last active workspace, or for an orchestrator's task its own.
+    #[ts(optional)]
+    pub workspace: Option<String>,
     #[ts(optional)]
     pub enabled: Option<bool>,
     #[ts(optional)]
@@ -149,8 +153,6 @@ pub struct ScheduleService {
     store: Arc<dyn Store>,
     events: broadcast::Sender<Value>,
     clock: Clock,
-    /// Read-modify-write of task records.
-    lock: Mutex<()>,
     /// Tasks whose session is being started right now.
     starting: Mutex<HashSet<String>>,
     /// The session each task started last, and when, until it starts its turn.
@@ -180,7 +182,6 @@ impl ScheduleService {
             store,
             events,
             clock,
-            lock: Mutex::new(()),
             starting: Mutex::new(HashSet::new()),
             fresh: Mutex::new(HashMap::new()),
             wake: Notify::new(),
@@ -190,6 +191,12 @@ impl ScheduleService {
 
     fn now(&self) -> DateTime<Utc> {
         (self.clock)()
+    }
+
+    /// Held for a read-modify-write of task records. The manager's, which
+    /// moves the tasks of a workspace being deleted under it too.
+    fn lock(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.manager.lock_scheduled_tasks()
     }
 
     /// Run the scheduler until [`Self::shutdown`].
@@ -309,7 +316,7 @@ impl ScheduleService {
             run.session_id = Some(s.id.clone());
             run.session_title = Some(s.title.clone());
             {
-                let _guard = self.lock.lock();
+                let _guard = self.lock();
                 self.store.add_scheduled_run(&run, HISTORY_KEPT)?;
                 if let Some(mut t) = self.find(&task.id)? {
                     if t.last_run.as_ref().is_some_and(|l| l.id == run.id) {
@@ -333,7 +340,7 @@ impl ScheduleService {
     /// `last_run` is no longer in the history; otherwise `last_run` takes
     /// its own entry as stored. No history, no last run.
     pub fn repair_last_runs(&self) -> Result<usize> {
-        let _guard = self.lock.lock();
+        let _guard = self.lock();
         let mut repaired = 0;
         for mut task in self.store.scheduled_tasks()? {
             let runs = self.store.scheduled_runs(&task.id, HISTORY_KEPT)?;
@@ -358,7 +365,7 @@ impl ScheduleService {
     /// Returns how many were removed. The sessions runs started are kept.
     pub fn clear_history(&self, id: &str, which: ClearHistory) -> Result<usize> {
         let removed = {
-            let _guard = self.lock.lock();
+            let _guard = self.lock();
             let mut task = self.get(id)?;
             let runs = self.store.scheduled_runs(id, usize::MAX)?;
             let gone: Vec<String> = runs
@@ -389,7 +396,7 @@ impl ScheduleService {
     }
 
     fn refresh_next_runs(&self) -> Result<()> {
-        let _guard = self.lock.lock();
+        let _guard = self.lock();
         for mut task in self.store.scheduled_tasks()? {
             let next = task.compute_next(&Local);
             if next != task.next_run {
@@ -403,7 +410,7 @@ impl ScheduleService {
     /// The tasks due now, each marked as handled up to now so it is not run twice.
     fn collect_due(&self) -> Result<Vec<Fire>> {
         let now = self.now();
-        let _guard = self.lock.lock();
+        let _guard = self.lock();
         let mut fires = vec![];
         for mut task in self.store.scheduled_tasks()? {
             let Some(next) = task.next_run.filter(|_| task.enabled) else {
@@ -501,7 +508,10 @@ impl ScheduleService {
                 );
             }
         }
-        let started = self.manager.create_session(self.session_opts(task)).await;
+        let started = match self.session_opts(task) {
+            Ok(opts) => self.manager.create_session(opts).await,
+            Err(e) => Err(e),
+        };
         self.starting.lock().remove(&task.id);
         match started {
             Ok(session) => {
@@ -612,7 +622,7 @@ impl ScheduleService {
         false
     }
 
-    fn session_opts(&self, task: &ScheduledTask) -> CreateSessionOpts {
+    fn session_opts(&self, task: &ScheduledTask) -> Result<CreateSessionOpts> {
         let local = self.now().with_timezone(&Local);
         let (provider, agent) = parse_agent(&task.agent).unwrap_or((ProviderKind::Claude, None));
         let worktree = task.worktree.then(|| WorktreeOpts {
@@ -620,7 +630,7 @@ impl ScheduleService {
             base: None,
             path: None,
         });
-        CreateSessionOpts {
+        Ok(CreateSessionOpts {
             provider,
             agent,
             cwd: task.cwd.clone(),
@@ -630,6 +640,8 @@ impl ScheduleService {
                 local.format("%a %-d %b %H:%M")
             )),
             group: task.group.clone(),
+            // The task's own workspace; one deleted meanwhile is the default one's.
+            workspace: Some(self.manager.workspace_or_default(&task.workspace)?),
             model: task.model.clone(),
             effort: task.effort.clone(),
             permission_mode: task.permission_mode.clone(),
@@ -644,7 +656,7 @@ impl ScheduleService {
             autonomy: task.autonomy.clone(),
             scheduled_task: Some((task.id.clone(), task.name.clone())),
             ..Default::default()
-        }
+        })
     }
 
     fn record(
@@ -668,7 +680,7 @@ impl ScheduleService {
             message,
         };
         let saved = (|| -> Result<()> {
-            let _guard = self.lock.lock();
+            let _guard = self.lock();
             // The task may have been deleted while its session started.
             let Some(mut current) = self.find(&task.id)? else {
                 return Ok(());
@@ -765,6 +777,14 @@ impl ScheduleService {
             worktree: false,
             branch_prefix: None,
             group: None,
+            // The user's goes where the user works now, unless it names one;
+            // an orchestrator's goes where the orchestrator is.
+            workspace: match by {
+                Editor::Orchestrator(o) if self.manager.has_workspace(&o.workspace) => {
+                    o.workspace.clone()
+                }
+                _ => self.manager.fallback_workspace()?,
+            },
             enabled: true,
             schedule: input
                 .schedule
@@ -790,7 +810,9 @@ impl ScheduleService {
         self.validate(&task)?;
         task.next_run = task.compute_next(&Local);
         {
-            let _guard = self.lock.lock();
+            let _guard = self.lock();
+            // Checked under the lock a workspace's tasks move under when it is deleted.
+            self.check_workspace(&task.workspace)?;
             self.store.save_scheduled_task(&task)?;
         }
         self.changed(&task.id);
@@ -805,11 +827,14 @@ impl ScheduleService {
     ) -> Result<ScheduledTask> {
         let now = self.now();
         let task = {
-            let _guard = self.lock.lock();
+            let _guard = self.lock();
             let old = self.get(id)?;
             let mut task = old.clone();
             apply(&mut task, &input, by, false)?;
             self.validate(&task)?;
+            if task.workspace != old.workspace {
+                self.check_workspace(&task.workspace)?;
+            }
             if task.schedule != old.schedule {
                 // "Every N" counts from now; nothing before now is owed.
                 task.anchor = now;
@@ -841,7 +866,7 @@ impl ScheduleService {
 
     pub fn delete(&self, id: &str) -> Result<ScheduledTask> {
         let task = {
-            let _guard = self.lock.lock();
+            let _guard = self.lock();
             let task = self.get(id)?;
             self.store.delete_scheduled_task(id)?;
             task
@@ -857,6 +882,13 @@ impl ScheduleService {
     pub async fn run_now(&self, id: &str) -> Result<ScheduledRun> {
         let task = self.get(id)?;
         Ok(self.start(&task, RunTrigger::Manual, None, None).await)
+    }
+
+    fn check_workspace(&self, id: &str) -> Result<()> {
+        if !self.manager.has_workspace(id) {
+            bail!("no workspace `{id}`; workspace.list shows them");
+        }
+        Ok(())
     }
 
     fn validate(&self, task: &ScheduledTask) -> Result<()> {
@@ -1051,8 +1083,12 @@ fn apply(
         Editor::User => {
             optional(&input.permission_mode, &mut task.permission_mode);
             optional(&input.sandbox_mode, &mut task.sandbox_mode);
+            required(&input.workspace, "workspace", &mut task.workspace)?;
         }
         Editor::Orchestrator(o) => {
+            if input.workspace.is_some() {
+                bail!("the workspace of a scheduled task is the user's to choose, in Aura; the tasks you schedule go in your own");
+            }
             if input.permission_mode.is_some() || input.sandbox_mode.is_some() {
                 bail!("permission and sandbox modes of scheduled tasks are the user's to choose, in Aura");
             }

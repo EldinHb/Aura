@@ -525,6 +525,10 @@ pub struct ScheduledTask {
     /// The sidebar group of the sessions it starts.
     #[serde(default)]
     pub group: Option<String>,
+    /// The workspace its runs belong to. Tasks stored before workspaces read
+    /// as empty and are put in the default workspace when the daemon starts.
+    #[serde(default)]
+    pub workspace: String,
     pub enabled: bool,
     pub schedule: Schedule,
     #[serde(default)]
@@ -1044,6 +1048,7 @@ mod tests {
             worktree: false,
             branch_prefix: None,
             group: None,
+            workspace: String::new(),
             enabled: true,
             schedule: Schedule::Days {
                 every: 1,
