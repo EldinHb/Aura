@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { Keymap, normalizeChord, chordFromEvent, formatKeys, physicalKey } from "./keymap";
 import type { CommandContext } from "./commands";
 import { evaluateWhen, fuzzyScore } from "./commands";
+import { defaultBindings, vimExtraBindings, workspaceDigitBindings, workspaceDigitKeys } from "../keymap/default";
 
 const ctx: CommandContext = {
   focus: "sidebar",
@@ -140,5 +141,47 @@ describe("fuzzyScore", () => {
   it("prefers prefixes and contiguous matches", () => {
     expect(fuzzyScore("New session", "new")! > fuzzyScore("Rename session", "new")!).toBe(true);
     expect(fuzzyScore("Open diff", "xyz")).toBeNull();
+  });
+});
+
+describe("workspace 1–9 by number", () => {
+  // The default and vim bindings as each platform gets them, whatever platform runs the test.
+  const bindingsOn = (mac: boolean) => [...defaultBindings, ...vimExtraBindings].filter((b) => b.command !== "workspace.go-nth").concat(workspaceDigitBindings(mac));
+  const run = (mac: boolean, chord: string, over: Partial<CommandContext> = {}) => {
+    const r = new Keymap(bindingsOn(mac), mac, "ctrl+space").handle(chord, { ...ctx, isMac: mac, ...over });
+    return r.kind === "run" ? [r.command, r.arg] : r.kind;
+  };
+
+  it("is ⌃digit on macOS and alt+shift+digit on Windows and Linux, next to sessions and tabs", () => {
+    expect(run(true, "ctrl+2")).toEqual(["workspace.go-nth", 2]);
+    expect(run(true, "cmd+2")).toEqual(["session.select-nth", 2]);
+    expect(run(true, "alt+2")).toEqual(["tab.go-nth", 2]);
+    expect(run(false, "alt+shift+2")).toEqual(["workspace.go-nth", 2]);
+    // Ctrl is mod there: Ctrl+digit stays "select session", Alt+digit "go to tab".
+    expect(run(false, "ctrl+2")).toEqual(["session.select-nth", 2]);
+    expect(run(false, "alt+2")).toEqual(["tab.go-nth", 2]);
+    // Dialogs and focused widgets keep their own alt+digit keys.
+    expect(run(false, "alt+shift+2", { dialogOpen: true })).toBe("none");
+    expect(formatKeys(workspaceDigitKeys(3, false), false)).toBe("Alt+Shift+3");
+    expect(formatKeys(workspaceDigitKeys(3, true), true)).toBe("⌃3");
+  });
+
+  it("collides with no other default binding", () => {
+    for (const mac of [true, false]) {
+      const chords = new Set(workspaceDigitBindings(mac).map((b) => normalizeChord(b.keys, mac, "ctrl+space")));
+      const others = bindingsOn(mac).filter((b) => b.command !== "workspace.go-nth" && chords.has(b.keys.split(/\s+/).map((c) => normalizeChord(c, mac, "ctrl+space")).join(" ")));
+      expect(others, mac ? "macOS" : "Windows / Linux").toEqual([]);
+    }
+  });
+
+  it("matches alt+shift+digit by the physical key, whatever character the layout gives", () => {
+    const chord = (key: string, code: string) => chordFromEvent(new KeyboardEvent("keydown", { key, code, altKey: true, shiftKey: true }), false);
+    expect(chord("!", "Digit1")).toBe("alt+shift+1"); // US
+    expect(chord("1", "Digit1")).toBe("alt+shift+1"); // AZERTY: shift gives the digit
+    expect(chord("Dead", "Digit6")).toBe("alt+shift+6"); // a dead key on some layouts
+    expect(chord("Unidentified", "Digit9")).toBe("alt+shift+9");
+    // Only digits with a modifier: a dead key alone is still nothing.
+    expect(chordFromEvent(new KeyboardEvent("keydown", { key: "Dead", code: "Digit6" }), false)).toBeNull();
+    expect(chordFromEvent(new KeyboardEvent("keydown", { key: "Dead", code: "BracketLeft", altKey: true }), false)).toBeNull();
   });
 });

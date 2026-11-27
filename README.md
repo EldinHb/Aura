@@ -103,7 +103,7 @@ asks something, wants an approval, or finished and you have not looked yet),
 plays a sound — pick one, use your own file, or turn it off in Settings → General.
 
 **Workspaces** keep separate lines of work apart. The name at the top of the sidebar
-switches between them (`⌘⇧K`, or `⌃1…9` for the first nine); `⋯` next to it renames,
+switches between them (`⌘⇧K`, or `⌃1…9` for the first nine; `Alt+Shift+1…9` on Windows and Linux); `⋯` next to it renames,
 deletes (what it holds moves to another workspace, nothing is deleted) or adds one.
 The sidebar shows one workspace at a time; `⌘K` still finds every session and switches
 to its workspace. Under the list, **Elsewhere** shows what needs you and what is idle
@@ -569,7 +569,7 @@ Shortcuts are shown with macOS keys; use `Ctrl` for `⌘` on Windows and Linux.
 | `Ctrl+Space` | Leader menu (which-key shows what comes next) |
 | `⌘N` / `⌘⇧N` | New session / new session in a git worktree |
 | `⌘1…9`, `⌘[` `⌘]` | Jump between sessions (leaders) in the workspace |
-| `⌘⇧K`, `⌃1…9` | Switch workspace / go to workspace 1–9 (`Ctrl+Space k` for more) |
+| `⌘⇧K`, `⌃1…9` | Switch workspace / go to workspace 1–9 (`Alt+Shift+1…9` on Windows and Linux; `Ctrl+Space k` for more) |
 | `Ctrl+H/J/K/L` | Move focus between sidebar, transcript, composer, inspector |
 | `j` `k` `gg` `G` `Enter` | Navigate lists and transcript items |
 | `←` `→` | In the sidebar: hide / show a leader's workers, step between it and them; on a section's heading, fold / unfold it |

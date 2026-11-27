@@ -1,4 +1,19 @@
 import type { Binding } from "../lib/keymap";
+import { isMac } from "../lib/platform";
+
+/**
+ * The chord that goes to workspace `n`. mod+digit selects sessions and alt+digit
+ * tabs on every platform, so macOS uses ⌃ (not ⌘ there) and Windows / Linux, where
+ * mod is Ctrl, alt+shift, matched by the physical digit key (see chordFromEvent).
+ */
+export function workspaceDigitKeys(n: number, mac: boolean): string {
+  return `${mac ? "ctrl" : "alt+shift"}+${n}`;
+}
+
+/** Workspace 1–9 by number. Not in dialogs or focused widgets, which keep their own alt+digit keys. */
+export function workspaceDigitBindings(mac: boolean): Binding[] {
+  return [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({ keys: workspaceDigitKeys(n, mac), command: "workspace.go-nth", arg: n, when: "!dialogOpen,!widgetFocused" }));
+}
 
 /** Default bindings. `mod` = ⌘ on macOS, Ctrl elsewhere. `leader` from settings (Ctrl+Space). */
 export const defaultBindings: Binding[] = [
@@ -30,17 +45,9 @@ export const defaultBindings: Binding[] = [
   { keys: "mod+7", command: "session.select-nth", arg: 7 },
   { keys: "mod+8", command: "session.select-nth", arg: 8 },
   { keys: "mod+9", command: "session.select-nth", arg: 9 },
-  // workspaces: ctrl+digit, since mod+digit selects sessions and alt+digit tabs (on macOS ⌃ is not ⌘)
+  // workspaces: ⌘⇧K opens the list; the first nine by number, see workspaceDigitKeys
   { keys: "mod+shift+k", command: "workspace.switch" },
-  { keys: "ctrl+1", command: "workspace.go-nth", arg: 1 },
-  { keys: "ctrl+2", command: "workspace.go-nth", arg: 2 },
-  { keys: "ctrl+3", command: "workspace.go-nth", arg: 3 },
-  { keys: "ctrl+4", command: "workspace.go-nth", arg: 4 },
-  { keys: "ctrl+5", command: "workspace.go-nth", arg: 5 },
-  { keys: "ctrl+6", command: "workspace.go-nth", arg: 6 },
-  { keys: "ctrl+7", command: "workspace.go-nth", arg: 7 },
-  { keys: "ctrl+8", command: "workspace.go-nth", arg: 8 },
-  { keys: "ctrl+9", command: "workspace.go-nth", arg: 9 },
+  ...workspaceDigitBindings(isMac),
   { keys: "mod+alt+up", command: "session.move-up" },
   { keys: "mod+alt+down", command: "session.move-down" },
   { keys: "mod+y", command: "approval.accept-oldest" },

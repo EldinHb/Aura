@@ -5,6 +5,8 @@ import { useStore, selectWorkspaceActivity, type WorkspaceActivity } from "../st
 import { ATTENTION, useViewedSessionId } from "../state/attention";
 import { runCommand } from "../lib/commands";
 import { isMac } from "../lib/platform";
+import { formatKeys } from "../lib/keymap";
+import { workspaceDigitKeys } from "../keymap/default";
 import type { Session } from "../gen";
 
 /** Which of the switcher's popovers is open: the workspace list, or the workspace actions. */
@@ -97,7 +99,7 @@ function SwitchMenu({ onClose }: { onClose: () => void }) {
               <span className="grow name">{w.name}</span>
               <span className="dim count" aria-label={`${a.sessions} sessions`}>{a.sessions}</span>
               <ActivityMarks a={a} />
-              {n < 9 && <kbd>{isMac ? "⌃" : "Ctrl+"}{n + 1}</kbd>}
+              {n < 9 && <kbd>{formatKeys(workspaceDigitKeys(n + 1, isMac), isMac)}</kbd>}
             </div>
           );
         })}

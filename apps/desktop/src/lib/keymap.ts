@@ -65,7 +65,10 @@ function normalizeKeyName(k: string): string {
 
 /** Translate a DOM KeyboardEvent to a normalized chord string. */
 export function chordFromEvent(e: KeyboardEvent, _isMac: boolean): string | null {
-  const key = e.key;
+  // A digit with a modifier is matched by its physical key: on some layouts alt+shift+digit
+  // gives a dead key or none at all (the chord is still alt+shift+1 for the 1 key).
+  const modifiedDigit = /^Digit[0-9]$/.test(e.code ?? "") && (e.ctrlKey || e.altKey || e.metaKey);
+  const key = modifiedDigit && (e.key === "Dead" || e.key === "Unidentified") ? e.code.slice(5) : e.key;
   if (["Shift", "Control", "Alt", "Meta", "CapsLock", "Dead", "Unidentified"].includes(key)) return null;
   const mods: string[] = [];
   if (e.ctrlKey) mods.push("ctrl");
