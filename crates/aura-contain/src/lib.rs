@@ -125,24 +125,28 @@ mod imp {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
 
-    pub fn spawn(mut cmd: Command) -> io::Result<Contained> {
-        cmd.process_group(0);
-        let child = cmd.spawn()?;
-        let group = child.id().to_string();
-        // The dead man's switch: `read` returns when this process's end of the
-        // pipe closes, which it does when this process dies.
-        let watcher = Command::new("/bin/sh")
-            .args([
-                "-c",
-                "read -r _; kill -KILL -- \"-$1\" 2>/dev/null",
-                "aura-contain",
-                &group,
-            ])
+    /// The dead man's switch, run by `sh` with the group's id as `$1`: `read`
+    /// returns when the supervisor's end of the pipe closes, which it does
+    /// when the supervisor dies. `kill -KILL -<pgid>` is the one spelling
+    /// every `sh` takes: dash (Debian's and Ubuntu's /bin/sh) refuses
+    /// `kill -KILL -- -<pgid>` ("Illegal number"), and then nothing was killed.
+    pub(crate) const WATCHER: &str = "read -r _; kill -KILL \"-$1\"";
+
+    /// The watcher for `group`, run by `shell`.
+    pub(crate) fn watcher(shell: &str, group: u32) -> Command {
+        let mut w = Command::new(shell);
+        w.args(["-c", WATCHER, "aura-contain", &group.to_string()])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
+            .process_group(0);
+        w
+    }
+
+    pub fn spawn(mut cmd: Command) -> io::Result<Contained> {
+        cmd.process_group(0);
+        let child = cmd.spawn()?;
+        let watcher = watcher("/bin/sh", child.id()).spawn();
         let watcher = match watcher {
             Ok(w) => w,
             Err(e) => {
@@ -432,6 +436,7 @@ mod imp {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
 
     fn sh(script: &str) -> Command {
         let mut c = Command::new("/bin/sh");
@@ -518,6 +523,64 @@ mod tests {
             !alive(grandchild)
         });
         assert!(gone, "the installer's tree stopped with its supervisor");
+    }
+
+    /// The watcher works in every `sh` it may meet as /bin/sh: dash
+    /// (Debian, Ubuntu), bash (macOS), busybox, and the others when installed.
+    #[test]
+    fn the_watcher_kills_the_group_in_every_shell() {
+        let mut shells: Vec<String> = [
+            "/bin/sh",
+            "/bin/dash",
+            "/bin/bash",
+            "/bin/zsh",
+            "/bin/ksh",
+            "/bin/mksh",
+        ]
+        .into_iter()
+        .filter(|s| Path::new(s).exists())
+        .map(String::from)
+        .collect();
+        if Path::new("/bin/busybox").exists() {
+            shells.push("/bin/busybox sh".into());
+        }
+        assert!(!shells.is_empty());
+        for shell in shells {
+            let mut group = Command::new("sleep");
+            group.arg("60").process_group(0);
+            let mut leader = group.spawn().unwrap();
+            let (program, extra) = match shell.split_once(' ') {
+                Some((p, a)) => (p.to_string(), Some(a.to_string())),
+                None => (shell.clone(), None),
+            };
+            let mut w = imp::watcher(&program, leader.id());
+            if let Some(a) = extra {
+                // `busybox sh -c …`: the applet goes before the script.
+                let args: Vec<_> = w.get_args().map(|a| a.to_owned()).collect();
+                w = Command::new(&program);
+                w.arg(a)
+                    .args(args)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+            }
+            let mut w = w.spawn().unwrap();
+            // The supervisor's end of the pipe closes.
+            drop(w.stdin.take());
+            let status = w.wait().unwrap();
+            let gone = (0..100).any(|_| {
+                if leader.try_wait().unwrap().is_some() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                false
+            });
+            if !gone {
+                let _ = leader.kill();
+                let _ = leader.wait();
+            }
+            assert!(gone, "{shell} did not kill the group (watcher {status})");
+        }
     }
 
     #[test]

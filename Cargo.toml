@@ -56,7 +56,6 @@ dirs = "5"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 parking_lot = "0.12"
-regex = "1"
 tempfile = "3"
 bytes = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "gzip"] }
