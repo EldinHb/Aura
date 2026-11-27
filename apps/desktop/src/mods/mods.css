@@ -2,7 +2,8 @@
 .mod-error { color: var(--err); font-size: 11.5px; white-space: pre-wrap; padding: 4px 8px; }
 pre.mod-error { margin: 4px 0; max-height: 160px; overflow: auto; }
 .mods-settings { display: flex; flex-direction: column; gap: 10px; }
-.mod-card { display: flex; flex-direction: column; gap: 8px; align-items: stretch; padding: 14px 16px; background: var(--md-surface-container); border: none; border-radius: var(--shape-lg); }
+/* Scoped so .list-item (styles.css, loaded after this file) cannot centre the cards. */
+.mods-settings .mod-card { display: flex; flex-direction: column; gap: 8px; align-items: stretch; padding: 14px 16px; background: var(--md-surface-container); border: none; border-radius: var(--shape-lg); }
 .mod-card-head { display: flex; align-items: center; gap: 8px; }
 .mod-card-head .chip.ok { color: var(--ok); }
 .mod-card-head .chip.err { color: var(--err); }
