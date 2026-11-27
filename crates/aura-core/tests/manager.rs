@@ -7924,3 +7924,104 @@ async fn deleting_many_sessions_keeps_their_worktrees_and_branches() {
         assert!(std::path::Path::new(&p).is_dir(), "{p} kept");
     }
 }
+
+/// A manager on a store that fails on demand, with the fake provider's
+/// knobs and starts in hand.
+fn failing_saves_setup() -> (Manager, Arc<FailingSaves>, Knobs, Starts) {
+    let knobs: Knobs = Default::default();
+    let starts: Starts = Default::default();
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: starts.clone(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: knobs.clone(),
+    });
+    let store = Arc::new(FailingSaves::default());
+    let m = Manager::new(store.clone(), vec![provider], None);
+    (m, store, knobs, starts)
+}
+
+fn stored(store: &FailingSaves, id: &str) -> Session {
+    store
+        .list_sessions()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_native_id_the_store_cannot_take_still_resumes_the_conversation() {
+    let (m, store, knobs, starts) = failing_saves_setup();
+    let (id, send) = session_with_sink(&m, &knobs).await;
+    wait_native_id(&m, &id).await;
+
+    *store.sessions.lock() = vec![id.clone()];
+    send(Event::NativeId {
+        session_id: id.clone(),
+        native_id: "native-2".into(),
+    });
+    for _ in 0..100 {
+        if m.get_session(&id).unwrap().native_id.as_deref() == Some("native-2") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        m.get_session(&id).unwrap().native_id.as_deref(),
+        Some("native-2"),
+        "the live session has it, though the store failed"
+    );
+    assert_ne!(stored(&store, &id).native_id.as_deref(), Some("native-2"));
+
+    // The next change that is stored carries it, and the next start resumes it.
+    store.sessions.lock().clear();
+    m.stop(&id).await.unwrap();
+    assert_eq!(stored(&store, &id).native_id.as_deref(), Some("native-2"));
+    m.send(
+        &id,
+        Input {
+            text: "again".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        starts.lock().last().unwrap().0.as_deref(),
+        Some("native-2"),
+        "resumed with the id the store could not take"
+    );
+}
+
+#[tokio::test]
+async fn a_stop_the_store_cannot_take_still_stops_the_session() {
+    let (m, store, knobs, _starts) = failing_saves_setup();
+    let (id, send) = session_with_sink(&m, &knobs).await;
+    send(Event::TurnStarted {
+        session_id: id.clone(),
+        turn: turn(&id, "t1", TurnStatus::Running),
+    });
+    wait_status(&m, &id, SessionStatus::Running).await;
+
+    *store.sessions.lock() = vec![id.clone()];
+    let mut rx = m.subscribe();
+    m.stop(&id).await.unwrap();
+    let s = m.get_session(&id).unwrap();
+    assert_eq!(s.status, SessionStatus::Idle, "not left running");
+    assert!(!m.waiting_on_user(&s), "nothing a scheduled run waits on");
+    assert!(
+        drain(&mut rx).await.iter().any(|e| matches!(
+            e,
+            Event::SessionUpdated { session } if session.id == id && session.status == SessionStatus::Idle
+        )),
+        "the app is told it stopped"
+    );
+    assert_eq!(stored(&store, &id).status, SessionStatus::Running);
+
+    // Stored with its next change.
+    store.sessions.lock().clear();
+    m.rename(&id, "renamed").unwrap();
+    assert_eq!(stored(&store, &id).status, SessionStatus::Idle);
+}

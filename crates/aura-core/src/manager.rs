@@ -680,6 +680,14 @@ impl Manager {
         // orchestrator's move to another workspace.
         let stored = {
             let _workspaces = self.inner.workspaces.lock();
+            // A scheduled run goes where its task is. The task lock is held
+            // until the run is stored and in the list, so the task cannot
+            // move to another workspace in between (lock order: workspaces,
+            // scheduled tasks, sessions).
+            let _tasks = session
+                .scheduled_task_id
+                .is_some()
+                .then(|| self.inner.scheduled_tasks.lock());
             self.place_new_session_locked(&session)
                 .and_then(|ws| {
                     session.workspace = ws;
@@ -1698,15 +1706,42 @@ impl Manager {
     }
 
     /// Change a session, then store and announce it. `f` returns whether it
-    /// changed anything; if not, nothing is stored or announced. When the
-    /// store fails, the session stays as it was and the error is returned. The sessions
+    /// changed anything; if not, nothing is stored or announced. The sessions
     /// lock is held until the change is stored and broadcast, so two changes
     /// at once (an RPC and the event loop) are stored and announced in the
     /// order they were made, and neither overwrites the other with a stale copy.
+    ///
+    /// The live session changes even when the store fails, and the change is
+    /// announced; the error is returned. What the agent and the daemon
+    /// learned (a native id, a status, usage) must reach the live session
+    /// whatever the disk does, and the next change that is stored carries it.
     fn change_session(
         &self,
         id: &str,
         activity: bool,
+        f: impl FnOnce(&mut Session) -> bool,
+    ) -> Result<Session> {
+        self.apply_change(id, activity, false, f)
+    }
+
+    /// [`Manager::change_session`] for a change that is the user's decision
+    /// rather than a fact (a session moving to another workspace): stored
+    /// first, and not made at all when the store fails, so a retry sees
+    /// what is stored.
+    fn change_session_stored(
+        &self,
+        id: &str,
+        activity: bool,
+        f: impl FnOnce(&mut Session) -> bool,
+    ) -> Result<Session> {
+        self.apply_change(id, activity, true, f)
+    }
+
+    fn apply_change(
+        &self,
+        id: &str,
+        activity: bool,
+        stored_first: bool,
         f: impl FnOnce(&mut Session) -> bool,
     ) -> Result<Session> {
         let mut sessions = self.inner.sessions.lock();
@@ -1715,21 +1750,26 @@ impl Manager {
             .ok_or_else(|| anyhow!("unknown session {id}"))?;
         let mut updated = s.clone();
         if !f(&mut updated) {
-            // Nothing to store; what `f` touched anyway is kept, as before.
+            // Nothing to store; what `f` touched anyway is kept.
             *s = updated.clone();
             return Ok(updated);
         }
         if activity {
             updated.last_activity = crate::now();
         }
-        // Stored before the live session changes: a change that cannot be
-        // stored is not made, so a retry sees what is really stored.
-        self.inner.store.upsert_session(&updated)?;
+        let stored = self.inner.store.upsert_session(&updated);
+        match &stored {
+            Err(_) if stored_first => return stored.map(|()| updated),
+            Err(e) => {
+                tracing::warn!("store session {id}: {e:#}; it is stored with its next change")
+            }
+            Ok(()) => {}
+        }
         *s = updated.clone();
         self.broadcast(Event::SessionUpdated {
             session: updated.clone(),
         });
-        Ok(updated)
+        stored.map(|()| updated)
     }
 
     fn spawn_event_loop(&self, mut rx: mpsc::UnboundedReceiver<Sourced>) {

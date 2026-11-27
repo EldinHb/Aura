@@ -2242,3 +2242,138 @@ async fn tasks_moved_out_of_a_deleted_workspace_are_announced() {
     assert_eq!(w.svc.get(&moved.id).unwrap().workspace, target);
     assert_ne!(w.svc.get(&stays.id).unwrap().workspace, target);
 }
+
+type Hook = Box<dyn FnOnce() + Send>;
+
+/// A store that, when a scheduled run's session is first written, runs
+/// `hook` and records the session's workspace next to its task's as stored
+/// at that moment.
+#[derive(Default)]
+struct RunWrites {
+    inner: MemoryStore,
+    hook: Mutex<Option<Hook>>,
+    seen: Mutex<Vec<(String, String)>>,
+}
+
+impl Store for RunWrites {
+    fn feature_records(&self, namespace: &str) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.feature_records(namespace)
+    }
+    fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> anyhow::Result<()> {
+        self.inner.save_feature_record(namespace, id, value)
+    }
+    fn delete_feature_record(&self, namespace: &str, id: &str) -> anyhow::Result<()> {
+        self.inner.delete_feature_record(namespace, id)
+    }
+    fn upsert_session(&self, s: &Session) -> anyhow::Result<()> {
+        if let Some(task) = &s.scheduled_task_id {
+            let hook = self.hook.lock().take();
+            if let Some(hook) = hook {
+                hook();
+                let task = self
+                    .inner
+                    .scheduled_tasks()?
+                    .into_iter()
+                    .find(|t| &t.id == task)
+                    .map(|t| t.workspace)
+                    .unwrap_or_default();
+                self.seen.lock().push((s.workspace.clone(), task));
+            }
+        }
+        self.inner.upsert_session(s)
+    }
+    fn delete_session(&self, id: &str) -> anyhow::Result<()> {
+        self.inner.delete_session(id)
+    }
+    fn list_sessions(&self) -> anyhow::Result<Vec<Session>> {
+        self.inner.list_sessions()
+    }
+    fn append_event(&self, id: &str, event: &Event) -> anyhow::Result<u64> {
+        self.inner.append_event(id, event)
+    }
+    fn events(&self, id: &str, after: u64, limit: usize) -> anyhow::Result<Vec<StoredEvent>> {
+        self.inner.events(id, after, limit)
+    }
+    fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.inner.search(query, limit)
+    }
+    fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {
+        self.inner.get_setting(key)
+    }
+    fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.inner.set_setting(key, value)
+    }
+    fn save_scrollback(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.inner.save_scrollback(id, data)
+    }
+    fn load_scrollback(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        self.inner.load_scrollback(id)
+    }
+}
+
+#[tokio::test]
+async fn a_task_moved_while_its_run_is_placed_waits_until_the_run_is_stored() {
+    let store = Arc::new(RunWrites::default());
+    let m = Manager::new(
+        store.clone(),
+        vec![Arc::new(Fake {
+            prompts: Default::default(),
+            stops: Default::default(),
+            starts: Default::default(),
+            hold: Default::default(),
+        })],
+        None,
+    );
+    m.restore().unwrap();
+    let (tx, _events) = broadcast::channel(64);
+    let svc = ScheduleService::new(m.clone(), store.clone(), tx);
+    let dir = tempfile::tempdir().unwrap();
+    let a = m.create_workspace("A").unwrap().id;
+    let b = m.create_workspace("B").unwrap().id;
+    let t = svc
+        .create(
+            ScheduledTaskInput {
+                name: Some("Nightly check".into()),
+                prompt: Some("quick: check".into()),
+                agent: Some("claude".into()),
+                cwd: Some(dir.path().to_string_lossy().into_owned()),
+                schedule: Some(every_hour()),
+                workspace: Some(a.clone()),
+                ..Default::default()
+            },
+            &Editor::User,
+        )
+        .unwrap();
+
+    // While the run's session is first written, the user moves the task to
+    // B, and is given every chance to finish before the write.
+    let mover: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Default::default();
+    {
+        let (svc, id, b, mover) = (svc.clone(), t.id.clone(), b.clone(), mover.clone());
+        *store.hook.lock() = Some(Box::new(move || {
+            let (done, moved) = std::sync::mpsc::channel();
+            *mover.lock() = Some(std::thread::spawn(move || {
+                svc.update(
+                    &id,
+                    ScheduledTaskInput {
+                        workspace: Some(b),
+                        ..Default::default()
+                    },
+                    &Editor::User,
+                )
+                .unwrap();
+                let _ = done.send(());
+            }));
+            let _ = moved.recv_timeout(std::time::Duration::from_millis(300));
+        }));
+    }
+    let run = svc.run_now(&t.id).await.unwrap();
+    mover.lock().take().unwrap().join().unwrap();
+
+    // The move waited for the run: when its session was written, the task
+    // was still where the run went.
+    assert_eq!(*store.seen.lock(), vec![(a.clone(), a.clone())]);
+    let s = m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    assert_eq!(s.workspace, a);
+    assert_eq!(svc.get(&t.id).unwrap().workspace, b, "then it moved");
+}

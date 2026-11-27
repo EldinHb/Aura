@@ -268,6 +268,10 @@ impl Manager {
     /// lock held while it is stored: a worker's orchestrator's; for a
     /// scheduled run, its task's as the task is now; else the one it asked
     /// for, else (none, or one deleted while it was made) the fallback.
+    ///
+    /// The caller holds the registry lock and, for a scheduled run, the
+    /// scheduled-task lock, both until the session is stored and in the
+    /// list.
     pub(super) fn place_new_session_locked(&self, s: &Session) -> Result<String> {
         let list = self.ensure_workspaces_locked()?;
         let known = |id: &str| list.iter().any(|w| w.id == id);
@@ -279,19 +283,17 @@ impl Manager {
             }
         }
         // The scheduler read the task before it started the run; its
-        // workspace may have been deleted, and the task moved, since. Read
-        // under the registry lock and then the task lock, the order a
-        // workspace's deletion moves tasks in, so this is the task as it is.
+        // workspace may have been deleted, and the task moved or changed,
+        // since. The caller holds the task lock (see the doc above), so this
+        // is the task as it is until the run is stored.
         if let Some(task) = s.scheduled_task_id.as_deref() {
-            let now = {
-                let _tasks = self.inner.scheduled_tasks.lock();
-                self.inner
-                    .store
-                    .scheduled_tasks()?
-                    .into_iter()
-                    .find(|t| t.id == task)
-                    .map(|t| t.workspace)
-            };
+            let now = self
+                .inner
+                .store
+                .scheduled_tasks()?
+                .into_iter()
+                .find(|t| t.id == task)
+                .map(|t| t.workspace);
             // A deleted task leaves what the run read; a workspace gone
             // anyway, the default one.
             return Ok(match now.as_deref().unwrap_or(&s.workspace) {
@@ -349,7 +351,7 @@ impl Manager {
                 continue;
             }
             // Not activity: the sidebar looks exactly as before.
-            self.change_session(&s.id, false, |s| {
+            self.change_session_stored(&s.id, false, |s| {
                 s.workspace = ws;
                 true
             })?;
@@ -408,7 +410,7 @@ impl Manager {
         for id in ids.iter().rev() {
             let mut from = None;
             // Not activity: the sessions keep their place in the list.
-            let result = self.change_session(id, false, |s| {
+            let result = self.change_session_stored(id, false, |s| {
                 if s.workspace == to {
                     return false;
                 }
@@ -426,7 +428,7 @@ impl Manager {
                 Err(_) if self.get_session(id).is_err() => {}
                 Err(e) => {
                     for (id, from) in moved.iter().rev() {
-                        let back = self.change_session(id, false, |s| {
+                        let back = self.change_session_stored(id, false, |s| {
                             s.workspace = from.clone();
                             true
                         });
