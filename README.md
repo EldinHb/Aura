@@ -626,12 +626,15 @@ See [`PLAN.md`](PLAN.md) for the full architecture and
 Features beyond running agents come as **mods**: packages with a part that runs
 inside the daemon (in a sandbox, allowed only what its manifest lists) and a part
 that adds to Aura's window — sidebar sections, views, inspector sections,
-commands, keys, settings. Aura ships two, which are on unless you turn them off:
+commands, keys, settings. Aura ships three, which are on unless you turn them off:
 
 - **GitHub** (`mods/github`): your GitHub account through `gh`, the issue picker in
   the new-session dialog, issue and PR links on sessions, and the pull request
   next to a session's branch.
 - **Pull requests** (`mods/pull-requests`): everything in the next section.
+- **PR status** (`mods/pr-status`): a card in the Inspector for each pull request
+  the selected session and its workers work on: its state, who reviewed and who
+  is still to review, its checks, and whether it is ready to merge, kept up to date.
 
 Settings → Mods lists them with what each may do, their settings and their log,
 and lets you disable, reload or approve them. Your own mods go in
@@ -870,7 +873,7 @@ The mod host, the SDK and the bundled mods (no GitHub account or agent quota nee
 ```sh
 cargo test -p aura-mods -p aura-store         # QuickJS host, permissions, storage, migration
 pnpm --filter @aura/github-client test        # the GitHub client the mods share
-pnpm mods:typecheck && pnpm mods:test         # mods/github, mods/pull-requests
+pnpm mods:typecheck && pnpm mods:test         # mods/github, mods/pull-requests, mods/pr-status
 ./scripts/build-mods.sh                       # bundle them where the installer picks them up
 ```
 
@@ -900,7 +903,7 @@ crates/aura-cli             the `aura` command
 apps/desktop                Tauri 2 shell (src-tauri) + React frontend (src); src/mods loads mods' UI
 packages/mod-sdk            @aura/mod-sdk: mod API types, `aura-mod build`, test host
 packages/github-client      @aura/github-client: GitHub reads and writes shared by the mods
-mods/                       the bundled mods (github, pull-requests)
+mods/                       the bundled mods (github, pull-requests, pr-status)
 docs/mods                   the mod design and how to write one
 docs/protocol               captured Claude / Codex traffic and notes
 scripts/                    export-ts.sh (Rust -> TS types), build-sidecars.sh, build-mods.sh, install-macos.sh

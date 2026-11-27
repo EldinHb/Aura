@@ -1,0 +1,14 @@
+{
+  "id": "pr-status",
+  "name": "PR status",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "A card per pull request of the selected session and its workers: state, reviewers, checks and merge readiness, kept up to date.",
+  "author": "Aura",
+  "dependsOn": { "github": "^1" },
+  "permissions": {
+    "sessions": "read",
+    "git": true,
+    "mods": ["github"]
+  }
+}
