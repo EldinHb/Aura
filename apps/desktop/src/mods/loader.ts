@@ -14,6 +14,7 @@ import type { Session } from "../gen";
 import { clearModContext, setModContext, slots, type InboxItem, type Registry } from "./registry";
 import { installHostModules } from "./host";
 import { useModInbox } from "./inbox";
+import { reportModUiError } from "./report";
 
 export { useModInbox };
 
@@ -258,6 +259,7 @@ async function load(info: ModInfo) {
     });
   } catch (e) {
     console.error(`[mod ${info.id}] failed to load its UI`, e);
+    reportModUiError(info.id, "ui.js failed to load", e);
     entry.dispose();
     loaded.delete(info.id);
     useMods.setState((s) => ({ uiErrors: { ...s.uiErrors, [info.id]: String((e as Error)?.message ?? e) }, loaded: [...loaded.keys()] }));

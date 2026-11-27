@@ -14,6 +14,7 @@ import { ModSettingsTab, ModsSettings, useModSettingsTabs } from "../../mods/Mod
 import { MAX_SOUND_FILE, SOUND_CHOICES, playSound } from "../../lib/sound";
 import { SpecialistsTab } from "./SpecialistsTab";
 import { AutonomyPicker } from "../AutonomyPicker";
+import { isBuiltinTheme, resolveTheme, useThemes } from "../../state/themes";
 
 type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "mods";
 const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "mods"];
@@ -183,6 +184,48 @@ function WaitingSoundField() {
   );
 }
 
+/** Dark, Light, System and the user's own themes, with why a theme is not shown when it cannot be. */
+function ThemeField() {
+  const choice = useStore((s) => s.settings.theme);
+  const setSettings = useStore((s) => s.setSettings);
+  const { loaded, dir, themes } = useThemes();
+  const prefersLight = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: light)").matches;
+  const resolved = resolveTheme(choice, loaded ? themes : null, prefersLight);
+  const current = themes.find((t) => t.id === choice);
+  const known = isBuiltinTheme(choice) || current || !loaded;
+  return (
+    <div className="field theme-field">
+      <label>Theme</label>
+      <select data-autofocus value={choice} onChange={(e) => setSettings({ theme: e.target.value })}>
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+        <option value="system">System</option>
+        {!known && <option value={choice}>{choice} (not installed)</option>}
+        {themes.length > 0 && (
+          <optgroup label="Your themes">
+            {themes.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+                {t.source.startsWith("mod:") ? ` (${t.source.slice(4)})` : ""}
+                {t.error ? " (invalid)" : ""}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+      {resolved.problem && <small className="theme-problem">{resolved.problem}</small>}
+      {current && !current.error && current.warnings.length > 0 && (
+        <small className="dim">
+          {current.warnings.length === 1 ? "1 warning" : `${current.warnings.length} warnings`}: {current.warnings.join("; ")}
+        </small>
+      )}
+      <small className="dim">
+        Add a theme as a JSON file in <code>{dir ?? "~/.aura/themes"}</code>; it applies as you save it. For agents: <code>aura guide themes</code>.
+      </small>
+    </div>
+  );
+}
+
 function GeneralTab() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
@@ -190,14 +233,7 @@ function GeneralTab() {
   const set = <K extends keyof UiSettings>(k: K, v: UiSettings[K]) => setSettings({ [k]: v } as Partial<UiSettings>);
   return (
     <div className="settings-grid">
-      <div className="field">
-        <label>Theme</label>
-        <select data-autofocus value={settings.theme} onChange={(e) => set("theme", e.target.value as UiSettings["theme"])}>
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
-          <option value="system">System</option>
-        </select>
-      </div>
+      <ThemeField />
       <div className="field">
         <label>Font size</label>
         <input type="number" min={10} max={20} value={settings.fontSize} onChange={(e) => set("fontSize", Math.max(10, Math.min(20, Number(e.target.value) || 13)))} />

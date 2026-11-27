@@ -128,7 +128,8 @@ export function ModsSettings() {
     <div className="mods-settings">
       <p className="dim">
         Mods add features to Aura. Their background part runs inside Aura's daemon and can only do what is listed under each; their interface part runs in
-        this window with Aura's own rights, so install mods only from people you trust. Put a mod's folder in <code>~/.aura/mods</code> and rescan.
+        this window with Aura's own rights, so install mods only from people you trust. Put a mod's folder in <code>~/.aura/mods</code>: Aura finds it
+        and asks you to approve it. For agents: <code>aura guide mods</code> explains how to make one, and <code>aura mods new &lt;id&gt;</code> starts one.
       </p>
       <div className="mod-actions">
         <button className="btn small" onClick={() => modsApi.rescan().then(() => syncMods()).catch((e) => toast(String(e?.message ?? e), "error"))} data-hint>

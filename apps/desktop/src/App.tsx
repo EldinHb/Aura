@@ -1,6 +1,7 @@
 import { registerScheduleCommands, useScheduleSync } from "./features/schedules/state";
 import "./features/schedules/schedules.css";
 import { useModLoader } from "./mods/loader";
+import { useThemeLoader } from "./state/themes";
 import { useWaitingSound } from "./state/waitingSound";
 import { ModView } from "./mods/Slots";
 import { MainTabs, TabPane } from "./components/MainTabs";
@@ -58,19 +59,9 @@ export default function App() {
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
   const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !modViewOpen;
   const focus = useStore((s) => s.focus);
-  const theme = useStore((s) => s.settings.theme);
   const fontSize = useStore((s) => s.settings.fontSize);
 
-  useEffect(() => {
-    // Native controls (select menus, scrollbars, checkboxes) follow the window appearance, not our CSS, so pin the
-    // window to the chosen theme; "system" releases it and then tracks the OS as it changes.
-    if (isTauri()) import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme === "system" ? null : theme)).catch(() => {});
-    const media = matchMedia("(prefers-color-scheme: light)");
-    const apply = () => { document.documentElement.dataset.theme = theme === "system" ? (media.matches ? "light" : "dark") : theme; };
-    apply();
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, [theme]);
+  useThemeLoader();
 
   useEffect(() => {
     document.documentElement.style.setProperty("--font-size", `${fontSize}px`);
