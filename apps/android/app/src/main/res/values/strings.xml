@@ -35,7 +35,7 @@
     <string name="add_server">Add server</string>
     <string name="server_actions">Actions for %1$s</string>
     <string name="servers_empty_title">No servers yet</string>
-    <string name="servers_empty_body">On your computer, open Aura and choose to pair a phone. Then add the server here by scanning its QR code.</string>
+    <string name="servers_empty_body">On your computer, turn on remote access in Aura and start pairing (or run aura remote pair). Then add the server here by scanning its QR code.</string>
     <string name="reconnect">Reconnect</string>
     <string name="pair_again">Pair again</string>
     <string name="rename_server">Rename server</string>
