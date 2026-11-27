@@ -104,6 +104,8 @@ export class PrPoller {
   private readonly github: GithubCall;
   private readonly now: () => number;
   private viewers = new Map<string, { sessionId: string; until: number }>();
+  /** Bumped whenever a viewer starts, stops or switches sessions: a round that collected for older watches starts over. */
+  private watchRevision = 0;
   private entries = new Map<string, Entry>();
   private trees = new Map<string, Tree & { at: number }>();
   /** Bumped by every invalidation: a collection started before one is not kept. */
@@ -131,6 +133,7 @@ export class PrPoller {
 
   /** `viewer` shows `sessionId`; with `refresh` (the section just became visible) its PRs are read now. */
   async watch(viewer: string, sessionId: string, refresh: boolean): Promise<SessionView> {
+    if (this.viewers.get(viewer)?.sessionId !== sessionId) this.watchRevision++;
     this.viewers.set(viewer, { sessionId, until: this.now() + LEASE_MS });
     if (refresh) {
       const refs = await this.refsOf(sessionId);
@@ -146,7 +149,7 @@ export class PrPoller {
   }
 
   unwatch(viewer: string): void {
-    this.viewers.delete(viewer);
+    if (this.viewers.delete(viewer)) this.watchRevision++;
   }
 
   /** Collect the session's PRs again and read every one of them now, merged ones too. */
@@ -166,7 +169,7 @@ export class PrPoller {
   /** A session is gone: forget its tree, its watches and its folder's branch caches. */
   forgetSession(sessionId: string): void {
     this.invalidate();
-    for (const [viewer, w] of this.viewers) if (w.sessionId === sessionId) this.viewers.delete(viewer);
+    for (const [viewer, w] of this.viewers) if (w.sessionId === sessionId) this.unwatch(viewer);
     const cwd = this.folders.get(sessionId);
     this.folders.delete(sessionId);
     if (cwd && ![...this.folders.values()].includes(cwd)) {
@@ -219,19 +222,28 @@ export class PrPoller {
 
   private async round(): Promise<void> {
     const now = this.now();
-    for (const [viewer, w] of this.viewers) if (w.until <= now) this.viewers.delete(viewer);
-    const watched = [...new Set([...this.viewers.values()].map((w) => w.sessionId))];
-    for (const id of this.trees.keys()) if (!watched.includes(id)) this.trees.delete(id);
-
-    const changed = new Set<string>();
-    const trees = new Map<string, PrRef[]>();
-    const folders = new Set<string>();
-    for (const id of watched) {
-      const before = this.trees.get(id)?.refs;
-      const tree = await this.treeOf(id);
-      trees.set(id, tree.refs);
-      tree.folders.forEach((f) => folders.add(f));
-      if (!sameRefs(before, tree.refs)) changed.add(id);
+    let watched: string[];
+    let changed: Set<string>;
+    let trees: Map<string, PrRef[]>;
+    let folders: Set<string>;
+    // Collecting waits on other mods; a selection that changes meanwhile must not be pruned
+    // with the folders of the watches before it, so the collection starts over.
+    for (;;) {
+      for (const [viewer, w] of this.viewers) if (w.until <= now) this.unwatch(viewer);
+      const revision = this.watchRevision;
+      watched = [...new Set([...this.viewers.values()].map((w) => w.sessionId))];
+      for (const id of this.trees.keys()) if (!watched.includes(id)) this.trees.delete(id);
+      changed = new Set<string>();
+      trees = new Map<string, PrRef[]>();
+      folders = new Set<string>();
+      for (const id of watched) {
+        const before = this.trees.get(id)?.refs;
+        const tree = await this.treeOf(id);
+        trees.set(id, tree.refs);
+        tree.folders.forEach((f) => folders.add(f));
+        if (!sameRefs(before, tree.refs)) changed.add(id);
+      }
+      if (revision === this.watchRevision) break;
     }
     // What the watched trees hold is in use, GitHub blocked or not; only the rest may be forgotten.
     const active = new Set<string>();

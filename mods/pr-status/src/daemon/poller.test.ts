@@ -466,4 +466,34 @@ describe("PrPoller", () => {
       expect(lookups()).toBe(2 * DISCOVERY_PER_TICK);
     });
   });
+
+  describe("third review", () => {
+    it("does not prune the lookup of a session selected while the previous round was collecting", async () => {
+      t.host.state.sessions.push(session("solo", { title: "Solo" }));
+      t.host.api.git.branchStatus = async (cwd: string) => ({ branch: cwd === "/code/solo" ? "solo-branch" : "main", head: "h", upstream: null, upstream_branch: null, upstream_repo: null, ahead: 0, behind: 0, changed: 0 });
+      t.branches["solo-branch"] = URL2;
+      t.fake.state.nodes[2] = prNode({ number: 2 });
+      await t.watch();
+      t.advance(DISCOVERY_GAP_MS);
+      // A round starts collecting the lead's tree and waits on the github mod …
+      t.poller.invalidate();
+      t.setHold(true);
+      const round = t.poller.tick();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(t.held).toHaveLength(1);
+      t.setHold(false);
+      // … while the user selects the solo session, whose collection queues its branch lookup.
+      await t.host.call("unwatch", { viewer: "v1" });
+      const shown = t.host.call<SessionView>("watch", { viewer: "v2", sessionId: "solo", refresh: true });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(t.poller.cached().queued).toBe(1);
+      t.held.splice(0).forEach((release) => release());
+      await round;
+      await shown;
+      // Well within the 60 s collection TTL: the branch PR was found and shows.
+      await t.host.call("watch", { viewer: "v2", sessionId: "solo", refresh: false });
+      const view = await t.host.call<SessionView>("view", { sessionId: "solo" });
+      expect(view.pulls.map((p) => [p.ref.url, p.status?.state ?? null])).toEqual([[URL2, "open"]]);
+    });
+  });
 });
