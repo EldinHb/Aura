@@ -59,4 +59,34 @@ describe("PR text through Aura's markdown renderer", () => {
     expect(img.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(img.getAttribute("loading")).toBe("lazy");
   });
+
+  it("shows GitHub's HTML as what it means, not as text (next.js#102433)", async () => {
+    const { toStatus } = await import("../../daemon/status");
+    const { prNode } = await import("../../test/fixtures");
+    const status = toStatus({ url: "https://github.com/acme/api/pull/7", repo: "acme/api", number: 7 }, prNode({ number: 7 }));
+    const body = [
+      "<!-- Thanks for opening a PR! Please fill in the template below. -->",
+      "### What?",
+      'Fixes the build. <img width="600" alt="before" src="https://github.com/user-attachments/assets/before.png" />',
+      "<details><summary>Logs</summary>",
+      "",
+      "Line one<br>Line two",
+      "</details>",
+    ].join("\n");
+    const page = {
+      repo: "acme/api", number: 7, url: "https://github.com/acme/api/pull/7", title: "T", author: "sam", createdAt: "2026-11-27T08:00:00Z", body,
+      base: "main", head: "x", headRepo: "acme/api", baseSha: "0".repeat(40), headSha: status.merge.headSha, commitCount: 1, changedFiles: 1, additions: 1, deletions: 0,
+      assignees: [], labels: [], milestone: null, timeline: [], commits: [], checks: [], commentCount: 0, status, complete: true,
+      readAt: new Date().toISOString(), nextMs: 60_000,
+    };
+    setCtx({ rpc: async (name: string) => (name === "page.get" ? page : null), toast: () => {}, storage: { get: () => undefined, set: () => {}, delete: () => {} } } as unknown as UiApi);
+    render(<PrPageView props={{ key: page.url, title: "#7 T", repo: "acme/api", number: 7, url: page.url }} close={() => {}} active />);
+    await act(async () => {});
+    const box = screen.getByRole("article", { name: "sam commented" }).querySelector(".prs-box-body")!;
+    expect(box.textContent).not.toMatch(/<!--|<img|<details|<br|<summary/);
+    expect(box.querySelector("img")?.getAttribute("src")).toBe("https://github.com/user-attachments/assets/before.png");
+    expect(box.querySelector("strong")?.textContent).toBe("Logs");
+    expect(box.textContent).toContain("Line one");
+    expect(box.querySelector("br")).not.toBeNull();
+  });
 });

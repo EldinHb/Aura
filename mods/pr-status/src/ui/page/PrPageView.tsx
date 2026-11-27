@@ -12,6 +12,7 @@ import { getCtx } from "../ctx";
 import { ago, BLOCKER_LABEL, CHECKS_LABEL, checkCounts, checksTone, readinessTone, REVIEW_LABEL, reviewTone, STATE_LABEL } from "../labels";
 import { SquashMerge } from "../SquashMerge";
 import { useNow } from "../usePullStatus";
+import { githubMarkdown } from "./githubMarkdown";
 import { filesKey, usePrFiles, usePrPage, useWindowVisible } from "./usePrPage";
 
 export const PAGE_VIEW = "pr";
@@ -160,7 +161,7 @@ function Conversation({ page, reload }: { page: PrPage; reload: () => Promise<vo
   return (
     <>
       <Box author={page.author} at={page.createdAt} url={page.url}>
-        {page.body.trim() ? <Markdown text={page.body} /> : <p className="prs-muted">No description provided.</p>}
+        {page.body.trim() ? <Markdown text={githubMarkdown(page.body)} /> : <p className="prs-muted">No description provided.</p>}
       </Box>
       <ol className="prs-timeline" aria-label="Timeline">
         {page.timeline.map((item, i) => <li key={i}><Event item={item} /></li>)}
@@ -191,13 +192,13 @@ function Line({ children, at }: { children: ReactNode; at: string }) {
 function Event({ item }: { item: TimelineItem }) {
   switch (item.kind) {
     case "comment":
-      return <Box author={item.author} at={item.at} url={item.url}><Markdown text={item.body} /></Box>;
+      return <Box author={item.author} at={item.at} url={item.url}><Markdown text={githubMarkdown(item.body)} /></Box>;
     case "review": {
       const tone = item.state === "APPROVED" ? "prs-ok" : item.state === "CHANGES_REQUESTED" ? "prs-err" : "";
       const badge = <span className={clsx("prs-badge", tone)}>{REVIEW_LABEL[item.state as keyof typeof REVIEW_LABEL] ?? item.state}</span>;
       return (
         <Box author={item.author} at={item.at} url={item.url} verb={REVIEW_VERB[item.state] ?? "reviewed"} badge={badge}>
-          {item.body.trim() && <Markdown text={item.body} />}
+          {item.body.trim() && <Markdown text={githubMarkdown(item.body)} />}
           {item.moreComments > 0 && (
             <p className="prs-muted">{item.moreComments} more comment{item.moreComments === 1 ? "" : "s"} in this review: <ExternalLink href={item.url} className="prs-link-inline">see them on GitHub</ExternalLink></p>
           )}
@@ -209,7 +210,7 @@ function Event({ item }: { item: TimelineItem }) {
                   <div key={j} className={l.startsWith("+") ? "diff-add" : l.startsWith("-") ? "diff-del" : undefined}>{l || " "}</div>
                 ))}</pre>
               )}
-              <div className="prs-thread-comment"><strong>{c.author}</strong> <Markdown text={c.body} /></div>
+              <div className="prs-thread-comment"><strong>{c.author}</strong> <Markdown text={githubMarkdown(c.body)} /></div>
             </div>
           ))}
         </Box>
