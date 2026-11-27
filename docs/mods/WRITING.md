@@ -1,5 +1,10 @@
 # Writing an Aura mod
 
+This page is about mods in this repository, in TypeScript with the SDK, tests
+and a build. A mod can also be a few plain JavaScript files with no build at
+all; that form, which works on any machine with Aura installed, is described in
+[docs/agents/creating-mods.md](../agents/creating-mods.md) (`aura guide mods`).
+
 A mod adds a feature to Aura without changing Aura itself. Aura's own GitHub
 and pull-request features are mods (`mods/github`, `mods/pull-requests`), so
 they are the best examples of everything below. The design is in
@@ -87,7 +92,7 @@ export default defineUi((ctx) => {
 
 ```bash
 pnpm exec aura-mod build .          # → dist/ (mod.json, daemon.js, ui.js, ui.css)
-cp -r dist ~/.aura/mods/hello       # then Settings → Mods → Rescan, and Approve
+cp -r dist ~/.aura/mods/hello       # Aura finds it; approve it in Settings → Mods
 ```
 
 A mod that is not bundled with Aura waits for your approval, and again whenever

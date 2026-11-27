@@ -1,0 +1,413 @@
+# Creating an Aura theme
+
+This guide is for coding agents asked to change how Aura looks. It assumes a
+terminal on a machine where Aura is installed, and nothing else: no Aura source
+code, no build step. Print it again any time with `aura guide themes`.
+
+## What a theme is
+
+A theme is one JSON file that starts from one of Aura's built-in looks (`dark`
+or `light`) and overrides some of its design tokens: the CSS custom properties
+the whole app, mods included, is painted with. An optional CSS file next to
+it can change what tokens cannot.
+
+```
+<data dir>/themes/<id>.json     required
+<data dir>/themes/<id>.css      optional
+```
+
+The data folder is `~/.aura` on every OS (`%USERPROFILE%\.aura` on Windows)
+unless `AURA_DATA_DIR` points elsewhere. The id is the file name: lowercase
+letters, digits and dashes; `dark`, `light` and `system` are taken.
+
+Themes appear in **Settings › General › Theme** under "Your themes". Aura
+watches the folder: saving a theme file applies the change to the open windows
+at once, with no reload.
+
+## Quick start
+
+```sh
+aura themes new ocean --base dark     # ~/.aura/themes/ocean.json with every token
+aura themes check ocean               # validate
+aura themes use ocean                 # show it in the open Aura windows
+```
+
+`aura themes new <id>` options: `--base dark|light` (default `dark`), `--name
+"Display name"`, `--css` (also write `<id>.css`), `--force` (overwrite).
+
+The scaffold lists every token with the base theme's current value, grouped,
+with a `"// Group"` comment entry before each group. Change the values you
+want and **delete the lines you do not change**: a token left out keeps the
+base theme's value, and keeps following it when Aura's defaults improve.
+
+`aura themes use <id>` switches every open Aura window; the user can switch
+back in Settings. `aura themes use dark` (or `light`, `system`) returns to a
+built-in theme. `aura themes list` shows all themes and whether each is valid.
+
+## The file format
+
+```json
+{
+  "name": "Ocean",
+  "author": "Ada",
+  "base": "dark",
+  "tokens": {
+    "// Colour roles": "Comments are keys that start with //; they are ignored.",
+    "--md-primary": "#7cc4ff",
+    "--md-on-primary": "#00325a",
+    "--md-surface": "#0b1520"
+  }
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Shown in the theme picker; 1 to 80 characters |
+| `base` | yes | `"dark"` or `"light"`: the built-in theme it starts from. It also sets the colour of native controls (scrollbars, select menus) |
+| `author` | no | Who made it |
+| `tokens` | no | `"--token": "value"` pairs. Values are CSS values: colours (`#rrggbb`, `rgb()`, `hsl()`, `oklch()`, `color-mix()`), lengths, font stacks, shadows, or `var(--other-token)` |
+| `description`, keys starting with `//` | no | Ignored; use them for notes |
+
+`<id>.css` holds any CSS, applied after the tokens. Use it for what tokens
+cannot express (a font weight, a border on one element). Scope rules to the
+theme with `:root[data-user-theme="<id>"] …` if you want to be explicit.
+Prefer tokens: they reach mods too, and survive Aura's updates, while class
+names in `<id>.css` may change between versions.
+
+## Validation
+
+Aura checks a theme each time it changes. `aura themes check <id>` prints the
+same result and exits with 1 when the theme cannot be used.
+
+Errors make the theme unusable. Aura then shows its base theme (or dark), and
+Settings › General shows the reason under the picker:
+
+- the JSON does not parse, or is not an object
+- `name` missing or empty; `base` missing or not `dark`/`light`
+- `tokens` is not an object
+- a value contains `{`, `}` or `!important`
+- a `url()` that is not a `data:` URL, `@import`, `image-set()` or any other
+  link (`https://`, `//host`): a theme never loads anything from the web or
+  from disk. Embed images and fonts as `data:` URLs
+- `<id>.json` larger than 128 KB, or `<id>.css` larger than 256 KB
+
+Warnings leave the theme usable and are shown too:
+
+- a token name Aura does not have (it is ignored; check the spelling against
+  the reference below)
+- a value that is not a string, is empty, or longer than 4000 characters
+  (ignored)
+- an unknown top-level field
+
+The CSS file is not parsed beyond those checks; a CSS syntax mistake only
+drops the broken rule, as in any stylesheet.
+
+## How to design one
+
+1. Pick the base closest to what you want: `dark` for a dark theme, `light`
+   for a light one.
+2. Change the **colour roles** first (`--md-*`). Almost everything is painted
+   from them, so a dozen values restyle the whole app:
+   `--md-primary`, `--md-on-primary`, `--md-primary-container`,
+   `--md-on-primary-container`, `--md-secondary-container`,
+   `--md-on-secondary-container`, the five `--md-surface*` tones,
+   `--md-on-surface`, `--md-on-surface-variant`, `--md-outline-variant`,
+   `--md-divider`.
+3. Keep the surface tones in order: `lowest` → `low` → (plain) → `high` →
+   `highest` get steadily further from the window frame. In dark themes
+   higher means lighter; in light themes the frame (`--frame`) is the darker
+   tone and panels are lighter.
+4. Then adjust the status colours (`--md-tertiary` for warnings, `--md-error`,
+   `--md-success`, `--md-info`), `--fg-dim`, `--accent-2` and the agent colours.
+5. Only then, if needed, shape (`--shape-*`), spacing (`--space-*`) and fonts
+   (`--font`, `--mono`).
+6. Run `aura themes check <id>`, switch to it with `aura themes use <id>`, and
+   look at the sidebar, a transcript, a dialog (`⌘K` / `Ctrl+K`) and Settings.
+
+### Accessibility
+
+- Text needs a contrast ratio of at least **4.5:1** against what it sits on
+  (3:1 for large text and icons). Check every `on-*` pair
+  (`--md-on-primary` on `--md-primary`, `--md-on-primary-container` on
+  `--md-primary-container`, …), and `--md-on-surface`,
+  `--md-on-surface-variant` and `--fg-dim` on `--md-surface`,
+  `--md-surface-container-low` and `--md-surface-container`.
+- The contrast ratio of colours A and B is `(L1 + 0.05) / (L2 + 0.05)`, with
+  L1 the lighter relative luminance; compute it rather than guess.
+- Keep `--md-primary` (the focus ring and the selection) clearly visible on
+  every surface: at least 3:1.
+- Do not tell states apart by hue alone: warning, error and success should
+  differ in lightness too.
+- Leave `--font-size` alone: the user sets it in Settings, which wins anyway.
+
+## Themes in a mod
+
+A mod can ship themes: put `<name>.json` (and `<name>.css`) in a `themes/`
+folder inside the mod. They are listed as `<mod id>:<name>` while the mod is
+enabled and approved, and follow the same rules. See `aura guide mods`.
+
+## Two complete examples
+
+A dark green theme, `~/.aura/themes/forest.json` (every text pair here is at
+least 5.5:1):
+
+```json
+{
+  "name": "Forest",
+  "author": "Aura guide",
+  "base": "dark",
+  "tokens": {
+    "--md-primary": "#8fd5a6",
+    "--md-on-primary": "#003920",
+    "--md-primary-container": "#1f5135",
+    "--md-on-primary-container": "#abf2c1",
+    "--md-secondary-container": "#2c4a3a",
+    "--md-on-secondary-container": "#cfe9d9",
+    "--md-tertiary": "#f0c27a",
+    "--md-surface": "#0f1512",
+    "--md-surface-container-lowest": "#0a0f0c",
+    "--md-surface-container-low": "#151d18",
+    "--md-surface-container": "#1a231e",
+    "--md-surface-container-high": "#232d27",
+    "--md-surface-container-highest": "#2d3832",
+    "--md-on-surface": "#dfe9e2",
+    "--md-on-surface-variant": "#bccabf",
+    "--md-outline": "#869489",
+    "--md-outline-variant": "#3f4a43",
+    "--md-divider": "#24302a",
+    "--md-success": "#8fd5a6",
+    "--fg-dim": "#8d9a91",
+    "--accent-2": "#9ccfd8",
+    "--shape-md": "8px",
+    "--shape-lg": "12px"
+  }
+}
+```
+
+A warm light theme with a CSS file, `~/.aura/themes/paper.json` (every text
+pair at least 5:1):
+
+```json
+{
+  "name": "Paper",
+  "author": "Aura guide",
+  "base": "light",
+  "tokens": {
+    "--md-primary": "#8a4b14",
+    "--md-on-primary": "#ffffff",
+    "--md-primary-container": "#ffdcc2",
+    "--md-on-primary-container": "#6b3a0c",
+    "--md-secondary-container": "#f1e4d6",
+    "--md-on-secondary-container": "#3a2e22",
+    "--md-tertiary": "#8a5300",
+    "--md-error": "#ba1a1a",
+    "--md-success": "#2e6b3f",
+    "--md-surface": "#fdf8f1",
+    "--md-surface-container-lowest": "#ffffff",
+    "--md-surface-container-low": "#f8f2ea",
+    "--md-surface-container": "#f2ebe2",
+    "--md-surface-container-high": "#ece4da",
+    "--md-surface-container-highest": "#e6ded3",
+    "--md-on-surface": "#1f1b16",
+    "--md-on-surface-variant": "#4f453b",
+    "--md-outline": "#81756a",
+    "--md-outline-variant": "#d4c4b5",
+    "--md-divider": "#e8ddd1",
+    "--fg-dim": "#6d6257",
+    "--accent-2": "#5b6b2e",
+    "--font": "Charter, \"Iowan Old Style\", Georgia, serif"
+  }
+}
+```
+
+`~/.aura/themes/paper.css`:
+
+```css
+/* Paper: a little more air in agent replies. */
+:root[data-user-theme="paper"] .md p { line-height: 1.6; }
+```
+
+## Token reference
+
+Every token, what it is for, and its value in the built-in dark and light
+themes. A light value equal to the dark one means the light theme does not
+change it. Values like `var(--md-surface)` point at another token.
+
+<!-- token-reference:start (generated from apps/desktop/src/styles.css; do not edit by hand) -->
+
+### Colour roles
+
+Material 3 colour roles. Most of the app is painted from these; change these first. An `on-*` colour is text and icons drawn on top of the colour it names, so keep each pair readable (4.5:1 contrast for text).
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--md-primary` | Main accent: links, focused borders, selected items, primary buttons | `#bcc2ff` | `#4c56a8` |
+| `--md-on-primary` | Text and icons on `--md-primary` (primary button labels) | `#232a6b` | `#ffffff` |
+| `--md-primary-container` | Quieter accent fill: selected chips and highlighted rows | `#3b4285` | `#dfe0ff` |
+| `--md-on-primary-container` | Text on `--md-primary-container` | `#dfe0ff` | `#333c8e` |
+| `--md-secondary` | Secondary accent for less prominent controls | `#c3c5dd` | `#5a5d72` |
+| `--md-on-secondary` | Text on `--md-secondary` | `#2c2f42` | `#ffffff` |
+| `--md-secondary-container` | Fill of selected list rows, tabs and toggles (`--accent-bg`) | `#383c56` | `#e0e1f9` |
+| `--md-on-secondary-container` | Text on `--md-secondary-container` | `#e0e1fa` | `#2f3247` |
+| `--md-tertiary` | Warning colour (`--warn`): waiting sessions, cautions | `#f3bf7f` | `#8a5300` |
+| `--md-on-tertiary` | Text on `--md-tertiary` | `#472a00` | `#ffffff` |
+| `--md-tertiary-container` | Fill of warning banners | `#5c3c08` | `#ffdcb8` |
+| `--md-on-tertiary-container` | Text on `--md-tertiary-container` | `#ffdcb8` | `#5e3800` |
+| `--md-error` | Errors, failed states and destructive buttons (`--err`) | `#ffb4ab` | `#ba1a1a` |
+| `--md-on-error` | Text on `--md-error` | `#690005` | `#ffffff` |
+| `--md-error-container` | Fill of error banners | `#93000a` | `#ffdad6` |
+| `--md-on-error-container` | Text on `--md-error-container` | `#ffdad6` | `#93000a` |
+| `--md-success` | Success and running states (`--ok`) | `#86d9a3` | `#1b6d3f` |
+| `--md-on-success` | Text on `--md-success` | `#00391c` | `#ffffff` |
+| `--md-info` | Informational highlights (`--info`) | `#a3c9ff` | `#1f5fa8` |
+| `--md-surface` | Base surface; the window frame (`--frame`) in the dark theme | `#111216` | `#fbf8ff` |
+| `--md-surface-container-lowest` | Lowest surface tone; the panels in the light theme | `#0c0d11` | `#ffffff` |
+| `--md-surface-container-low` | Panels: main area and inspector cards (`--panel`) in the dark theme | `#18191f` | `#f6f3fb` |
+| `--md-surface-container` | Raised surfaces: popovers and inputs (`--bg-elev`); the frame in the light theme | `#1d1e25` | `#efedf5` |
+| `--md-surface-container-high` | Higher surfaces: dialogs and menus (`--bg-elev2`) | `#26272f` | `#e9e7ef` |
+| `--md-surface-container-highest` | Highest surface tone: tooltips, pressed fills | `#31323a` | `#e3e1e9` |
+| `--md-on-surface` | Main text colour (`--fg`) | `#e3e1e9` | `#1b1b21` |
+| `--md-on-surface-variant` | Secondary text: labels, metadata (`--fg-muted`) | `#c6c5d0` | `#46464f` |
+| `--md-outline` | Strong outlines: input borders, focus outlines | `#8f8f9a` | `#767680` |
+| `--md-outline-variant` | Subtle outlines (`--border-strong`) | `#45464f` | `#c7c5d0` |
+| `--md-divider` | Hairline dividers between rows and panes (`--border`) | `#2a2b33` | `#e2e0ea` |
+| `--md-inverse-surface` | Background of snackbars and toasts | `#e3e1e9` | `#303036` |
+| `--md-inverse-on-surface` | Text on `--md-inverse-surface` | `#2f3036` | `#f2eff7` |
+| `--md-inverse-primary` | Accent on inverse surfaces (toast actions) | `#4c56a8` | `#bcc2ff` |
+| `--md-inverse-warn` | Warning colour on inverse surfaces | `#8a5300` | `#f3bf7f` |
+| `--md-inverse-error` | Error colour on inverse surfaces | `#ba1a1a` | `#ffb4ab` |
+| `--md-scrim` | Dimming layer behind dialogs (use a colour with alpha) | `rgb(0 0 0 / 0.55)` | `rgb(0 0 0 / 0.32)` |
+
+### Layout surfaces
+
+Which surface tone the big areas use.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--frame` | Window frame: title bar, sidebar, gaps between panes | `var(--md-surface)` | `var(--md-surface-container)` |
+| `--panel` | Main area and inspector cards | `var(--md-surface-container-low)` | `var(--md-surface-container-lowest)` |
+
+### State layers
+
+Hover and press feedback: an on-colour laid over a surface at a fixed opacity.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--state-hover` | Opacity of the hover layer (a percentage) | `8%` | `8%` |
+| `--state-focus` | Opacity of the focus layer (a percentage) | `10%` | `10%` |
+| `--state-pressed` | Opacity of the pressed layer (a percentage) | `12%` | `12%` |
+| `--hover-layer` | Colour laid over a hovered row or button | `color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent)` | `color-mix(in srgb, var(--md-on-surface) var(--state-hover), transparent)` |
+| `--pressed-layer` | Colour laid over a pressed row or button | `color-mix(in srgb, var(--md-on-surface) var(--state-pressed), transparent)` | `color-mix(in srgb, var(--md-on-surface) var(--state-pressed), transparent)` |
+
+### Elevation
+
+Shadows, only for what floats over the window: menus, dialogs, snackbars.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--elev-1` | Shadow of small floating elements (menus, chips) | `0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15)` | `0 1px 2px rgb(0 0 0 / 0.12), 0 1px 3px 1px rgb(0 0 0 / 0.06)` |
+| `--elev-2` | Shadow of popovers | `0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px 2px rgb(0 0 0 / 0.15)` | `0 1px 2px rgb(0 0 0 / 0.12), 0 2px 6px 2px rgb(0 0 0 / 0.08)` |
+| `--elev-3` | Shadow of dialogs | `0 4px 8px 3px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.3)` | `0 4px 8px 3px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.14)` |
+
+### Shape
+
+Corner radii.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--shape-xs` | Extra-small radius: chips, small buttons | `4px` | `4px` |
+| `--shape-sm` | Small radius: inputs, rows | `8px` | `8px` |
+| `--shape-md` | Medium radius: cards | `12px` | `12px` |
+| `--shape-lg` | Large radius: dialogs | `16px` | `16px` |
+| `--shape-xl` | Extra-large radius: sheets | `28px` | `28px` |
+| `--shape-full` | Pill shape | `999px` | `999px` |
+| `--radius` | Default radius of older components | `var(--shape-md)` | `var(--shape-md)` |
+
+### Spacing
+
+The 4/8 px spacing rhythm. Changing these makes the app denser or roomier.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--space-1` | 4 px step | `4px` | `4px` |
+| `--space-2` | 8 px step | `8px` | `8px` |
+| `--space-3` | 12 px step | `12px` | `12px` |
+| `--space-4` | 16 px step | `16px` | `16px` |
+| `--space-5` | 20 px step | `20px` | `20px` |
+| `--space-6` | 24 px step | `24px` | `24px` |
+
+### Typography
+
+Fonts and the type scale. Only fonts installed on the machine (or embedded with a data: URL in the theme's CSS) can be used.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--fs-label-s` | Small labels and badges | `11px` | `11px` |
+| `--fs-label-m` | Labels and metadata | `12px` | `12px` |
+| `--fs-title-s` | Small titles: section and card headings | `14px` | `14px` |
+| `--fs-title-m` | Titles: dialog headings | `16px` | `16px` |
+| `--fs-headline-s` | Headlines: empty states | `22px` | `22px` |
+| `--font` | Interface font stack | `"Google Sans Text", "Google Sans", "Roboto Flex", Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` | `"Google Sans Text", "Google Sans", "Roboto Flex", Roboto, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif` |
+| `--mono` | Monospace font stack: code, diffs, terminals | `"Roboto Mono", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace` | `"Roboto Mono", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace` |
+| `--font-size` | Base text size. Settings › Font size sets this on the window, which wins over a theme | `13px` | `13px` |
+
+### App aliases
+
+The app's original short names. Most point at a colour role above, so overriding the role is usually enough; override an alias to change only the places that use it.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--bg` | Window background | `var(--frame)` | `var(--frame)` |
+| `--bg-elev` | Raised background: inputs, popovers | `var(--md-surface-container)` | `var(--md-surface-container-low)` |
+| `--bg-elev2` | Higher background: dialogs, menus | `var(--md-surface-container-high)` | `var(--md-surface-container-high)` |
+| `--bg-hover` | Hover background of rows and buttons | `var(--hover-layer)` | `var(--hover-layer)` |
+| `--border` | Hairline borders | `var(--md-divider)` | `var(--md-divider)` |
+| `--border-strong` | Stronger borders | `var(--md-outline-variant)` | `var(--md-outline-variant)` |
+| `--fg` | Main text | `var(--md-on-surface)` | `var(--md-on-surface)` |
+| `--fg-muted` | Secondary text | `var(--md-on-surface-variant)` | `var(--md-on-surface-variant)` |
+| `--fg-dim` | Faint text: timestamps, placeholders | `#94949f` | `#62626d` |
+| `--accent` | Accent colour | `var(--md-primary)` | `var(--md-primary)` |
+| `--on-accent` | Text on the accent colour | `var(--md-on-primary)` | `var(--md-on-primary)` |
+| `--accent-2` | Second accent: links in session rows, highlights | `#80d5c3` | `#006b5f` |
+| `--accent-bg` | Fill of selected rows | `var(--md-secondary-container)` | `var(--md-secondary-container)` |
+| `--ok` | Success colour | `var(--md-success)` | `var(--md-success)` |
+| `--on-ok` | Text on the success colour | `var(--md-on-success)` | `var(--md-on-success)` |
+| `--warn` | Warning colour | `var(--md-tertiary)` | `var(--md-tertiary)` |
+| `--err` | Error colour | `var(--md-error)` | `var(--md-error)` |
+| `--on-err` | Text on the error colour | `var(--md-on-error)` | `var(--md-on-error)` |
+| `--info` | Info colour | `var(--md-info)` | `var(--md-info)` |
+| `--focus-ring` | Box-shadow drawn around the focused control | `0 0 0 2px var(--md-primary), 0 0 0 5px color-mix(in srgb, var(--md-primary) 24%, transparent)` | `0 0 0 2px var(--md-primary), 0 0 0 5px color-mix(in srgb, var(--md-primary) 24%, transparent)` |
+
+### Agent colours
+
+The colour that marks each kind of agent in session rows and transcripts.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--agent-claude` | Claude sessions | `#e8a878` | `#9a4c16` |
+| `--agent-codex` | Codex sessions | `#8fd9b5` | `#2a7d59` |
+| `--agent-terminal` | Terminal sessions | `#a8b1ff` | `#4d5bd6` |
+| `--agent-acp` | ACP agent sessions | `#d8b7f5` | `#8045b8` |
+
+### Icons
+
+Small icons drawn from CSS. `--chevron` is an image (it carries its own colour); the others are masks painted in the current text colour. Only `data:` URLs are allowed.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--chevron` | Arrow of select menus (an SVG data: URL) | *(SVG data URL)* | *(SVG data URL)* |
+| `--feature-owner-icon` | Flag marking a feature owner session (a mask) | *(SVG data URL)* | *(SVG data URL)* |
+| `--orchestrator-icon` | Mark of an orchestrator session (a mask) | *(SVG data URL)* | *(SVG data URL)* |
+| `--inbox-icon` | Inbox icon (a mask) | *(SVG data URL)* | *(SVG data URL)* |
+
+### Layout sizes
+
+Default sizes of the panes and the title bar.
+
+| Token | Role | Dark default | Light default |
+| --- | --- | --- | --- |
+| `--sidebar-w` | Sidebar width | `280px` | `280px` |
+| `--inspector-w` | Inspector width | `320px` | `320px` |
+| `--titlebar-h` | Title bar height | `38px` | `38px` |
+
+<!-- token-reference:end -->
