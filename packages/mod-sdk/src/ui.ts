@@ -123,6 +123,14 @@ export interface UiApi {
     onChange(fn: (key: string, value: Json) => void): Disposer;
   };
 
+  /** The sessions open in this window, read-only. */
+  sessions: {
+    /** Ids of the sessions open here: each session's main-area tab (in tab order), and the selected session. */
+    open(): string[];
+    /** Called with `open()` whenever that list changes (a tab opened or closed, another session selected). */
+    onOpenChange(fn: (ids: string[]) => void): Disposer;
+  };
+
   commands: { register(cmd: CommandDef): Disposer; run(id: string, arg?: unknown): void };
   keys: {
     bind(binding: KeyBindingDef): Disposer;

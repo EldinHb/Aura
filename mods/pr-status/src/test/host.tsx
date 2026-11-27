@@ -3,10 +3,9 @@
 import type { ComponentProps } from "react";
 import { create } from "zustand";
 
-export const useStore = create<{ selectedId: string | null; select: (id: string | null) => void; sessions: Record<string, { title: string }>; tabs: unknown[] }>((set) => ({
+export const useStore = create<{ selectedId: string | null; select: (id: string | null) => void; sessions: Record<string, { title: string }> }>((set) => ({
   selectedId: null,
   sessions: {},
-  tabs: [],
   select: (selectedId) => set({ selectedId }),
 }));
 

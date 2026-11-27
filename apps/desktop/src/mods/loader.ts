@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import { useEffect } from "react";
 import { useStore } from "../state/store";
+import { onOpenSessionsChange, openSessionIds } from "./openSessions";
 import { openModView } from "./views";
 import { registerCommand, runCommand } from "../lib/commands";
 import { desktopNotify, onModNotificationClick } from "../lib/notify";
@@ -144,6 +145,10 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
         settingListeners.set(id, set);
         return track(() => set.delete(fn));
       },
+    },
+    sessions: {
+      open: () => openSessionIds(),
+      onOpenChange: (fn: (ids: string[]) => void) => track(onOpenSessionsChange(fn)),
     },
     commands: {
       register(cmd: { id: string; title: string; group: string; keywords?: string[]; when?: string; hidden?: boolean; run: (arg?: unknown) => void | Promise<void> }) {

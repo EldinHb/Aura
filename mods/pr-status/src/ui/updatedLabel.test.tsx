@@ -27,7 +27,7 @@ function entry(number: number, state: "open" | "merged", readAt: string): PrEntr
 
 function fakeCtx(view: SessionView) {
   const rpc = vi.fn(async (name: string) => (name === "unwatch" ? true : view));
-  setCtx({ rpc, on: () => () => {}, onConnection: () => () => {}, storage: { get: () => undefined, set: () => {}, delete: () => {} } } as unknown as UiApi);
+  setCtx({ rpc, on: () => () => {}, onConnection: () => () => {}, storage: { get: () => undefined, set: () => {}, delete: () => {} }, sessions: { open: () => ["lead"], onOpenChange: () => () => {} } } as unknown as UiApi);
 }
 
 describe("updated label", () => {

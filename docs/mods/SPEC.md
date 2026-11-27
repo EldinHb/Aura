@@ -228,6 +228,8 @@ export default function activate(ctx: UiApi): void | (() => void)
 * `ctx.on(name, fn)` subscribes to the mod's `mod.<id>.<name>` notifications.
 * `ctx.client` is the core RPC client (same object core uses).
 * `ctx.storage` is `localStorage` namespaced to `aura.mod.<id>.`.
+* `ctx.sessions.open()` lists the sessions open in the window (session tabs and
+  the selected one) and `ctx.sessions.onOpenChange(fn)` follows it; read-only.
 
 **Commands and keys**
 
@@ -399,6 +401,10 @@ What the first draft did not foresee and the build added:
   tools, `ctx.notify` and `ctx.window` in the UI API.
 - `mods.session_data.set`: a new-session field's `data` is stored on the new
   session as that mod's session data.
+- `ctx.sessions.open()` and `ctx.sessions.onOpenChange(fn)`: the ids of the
+  sessions open in the window (each session's main-area tab, in order, and the
+  selected session), read-only, so a mod can keep per-session state for exactly
+  those without reading Aura's store.
 - `ctx.openView(id, props, { preview: false })` opens a view in a main-area tab of
   its own that stays; without it the view takes the preview tab, which the next
   preview replaces. The same view and props (or `props.key`) always shows the tab

@@ -2,7 +2,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import type { UiApi } from "@aura/mod-sdk/ui";
-import { useStore } from "@aura/host";
 import type { PrEntry, SessionView } from "../shared/types";
 import { session } from "../test/fixtures";
 import { setCtx } from "./ctx";
@@ -29,8 +28,21 @@ function view(sessionId: string, number: number, title: string): SessionView {
 }
 
 const views: Record<string, SessionView> = { a: view("a", 1, "PR of A"), b: view("b", 2, "PR of B") };
+/** `ctx.sessions`: the open sessions, as Aura reports them. */
+let open: string[] = [];
+const listeners = new Set<(ids: string[]) => void>();
+const sessions = {
+  open: () => open,
+  onOpenChange: (fn: (ids: string[]) => void) => {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  },
+};
 const setTabs = (...ids: string[]) =>
-  act(() => (useStore as any).setState({ tabs: ids.map((id) => ({ key: `s:${id}`, kind: "session", sessionId: id, preview: false })) }));
+  act(() => {
+    open = ids;
+    listeners.forEach((fn) => fn(ids));
+  });
 
 function fakeCtx() {
   const pending: Array<() => void> = [];
@@ -40,11 +52,12 @@ function fakeCtx() {
     if (!hold) return views[p.sessionId];
     return new Promise((resolve) => pending.push(() => resolve(views[p.sessionId])));
   });
-  setCtx({
-    rpc, on: () => () => {}, onConnection: () => () => {},
+  const ctx = {
+    rpc, on: () => () => {}, onConnection: () => () => {}, sessions,
     storage: { get: () => undefined, set: () => {}, delete: () => {} },
-  } as unknown as UiApi);
-  return { rpc, pending, setHold: (on: boolean) => (hold = on) };
+  } as unknown as UiApi;
+  setCtx(ctx);
+  return { rpc, ctx, pending, setHold: (on: boolean) => (hold = on) };
 }
 
 describe("sessions open in tabs", () => {
@@ -57,14 +70,15 @@ describe("sessions open in tabs", () => {
     stop();
     cleanup();
     setCtx(null);
-    (useStore as any).setState({ tabs: [], selectedId: null });
+    open = [];
+    listeners.clear();
     vi.useRealTimers();
   });
 
   it("keeps a background watch per open session, renewed, and lets go of a closed one", async () => {
     const ctx = fakeCtx();
     await setTabs("a", "b");
-    stop = keepOpenSessions({ rpc: ctx.rpc, onConnection: () => () => {} } as unknown as UiApi);
+    stop = keepOpenSessions(ctx.ctx);
     const background = () => ctx.rpc.mock.calls.filter(([n, p]) => n === "watch" && p.background).map(([, p]) => p.sessionId);
     expect(background()).toEqual(["a", "b"]);
     await act(async () => void vi.advanceTimersByTime(RENEW_MS));
@@ -76,7 +90,7 @@ describe("sessions open in tabs", () => {
   it("shows a session's cards at once when switching back, then refreshes them", async () => {
     const ctx = fakeCtx();
     await setTabs("a", "b");
-    stop = keepOpenSessions({ rpc: ctx.rpc, onConnection: () => () => {} } as unknown as UiApi);
+    stop = keepOpenSessions(ctx.ctx);
     const { rerender } = render(<PrStatusSection session={session("a")} />);
     expect(await screen.findByRole("article", { name: /PR of A/ })).toBeTruthy();
     rerender(<PrStatusSection session={session("b")} />);
@@ -93,7 +107,7 @@ describe("sessions open in tabs", () => {
   it("forgets a session's cards when its tab closes", async () => {
     const ctx = fakeCtx();
     await setTabs("a", "b");
-    stop = keepOpenSessions({ rpc: ctx.rpc, onConnection: () => () => {} } as unknown as UiApi);
+    stop = keepOpenSessions(ctx.ctx);
     const { rerender } = render(<PrStatusSection session={session("b")} />);
     await screen.findByRole("article", { name: /PR of B/ });
     rerender(<PrStatusSection session={session("a")} />);

@@ -46,6 +46,8 @@ function fakeCtx(view: SessionView) {
     rpc, on: (name: string, fn: (p: any) => void) => { listeners.set(name, fn); return () => listeners.delete(name); }, onConnection: () => () => {},
     storage: { get: (k: string) => stored.get(k), set: (k: string, v: unknown) => void stored.set(k, v), delete: (k: string) => void stored.delete(k) },
     openView,
+    // No session counts as open, so no test sees cards another one cached (openSessions.test covers that).
+    sessions: { open: () => [], onOpenChange: () => () => {} },
   };
   setCtx(ctx as unknown as UiApi);
   return { rpc, openView, emit: (name: string, p: unknown) => listeners.get(name)?.(p) };
