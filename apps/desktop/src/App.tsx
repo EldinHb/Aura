@@ -9,7 +9,7 @@ import type { Tab } from "./state/tabs";
 import { slots } from "./mods/registry";
 import "./mods/mods.css";
 import { useEffect } from "react";
-import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
+import { useStore, selectSelected } from "./state/store";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
 import { connectDaemon, isTauri } from "./lib/connection";
 import { useKeyboard } from "./hooks/useKeyboard";
@@ -26,13 +26,12 @@ import { Inspector } from "./views/Inspector";
 import { OrchestratorTabs, WorkerThreads } from "./views/WorkerThreads";
 import { TeamView } from "./views/TeamView";
 import { useWorkerThreads } from "./state/workerThreads";
-import { setFeatures, setRoleSuggestions } from "./state/features";
 import { Overlays } from "./components/Overlays";
 import { isMac } from "./lib/platform";
 import { desktopNotify } from "./lib/notify";
 import clsx from "clsx";
-import type { Event, Session, Workspace } from "./gen";
-import { EventGate } from "./state/eventGate";
+import type { Event } from "./gen";
+import { syncWithDaemon } from "./state/daemonSync";
 
 const params = new URLSearchParams(location.search);
 const windowMode = params.get("window"); // "session" for a detached single-session window
@@ -89,8 +88,7 @@ export default function App() {
   // Connect + subscribe.
   useEffect(() => {
     let cancelled = false;
-    let offEvent: (() => void) | null = null;
-    let offState: (() => void) | null = null;
+    let offSync: (() => void) | null = null;
     let offFocus: (() => void) | null = null;
     const st = useStore.getState;
     (async () => {
@@ -100,40 +98,8 @@ export default function App() {
         if (cancelled) return client.close();
         st().setClient(client);
         st().setConnection("open");
-        // Events are held while a snapshot loads and replayed over it (see EventGate).
-        const gate = new EventGate<Event>((ev) => st().applyEvent(ev));
-        offEvent = client.onEvent((ev: Event) => {
-          gate.push(ev);
-          notifyIfNeeded(ev);
-        });
-        const refresh = async () => {
-          let sessions: Session[] = [];
-          let workspaces: Workspace[] = [];
-          await gate.during(
-            // A daemon from before workspaces has none to list: the sidebar is then not scoped.
-            () => Promise.all([client.providers(), client.sessions(), client.daemonInfo(), client.workspaces().catch(() => [])]),
-            ([providers, list, info, spaces]) => {
-              sessions = list;
-              workspaces = spaces;
-              st().setProviders(providers);
-              st().setWorkspaces(spaces);
-              st().setSessions(list);
-              useStore.setState({ daemonVersion: info.version });
-            },
-          );
-          const active = st().activeWorkspace;
-          if (workspaces.length && active) client.touchWorkspace(active).catch((error: unknown) => console.warn("Could not tell the daemon the active workspace:", error));
-          // A daemon from before feature owners has none to list.
-          client.features().then(setFeatures, () => {});
-          client.roleSuggestions().then(setRoleSuggestions, () => {});
-          if (initialSession && sessions.some((s) => s.id === initialSession)) st().select(initialSession);
-          else if (!st().selectedId && !st().modView && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
-        };
-        await refresh();
-        offState = client.onState((s) => {
-          st().setConnection(s);
-          if (s === "open") void refresh();
-        });
+        // Events, the connection state and a refresh on every reconnect (see state/daemonSync.ts).
+        offSync = syncWithDaemon(client, { initialSession, selectFirst: windowMode !== "session", onEvent: (ev) => void notifyIfNeeded(ev) });
         // Provider CLIs are upgraded outside Aura, so re-read them whenever the
         // window comes back rather than trusting what we saw at connect. Only
         // the provider list — a full refresh would re-apply the initial session
@@ -152,8 +118,7 @@ export default function App() {
     })();
     return () => {
       cancelled = true;
-      offEvent?.();
-      offState?.();
+      offSync?.();
       offFocus?.();
     };
   }, []);
