@@ -63,3 +63,5 @@ jobs:
         run: pnpm mods:typecheck && pnpm mods:test
       - name: Build the bundled mods
         run: ./scripts/build-mods.sh
+      - name: Test the release scripts
+        run: node --test scripts/*.test.mjs

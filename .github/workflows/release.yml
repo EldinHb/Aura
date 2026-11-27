@@ -6,6 +6,12 @@
 # The release is created as a draft, every platform uploads into it, and it is
 # published only once all builds succeed, so a half-filled release is never
 # visible.
+#
+# Updates: every installer is signed for tauri-plugin-updater with the key in
+# the TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets
+# (the public key is in tauri.conf.json). The publish job assembles latest.json
+# from the signatures and uploads it with the release, so installed copies find
+# the new version at /releases/latest/download/latest.json once it is published.
 name: Release
 
 on:
@@ -122,19 +128,51 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Signs the updater artifacts (.app.tar.gz, setup.exe, .msi, .AppImage,
+          # .deb, .rpm); the build fails without the key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           releaseId: ${{ needs.create-release.outputs.release-id }}
+          # latest.json is assembled once by the publish job: these jobs run in
+          # parallel, and each would read, rewrite and re-upload it, dropping
+          # the platforms another job just added.
+          includeUpdaterJson: false
 
   publish-release:
     needs: [create-release, build]
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
     steps:
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # One manifest for every platform, from the signatures the builds
+      # uploaded. Fails when an artifact is unsigned or a platform is missing,
+      # so a release never reaches installed copies half-updatable.
+      - name: Assemble the updater manifest
+        run: node scripts/updater-manifest.mjs --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --out latest.json
+
+      - name: Upload the updater manifest
         run: |
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/${{ needs.create-release.outputs.release-id }}" \
+          # A re-run replaces the one it uploaded before.
+          for asset in $(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+              --jq '.[] | select(.name == "latest.json") | .id'); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset"
+          done
+          gh api -X POST -H "Content-Type: application/json" --input latest.json \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=latest.json" \
+            --jq '"uploaded " + .name'
+
+      - name: Publish release
+        run: |
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             -F draft=false
