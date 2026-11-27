@@ -1,0 +1,20 @@
+[package]
+name = "aura-contain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Run a process tree that cannot outlive its supervisor (the Windows update installer)"
+
+# std and the OS only, so its Windows code type-checks from any host:
+#   cargo check -p aura-contain --target x86_64-pc-windows-msvc
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }

@@ -148,6 +148,11 @@ async fn main() -> Result<()> {
         .data_dir
         .clone()
         .unwrap_or_else(aura_rpc::default_data_dir);
+    // An app update replaces this binary and the daemon's: a running `aura`
+    // locks its own on Windows, and could start the old daemon mid-install.
+    if let Some(install) = aura_rpc::update_lock::install_in_progress(&data_dir) {
+        bail!("{}", aura_rpc::update_lock::installing_message(&install));
+    }
     if let Cmd::Daemon { cmd } = &cli.cmd {
         return daemon_cmd(&data_dir, cmd).await;
     }

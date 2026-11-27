@@ -751,6 +751,16 @@ kbd { font-family: var(--mono); font-size: 10.5px; line-height: 1.4; padding: 1p
 .toast .toast-close { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--shape-full); color: color-mix(in srgb, var(--md-inverse-on-surface) 75%, transparent); padding: 0; }
 .toast .toast-close:hover { color: var(--md-inverse-on-surface); background: color-mix(in srgb, var(--md-inverse-on-surface) 10%, transparent); }
 .toast .toast-close:focus-visible { border-radius: var(--shape-full); box-shadow: 0 0 0 2px var(--md-inverse-primary); }
+/* A toast's buttons: Material snackbar text buttons. */
+.toast .toast-action { flex: none; background: transparent; border: none; border-radius: var(--shape-full); padding: 6px 10px; color: var(--md-inverse-primary); font-weight: 500; letter-spacing: 0.01em; cursor: pointer; }
+.toast .toast-action:hover { background: color-mix(in srgb, var(--md-inverse-primary) 12%, transparent); }
+.toast .toast-action:focus-visible { box-shadow: 0 0 0 2px var(--md-inverse-primary); }
+.toast .toast-msg .toast-action { padding: 2px 6px; margin-left: -2px; }
+.toast .toast-action.strong { font-weight: 700; }
+.toast.update-banner::before { background: var(--md-inverse-primary); }
+.update-banner .update-text { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.update-banner .update-reason { font-size: var(--fs-label-s); line-height: 1.4; opacity: 0.8; user-select: text; }
+.update-banner .update-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -10px; }
 .hint-label .typed { color: inherit; opacity: 0.55; }
 .hint-status { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); background: var(--md-inverse-surface); color: var(--md-inverse-on-surface); border: none; border-radius: var(--shape-full); padding: 6px 16px; font-size: var(--fs-label-s); box-shadow: var(--elev-2); z-index: 70; }
 .help-modal .help-columns { display: grid; grid-template-columns: 1fr 1.2fr; gap: 24px; margin-top: 10px; }

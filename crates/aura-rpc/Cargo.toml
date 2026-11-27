@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aura-core = { workspace = true }
+aura-contain = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

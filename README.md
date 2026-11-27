@@ -167,6 +167,69 @@ your system will warn you the first time.
   (`sudo apt install ./Aura_*.deb`, `sudo dnf install ./Aura-*.rpm`). For the
   AppImage, make it executable first: `chmod +x Aura_*.AppImage`.
 
+### Updates
+
+Aura updates itself. Shortly after it starts, and every 6 hours after that, it looks
+for a newer stable release on GitHub (drafts and pre-releases are never offered),
+downloads it in the background and checks its signature. A banner then says
+**Aura X.Y.Z is ready — Restart to update**, with **Release notes** and **Later**
+(which hides it until the next launch or a newer version).
+
+Restarting stops the daemon, installs the new version and opens it, and the new
+version starts its own daemon. Your sessions are paused for the moment that takes and
+resume afterwards; if any session is working, Aura asks before it restarts.
+
+- **Check by hand:** `⌘K` → Check for updates, `Ctrl+Space u`, or **Check for
+  Updates…** in the tray menu. It says "You're up to date" or what went wrong.
+- **Settings → General:** turn off **Automatically check for updates**, and see the
+  version you run and when Aura last checked.
+- **When something fails** (no network, a bad signature, no permission), Aura says so
+  with a **Download manually** link to the latest release. Checks Aura starts by itself
+  fail quietly and try again 6 hours later; they are in the app's log (see
+  [How it works](#how-it-works)).
+
+How each system updates:
+
+| Installed from | Update |
+|---|---|
+| macOS `.dmg` | Replaces `Aura.app` where it is. If that folder needs an administrator, macOS asks for the password. |
+| Windows installer (`-setup.exe`) | Installs for your user only (no administrator rights). Runs the new installer with only a progress bar, then starts Aura again. If the installer is cancelled or fails, Aura starts again and says which version is installed, or that the install is incomplete and should be run again. |
+| Windows `.msi`, or an install for all users | Not updated in place, since that needs administrator rights: the banner offers the download, and you run the new installer yourself. |
+| Linux AppImage | Replaces the AppImage file, if you can write to it and its folder. |
+| Linux `.deb` / `.rpm` | Installs the new package, asking for your password through `pkexec` (or `zenity` / `kdialog`). |
+
+Where Aura cannot replace itself (opened straight from the disk image, from a
+location macOS moved it to or through a symbolic link, an AppImage in a read-only folder, a `.deb` without a way
+to ask for your password, a Windows install for all users or from the `.msi`), the banner says why and links to the release to install it
+by hand.
+
+While an update installs, the `aura` command and the daemon refuse to start ("Aura is
+installing version X.Y.Z…"), so nothing holds on to the files being replaced; they
+work again once Aura has restarted. On Windows the installer runs in a job that ends
+with Aura's update helper, and one still running after 30 minutes is stopped with
+everything it started. If Windows cannot confirm that everything stopped (a process can
+hang on pending I/O), the lock stays and Aura is not started again until it has; the
+next start says what happened. After a failed or cancelled install, Aura checks what is installed and says
+which version you have, or that the install is incomplete and should be run again.
+
+The Windows installer itself closes any program that has `aurad.exe` or `aura.exe`
+open before it replaces them (through Windows' Restart Manager), not only Aura's own
+processes. Updates Aura starts itself stop exactly the processes running those two
+files first, so this only matters for an installer you start by hand.
+
+**Known limits**, accepted for now:
+
+- A new window that opens while the daemon is being restarted, and is closed again
+  before it has found the daemon, can still connect afterwards in the background.
+- Windows: the clean-up of earlier updates' temporary folders and a helper starting up are not
+  fully coordinated: in a narrow window right after an update is prepared, a clean-up
+  could remove that update's folder, and the install then fails and says so.
+
+**Upgrading from 0.4.0 or earlier:** those versions cannot update themselves. Install
+the new version once by hand from the
+[latest release](https://github.com/EldinHb/Aura/releases/latest), as above; from
+then on Aura updates itself.
+
 ## Getting started
 
 1. **Install at least one agent CLI** and sign in to it:
@@ -618,6 +681,12 @@ The app starts `aurad` when needed and connects to it over a loopback WebSocket
 protected by a token. The daemon writes `~/.aura/daemon.json` (readable only by you)
 with the port and token. Session history is stored in SQLite under `~/.aura`.
 
+**Logs.** Both write to the data directory: the daemon to `aurad.log`, the app to
+`aura-desktop.log` (a development build to `aura-desktop-dev.log`). The app's log holds
+what the window and the updater report, including update checks that failed quietly,
+and errors in the window itself. It keeps 5 files of 5 MB (`aura-desktop.log`, then
+`.1` up to `.4`, newest first). `RUST_LOG` sets how much is logged (default `info`).
+
 See [`PLAN.md`](PLAN.md) for the full architecture and
 [`docs/protocol/`](docs/protocol) for the captured Claude Code and Codex protocols.
 
@@ -810,7 +879,7 @@ frontend.
 
 ### Prerequisites
 
-- Rust 1.89+ (stable), Node 20+, pnpm. 1.89 is where `std::fs::File::try_lock` landed; `aurad` uses it to hold a single-instance lock on its data directory.
+- Rust 1.90+ (stable), Node 20+, pnpm. `aurad` needs 1.89 (`std::fs::File::try_lock`, for the single-instance lock on its data directory) and Tauri 2.12 needs 1.90.
 - macOS: Xcode or the Xcode Command Line Tools (with the license accepted).
 - Linux: `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev` (Tauri 2 requirements).
 - Windows: WebView2 runtime (ships with Windows 11).
@@ -903,7 +972,8 @@ packages/github-client      @aura/github-client: GitHub reads and writes shared 
 mods/                       the bundled mods (github, pull-requests)
 docs/mods                   the mod design and how to write one
 docs/protocol               captured Claude / Codex traffic and notes
-scripts/                    export-ts.sh (Rust -> TS types), build-sidecars.sh, build-mods.sh, install-macos.sh
+scripts/                    export-ts.sh (Rust -> TS types), build-sidecars.sh, build-mods.sh, install-macos.sh,
+                            updater-manifest.mjs (the release's latest.json), test-update-macos.sh
 ```
 
 ### Releasing
@@ -921,6 +991,54 @@ on macOS (Apple Silicon and Intel), Windows and Linux. To publish one:
 The workflow refuses a tag that does not match the version in `tauri.conf.json`. It
 builds every installer into a draft release and publishes it once all platforms
 succeed, with release notes generated from the commits since the previous tag.
+
+Every installer is signed for the updater. Before publishing, the workflow assembles
+`latest.json` from the signatures ([`scripts/updater-manifest.mjs`](scripts/updater-manifest.mjs))
+and uploads it with the release; installed copies read it at
+`https://github.com/EldinHb/Aura/releases/latest/download/latest.json` and see the new
+version as soon as the release is published. Each platform gets an
+`{os}-{arch}-{bundle}` entry, so an MSI, NSIS, `.deb` or `.rpm` install updates with
+its own kind, and an `{os}-{arch}` fallback (the NSIS installer on Windows, the
+AppImage on Linux). Before it publishes, the script downloads every installer and
+verifies its signature against the public key in `tauri.conf.json`, and that it was
+signed for the release's version: the checks the app makes. A release with an
+unsigned or wrongly signed installer, or a missing platform, is not published.
+
+#### The updater signing key
+
+The app only installs updates signed with Aura's updater key. The public key is in
+`apps/desktop/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`); the private key
+is never in the repository. On the maintainer's Mac it is at
+`~/.tauri/aura-updater.key`, with its password in the Keychain under the service
+`aura-updater-key`. The release workflow reads both from repository secrets, set once:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY --repo EldinHb/Aura < ~/.tauri/aura-updater.key
+security find-generic-password -s aura-updater-key -w | tr -d '\n' \
+  | gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo EldinHb/Aura
+```
+
+Without them the build jobs fail. Keep a copy of the key file and its password
+somewhere safe (a password manager): installed copies trust only this key, so if it
+is lost, no update can reach them and every user has to install the next version by
+hand. A new key goes into `tauri.conf.json` and needs that same manual install. If the
+key leaks, anyone who can also publish a release in the repository can ship an update.
+
+`requireSignedVersion` is on: the CLI writes the version into each signature, and the
+app rejects a package whose signed version differs from the one `latest.json`
+announces, so an old, validly signed release cannot be passed off as a new one.
+
+#### Testing an update
+
+`scripts/test-update-macos.sh` builds the current version and a signed next version
+under a test name and identifier (`AuraUpdateTest`, `nl.havick.aura.updatetest`), serves
+the second from a local `latest.json`, and checks that the first finds, downloads and
+verifies it, stops its daemon, replaces itself, restarts as the new version and starts
+the new daemon; and that a copy opened through a symbolic link is offered the update
+without installing it. Everything stays under `/private/tmp/aura-update-e2e` with its own data
+directory; an installed Aura and `~/.aura` are not touched. It needs the signing key
+(above). The local manifest only works in builds with the `updater-test` Cargo
+feature, which releases never enable, and only under the test identifier.
 
 ## License
 

@@ -8,6 +8,7 @@
 pub mod client;
 pub mod fs;
 pub mod server;
+pub mod update_lock;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -133,6 +134,20 @@ pub fn lock_data_dir(data_dir: &std::path::Path) -> anyhow::Result<Option<std::f
     }
 }
 
+/// Whether no daemon holds the data directory's lock. The lock taken to
+/// find out is released at once, explicitly: dropping it would leave it held
+/// for as long as a process another thread forks meanwhile keeps a copy of
+/// the descriptor, and a daemon started right after would find it taken.
+pub fn data_dir_free(data_dir: &std::path::Path) -> bool {
+    match lock_data_dir(data_dir) {
+        Ok(Some(file)) => {
+            let _ = file.unlock();
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn daemon_info_path(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.join("daemon.json")
 }
@@ -197,7 +212,7 @@ pub async fn stop_daemon_within(
     let Err(e) = request_shutdown(&info, answer).await else {
         return DaemonStop::Requested;
     };
-    if matches!(lock_data_dir(data_dir), Ok(Some(_))) {
+    if data_dir_free(data_dir) {
         return DaemonStop::NotRunning;
     }
     tracing::warn!(
@@ -257,7 +272,7 @@ pub async fn stop_unresponsive_daemon_within(
     term: std::time::Duration,
     kill: std::time::Duration,
 ) -> UnresponsiveStop {
-    let free = || matches!(lock_data_dir(data_dir), Ok(Some(_)));
+    let free = || data_dir_free(data_dir);
     let outcome = |free: bool| {
         if free {
             UnresponsiveStop::Freed

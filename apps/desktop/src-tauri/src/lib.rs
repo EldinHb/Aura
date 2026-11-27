@@ -9,6 +9,10 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+pub mod log_file;
+mod update;
+pub mod update_helper;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Connection {
     pub port: u16,
@@ -169,7 +173,7 @@ async fn stop_daemon(dir: &Path, info: &aura_rpc::DaemonInfo) -> Result<()> {
     }
     for _ in 0..150 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if !daemon_alive(info.port).await && matches!(aura_rpc::lock_data_dir(dir), Ok(Some(_))) {
+        if !daemon_alive(info.port).await && aura_rpc::data_dir_free(dir) {
             return Ok(());
         }
     }
@@ -190,11 +194,36 @@ async fn stop_unresponsive(dir: &Path, info: &aura_rpc::DaemonInfo) -> Result<()
 
 async fn ensure_daemon() -> Result<Connection> {
     let _guard = DAEMON_LOCK.lock().await;
+    // The daemon was stopped so its binary can be replaced; the relaunched
+    // app starts the new one.
+    if update::installing() {
+        return Err(anyhow!(
+            "Aura is installing an update and restarts in a moment"
+        ));
+    }
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
+    // Another process installs an update (Aura reopened while the Windows
+    // installer runs, say): aurad would refuse to start until it has finished.
+    if aura_rpc::update_lock::install_in_progress(&dir).is_some() {
+        tracing::info!("an update is being installed; waiting for it before starting the daemon");
+        // The helper stops an installer after its limit; past that (a tree
+        // Windows has not let it stop yet) aurad still refuses, and says why.
+        let waited = aura_rpc::update_lock::wait_for_install(
+            &dir,
+            std::time::Duration::from_millis(500),
+            update_helper::LIMITS.install + std::time::Duration::from_secs(5 * 60),
+        )
+        .await;
+        if !waited {
+            return Err(anyhow!(
+                "an update is still being installed; open Aura again once it has finished"
+            ));
+        }
+    }
     if let Some(info) = aura_rpc::read_daemon_info(&dir) {
         // A daemon holds the data directory (dropping the lock at once releases it).
-        let held = !matches!(aura_rpc::lock_data_dir(&dir), Ok(Some(_)));
+        let held = !aura_rpc::data_dir_free(&dir);
         if daemon_alive(info.port).await || (held && answers_within(info.port, 5).await) {
             if !replace_daemon(&info.version) {
                 return Ok(connection(info));
@@ -210,6 +239,69 @@ async fn ensure_daemon() -> Result<Connection> {
     spawn_and_connect(&dir).await
 }
 
+/// Stop the daemon so an update can replace its binary, and confirm it is
+/// gone: unlike a restart, a daemon still running here makes the installer
+/// fail (Windows locks a running `.exe`) or leaves the old daemon serving the
+/// new app. The caller holds `DAEMON_LOCK`.
+async fn stop_daemon_for_update() -> Result<()> {
+    let dir = data_dir();
+    if let Some(info) = aura_rpc::read_daemon_info(&dir) {
+        let held = !aura_rpc::data_dir_free(&dir);
+        if held || daemon_alive(info.port).await {
+            stop_daemon(&dir, &info).await?;
+        }
+    }
+    if !aura_rpc::data_dir_free(&dir) {
+        return Err(anyhow!(
+            "The Aura daemon did not stop, so the update was not installed. Stop it with `aura daemon stop` and try again."
+        ));
+    }
+    #[cfg(windows)]
+    wait_until_replaceable().await?;
+    Ok(())
+}
+
+/// Windows refuses to overwrite a running `.exe`: wait until `aurad.exe` and
+/// `aura.exe` beside the app have exited (the daemon's process lingers a
+/// moment after it releases the data dir; an `aura` command may run in a
+/// terminal). Built everywhere so it is type-checked on every host.
+#[cfg_attr(not(windows), allow(dead_code))]
+async fn wait_until_replaceable() -> Result<()> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    else {
+        return Ok(());
+    };
+    let locked = || {
+        ["aurad.exe", "aura.exe"]
+            .into_iter()
+            .filter(|name| {
+                // Opening for writing changes nothing, but fails while the image runs.
+                matches!(
+                    std::fs::OpenOptions::new().write(true).open(dir.join(name)),
+                    Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..50 {
+        if locked().is_empty() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let still = locked();
+    if still.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{} is still running, so the installer could not replace it. Close any `aura` command in a terminal and try again.",
+        still.join(" and ")
+    ))
+}
+
 async fn spawn_and_connect(dir: &Path) -> Result<Connection> {
     spawn_daemon(dir)?;
     for _ in 0..150 {
@@ -223,13 +315,41 @@ async fn spawn_and_connect(dir: &Path) -> Result<Connection> {
     Err(anyhow!("daemon did not start within 15s"))
 }
 
-#[tauri::command]
-async fn connect_daemon() -> Result<Connection, String> {
-    ensure_daemon().await.map_err(|e| format!("{e:#}"))
+/// The daemon the windows were last told about.
+static ANNOUNCED: std::sync::Mutex<Option<(u16, String)>> = std::sync::Mutex::new(None);
+
+/// Whether `conn` is another daemon than the one last announced (and remember it).
+fn daemon_changed(last: &mut Option<(u16, String)>, conn: &Connection) -> bool {
+    let now = (conn.port, conn.token.clone());
+    let changed = last.as_ref().is_some_and(|l| *l != now);
+    *last = Some(now);
+    changed
+}
+
+/// Tell every window when the daemon changed (a restart, a recovery after a
+/// failed update, one window starting a new daemon after the old one died):
+/// each holds a client for the old port and token, and would otherwise stay
+/// disconnected.
+fn announce<R: tauri::Runtime>(app: &tauri::AppHandle<R>, conn: &Connection) {
+    let changed = daemon_changed(
+        &mut ANNOUNCED.lock().unwrap_or_else(|e| e.into_inner()),
+        conn,
+    );
+    if changed {
+        tracing::info!(port = conn.port, "the daemon changed; telling every window");
+        let _ = app.emit("aura://daemon-changed", conn);
+    }
 }
 
 #[tauri::command]
-async fn restart_daemon() -> Result<Connection, String> {
+async fn connect_daemon(app: AppHandle) -> Result<Connection, String> {
+    let conn = ensure_daemon().await.map_err(|e| format!("{e:#}"))?;
+    announce(&app, &conn);
+    Ok(conn)
+}
+
+#[tauri::command]
+async fn restart_daemon(app: AppHandle) -> Result<Connection, String> {
     {
         let _guard = DAEMON_LOCK.lock().await;
         let dir = data_dir();
@@ -239,7 +359,49 @@ async fn restart_daemon() -> Result<Connection, String> {
                 .map_err(|e| format!("{e:#}"))?;
         }
     }
-    ensure_daemon().await.map_err(|e| format!("{e:#}"))
+    let conn = ensure_daemon().await.map_err(|e| format!("{e:#}"))?;
+    announce(&app, &conn);
+    Ok(conn)
+}
+
+/// Log to stderr (a terminal, in development) and to the rotating log file in
+/// the data directory (see `log_file`), which is what is kept: an app opened
+/// from Finder or the Start menu has nowhere for stderr to go.
+fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let file = match log_file::open(&data_dir()) {
+        Ok(file) => Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file)),
+        ),
+        Err(e) => {
+            eprintln!("Aura: cannot write its log file: {e}");
+            None
+        }
+    };
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(file)
+        .init();
+    log_file::log_panics();
+    tracing::info!(version = VERSION, "Aura started");
+}
+
+/// A line from the webview into the app's log: its console is kept nowhere.
+/// Render errors, uncaught errors and the updater's own lines come here.
+#[tauri::command]
+fn webview_log(level: String, message: String) {
+    let message: String = message.chars().take(8_000).collect();
+    match level.as_str() {
+        "error" => tracing::error!(target: "webview", "{message}"),
+        "warn" => tracing::warn!(target: "webview", "{message}"),
+        _ => tracing::info!(target: "webview", "{message}"),
+    }
 }
 
 #[tauri::command]
@@ -361,9 +523,7 @@ fn focus_main(app: &AppHandle) {
 }
 
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    init_logging();
     // Launched from Finder the app gets a soft limit of 256 open files, and
     // the aurad it starts inherits it; raise it first (aurad raises its own too).
     aura_core::process::raise_open_file_limit();
@@ -374,6 +534,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main(app);
         }))
@@ -393,13 +555,27 @@ pub fn run() {
             set_badge,
             open_session_window,
             show_main,
-            notify_with_target
+            notify_with_target,
+            update::update_config,
+            update::update_last_result,
+            webview_log,
+            update::update_check,
+            update::update_download,
+            update::update_install
         ])
         .setup(|app| {
+            update::manage(app);
             // Tray. Built here rather than via the `trayIcon` config block: Tauri
             // creates one tray per source and keeps them in a list, so declaring it
             // in both places put two identical icons in the menu bar.
             let show = MenuItem::with_id(app, "show", "Show Aura", true, None::<&str>)?;
+            let updates = MenuItem::with_id(
+                app,
+                "check-updates",
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(
                 app,
                 "quit",
@@ -407,7 +583,7 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &updates, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("icon"))
                 .icon_as_template(true)
@@ -416,6 +592,11 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => focus_main(app),
+                    // The main window runs the check and shows the result.
+                    "check-updates" => {
+                        focus_main(app);
+                        let _ = app.emit_to("main", "aura://check-updates", ());
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -476,6 +657,29 @@ mod tests {
     /// An app update replaces the daemon the previous version left running.
     /// Run by hand, in release mode with the release `aurad` built:
     /// `AURA_TEST_OLD_DAEMON=<aurad of another version> cargo test --release -p aura-desktop -- --ignored`
+    fn conn(port: u16, token: &str) -> Connection {
+        Connection {
+            port,
+            token: token.into(),
+            data_dir: String::new(),
+            daemon_pid: 1,
+            version: VERSION.into(),
+        }
+    }
+
+    #[test]
+    fn announces_only_another_daemon() {
+        let mut last = None;
+        // The first connection is no change: every window connects by itself.
+        assert!(!daemon_changed(&mut last, &conn(1000, "a")));
+        assert!(!daemon_changed(&mut last, &conn(1000, "a")));
+        // A restart: new port and token.
+        assert!(daemon_changed(&mut last, &conn(2000, "b")));
+        assert!(!daemon_changed(&mut last, &conn(2000, "b")));
+        // Same port reused, new token.
+        assert!(daemon_changed(&mut last, &conn(2000, "c")));
+    }
+
     #[tokio::test]
     #[ignore]
     async fn replaces_a_daemon_of_another_version() {

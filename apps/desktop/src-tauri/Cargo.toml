@@ -24,7 +24,16 @@ tauri-plugin-os = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-opener = "2"
+# Self-update from signed GitHub release artifacts, and relaunch after it.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+url = "2"
+# The manifest-only check of a copy that cannot replace itself (see update.rs).
+reqwest = { workspace = true }
+rustls = { workspace = true }
+semver = "1"
 aura-rpc = { workspace = true }
+aura-contain = { workspace = true }
 aura-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -33,3 +42,18 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+# The mock runtime, to run the updater plugin in tests.
+tauri = { version = "2", features = ["test"] }
+# Paused time, for the check schedule.
+tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+# End-to-end tests of the updater only: honours AURA_UPDATER_ENDPOINT (a local
+# release manifest) and AURA_UPDATER_TEST_AUTO_RESTART, and only in the test
+# app (identifier nl.havick.aura.updatetest). The release workflow never enables it.
+updater-test = []

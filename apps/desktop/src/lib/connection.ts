@@ -1,5 +1,4 @@
 /** Find the daemon: Tauri command in the app, URL/dev endpoint in a browser. */
-import { RpcClient } from "./rpc";
 
 export type ConnInfo = { port: number; token: string; data_dir?: string; version?: string };
 
@@ -21,11 +20,4 @@ export async function discoverDaemon(): Promise<ConnInfo> {
   const info = (await res.json()) as ConnInfo;
   if (!info.port) throw new Error("daemon.json is incomplete");
   return info;
-}
-
-export async function connectDaemon(): Promise<RpcClient> {
-  const info = await discoverDaemon();
-  const client = new RpcClient(info.port, info.token);
-  await client.connect();
-  return client;
 }

@@ -1,4 +1,5 @@
 import { registerScheduleCommands, useScheduleSync } from "./features/schedules/state";
+import { useUpdateChecks } from "./features/updates/updates";
 import "./features/schedules/schedules.css";
 import { useModLoader } from "./mods/loader";
 import { useWaitingSound } from "./state/waitingSound";
@@ -11,7 +12,9 @@ import "./mods/mods.css";
 import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
-import { connectDaemon, isTauri } from "./lib/connection";
+import { discoverDaemon, isTauri, type ConnInfo } from "./lib/connection";
+import { DaemonLink, connectWindow } from "./lib/daemonLink";
+import { RpcClient } from "./lib/rpc";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
 import { registerGitCommands } from "./commands/git";
@@ -44,6 +47,8 @@ export default function App() {
   // A sound when a session goes from working to waiting for you; the main window plays it.
   useWaitingSound(windowMode !== "session");
   useScheduleSync();
+  // Self-update: the main window checks, downloads and offers the restart.
+  useUpdateChecks(windowMode !== "session");
   useMarkViewedSeen();
   const inbox = useInboxCount();
   const connection = useStore((s) => s.connection);
@@ -85,20 +90,17 @@ export default function App() {
     return () => { offCore(); offTabs(); offSchedules(); };
   }, []);
 
-  // Connect + subscribe.
+  // Connect + subscribe. The link moves the window to a new client when the
+  // shell says the daemon changed (a restart, a recovery after a failed update).
   useEffect(() => {
     let cancelled = false;
-    let offEvent: (() => void) | null = null;
-    let offState: (() => void) | null = null;
-    let offFocus: (() => void) | null = null;
+    let unlisten: (() => void) | undefined;
     const st = useStore.getState;
-    (async () => {
-      try {
-        st().setConnection("connecting");
-        const client = await connectDaemon();
-        if (cancelled) return client.close();
-        st().setClient(client);
-        st().setConnection("open");
+    const link = new DaemonLink<RpcClient>({
+      makeClient: (info) => new RpcClient(info.port, info.token),
+      // Subscribes and loads on the new client; it becomes the window's in
+      // `commit`, once this succeeded.
+      attach: async (client) => {
         const refresh = async () => {
           const [providers, sessions, info] = await Promise.all([client.providers(), client.sessions(), client.daemonInfo()]);
           st().setProviders(providers);
@@ -111,11 +113,11 @@ export default function App() {
           else if (!st().selectedId && !st().modView && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
         };
         await refresh();
-        offEvent = client.onEvent((ev: Event) => {
+        const offEvent = client.onEvent((ev: Event) => {
           st().applyEvent(ev);
           notifyIfNeeded(ev);
         });
-        offState = client.onState((s) => {
+        const offState = client.onState((s) => {
           st().setConnection(s);
           if (s === "open") void refresh();
         });
@@ -130,16 +132,33 @@ export default function App() {
             .catch(() => {});
         };
         window.addEventListener("focus", onWindowFocus);
-        offFocus = () => window.removeEventListener("focus", onWindowFocus);
-      } catch (e) {
-        st().setConnection("closed", e instanceof Error ? e.message : String(e));
-      }
-    })();
+        return () => {
+          offEvent();
+          offState();
+          window.removeEventListener("focus", onWindowFocus);
+        };
+      },
+      commit: (client) => {
+        st().setClient(client);
+        st().setConnection("open");
+      },
+    });
+    const failed = (e: unknown) => {
+      if (!cancelled) st().setConnection("closed", e instanceof Error ? e.message : String(e));
+    };
+    st().setConnection("connecting");
+    // Listen for the shell's announcements before looking for the daemon, so
+    // a restart while this window opens is not missed (see connectWindow).
+    const listen = async (onChange: (info: ConnInfo) => void) => {
+      if (!isTauri()) return () => {};
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<ConnInfo>("aura://daemon-changed", (e) => onChange(e.payload));
+    };
+    void connectWindow({ link, listen, discover: discoverDaemon, onError: failed }).then((u) => (cancelled ? u() : (unlisten = u)));
     return () => {
       cancelled = true;
-      offEvent?.();
-      offState?.();
-      offFocus?.();
+      link.close();
+      unlisten?.();
     };
   }, []);
 

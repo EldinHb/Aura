@@ -34,7 +34,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cargo build --workspace --exclude aura-desktop
-          cargo test -p aura-mods -p aura-store -p aura-cli
+          cargo test -p aura-mods -p aura-store -p aura-cli -p aura-contain
 
   web:
     name: App, SDK and mods
@@ -63,3 +63,5 @@ jobs:
         run: pnpm mods:typecheck && pnpm mods:test
       - name: Build the bundled mods
         run: ./scripts/build-mods.sh
+      - name: Test the release scripts
+        run: node --test scripts/*.test.mjs
