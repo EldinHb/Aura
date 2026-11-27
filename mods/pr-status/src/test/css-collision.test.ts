@@ -22,9 +22,8 @@ function unscopedClasses(sheet: string, scope?: string): Set<string> {
 }
 
 describe("stylesheet collisions between mods", () => {
-  // `it.fails`: this documents a known bug and passes while it exists. Remove `.fails` with the fix
-  // (scope every pr-status rule under `.pr-status`, or give its classes their own prefix).
-  it.fails("pr-status styles no class that mods/pull-requests styles too", () => {
+  // Fixed by giving pr-status's classes their own `prs-` prefix.
+  it("pr-status styles no class that mods/pull-requests styles too", () => {
     const mine = unscopedClasses(css("../ui.css"), "pr-status");
     const theirs = unscopedClasses(css("../../../pull-requests/src/ui.css"));
     const shared = [...mine].filter((name) => theirs.has(name)).sort();

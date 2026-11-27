@@ -6,7 +6,7 @@ import { useStore } from "@aura/host";
 import type { PrEntry, SessionView } from "../shared/types";
 import { session } from "../test/fixtures";
 import { setCtx } from "./ctx";
-import { PrStatusSection } from "./PrStatusSection";
+import { DONE_OPEN_KEY, PrStatusSection } from "./PrStatusSection";
 import { RENEW_MS } from "./usePullStatus";
 
 const NOW = Date.parse("2026-11-27T10:00:30Z");
@@ -32,10 +32,16 @@ function entry(over: Partial<PrEntry["ref"]> & { status?: any; error?: string | 
   };
 }
 
+/** `ctx.storage`, kept across renders of one test. */
+const stored = new Map<string, unknown>();
+
 function fakeCtx(view: SessionView) {
   const listeners = new Map<string, (p: any) => void>();
   const rpc = vi.fn(async (name: string, _params?: any) => (name === "unwatch" ? true : view));
-  const ctx = { rpc, on: (name: string, fn: (p: any) => void) => { listeners.set(name, fn); return () => listeners.delete(name); }, onConnection: () => () => {} };
+  const ctx = {
+    rpc, on: (name: string, fn: (p: any) => void) => { listeners.set(name, fn); return () => listeners.delete(name); }, onConnection: () => () => {},
+    storage: { get: (k: string) => stored.get(k), set: (k: string, v: unknown) => void stored.set(k, v), delete: (k: string) => void stored.delete(k) },
+  };
   setCtx(ctx as unknown as UiApi);
   return { rpc, emit: (name: string, p: unknown) => listeners.get(name)?.(p) };
 }
@@ -49,6 +55,7 @@ describe("PrStatusSection", () => {
   });
   afterEach(() => {
     cleanup();
+    stored.clear();
     setCtx(null);
     vi.useRealTimers();
   });
@@ -92,27 +99,65 @@ describe("PrStatusSection", () => {
     fakeCtx({ sessionId: "lead", pulls: [entry({ sources: [{ sessionId: "lead", title: "Lead", worker: false }, { sessionId: "w1", title: "API limits", worker: true }] })], blocked: null });
     render(<PrStatusSection session={lead} />);
     const card = await screen.findByRole("article");
-    expect(card.textContent).toContain("from this session, worker API limits");
+    expect(card.querySelector(".prs-sources")!.getAttribute("title")).toBe("from this session, worker API limits");
     fireEvent.click(within(card).getByRole("button", { name: "worker API limits" }));
     expect(useStore.getState().selectedId).toBe("w1");
   });
 
   it("says why it is not updating and keeps the dated data", async () => {
-    fakeCtx({ sessionId: "lead", pulls: [entry({ status: { ...entry().status, state: "merged", readiness: null } })], blocked: "GitHub login expired." });
+    fakeCtx({ sessionId: "lead", pulls: [entry()], blocked: "GitHub login expired." });
     render(<PrStatusSection session={lead} />);
     expect((await screen.findByRole("status")).textContent).toContain("Not updating: GitHub login expired.");
-    expect(screen.getByText("Merged")).toBeTruthy();
-    expect(screen.queryByText(/Ready to merge|Not ready/)).toBeNull();
+    expect(screen.getByRole("article").textContent).toContain("Not ready");
     expect(screen.getByText("updated 30s ago")).toBeTruthy();
   });
 
-  it("hides who is still to review once a PR is merged or closed", async () => {
-    const done = (state: string, number: number) => entry({ number, status: { ...entry({ number }).status, state, readiness: null } });
-    fakeCtx({ sessionId: "lead", pulls: [done("merged", 1), done("closed", 2), entry({ number: 3 })], blocked: null });
+  const done = (state: string, number: number, title = `Done ${number}`) =>
+    entry({ number, status: { ...entry({ number }).status, title, state, readiness: null } });
+  const withStatus = (number: number, over: object) => entry({ number, status: { ...entry({ number }).status, title: `PR ${number}`, ...over } });
+
+  it("lists open PRs first: not ready, then ready, then drafts", async () => {
+    fakeCtx({ sessionId: "lead", blocked: null, pulls: [
+      withStatus(1, { state: "draft", readiness: { ready: false, reasons: ["draft"] } }),
+      done("merged", 2),
+      withStatus(3, { readiness: { ready: true, reasons: [] } }),
+      withStatus(4, {}),
+    ] });
     render(<PrStatusSection session={lead} />);
     const cards = await screen.findAllByRole("article");
-    expect(cards.map((c) => within(c).queryByRole("group", { name: "Still to review" }) !== null)).toEqual([false, false, true]);
-    expect(within(cards[0]).getByRole("group", { name: "Reviewed" })).toBeTruthy();
+    expect(cards.map((c) => c.getAttribute("aria-label"))).toEqual(["Pull request #4: PR 4", "Pull request #3: PR 3", "Pull request #1: PR 1"]);
+  });
+
+  it("folds merged and closed PRs into one remembered group of one-line links", async () => {
+    fakeCtx({ sessionId: "lead", pulls: [done("merged", 1, "Ship it"), done("closed", 2), entry({ number: 3 })], blocked: null });
+    const { unmount } = render(<PrStatusSection session={lead} />);
+    expect(await screen.findAllByRole("article")).toHaveLength(1);
+    const toggle = screen.getByRole("button", { name: "Merged & closed (2)" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("list", { name: "Merged and closed pull requests" })).toBeNull();
+    fireEvent.click(toggle);
+    const list = screen.getByRole("list", { name: "Merged and closed pull requests" });
+    const row = within(list).getByRole("link", { name: /Ship it/ });
+    expect(row.getAttribute("href")).toBe("https://github.com/acme/api/pull/1");
+    expect(row.textContent).toBe("MergedShip it#1");
+    expect(within(list).queryByRole("group")).toBeNull();
+    expect(stored.get(DONE_OPEN_KEY)).toBe(true);
+    unmount();
+    render(<PrStatusSection session={lead} />);
+    expect((await screen.findByRole("button", { name: "Merged & closed (2)" })).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("sums up more than two sources on one line, and lists them when unfolded", async () => {
+    const sources = [{ sessionId: "lead", title: "Lead", worker: false },
+      ...[1, 2, 3].map((n) => ({ sessionId: `w${n}`, title: `#24${n} worker with a long name`, worker: true }))];
+    fakeCtx({ sessionId: "lead", pulls: [entry({ sources })], blocked: null });
+    render(<PrStatusSection session={lead} />);
+    const card = await screen.findByRole("article");
+    const summary = within(card).getByRole("button", { name: "this session + 3 workers" });
+    expect(summary.parentElement!.getAttribute("title")).toBe("from this session, worker #241 worker with a long name, worker #242 worker with a long name, worker #243 worker with a long name");
+    fireEvent.click(summary);
+    fireEvent.click(within(card).getByRole("button", { name: "worker #242 worker with a long name" }));
+    expect(useStore.getState().selectedId).toBe("w2");
   });
 
   it("shows dismissed reviews, an UNSTABLE merge state and an incomplete reviewer list (review items 1, 5, 7)", async () => {

@@ -6,20 +6,20 @@ Read-only on GitHub. Depends on the `github` mod (token, rate limits, session li
 
 ## Layout (Inspector section `status`, order -10: above "Issues & PRs")
 ```
-Pull requests                         updated 12s ago  [↻]
-┌ [Open] Add rate limiting ↗                          ┐
-│ acme/api #42 · from Worker: API limits              │
-│ ● Not ready: Checks failing · Required reviews       │
-│ ▸ ✗ Checks failing · 1 failing, 1 pending, 7 passed │  (expands: failing + pending, linked)
-│ Reviewed       (A) alice   Approved                  │
-│ Still to review (B) bob     Pending                  │
-│                 (T) acme/core Pending (team)         │
-└──────────────────────────────────────────────────────┘
+Pull requests                     updated 12s ago  [↻]
+┌ [Open] Add rate limiting to the public API,       ┐  title: 2 lines, then …
+│        per plan and per key…                      │
+│ acme/api #42                                      │
+│ from this session + 3 workers                     │  (unfolds to the sessions)
+│ ● Not ready: Checks failing · Required reviews    │
+│ ▸ ● Checks failing · 1 failing · 7 passing        │  (unfolds: failing + pending)
+│ Reviewed         (A) alice Approved               │  reviewer chips wrap
+│ Still to review  (B) bob Pending  (T) acme/core … │
+└───────────────────────────────────────────────────┘
+▸ Merged & closed (6)                                  folded; a row each: chip, title, #n
 ```
-
-The section is hidden while the session tree has no PRs. States: chip Draft / Open /
-Merged / Closed; readiness "Ready to merge" or "Not ready: <reasons>" (open PRs only);
-checks passing / failing / pending / none. Every colour comes with its text label.
+Hidden without PRs. Open PRs first: not ready, ready, drafts. Chips use Material 3
+containers; status words --md-success/-tertiary/-error. Classes are `prs-` (unshared).
 GitHub blocked (`api.blocked`): one inline reason, the cards stay, dated.
 
 ## Data

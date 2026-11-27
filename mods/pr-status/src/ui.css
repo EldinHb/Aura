@@ -1,49 +1,78 @@
-/* PR status cards in the Inspector. Theme variables and shared classes (.inspector-section,
-   .section-head, .with-btn, .btn, .dot, .dim, .notice, .err-text, .linkish) are Aura's. */
-.pr-status .pr-updated { font-size: var(--fs-label-s); font-weight: 400; }
-.pr-status .pr-blocked { margin: 0 0 8px; }
-.pr-status .pr-error { margin: 0 0 8px; font-size: var(--fs-label-m); }
+/* PR status cards in the Inspector. Every class is prs- prefixed: all mods' stylesheets share
+   one page, and the pull-requests mod styles pr-*. Aura's own classes used: .inspector-section,
+   .btn, .dot, .notice, .err-text. Colours are Material 3 tokens: chips are a container with its
+   on-container text; status words are --md-success / --md-tertiary / --md-error on the card. */
+.prs-section { min-width: 0; }
+.prs-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; margin: 0 0 10px; }
+.prs-head h4 { flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prs-head-meta { flex: none; display: flex; align-items: center; gap: 8px; font-size: var(--fs-label-s); color: var(--fg-muted); }
+.prs-refresh { min-height: 24px; padding: 0 8px; }
+.prs-note { margin: 0 0 8px; min-width: 0; font-size: var(--fs-label-m); overflow-wrap: anywhere; }
 
-.pr-card { padding: 10px 12px; border-radius: var(--shape-md); background: var(--md-surface-container); font-size: var(--fs-label-m); }
-.pr-card + .pr-card { margin-top: 8px; }
-.pr-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.pr-link { flex: 1; min-width: 0; color: var(--fg); font-weight: 500; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pr-link:hover { color: var(--accent-2); text-decoration: underline; }
-.pr-link:focus-visible, .pr-check-name:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.prs-cards { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.prs-card { min-width: 0; padding: 10px 12px; border-radius: var(--shape-md); background: var(--md-surface-container); font-size: var(--fs-label-m); line-height: 18px; color: var(--fg); }
+.prs-title { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.prs-link { flex: 1 1 auto; min-width: 0; color: var(--fg); font-weight: 500; text-decoration: none; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.prs-link:hover { text-decoration: underline; }
 
-/* State chips: the label always says the state; the colour repeats it. */
-.pr-state { flex: none; padding: 0 8px; border-radius: var(--shape-sm); border: 1px solid var(--md-outline-variant); font-size: 10.5px; font-weight: 500; line-height: 16px; color: var(--fg-muted); }
-.pr-state.open { border-color: color-mix(in srgb, var(--ok) 60%, transparent); color: var(--ok); }
-.pr-state.merged { border-color: #c79bf088; color: #c79bf0; }
-.pr-state.closed { border-color: color-mix(in srgb, var(--err) 60%, transparent); color: var(--err); }
-:root[data-theme="light"] .pr-state.merged { border-color: #8250df88; color: #8250df; }
+/* State chips: a tonal container with its own on-colour; the word says the state. */
+.prs-chip { flex: none; display: inline-block; padding: 0 8px; border-radius: var(--shape-sm); font-size: 10.5px; font-weight: 600; line-height: 18px;
+  background: var(--md-surface-container-highest); color: var(--md-on-surface-variant); }
+.prs-chip-open { background: var(--md-primary-container); color: var(--md-on-primary-container); }
+.prs-chip-merged { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.prs-chip-closed { background: var(--md-error-container); color: var(--md-on-error-container); }
 
-.pr-meta { display: flex; flex-wrap: wrap; gap: 0 8px; margin-top: 2px; font-size: var(--fs-label-s); }
-.pr-meta .pr-sources { min-width: 0; overflow-wrap: anywhere; }
-.pr-source { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-2); cursor: pointer; text-align: left; }
-.pr-source:hover { text-decoration: underline; }
+.prs-meta, .prs-sources { min-width: 0; margin-top: 2px; font-size: var(--fs-label-s); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prs-source { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-2); cursor: pointer; text-align: left; }
+.prs-source:hover { text-decoration: underline; }
+.prs-sources-row { display: flex; gap: 4px; }
+.prs-sources-row > * { flex: none; }
+.prs-sources-row > .prs-comma { margin-left: -4px; }
+.prs-source-list { list-style: none; margin: 2px 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-label-s); color: var(--fg-muted); }
+.prs-source-list li { display: flex; min-width: 0; }
+.prs-sources-row > .prs-source, .prs-source-list .prs-source { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.pr-line { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; line-height: 18px; }
-.pr-line .dot { flex: none; }
-.pr-ready strong { font-weight: 500; }
-.pr-toggle { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--shape-xs); }
-.pr-toggle:hover .grow { text-decoration: underline; }
-.pr-chevron { flex: none; width: 10px; height: 10px; background: var(--chevron) no-repeat center / 8px 5px; transform: rotate(-90deg); transition: transform 0.12s; }
-.pr-chevron.open { transform: none; }
-@media (prefers-reduced-motion: reduce) { .pr-chevron { transition: none; } }
-.pr-check-list { list-style: none; margin: 4px 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.pr-check-list li { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
-.pr-check-state { flex: none; font-size: 10.5px; font-weight: 500; }
-.pr-check-state.err, .pr-review-state.err { color: var(--err); }
-.pr-check-state.warn, .pr-review-state.warn { color: var(--warn); }
-.pr-review-state.ok { color: var(--ok); }
-.pr-check-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-2); text-decoration: none; }
-a.pr-check-name:hover { text-decoration: underline; }
+.prs-line { display: flex; align-items: flex-start; gap: 6px; min-width: 0; margin: 6px 0 0; }
+.prs-line > .prs-dot { flex: none; margin-top: 5px; }
+.prs-grow { flex: 1 1 auto; }
+.prs-wrap, .prs-grow { min-width: 0; overflow-wrap: anywhere; }
+.prs-muted { color: var(--fg-muted); }
+.prs-word { font-weight: 500; }
+.prs-word.prs-ok { color: var(--md-success); }
+.prs-word.prs-warn { color: var(--md-tertiary); }
+.prs-word.prs-err { color: var(--md-error); }
 
-.pr-reviewers { margin-top: 8px; }
-.pr-group-title { font-size: var(--fs-label-s); margin-bottom: 2px; }
-.pr-reviewer { display: flex; align-items: center; gap: 6px; padding: 2px 0; min-width: 0; }
-.pr-reviewer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pr-review-state { flex: none; font-size: var(--fs-label-s); color: var(--fg-muted); }
-.pr-avatar { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-size: 10px; font-weight: 600; }
-.pr-avatar.team { border-radius: var(--shape-xs); }
+.prs-toggle { display: flex; align-items: flex-start; gap: 6px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--shape-xs); }
+.prs-toggle:hover .prs-grow { text-decoration: underline; }
+.prs-chevron { flex: none; width: 10px; height: 10px; margin-top: 4px; background: var(--chevron) no-repeat center / 8px 5px; transform: rotate(-90deg); transition: transform 0.12s; }
+.prs-chevron.prs-open { transform: none; }
+@media (prefers-reduced-motion: reduce) { .prs-chevron { transition: none; } }
+.prs-check-list { list-style: none; min-width: 0; margin: 4px 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.prs-check-list li { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.prs-check-list .prs-word { flex: none; font-size: var(--fs-label-s); }
+.prs-check-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-2); text-decoration: none; }
+a.prs-check-name:hover { text-decoration: underline; }
+
+/* Reviewers wrap as chips; a chip (avatar, login, state) stays on one line, its login shortened only when alone it is too wide. */
+.prs-people { min-width: 0; margin-top: 8px; }
+.prs-group-title { margin-bottom: 4px; font-size: var(--fs-label-s); color: var(--fg-muted); }
+.prs-chips { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.prs-person { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.prs-login { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prs-person .prs-word { flex: none; font-size: var(--fs-label-s); }
+.prs-avatar { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-size: 10px; font-weight: 600; }
+.prs-avatar-team { border-radius: var(--shape-xs); }
+
+/* Merged and closed: folded, one line each. */
+.prs-cards + .prs-done { margin-top: 8px; }
+.prs-done-toggle { padding: 6px 4px; color: var(--fg-muted); font-size: var(--fs-label-m); font-weight: 500; }
+.prs-done-toggle:hover { background: var(--hover-layer); }
+.prs-done-list { list-style: none; min-width: 0; margin: 2px 0 0; padding: 0; }
+.prs-done-row { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px; border-radius: var(--shape-sm); font-size: var(--fs-label-m); color: var(--fg); text-decoration: none; }
+.prs-done-row:hover { background: var(--hover-layer); }
+.prs-done-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prs-number { flex: none; font-size: var(--fs-label-s); }
+
+.prs-section a:focus-visible, .prs-section button:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 1px; border-radius: var(--shape-xs); }

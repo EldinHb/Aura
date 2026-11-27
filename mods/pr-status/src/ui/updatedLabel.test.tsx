@@ -26,7 +26,7 @@ function entry(number: number, state: "open" | "merged", readAt: string): PrEntr
 
 function fakeCtx(view: SessionView) {
   const rpc = vi.fn(async (name: string) => (name === "unwatch" ? true : view));
-  setCtx({ rpc, on: () => () => {}, onConnection: () => () => {} } as unknown as UiApi);
+  setCtx({ rpc, on: () => () => {}, onConnection: () => () => {}, storage: { get: () => undefined, set: () => {}, delete: () => {} } } as unknown as UiApi);
 }
 
 describe("updated label", () => {
@@ -44,8 +44,8 @@ describe("updated label", () => {
   // oldest readAt of all cards, so beside a merged PR it says "9m ago" while the open PR was
   // read 5 s ago, and keeps growing for as long as the merged PR is listed. Seen in the real app:
   // cards refreshed at :06:35 and :07:42 while the label read "2m ago", "3m ago".
-  // `it.fails`: passes while the bug exists; remove `.fails` with the fix.
-  it.fails("is not held back by a merged PR that is never read again", async () => {
+  // Fixed: the label takes the oldest read of the PRs still polled (see ui/order.ts).
+  it("is not held back by a merged PR that is never read again", async () => {
     fakeCtx({
       sessionId: "lead", blocked: null,
       pulls: [entry(1, "merged", "2026-11-27T10:00:00Z"), entry(2, "open", "2026-11-27T10:09:55Z")],
