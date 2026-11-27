@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { appLog, describe } from "../lib/appLog";
 import { isTauri } from "../lib/connection";
 
 type State = { error: Error | null; restarting: boolean; restartError: string | null };
@@ -17,6 +18,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
     console.error("Aura failed to render:", error, info.componentStack);
+    appLog("error", `render failed: ${describe(error)}${info.componentStack ?? ""}`);
   }
 
   private restart = async () => {

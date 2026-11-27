@@ -9,6 +9,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+pub mod log_file;
 mod update;
 pub mod update_helper;
 
@@ -356,6 +357,46 @@ async fn restart_daemon(app: AppHandle) -> Result<Connection, String> {
     Ok(conn)
 }
 
+/// Log to stderr (a terminal, in development) and to the rotating log file in
+/// the data directory (see `log_file`), which is what is kept: an app opened
+/// from Finder or the Start menu has nowhere for stderr to go.
+fn init_logging() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let file = match log_file::open(&data_dir()) {
+        Ok(file) => Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file)),
+        ),
+        Err(e) => {
+            eprintln!("Aura: cannot write its log file: {e}");
+            None
+        }
+    };
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(file)
+        .init();
+    log_file::log_panics();
+    tracing::info!(version = VERSION, "Aura started");
+}
+
+/// A line from the webview into the app's log: its console is kept nowhere.
+/// Render errors, uncaught errors and the updater's own lines come here.
+#[tauri::command]
+fn webview_log(level: String, message: String) {
+    let message: String = message.chars().take(8_000).collect();
+    match level.as_str() {
+        "error" => tracing::error!(target: "webview", "{message}"),
+        "warn" => tracing::warn!(target: "webview", "{message}"),
+        _ => tracing::info!(target: "webview", "{message}"),
+    }
+}
+
 #[tauri::command]
 fn set_badge(app: AppHandle, count: u32) {
     #[cfg(target_os = "macos")]
@@ -475,9 +516,7 @@ fn focus_main(app: &AppHandle) {
 }
 
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    init_logging();
     // Launched from Finder the app gets a soft limit of 256 open files, and
     // the aurad it starts inherits it; raise it first (aurad raises its own too).
     aura_core::process::raise_open_file_limit();
@@ -512,7 +551,7 @@ pub fn run() {
             notify_with_target,
             update::update_config,
             update::update_last_result,
-            update::update_log,
+            webview_log,
             update::update_check,
             update::update_download,
             update::update_install

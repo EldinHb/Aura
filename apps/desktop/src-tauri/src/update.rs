@@ -778,16 +778,6 @@ async fn install_with_helper<R: Runtime>(
     std::process::exit(0);
 }
 
-/// A line from the webview's side of the updater, into the app's log: its
-/// console is kept nowhere, and automatic checks fail quietly.
-#[tauri::command]
-pub fn update_log(message: String, error: Option<String>) {
-    match error {
-        Some(error) => tracing::warn!("updates: {message}: {error}"),
-        None => tracing::info!("updates: {message}"),
-    }
-}
-
 /// Every failure is logged here: the webview shows only those the user asked for.
 fn logged<T>(what: &str, result: Result<T, UpdateError>) -> Result<T, UpdateError> {
     if let Err(e) = &result {

@@ -181,6 +181,7 @@ check "the new daemon uses $WORK/data" 'ps -o command= -p "$B_DAEMON" | grep -q 
 check "the new daemon is B's binary" 'ps -o command= -p "$B_DAEMON" | grep -q "^$APP/Contents/MacOS/aurad"'
 check "the manifest and B's package were downloaded" 'grep -q "GET /latest.json" "$WORK/server.log" && grep -q "GET /$NAME.app.tar.gz" "$WORK/server.log"'
 check "the plain darwin-$ARCH entry was not used" '! grep -q "missing.tar.gz" "$WORK/server.log"'
+check "the app's log file has the shell's and the webview's update lines" 'grep -q "update downloaded and verified" "$WORK/data/aura-desktop.log" && grep -q "updates: automatic check" "$WORK/data/aura-desktop.log"'
 check "no update lock is left behind" '[ ! -e "$WORK/data/update.json" ]'
 check "the shell verified, stopped the daemon and installed" 'grep -q "update downloaded and verified" "$WORK/app.log" && grep -q "daemon stopped, installing the update" "$WORK/app.log"'
 echo

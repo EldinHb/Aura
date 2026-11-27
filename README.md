@@ -185,7 +185,8 @@ resume afterwards; if any session is working, Aura asks before it restarts.
   version you run and when Aura last checked.
 - **When something fails** (no network, a bad signature, no permission), Aura says so
   with a **Download manually** link to the latest release. Checks Aura starts by itself
-  fail quietly and try again 6 hours later.
+  fail quietly and try again 6 hours later; they are in the app's log (see
+  [How it works](#how-it-works)).
 
 How each system updates:
 
@@ -661,6 +662,12 @@ Set `AURA_DATA_DIR` to use a different data directory (useful for tests).
 The app starts `aurad` when needed and connects to it over a loopback WebSocket
 protected by a token. The daemon writes `~/.aura/daemon.json` (readable only by you)
 with the port and token. Session history is stored in SQLite under `~/.aura`.
+
+**Logs.** Both write to the data directory: the daemon to `aurad.log`, the app to
+`aura-desktop.log` (a development build to `aura-desktop-dev.log`). The app's log holds
+what the window and the updater report, including update checks that failed quietly,
+and errors in the window itself. It keeps 5 files of 5 MB (`aura-desktop.log`, then
+`.1` up to `.4`, newest first). `RUST_LOG` sets how much is logged (default `info`).
 
 See [`PLAN.md`](PLAN.md) for the full architecture and
 [`docs/protocol/`](docs/protocol) for the captured Claude Code and Codex protocols.

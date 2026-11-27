@@ -9,6 +9,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { registerCommands } from "../../lib/commands";
+import { appLog, describe } from "../../lib/appLog";
 import { isTauri } from "../../lib/connection";
 import { useStore } from "../../state/store";
 import {
@@ -284,11 +285,8 @@ export function tauriDeps(): UpdaterDeps {
     log: (message, error) => {
       if (error === undefined) console.info(`[updates] ${message}`);
       else console.warn(`[updates] ${message}`, error);
-      // Into the app's log too: the webview's console is kept nowhere.
-      const detail = error === undefined ? null : error instanceof Error ? error.message : typeof error === "string" ? error : JSON.stringify(error);
-      void core()
-        .then(({ invoke }) => invoke("update_log", { message, error: detail }))
-        .catch(() => {});
+      // Into the app's log file too: the webview's console is kept nowhere.
+      appLog(error === undefined ? "info" : "warn", error === undefined ? `updates: ${message}` : `updates: ${message}: ${describe(error)}`);
     },
   };
 }

@@ -3,6 +3,10 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles.css";
+import { logUncaughtErrors } from "./lib/appLog";
+
+// Into the app's log file: the webview's console is kept nowhere.
+logUncaughtErrors();
 
 // Files dropped outside the composer would make the webview open them in place of the app.
 window.addEventListener("dragover", (e) => {
