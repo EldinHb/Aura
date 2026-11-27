@@ -321,6 +321,8 @@ async fn pair_then_auth_then_list_sessions() {
         )),
         "{uri}"
     );
+    // Bound to one address, there is nothing to fall back to.
+    assert!(!uri.contains("alt="), "{uri}");
 
     // A wrong fingerprint is refused by the client.
     assert!(try_connect(port, &"0".repeat(64)).await.is_err());

@@ -69,10 +69,16 @@ starts) or without a terminal on stdin.
    {enabled: true}`) and starts pairing (`remote.startPairing`). The app shows
    the returned `uri` as a QR code plus the code, the fingerprint and the
    addresses to pick from.
-2. The phone scans `aura://pair?host=<ip>&port=<port>&fp=<fingerprint>&code=<code>&name=<server name>`.
+2. The phone scans `aura://pair?host=<ip>&port=<port>&fp=<fingerprint>&code=<code>&name=<server name>[&alt=<other addresses>]`.
    Every value is percent-encoded (an IPv6 host's colons as `%3A`, a space in
-   the name as `%20`). `host` is the first of `addresses`; the phone may offer
-   the others when it cannot reach that one.
+   the name as `%20`). `host` is the first of `addresses` (a bare IP, IPv6
+   not bracketed).
+   `alt` is optional: the rest of `addresses`, comma separated, IPv6 ones in
+   brackets (`100.75.1.9,[2001:db8::5]`, sent as
+   `100.75.1.9%2C%5B2001%3Adb8%3A%3A5%5D`). It is left out when there is only
+   one address (e.g. the listener is bound to one IP). Decode the value, split
+   on `,`, strip the brackets; try `host` first, then each `alt` in order,
+   always with the same `port` and `fp`.
 3. The phone opens `wss://host:port/` with TLS, accepting exactly the
    certificate whose SHA-256 is `fp`.
 4. It calls `remote.pair {code, deviceName}` and gets

@@ -115,7 +115,7 @@ pub struct RemoteConfigure {
 pub struct PairingInfo {
     pub code: String,
     pub expires_at: DateTime<Utc>,
-    /// `aura://pair?host=…&port=…&fp=…&code=…&name=…`, for a QR code.
+    /// `aura://pair?host=…&port=…&fp=…&code=…&name=…[&alt=…]`, for a QR code.
     pub uri: String,
     pub fingerprint: String,
     pub addresses: Vec<String>,
@@ -491,13 +491,14 @@ impl RemoteService {
             .first()
             .cloned()
             .unwrap_or_else(|| i.config.bind_address.clone());
-        let uri = format!(
-            "aura://pair?host={}&port={}&fp={}&code={}&name={}",
-            enc(&host),
+        let alt = addresses.get(1..).unwrap_or_default();
+        let uri = pairing_uri(
+            &host,
+            alt,
             i.config.port,
-            fingerprint,
-            code,
-            enc(&i.config.server_name())
+            &fingerprint,
+            &code,
+            &i.config.server_name(),
         );
         i.pairing = Some(PendingCode {
             code: code.clone(),
@@ -901,6 +902,30 @@ fn new_code() -> String {
         .collect()
 }
 
+/// `aura://pair?host=…&port=…&fp=…&code=…&name=…[&alt=…]`. `alt` lists the
+/// other addresses, comma separated with IPv6 ones in brackets, for the phone
+/// to try when `host` is out of reach; left out when there are none. Every
+/// value is percent-encoded.
+fn pairing_uri(host: &str, alt: &[String], port: u16, fp: &str, code: &str, name: &str) -> String {
+    let mut uri = format!(
+        "aura://pair?host={}&port={port}&fp={fp}&code={code}&name={}",
+        enc(host),
+        enc(name)
+    );
+    if !alt.is_empty() {
+        let list: Vec<String> = alt
+            .iter()
+            .map(|a| match a.parse::<IpAddr>() {
+                Ok(IpAddr::V6(v6)) => format!("[{v6}]"),
+                _ => a.clone(),
+            })
+            .collect();
+        uri.push_str("&alt=");
+        uri.push_str(&enc(&list.join(",")));
+    }
+    uri
+}
+
 fn enc(s: &str) -> String {
     use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
     const UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
@@ -987,6 +1012,21 @@ mod tests {
         assert_eq!(enc("Eldin's Mac"), "Eldin%27s%20Mac");
         assert_eq!(enc("192.168.1.2"), "192.168.1.2");
         assert_eq!(enc("fe80::1"), "fe80%3A%3A1");
+    }
+
+    #[test]
+    fn the_pairing_uri_lists_the_other_addresses_in_alt() {
+        let base = "aura://pair?host=192.168.1.2&port=7443&fp=ab&code=ABCDEFGH&name=Studio%20Mac";
+        assert_eq!(
+            pairing_uri("192.168.1.2", &[], 7443, "ab", "ABCDEFGH", "Studio Mac"),
+            base,
+            "no alt without other addresses"
+        );
+        let alt = ["100.75.1.9".to_string(), "2001:db8::5".to_string()];
+        assert_eq!(
+            pairing_uri("192.168.1.2", &alt, 7443, "ab", "ABCDEFGH", "Studio Mac"),
+            format!("{base}&alt=100.75.1.9%2C%5B2001%3Adb8%3A%3A5%5D")
+        );
     }
 
     #[test]

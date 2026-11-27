@@ -5,6 +5,6 @@
  */
 export type PairingInfo = { code: string, expiresAt: string, 
 /**
- * `aura://pair?host=…&port=…&fp=…&code=…&name=…`, for a QR code.
+ * `aura://pair?host=…&port=…&fp=…&code=…&name=…[&alt=…]`, for a QR code.
  */
 uri: string, fingerprint: string, addresses: Array<string>, };
