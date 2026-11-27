@@ -115,7 +115,7 @@ impl ModHost {
         host.discover();
         host.forward_events();
         host.start_all().await;
-        host.watch_dev_dirs();
+        host.watch_dirs();
         host
     }
 
@@ -134,7 +134,8 @@ impl ModHost {
         futures::future::join_all(running.iter().map(|r| r.stop())).await;
     }
 
-    fn discover(&self) {
+    /// Every mod in the configured folders, and the folders that hold a mod.json that does not load.
+    fn scan(&self) -> (BTreeMap<String, Entry>, Vec<(PathBuf, String)>) {
         let mut found: BTreeMap<String, Entry> = BTreeMap::new();
         let mut broken = vec![];
         for (source, root) in &self.0.config.dirs {
@@ -176,9 +177,65 @@ impl ModHost {
                 }
             }
         }
+        (found, broken)
+    }
+
+    fn discover(&self) {
+        let (found, broken) = self.scan();
         tracing::info!(count = found.len(), "mods found");
         *self.0.mods.write() = found;
         *self.0.broken.write() = broken;
+    }
+
+    /// Pick up mods added to (or removed from) the user and dev folders since
+    /// the last scan, without restarting the others. Returns whether anything changed.
+    async fn discover_new(&self) -> bool {
+        let added: Vec<String> = {
+            let _l = self.0.lifecycle.lock().await;
+            let (found, broken) = self.scan();
+            let gone: Vec<String> = self
+                .0
+                .mods
+                .read()
+                .iter()
+                .filter(|(id, e)| {
+                    e.source != ModSource::Bundled
+                        && !found.contains_key(*id)
+                        && !e.dir.join("mod.json").is_file()
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &gone {
+                self.stop_mod(id).await;
+                self.0.mods.write().remove(id);
+                tracing::info!(mod_id = %id, "mod folder removed");
+            }
+            let mut added = vec![];
+            {
+                let mut mods = self.0.mods.write();
+                for (id, e) in found {
+                    if !mods.contains_key(&id) {
+                        tracing::info!(mod_id = %id, dir = %e.dir.display(), "new mod found");
+                        mods.insert(id.clone(), e);
+                        added.push(id);
+                    }
+                }
+            }
+            let broken_changed = *self.0.broken.read() != broken;
+            *self.0.broken.write() = broken;
+            if added.is_empty() && gone.is_empty() && !broken_changed {
+                return false;
+            }
+            added
+        };
+        for id in added {
+            let _l = self.0.lifecycle.lock().await;
+            if let Err(e) = self.start_mod(&id, &mut vec![]).await {
+                tracing::warn!(mod_id = %id, "not started: {}", e.message);
+            }
+        }
+        self.changed();
+        true
     }
 
     fn saved(&self) -> SavedState {
@@ -397,23 +454,35 @@ impl ModHost {
         });
     }
 
-    /// Reload a dev mod when its files change.
-    fn watch_dev_dirs(&self) {
+    /// The folder of the user's themes: `<data dir>/themes`.
+    pub fn themes_dir(&self) -> PathBuf {
+        self.0.config.data_dir.join("themes")
+    }
+
+    /// Watch the user and dev mod folders and the themes folder. A changed
+    /// mod reloads, a new or removed mod folder is picked up, and a changed
+    /// theme (the user's, or one in a mod's `themes/`) is announced with
+    /// `themes.changed`. Bursts of events settle for 400 ms first.
+    fn watch_dirs(&self) {
         use notify::{RecursiveMode, Watcher};
-        let dev: Vec<PathBuf> = self
-            .0
-            .config
-            .dirs
-            .iter()
-            .filter(|(s, _)| *s == ModSource::Dev)
-            .map(|(_, p)| p.clone())
-            .collect();
-        if dev.is_empty() {
-            return;
+        let themes = self.themes_dir();
+        let _ = std::fs::create_dir_all(&themes);
+        let mut roots: Vec<PathBuf> = vec![themes.clone()];
+        for (source, dir) in &self.0.config.dirs {
+            if *source == ModSource::Bundled {
+                continue;
+            }
+            if *source == ModSource::User {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            roots.push(dir.clone());
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res {
+                if matches!(ev.kind, notify::EventKind::Access(_)) {
+                    return;
+                }
                 for p in ev.paths {
                     let _ = tx.send(p);
                 }
@@ -422,38 +491,111 @@ impl ModHost {
         let mut watcher = match watcher {
             Ok(w) => w,
             Err(e) => {
-                tracing::warn!("cannot watch dev mods: {e}");
+                tracing::warn!("cannot watch mods and themes: {e}");
                 return;
             }
         };
-        for d in &dev {
+        for d in &roots {
             if let Err(e) = watcher.watch(d, RecursiveMode::Recursive) {
                 tracing::warn!("cannot watch {}: {e}", d.display());
             }
         }
+        // Canonical forms too: macOS reports /private/tmp for /tmp.
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let themes_canon = canon(&themes);
+        let mod_roots: Vec<PathBuf> = roots[1..]
+            .iter()
+            .flat_map(|r| [r.clone(), canon(r)])
+            .collect();
         let host = self.clone();
         tokio::spawn(async move {
             let _keep = watcher;
             while let Some(first) = rx.recv().await {
                 let mut paths = vec![first];
-                // Builds write several files; settle first.
+                // Editors and builds write several files; settle first.
                 tokio::time::sleep(Duration::from_millis(400)).await;
                 while let Ok(p) = rx.try_recv() {
                     paths.push(p);
                 }
-                let ids: HashSet<String> = {
+                let mut themes_changed = false;
+                let mut reload: HashSet<String> = HashSet::new();
+                let mut rescan = false;
+                {
                     let mods = host.0.mods.read();
-                    paths
-                        .iter()
-                        .filter_map(|p| mods.values().find(|e| p.starts_with(&e.dir)).map(|e| e.manifest.id.clone()))
-                        .collect()
-                };
-                for id in ids {
+                    for p in &paths {
+                        if p.starts_with(&themes) || p.starts_with(&themes_canon) {
+                            themes_changed = true;
+                            continue;
+                        }
+                        let owner = mods.values().find(|e| {
+                            e.source != ModSource::Bundled
+                                && (p.starts_with(&e.dir) || p.starts_with(canon(&e.dir)))
+                        });
+                        match owner {
+                            Some(e) => {
+                                let dir = if p.starts_with(&e.dir) {
+                                    e.dir.clone()
+                                } else {
+                                    canon(&e.dir)
+                                };
+                                let rel = p.strip_prefix(&dir).unwrap_or(p);
+                                if rel.starts_with("themes") {
+                                    themes_changed = true;
+                                } else if rel.as_os_str().is_empty() && !e.dir.exists() {
+                                    rescan = true;
+                                } else {
+                                    reload.insert(e.manifest.id.clone());
+                                }
+                            }
+                            None => {
+                                if mod_roots.iter().any(|r| p.starts_with(r)) {
+                                    rescan = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if rescan && host.discover_new().await {
+                    themes_changed = true;
+                }
+                for id in reload {
+                    let dir = host.0.mods.read().get(&id).map(|e| e.dir.clone());
+                    if dir.is_some_and(|d| !d.join("mod.json").is_file()) {
+                        if host.discover_new().await {
+                            themes_changed = true;
+                        }
+                        continue;
+                    }
                     tracing::info!(mod_id = %id, "files changed; reloading");
+                    host.0.log(&id, "info", "files changed; reloading");
                     let _ = host.reload(&id).await;
+                }
+                if themes_changed {
+                    host.0.broadcast("themes.changed", json!({}));
                 }
             }
         });
+    }
+
+    /// Every theme: the user's (`<data dir>/themes`), then those of running mods.
+    pub fn themes(&self) -> Vec<aura_core::themes::Theme> {
+        let mut out = aura_core::themes::list_dir(&self.themes_dir(), None, "user");
+        let mods: Vec<(String, PathBuf)> = self
+            .0
+            .mods
+            .read()
+            .values()
+            .filter(|e| e.status == Status::Running)
+            .map(|e| (e.manifest.id.clone(), e.dir.join("themes")))
+            .collect();
+        for (id, dir) in mods {
+            out.extend(aura_core::themes::list_dir(
+                &dir,
+                Some(&id),
+                &format!("mod:{id}"),
+            ));
+        }
+        out
     }
 
     /// The `mods.*` and `mod.<id>.*` RPC methods. `session` is the calling
@@ -541,6 +683,40 @@ impl ModHost {
                 self.discover();
                 drop(_l);
                 self.start_all().await;
+                json!(true)
+            }
+            "themes.list" => json!({
+                "dir": self.themes_dir().to_string_lossy(),
+                "themes": self.themes(),
+            }),
+            "themes.get" => {
+                let id = id()?;
+                let theme = self.themes().into_iter().find(|t| t.id == id);
+                json!(theme.with_context(|| format!(
+                    "no theme {id}; `aura themes list` shows the themes"
+                ))?)
+            }
+            // `aura themes use <id>`: the open windows switch to it.
+            "themes.use" => {
+                let id = id()?;
+                let builtin = aura_core::themes::RESERVED_IDS.contains(&id.as_str());
+                if !builtin && !self.themes().iter().any(|t| t.id == id) {
+                    anyhow::bail!("no theme {id}; `aura themes list` shows the themes");
+                }
+                self.0.broadcast("themes.use", json!({"id": id}));
+                json!(true)
+            }
+            // Something a mod's UI half reports (a load error, a component that threw),
+            // so it shows in `aura mods logs <id>` next to the daemon half's lines.
+            "mods.ui_log" => {
+                let id = id()?;
+                let level = params
+                    .get("level")
+                    .and_then(Value::as_str)
+                    .filter(|l| matches!(*l, "info" | "warn" | "error"))
+                    .unwrap_or("error");
+                let message = params.get("message").and_then(Value::as_str).unwrap_or("");
+                self.0.log(&id, &format!("ui {level}"), message);
                 json!(true)
             }
             "mods.logs" => {
@@ -800,7 +976,16 @@ impl Inner {
                     return Err(ModError::new("not_found", format!("mod {id} has no daemon half")))
                 }
                 (status, _) => {
-                    return Err(ModError::unavailable(format!("mod {id} is not running ({status:?})")))
+                    let why = match status {
+                        Status::NeedsApproval => format!(
+                            "is waiting for the user's approval (Settings › Mods, or `aura mods approve {id}`)"
+                        ),
+                        Status::Disabled => format!("is disabled (`aura mods enable {id}`)"),
+                        Status::Failed(e) => format!("failed to start: {e} (`aura mods logs {id}`)"),
+                        Status::Starting => "is still starting".to_string(),
+                        _ => "is not running".to_string(),
+                    };
+                    return Err(ModError::unavailable(format!("mod {id} {why}")));
                 }
             }
         };

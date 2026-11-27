@@ -349,3 +349,183 @@ async fn files_stay_inside_the_mods_data_folder() {
     // Cancelling needs the agents permission.
     assert_eq!(call(h, "mod.files.cancelNothing", json!({})).await.unwrap(), json!("permission_denied"));
 }
+
+/// Wait up to `secs` for a notification `method`.
+async fn wait_note(notes: &mut broadcast::Receiver<Value>, method: &str, secs: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
+        while let Ok(n) = notes.try_recv() {
+            if n["method"] == method {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// Poll `f` until it is true or `secs` pass.
+async fn eventually<F: std::future::Future<Output = bool>>(
+    secs: u64,
+    mut f: impl FnMut() -> F,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
+        if f().await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn themes_are_listed_validated_and_watched() {
+    let mut s = setup(&[], &[("themed", json!({}), "export default () => {}")]).await;
+    let h = &s.host;
+    let user_dir = s._tmp.path().join("user").join("themed");
+    // A mod's own themes count only while it runs.
+    std::fs::create_dir_all(user_dir.join("themes")).unwrap();
+    std::fs::write(
+        user_dir.join("themes/night.json"),
+        r#"{"name":"Night","base":"dark"}"#,
+    )
+    .unwrap();
+
+    let themes = h.themes_dir();
+    assert!(themes.is_dir(), "the themes folder is created");
+    std::fs::write(
+        themes.join("ocean.json"),
+        r##"{"name":"Ocean","base":"light","tokens":{"--md-primary":"#0066cc","--nope":"1"}}"##,
+    )
+    .unwrap();
+    std::fs::write(themes.join("bad.json"), r#"{"name":"Bad","base":"blue"}"#).unwrap();
+
+    let list = call(h, "themes.list", json!({})).await.unwrap();
+    assert_eq!(list["dir"], themes.to_string_lossy().as_ref());
+    let ids: Vec<&str> = list["themes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["bad", "ocean"],
+        "the mod is not approved, so its theme is not listed"
+    );
+    let ocean = call(h, "themes.get", json!({"id": "ocean"})).await.unwrap();
+    assert_eq!(ocean["base"], "light");
+    assert_eq!(ocean["tokens"]["--md-primary"], "#0066cc");
+    assert!(ocean["warnings"][0].as_str().unwrap().contains("--nope"));
+    let bad = call(h, "themes.get", json!({"id": "bad"})).await.unwrap();
+    assert!(bad["error"].as_str().unwrap().contains("base"));
+    assert!(call(h, "themes.get", json!({"id": "nope"})).await.is_err());
+
+    call(h, "mods.approve", json!({"id": "themed"}))
+        .await
+        .unwrap();
+    let night = call(h, "themes.get", json!({"id": "themed:night"}))
+        .await
+        .unwrap();
+    assert_eq!(night["source"], "mod:themed");
+
+    // Editing a theme announces it.
+    while s.notes.try_recv().is_ok() {}
+    std::fs::write(
+        themes.join("ocean.json"),
+        r##"{"name":"Ocean 2","base":"light"}"##,
+    )
+    .unwrap();
+    assert!(
+        wait_note(&mut s.notes, "themes.changed", 10).await,
+        "themes.changed after an edit"
+    );
+    let ocean = call(h, "themes.get", json!({"id": "ocean"})).await.unwrap();
+    assert_eq!(ocean["name"], "Ocean 2");
+}
+
+#[tokio::test]
+async fn user_mods_are_picked_up_and_reloaded_when_their_files_change() {
+    let s = setup(&[], &[]).await;
+    let h = &s.host;
+    let dir = s._tmp.path().join("user").join("fresh");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("daemon.js"),
+        r#"export default (aura) => { aura.rpc.handle("v", () => 1); }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mod.json"),
+        json!({"id":"fresh","name":"Fresh","version":"0.1.0","apiVersion":1,"daemon":"daemon.js"})
+            .to_string(),
+    )
+    .unwrap();
+    let found = eventually(10, || async {
+        call(h, "mods.list", json!({}))
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "fresh")
+    })
+    .await;
+    assert!(found, "a new mod folder is found without a rescan");
+    let list = call(h, "mods.list", json!({})).await.unwrap();
+    assert_eq!(
+        status(&list, "fresh")["state"],
+        "needs_approval",
+        "a new user mod still waits for approval"
+    );
+    call(h, "mods.approve", json!({"id": "fresh"}))
+        .await
+        .unwrap();
+    assert_eq!(call(h, "mod.fresh.v", json!({})).await.unwrap(), json!(1));
+
+    std::fs::write(
+        dir.join("daemon.js"),
+        r#"export default (aura) => { aura.rpc.handle("v", () => 2); }"#,
+    )
+    .unwrap();
+    let reloaded = eventually(10, || async {
+        call(h, "mod.fresh.v", json!({})).await.ok() == Some(json!(2))
+    })
+    .await;
+    assert!(reloaded, "an edited daemon.js reloads");
+    let logs = call(h, "mods.logs", json!({"id": "fresh"})).await.unwrap();
+    assert!(logs
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l.as_str().unwrap().contains("reloading")));
+
+    // A UI half's report lands in the same log.
+    call(
+        h,
+        "mods.ui_log",
+        json!({"id": "fresh", "level": "error", "message": "ui.js: boom"}),
+    )
+    .await
+    .unwrap();
+    let logs = call(h, "mods.logs", json!({"id": "fresh"})).await.unwrap();
+    assert!(logs
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l.as_str().unwrap().contains("ui error: ui.js: boom")));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+    let gone = eventually(10, || async {
+        !call(h, "mods.list", json!({}))
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "fresh")
+    })
+    .await;
+    assert!(gone, "a removed mod folder is dropped");
+}
