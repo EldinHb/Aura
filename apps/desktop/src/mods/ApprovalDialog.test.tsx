@@ -74,7 +74,7 @@ it("asks for a theme's CSS, saying what it can do", async () => {
   act(() => openApprovalPrompt("theme", "neon"));
   const dialog = document.body.querySelector("dialog.aura-protected")!;
   expect(dialog.textContent).toContain("/d/themes/neon.css");
-  expect(dialog.textContent).toContain("can restyle any screen");
+  expect(dialog.textContent).toContain("can restyle every screen in Aura, including the cards where you approve what agents run");
   await act(async () => {
     fireEvent.click(dialog.querySelector("button.aura-protected-approve")!);
   });

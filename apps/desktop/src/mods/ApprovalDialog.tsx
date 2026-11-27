@@ -87,8 +87,9 @@ export function ApprovalDialog() {
       <>
         <h2>Approve the CSS of the theme {theme.name}?</h2>
         <p>
-          <code>{theme.path.replace(/\.json$/, ".css")}</code> ({theme.cssBytes ?? 0} bytes) can restyle any screen in Aura: hide, move or reword what you
-          see. Aura's approval prompts, like this one, stay out of its reach.
+          <code>{theme.path.replace(/\.json$/, ".css")}</code> ({theme.cssBytes ?? 0} bytes) can restyle every screen in Aura, including the cards where you
+          approve what agents run: it can hide, move or reword what you see. Only Aura's approval prompts for mods and themes, like this
+          one, stay out of its reach.
         </p>
         <p>Its colour tokens apply without approval. If the CSS changes, Aura asks again.</p>
       </>
