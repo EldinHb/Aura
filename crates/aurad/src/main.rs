@@ -40,6 +40,13 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(aura_rpc::default_data_dir);
     std::fs::create_dir_all(&data_dir).with_context(|| format!("create {}", data_dir.display()))?;
+    // An app update replaces this binary: running now would lock it (Windows)
+    // or leave the old daemon serving the new app. The app starts the new
+    // daemon once the update is in.
+    if let Some(install) = aura_rpc::update_lock::install_in_progress(&data_dir) {
+        eprintln!("{}", aura_rpc::update_lock::installing_message(&install));
+        std::process::exit(3);
+    }
     init_logging(&data_dir, args.foreground)?;
     // Started from the GUI, aurad inherits macOS's soft limit of 256 open
     // files, which some 75 live sessions use up with their pipes; then `gh`

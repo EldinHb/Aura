@@ -8,6 +8,7 @@
 pub mod client;
 pub mod fs;
 pub mod server;
+pub mod update_lock;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
