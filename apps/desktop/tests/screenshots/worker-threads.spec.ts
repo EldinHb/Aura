@@ -73,6 +73,7 @@ async function mockDaemon(page: Page) {
         case "session.list": result = sessions; break;
         case "session.get": result = sessions.find((s) => s.id === params.id); break;
         case "session.pending": result = { approvals: [], inputs: [] }; break;
+        case "mods.inbox": result = []; break;
         case "session.history": result = (history[params.id] ?? []).map((it, i) => ({ seq: i + 1, ts: it.started_at, event: { type: "item_completed", session_id: params.id, item: it } })); break;
         default:
           if (/history|commands|native|list|candidates|status|diff_stat|log|worktrees|branches/.test(method)) result = [];

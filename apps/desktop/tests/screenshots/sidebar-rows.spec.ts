@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { BranchStatus, Session } from "../../src/gen";
 
 /**
- * Sidebar rows crowded with tags (orchestrator, hidden workers, agent, branch
+ * Sidebar rows crowded with tags (orchestrator, workers chip, agent, branch
  * state) and unseen markers (done, failed, waiting on you)
  * at the default and a narrow sidebar width, in both themes. Not a README shot; run it on its own when changing the row layout:
  *   SHOTS=/tmp/rows pnpm exec playwright test -c playwright.screenshots.config.ts sidebar-rows
@@ -45,6 +45,7 @@ async function mockDaemon(page: Page) {
         case "session.list": result = sessions; break;
         case "session.get": result = sessions.find((s) => s.id === params.id); break;
         case "session.pending": result = { approvals: [], inputs: [] }; break;
+        case "mods.inbox": result = []; break;
         case "git.branch_status": result = git[params.cwd] ?? null; break;
         default:
           if (/history|commands|native|list|candidates|status|diff_stat|log|worktrees|branches/.test(method)) result = [];
@@ -61,13 +62,11 @@ for (const theme of ["dark", "light"] as const) {
       await page.setViewportSize({ width: 1100, height: 1000 });
       await mockDaemon(page);
       await page.goto(`/?port=19998&token=shots&session=${billing}`);
-      const portalRow = page.locator(`[data-session-id="${portal}"]`);
-      await expect(portalRow).toBeVisible();
-      // Collapse the Vidara orchestrator so its workers become a "+6" count.
-      await portalRow.locator(".orchestra-toggle").click();
+      // Leaders start collapsed: the Vidara orchestrator shows "6 workers · 1 needs you", and its waiting worker peeks out.
+      await expect(page.locator(`[data-session-id="${portal}"] .chip.workers`)).toBeVisible();
       await page.locator(`[data-session-id="${id(21)}"]`).click();
       await page.evaluate((w) => document.documentElement.style.setProperty("--sidebar-w", `${w}px`), width);
-      await expect(page.getByText("⎇ portal-admin-improvements").first()).toBeVisible();
+      await expect(page.locator(`[data-session-id="${id(40)}"] .where`)).toContainText("⎇ portal-admin-improvements");
       await page.waitForTimeout(400);
       await page.locator(".sidebar").screenshot({ path: `${OUT}/${theme}-${label}.png` });
     });
@@ -78,7 +77,7 @@ test("rows with hint labels", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 1000 });
   await mockDaemon(page);
   await page.goto(`/?port=19998&token=shots&session=${billing}`);
-  await expect(page.getByText("⎇ portal-admin-improvements").first()).toBeVisible();
+  await expect(page.locator(`[data-session-id="${id(40)}"] .where`)).toContainText("⎇ portal-admin-improvements");
   await page.evaluate(async () => {
     // A path in a variable, so the type checker leaves this browser-side import alone.
     const path = "/src/lib/commands.ts";

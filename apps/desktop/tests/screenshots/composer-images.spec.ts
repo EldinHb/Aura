@@ -66,6 +66,7 @@ async function mockDaemon(page: Page, history: StoredEvent[]) {
         case "session.get": result = session; break;
         case "session.history": result = history.filter((e) => e.seq > (params.after_seq ?? 0)); break;
         case "session.pending": result = { approvals: [], inputs: [] }; break;
+        case "mods.inbox": result = []; break;
         case "session.send": sent.push(params.input); result = true; break;
         case "session.attachment": result = { data: fullImage.split(",")[1], media_type: "image/png" }; break;
         case "git.branch_status": result = null; break;

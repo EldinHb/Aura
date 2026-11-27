@@ -102,6 +102,16 @@ asks something, wants an approval, or finished and you have not looked yet),
 **Working**, and **Idle**. When a session goes from working to waiting for you, Aura
 plays a sound — pick one, use your own file, or turn it off in Settings → General.
 
+**Workspaces** keep separate lines of work apart. The name at the top of the sidebar
+switches between them (`⌘⇧K`, or `⌃1…9` for the first nine); `⋯` next to it renames,
+deletes (what it holds moves to another workspace, nothing is deleted) or adds one.
+The sidebar shows one workspace at a time; `⌘K` still finds every session and switches
+to its workspace. Under the list, **Elsewhere** shows what needs you and what is idle
+in the other workspaces, and **Scheduled runs** the runs of scheduled tasks that work or
+wait on you, from every workspace. Scheduled runs never appear in Waiting for you,
+Working or Idle. `Ctrl+Space k` has the workspace commands; `Ctrl+Space s v` moves the
+selected session, with its workers, to another workspace.
+
 Every session and page you open gets a **tab** in the main area, like a browser, so
 you can keep several things open without losing your place: `Ctrl+Tab` / `Ctrl+⇧Tab`
 switch, `Alt+1…9` jump, `⌘W` closes, `⌘⇧T` reopens. Moving through the sidebar with
@@ -238,13 +248,19 @@ dialog, or turn an existing session into one with **Orchestrate** in the inspect
   can be read and rewritten there; your own rules, preferred agents and models, and
   agents and models never to use come on top and take precedence. Aura refuses to
   start a worker with one you forbade. With the load balancer off, nothing changes.
-- **Workers are normal sessions.** They show up indented under their orchestrator
-  while both are in the same state (working, say); a worker in another state is listed
-  in its own section and names its orchestrator. Open one to read along, message it, approve its
-  commands, or switch it to the agent's TUI. The chevron on the orchestrator (or `←`
-  / `→` in the sidebar) hides and shows its workers; Aura remembers that per
-  orchestrator. In the sidebar, `j` / `k` step over the workers of other
-  orchestrators; from an orchestrator they go through its workers and out again.
+- **Workers are normal sessions.** In the sidebar they live under their leader (the
+  orchestrator or feature owner at the top), never in a row of their own: the leader's
+  row is sectioned by its whole tree (one worker waiting on you puts it in Waiting for
+  you) and says "4 workers · 1 needs you". Leaders start collapsed; a worker that waits
+  on you peeks out anyway. The chevron or the workers chip (or `←` / `→`) shows and hides
+  the rest; Aura remembers that per leader. `⌘1…9`, `⌘[` `⌘]` and `j` / `k` move between
+  leaders, and through the workers of the one you are on. Open a worker to read along,
+  message it, approve its commands, or switch it to the agent's TUI.
+- **Cleaning up workers.** "Clean up worker sessions…" (`Ctrl+Space k c`, or `⋯` in the
+  sidebar) lists the workers agents started in the workspace, finished ones checked,
+  and deletes them after one confirmation; `Ctrl+Space o x`, the workers panel and the
+  orchestrator's row do the same for one orchestrator. Orchestrators, worktrees and
+  branches are kept.
 - **Reports come back by themselves.** When a worker stops (done, failed, or waiting
   for your approval or answer), Aura sends the orchestrator a short report with the
   worker's last reply as soon as the orchestrator is idle. It does not have to poll,
@@ -552,10 +568,11 @@ Shortcuts are shown with macOS keys; use `Ctrl` for `⌘` on Windows and Linux.
 | `⌘K` | Command palette (every action lives here) |
 | `Ctrl+Space` | Leader menu (which-key shows what comes next) |
 | `⌘N` / `⌘⇧N` | New session / new session in a git worktree |
-| `⌘1…9`, `⌘[` `⌘]` | Jump between sessions |
+| `⌘1…9`, `⌘[` `⌘]` | Jump between sessions (leaders) in the workspace |
+| `⌘⇧K`, `⌃1…9` | Switch workspace / go to workspace 1–9 (`Ctrl+Space k` for more) |
 | `Ctrl+H/J/K/L` | Move focus between sidebar, transcript, composer, inspector |
 | `j` `k` `gg` `G` `Enter` | Navigate lists and transcript items |
-| `←` `→` | In the sidebar: hide / show an orchestrator's workers, step between it and them; on a section's heading, fold / unfold it |
+| `←` `→` | In the sidebar: hide / show a leader's workers, step between it and them; on a section's heading, fold / unfold it |
 | `Ctrl+Tab` `Ctrl+⇧Tab`, `Alt+1…9` | Next / previous tab, jump to a tab |
 | `⌘W` / `⌘⇧T` | Close the tab / reopen the last closed one |
 | `t` | In the sidebar: switch between the Sessions and Scheduled tabs (also `Ctrl+Space s s`) |

@@ -91,6 +91,7 @@ async function mockDaemon(page: Page, image: string) {
         case "session.get": result = session; break;
         case "session.history": result = history().filter((e) => e.seq > (params.after_seq ?? 0)); break;
         case "session.pending": result = { approvals: [], inputs: [] }; break;
+        case "mods.inbox": result = []; break;
         // A send takes a moment, as it does when the daemon starts the agent first.
         case "session.send": result = true; setTimeout(() => { sent.push(params.input.text); socket.send(JSON.stringify({ id, result })); }, 300); return;
         case "fs.read_image": readImage.push(params.path); result = { data: image, media_type: "image/png" }; break;
