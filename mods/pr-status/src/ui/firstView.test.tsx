@@ -48,4 +48,14 @@ describe("the first cards", () => {
     expect(screen.getByRole("article", { name: /Fresh/ })).toBeTruthy();
     expect(screen.queryByRole("article", { name: /Kept/ })).toBeNull();
   });
+
+  it("fall through to the watch when the first view is empty or fails (review)", async () => {
+    for (const first of [() => Promise.resolve(null), () => Promise.reject(new Error("daemon restarting")), () => Promise.resolve({ sessionId: "lead" })]) {
+      fakeCtx((name) => (name === "view" ? first() : name === "watch" ? Promise.resolve(view("Fresh")) : Promise.resolve(true)));
+      render(<PrStatusSection session={session("lead")} />);
+      await act(async () => {});
+      expect(screen.getByRole("article", { name: /Fresh/ })).toBeTruthy();
+      cleanup();
+    }
+  });
 });

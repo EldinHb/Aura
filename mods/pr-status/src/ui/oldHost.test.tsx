@@ -29,7 +29,12 @@ function view(sessionId: string, number: number): SessionView {
 /** The UiApi of Aura 0.4.0: no `sessions`, and `openView(viewId, props)` only. */
 function oldHostCtx() {
   const opened: unknown[][] = [];
-  const rpc = vi.fn(async (name: string, p?: any) => (name === "watch" ? (p.background ? null : view(p.sessionId, p.sessionId === "a" ? 1 : 2)) : name === "unwatch" ? true : null));
+  const rpc = vi.fn(async (name: string, p?: any) => {
+    if (name === "watch") return p.background ? null : view(p.sessionId, p.sessionId === "a" ? 1 : 2);
+    // The kept view the section asks for first.
+    if (name === "view") return view(p.sessionId, p.sessionId === "a" ? 1 : 2);
+    return name === "unwatch" ? true : null;
+  });
   const ctx = {
     rpc, on: () => () => {}, onConnection: () => () => {},
     storage: { get: () => undefined, set: () => {}, delete: () => {} },
