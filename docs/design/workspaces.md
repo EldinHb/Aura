@@ -66,7 +66,9 @@ rule `tabOf` already uses.
 │ [Filter sessions  /    ] [ + ]│  ← existing head
 │ [ Sessions | Scheduled ]      │  ← existing tabs, scoped to the workspace
 │ WAITING FOR YOU               │
-│  ● Fix login bug        2  1  │  ← existing list, active workspace only
+│  ○ ▸ Login revamp       1  1  │  ← leaders only, active workspace only
+│      4 workers · 1 needs you  │
+│      ⚠ Tester (peek)       1  │  ← worker that waits on you, shown while collapsed
 │ WORKING …                     │
 │ IDLE …                        │
 │            (scrolls)          │
@@ -100,6 +102,130 @@ view".
   scoped to the active workspace.**
 - The inbox (`⌘I`) still lists approvals and questions from scheduled runs. It
   is a queue of things to answer, not a status panel, so this is unchanged.
+
+### 3.1 Leaders only: workers live under their leader
+
+A **leader** is a session with no `orchestrator_id`: a plain session, an
+orchestrator or a feature owner. A **worker** is any session with
+`orchestrator_id` set, at any depth. Its leader is the top of its
+`orchestrator_id` chain. Only leaders get rows in the sidebar sections
+(*Waiting for you* / *Working* / *Idle*, the Scheduled tab's task sections)
+and in the rail (*Elsewhere*, *Scheduled runs*). A worker is shown only in its
+leader's nested list. It never gets a row of its own anywhere else.
+
+**Today (checked in `Sidebar.tsx` and `store.ts`):**
+
+- `selectSessionSections` puts **every** session in the section of its own
+  `categoryOf`.
+- A worker nests under its orchestrator only while both are in the same state.
+  Otherwise the worker gets its own row in another section with a `↳ <lead>`
+  chip (`SessionRowDetails`, `lead`). That is how an idle orchestrator sits
+  under *Idle* while its worker sits under *Working*.
+- Orchestras are **expanded by default**. `collapsedOrchestras` stores the
+  collapsed ids, and `revealIn` expands the ancestors of a selected worker.
+- A collapsed orchestrator shows a `+N` chip (`HiddenWorkers`). The chip turns
+  warn-coloured when a hidden worker has `pending_count`, and carries the most
+  urgent hidden attention (`hiddenAttention`).
+- `⌘1–9` and `selectVisibleSessions` count visible worker rows.
+- ↑/↓ already step over the workers of *other* orchestras and walk the
+  current one. →/← open and close an orchestra, or move between a worker and
+  its orchestrator.
+- `SectionHeading` counts every row in the section, workers included.
+
+**Delta:**
+
+| | Today | New |
+|---|---|---|
+| Section of a session | its own `categoryOf` | the leader's **rolled-up** state. Workers have no section. |
+| Worker in a different state from its leader | own row elsewhere with `↳ lead` | only under its leader. The `↳ lead` chip is removed from the sidebar. |
+| Default fold | expanded | **collapsed**. Persistence is inverted to `expandedOrchestras` under a new key; the old `collapsedOrchestras` key is dropped, so every orchestra starts collapsed after the upgrade. |
+| `+N` chip | only when collapsed | always on a leader with workers. It becomes the roll-up summary (below). |
+| `⌘1–9`, `⌘[` / `⌘]` | visible rows | leaders only |
+| Section heading counts | all rows | leaders. "Working" counts leaders whose roll-up is working. Pending sums across the whole tree. |
+| `⌘K` | every session | unchanged: still finds workers (`selectListedSessions` stays a list of all sessions) |
+
+#### Rolled-up state
+
+`rollupOf(leader, tree)`, where `tree` is the leader plus every worker under
+it at any depth:
+
+1. **Needs you** if the leader is `categoryOf === "waiting"`, **or** any worker
+   *waits on the user*: `pending_count > 0`, status `waiting_approval` /
+   `waiting_input`, or `attention === "waiting"`.
+   - A worker's `done` / `failed` attention does **not** roll up. The worker
+     reports to its orchestrator, not to the user, so a finished worker must
+     not keep putting the leader in *Waiting for you*. It still shows as a
+     marker on the worker's nested row and on the `+N` chip. (See Q6.)
+2. Otherwise **working** if anyone in the tree has `status === "running"`.
+3. Otherwise **idle**.
+
+Nested orchestrators roll up into the **top-level** leader. A sub-orchestrator
+is just a worker of the top leader for roll-up, sectioning and the rail.
+
+#### Leader row
+
+- **Dot**: the leader's **own** status, so the dot means the same as it does
+  today. The roll-up is carried by which section the row is in, plus the chip
+  below. That way state is never shown by colour alone.
+- **Pending badge**: `pending_count` summed over the tree. Tooltip: "2 waiting
+  on you: 1 here, 1 in Tester".
+- **Attention marker**: the most urgent across the tree, using
+  `hiddenAttention` over leader and workers.
+- **Workers chip** (replaces `+N`, sits in the same place on the second line):
+  `N workers`, plus the most urgent clause:
+  - "· 1 needs you" (warn), else
+  - "· 2 working" (with the working dot), else nothing.
+
+  Tooltip: one line per worker with its state word (the same as today's
+  `HiddenWorkers` title). Click the chip to toggle the nested list.
+- Accessible name: "<title>, <own state>. 4 workers: 1 needs you, 2 working.
+  Collapsed."
+
+#### Nested list
+
+- **Expanding**: click the existing `orchestra-toggle` chevron or the workers
+  chip, or press → on the leader. The list shows the whole tree indented
+  (`--depth`, as today), in the existing worker order. Sub-orchestrators keep
+  their own chevron and are expanded within an expanded parent.
+- Each nested row is today's row: dot, title, specialist chip, attention,
+  pending badge, age. It has no `⌘` digit.
+- **Collapsed by default, with a peek**: while a leader is collapsed, any
+  worker that waits on the user is shown anyway as a nested row with the warn
+  highlight (`session-row worker needs-you`). Below it is a dim line "+3 more
+  workers", which expands the list.
+  - The peek does not change the saved expand state. The row leaves the peek
+    once the worker no longer waits.
+  - This is the "auto-expand": the worker that needs the user is one click
+    away without unfolding everything.
+- **Selecting a worker** from anywhere (⌘K, inbox, notification, rail, Workers
+  panel) expands its leader for that selection, as `revealIn` does today, and
+  selects the worker row. If the leader is collapsed again, the leader row
+  gets the existing `cursor` mark to show the selection is inside it.
+- **Drag to reorder**: leaders only. Nested rows are not draggable, because
+  their order is the orchestrator's.
+- **Workers panel** (`views/WorkerThreads.tsx`, `leader o w`): unchanged. It is
+  the conversation view of an orchestra. The nested list is navigation. The
+  nested list gets a last dim row **"Open workers panel"** when the leader has
+  more than 8 workers, after which the list itself stops at 8 rows.
+- **Cleanup** (§6) is unaffected. It lists workers explicitly; it is the one
+  place apart from the nested list and ⌘K where they appear one by one.
+
+#### Keyboard
+
+- ↑/↓ move between **leaders**. Inside an expanded or peeked nested list they
+  walk that leader's workers, then continue to the next leader. Today's "step
+  over other orchestras' workers" rule becomes "workers are reached only from
+  their leader".
+- → on a collapsed leader expands it. → on an expanded leader moves to its
+  first worker. ← on a worker goes to its parent; ← on an expanded leader
+  collapses it. This keeps today's tree keys.
+- Home / End go to the first and last **leader**.
+- `⌘1–9` numbers leaders only, and the `kbd` hints show on leader rows only.
+- `⌘[` / `⌘]` (`session.prev` / `session.next`) step through leaders, the same
+  as ↑/↓.
+- `⌘K` lists workers with their leader as context ("Tester · ↳ Login
+  revamp"). Picking one switches workspace if needed, expands the leader and
+  selects the worker.
 
 ## 4. Workspace switcher
 
@@ -243,13 +369,16 @@ workspace. The *Scheduled runs* block (§5.4) is then still shown on its own.
 
 | Block | Qualifies | Excludes |
 |---|---|---|
-| **Needs you** | `categoryOf(s) === "waiting"`: `pending_count > 0`, `waiting_approval` / `waiting_input`, or `attention` set (done / failed / waiting since last looked). Same rule as the list. | archived; scheduled runs |
-| **Idle** | `categoryOf(s) === "idle"` | archived; scheduled runs; workers whose orchestrator is also idle (they show as `+N` on the orchestrator's row, like a collapsed orchestra) |
-| Working | not listed. The count shows only on the switcher menu rows. | |
+| **Needs you** | leader whose roll-up (§3.1) is *needs you* | archived; scheduled runs; workers (they roll up) |
+| **Idle** | leader whose roll-up is *idle*, meaning the whole tree is idle | archived; scheduled runs; workers |
+| Working | not listed. The count of working leaders shows only on the switcher menu rows. | |
 
-Rows are compact single lines: status dot · title · dim `· <workspace>` ·
-attention marker · pending badge · relative time. They reuse the
-`session-row` classes, without the second line.
+Rows are leaders only, as compact single lines: status dot · title · dim
+`· <workspace>` · attention marker · pending badge (tree total) · relative
+time. When the *needs you* comes from a worker, add a dim suffix "· Tester
+needs you", or "· 2 workers need you" when there are several. Rows reuse the
+`session-row` classes, without the second line. There is no nested list in
+the rail.
 
 ### 5.2 Order, cap, overflow
 
@@ -270,7 +399,9 @@ attention marker · pending badge · relative time. They reuse the
 ### 5.3 Interaction
 
 - Click, or Enter on a focused row: switch to that row's workspace, select
-  the session, and focus main. This is the same as `select(id)` plus a
+  the session, and focus main. If the leader itself does not need the user
+  but a worker does, open **that worker** (the most urgent one, by the §5.2
+  urgency order), revealed under its leader. This is the same as `select(id)` plus a
   workspace switch. Opening clears its attention as today
   (`useMarkViewedSeen`), so it drops out of *Needs you*.
 - Keyboard: the rail is part of the sidebar region. ↓ past the last list row
@@ -290,8 +421,10 @@ under a divider, never mixed into *Needs you* or *Idle*.
 
 - Heading: **Scheduled runs**. Clicking the heading switches to the
   *Scheduled* tab.
-- Lists runs from **every** workspace (including the active one) that are
-  **working** or **need the user** (`categoryOf` is `waiting` or `working`).
+- Lists runs from **every** workspace (including the active one) whose
+  roll-up (§3.1) is **working** or **needs you**. Only the top-level run is
+  listed; workers under a scheduled orchestrator roll up into it, the same as
+  on the Scheduled tab.
   Idle, finished, and seen runs are not listed; the Scheduled tab has them.
 - Row: dot · **task name** · dim run time (`03:00`, or relative time) ·
   workspace suffix if not the active workspace · attention marker · pending
@@ -512,6 +645,20 @@ when `settings.confirmDelete` is off, the same as `session.delete`.
     automatically scopes `⌘1–9`, `selectTabActivity`, and arrow navigation.
     `selectListedSessions` (⌘K) stays unscoped.
   - `select(id)` switches the workspace when needed.
+  - Leaders only (§3.1):
+    - New `leaderOf(s, sessions)` and `rollupOf(leader, sessions)`.
+    - `selectSessionSections` sections **leaders** by `rollupOf` (or by task
+      on the Scheduled tab). `selectVisibleSessions` therefore returns leaders
+      only, which `⌘1–9`, `session.next` / `session.prev` and `canReorder`
+      use.
+    - New `selectNestedRows(st, leaderId)` returns the expanded tree, or the
+      peek rows when the leader is collapsed. Rendering and ↑/↓ navigation
+      use it.
+    - Replace `collapsedOrchestras` / `COLLAPSED_KEY` with
+      `expandedOrchestras` under a new key. `revealIn` adds ancestors
+      instead of removing them.
+    - Retire `sectionOf` / `isNestedWorker`'s "same state" rule.
+    - `selectListedSessions` (⌘K) keeps every session.
   - New selectors `selectRail(st, viewedId)` and `selectScheduledRail(st)`,
     and per-workspace activity for the switcher.
   - New dialog kinds `workspace-edit`, `workspace-delete`,
@@ -523,6 +670,16 @@ when `settings.confirmDelete` is off, the same as `session.delete`.
   rail between `session-list` and `ScheduleSidebar`; extend arrow navigation
   into the rail; add the empty-state copy (§4.8); add the "Clean up workers"
   row action on orchestrators.
+  - Leader rows: `HiddenWorkers` becomes the always-on workers chip with the
+    roll-up clause. Remove the `lead` (`↳ <orchestrator>`) chip from
+    `SessionRowDetails`.
+  - Render the nested list and its peek, with the `needs-you` row class.
+  - `SectionHeading` counts leaders.
+  - `move` / `tree` navigation follows §3.1 "Keyboard".
+  - Update `Sidebar.test.tsx` and `sessionOrder.test.ts` for the new
+    defaults.
+- `components/CommandPalette.tsx` / `palette.ts`: show the leader as context
+  on worker rows.
 - `commands/core.ts`: `workspace.*`, `session.move-workspace`,
   `workers.cleanup`, `workers.cleanup-orchestrator`.
   `keymap/default.ts`: the bindings in §4.7. WhichKey: label the `leader k`
@@ -558,3 +715,13 @@ when `settings.confirmDelete` is off, the same as `session.delete`.
 - **Q5. Should Idle in the rail be folded by default?** Recommendation:
   **yes**. Idle grows unbounded until cleanup. The count alone tells the user
   it is there.
+- **Q6. Does a worker's `done` / `failed` attention roll up to the leader as
+  "needs you"?** Recommendation: **no**. Only a worker that waits on the user
+  rolls up (pending, `waiting_*`, `attention: waiting`). Finished and failed
+  workers report to their orchestrator, and the orchestrator's own attention
+  covers what the user needs to see. If they rolled up, every finished worker
+  would keep the leader in *Waiting for you*. Their markers still show on the
+  nested row and the workers chip.
+- **Q7. Should the peek (§3.1) also show failed workers while the leader is
+  collapsed?** Recommendation: **no**. The peek is for "waits on you" only.
+  The workers chip's marker already shows a failure.
