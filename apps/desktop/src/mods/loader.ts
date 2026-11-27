@@ -366,5 +366,7 @@ export const modsApi = {
   reload: (id: string) => client().call("mods.reload", { id }),
   rescan: () => client().call("mods.rescan", {}),
   logs: (id: string) => client().call<string[]>("mods.logs", { id }),
+  /** The user's mods folder (and $AURA_MODS_DIR, when set). */
+  dirs: () => client().call<{ user: string | null; dev: string | null }>("mods.dirs", {}),
   setSetting: (id: string, key: string, value: unknown) => client().call("mods.settings.set", { id, key, value }),
 };

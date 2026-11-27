@@ -392,6 +392,10 @@ async fn themes_are_listed_validated_and_watched() {
     )
     .unwrap();
 
+    let dirs = call(h, "mods.dirs", json!({})).await.unwrap();
+    assert_eq!(dirs["user"], s._tmp.path().join("user").to_string_lossy().as_ref());
+    assert_eq!(dirs["dev"], Value::Null);
+
     let themes = h.themes_dir();
     assert!(themes.is_dir(), "the themes folder is created");
     std::fs::write(

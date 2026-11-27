@@ -685,6 +685,18 @@ impl ModHost {
                 self.start_all().await;
                 json!(true)
             }
+            // Where the user's (and the dev) mods live, for Settings › Mods.
+            "mods.dirs" => {
+                let dir = |source: ModSource| {
+                    self.0
+                        .config
+                        .dirs
+                        .iter()
+                        .find(|(s, _)| *s == source)
+                        .map(|(_, p)| p.to_string_lossy().to_string())
+                };
+                json!({"user": dir(ModSource::User), "dev": dir(ModSource::Dev)})
+            }
             "themes.list" => json!({
                 "dir": self.themes_dir().to_string_lossy(),
                 "themes": self.themes(),

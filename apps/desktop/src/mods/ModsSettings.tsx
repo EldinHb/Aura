@@ -121,16 +121,24 @@ function ModCard({ mod }: { mod: ModInfo }) {
 export function ModsSettings() {
   const mods = useMods((s) => s.mods);
   const toast = useStore((st) => st.toast);
+  const [dirs, setDirs] = useState<{ user: string | null; dev: string | null } | null>(null);
   useEffect(() => {
     void syncMods();
+    // An older daemon has no mods.dirs; the text then names the default folder.
+    modsApi.dirs().then(setDirs, () => setDirs(null));
   }, []);
   return (
     <div className="mods-settings">
       <p className="dim">
         Mods add features to Aura. Their background part runs inside Aura's daemon and can only do what is listed under each; their interface part runs in
-        this window with Aura's own rights, so install mods only from people you trust. Put a mod's folder in <code>~/.aura/mods</code>: Aura finds it
+        this window with Aura's own rights, so install mods only from people you trust. Put a mod's folder in <code className="mods-dir">{dirs?.user ?? "~/.aura/mods"}</code>: Aura finds it
         and asks you to approve it. For agents: <code>aura guide mods</code> explains how to make one, and <code>aura mods new &lt;id&gt;</code> starts one.
       </p>
+      {dirs?.dev && (
+        <p className="dim">
+          Also loading development mods from <code>{dirs.dev}</code> (<code>AURA_MODS_DIR</code>).
+        </p>
+      )}
       <div className="mod-actions">
         <button className="btn small" onClick={() => modsApi.rescan().then(() => syncMods()).catch((e) => toast(String(e?.message ?? e), "error"))} data-hint>
           Rescan mod folders
