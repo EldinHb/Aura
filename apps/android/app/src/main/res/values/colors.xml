@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Surface of the fallback scheme (ui/theme/Color.kt). -->
+    <color name="window_background">#FFFAF8FF</color>
+    <!-- The launcher icon's background: the fallback scheme's primary container. -->
+    <color name="ic_launcher_background">#FFDBE1FF</color>
+</resources>

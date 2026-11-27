@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aura</string>
+
+    <!-- Common -->
+    <string name="back">Back</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="remove">Remove</string>
+    <string name="rename">Rename</string>
+    <string name="name">Name</string>
+    <string name="paste">Paste</string>
+    <string name="continue_label">Continue</string>
+    <string name="retry_now">Retry now</string>
+    <string name="expanded">Expanded</string>
+    <string name="collapsed">Collapsed</string>
+
+    <!-- Session states -->
+    <string name="state_waiting">Waiting for you</string>
+    <string name="state_running">Running</string>
+    <string name="state_failed">Failed</string>
+    <string name="state_done">Done</string>
+    <string name="state_idle">Idle</string>
+
+    <!-- Connection states -->
+    <string name="conn_offline">Offline</string>
+    <string name="conn_connecting">Connecting…</string>
+    <string name="conn_online">Connected</string>
+    <string name="conn_retrying">%1$s. Retrying…</string>
+    <string name="conn_revoked">No longer paired</string>
+    <string name="conn_cert_mismatch">Certificate changed</string>
+
+    <!-- Servers -->
+    <string name="servers_title">Servers</string>
+    <string name="add_server">Add server</string>
+    <string name="server_actions">Actions for %1$s</string>
+    <string name="servers_empty_title">No servers yet</string>
+    <string name="servers_empty_body">On your computer, open Aura and choose to pair a phone. Then add the server here by scanning its QR code.</string>
+    <string name="reconnect">Reconnect</string>
+    <string name="pair_again">Pair again</string>
+    <string name="rename_server">Rename server</string>
+    <string name="remove_server_title">Remove %1$s?</string>
+    <string name="remove_server_body">This phone forgets the server and its device token. To use it again, pair again. To revoke the device on the server too, remove it in Aura on your computer.</string>
+
+    <!-- Add server -->
+    <string name="add_server_intro">Scan the QR code Aura shows on your computer, paste its pairing link, or enter the details by hand.</string>
+    <string name="scan_qr">Scan QR code</string>
+    <string name="scan_prompt">Point the camera at the QR code in Aura</string>
+    <string name="paste_link_title">Pairing link</string>
+    <string name="pairing_link">aura://pair link</string>
+    <string name="manual_title">Enter the details</string>
+    <string name="host">Host</string>
+    <string name="port">Port</string>
+    <string name="fingerprint">Certificate fingerprint (SHA-256)</string>
+    <string name="fingerprint_help">64 hexadecimal characters; colons and spaces are ignored</string>
+    <string name="pairing_code">Pairing code</string>
+    <string name="address">Address</string>
+    <string name="confirm_title">Is this your server?</string>
+    <string name="confirm_body">Check that the fingerprint below is the one Aura shows on your computer. This phone will trust only the server with this certificate.</string>
+    <string name="pair">Pair</string>
+    <string name="pair_cert_mismatch">The server\'s certificate does not match this fingerprint. Nothing was sent. Check that you are on the right network and that the link is current.</string>
+    <string name="pair_refused">The server refused to pair: %1$s</string>
+    <string name="pair_unknown_host">Cannot find that host. Check the address and your network.</string>
+    <string name="pair_unreachable">Cannot reach the server. Check that Aura is running and that this phone is on the same network.</string>
+    <string name="pair_failed">Pairing failed: %1$s</string>
+
+    <!-- Sessions -->
+    <string name="new_session">New session</string>
+    <string name="untitled_session">Untitled session</string>
+    <string name="sessions_empty_title">No sessions</string>
+    <string name="sessions_empty_body">Start a session here, or in Aura on your computer.</string>
+    <string name="refresh_failed">Could not refresh: %1$s</string>
+    <string name="offline_title">Not connected</string>
+    <string name="cert_mismatch_title">The server\'s certificate changed</string>
+    <string name="cert_mismatch_body">This phone paired with a server whose certificate is\n%1$s\nbut the server now shows\n%2$s\n\nThis phone will not connect. If you reinstalled Aura or reset its remote access, pair again. Otherwise someone may be intercepting the connection.</string>
+    <string name="cert_mismatch_short">The server shows a certificate this phone did not pair with, so it will not connect. It now shows:</string>
+    <string name="revoked_title">This phone is no longer paired</string>
+    <string name="revoked_body">%1$s\n\nThe device may have been removed in Aura on your computer. Pair again to reconnect.</string>
+
+    <!-- Session -->
+    <string name="interrupt">Interrupt</string>
+    <string name="stop">Stop</string>
+    <string name="stop_session">Stop session</string>
+    <string name="stop_session_title">Stop this session?</string>
+    <string name="stop_session_body">The agent stops. You can continue the session later from Aura.</string>
+    <string name="session_actions">Session actions</string>
+    <string name="message_placeholder">Message the agent</string>
+    <string name="send">Send</string>
+    <string name="transcript_empty">Nothing here yet.</string>
+    <string name="terminal_session_title">Terminal session</string>
+    <string name="terminal_session_body">This session runs in a terminal. Open it in Aura on your computer.</string>
+    <string name="approval_needed">Approval needed</string>
+    <string name="allow">Allow</string>
+    <string name="allow_for_session">Allow for session</string>
+    <string name="decline">Decline</string>
+    <string name="question_title">The agent asks</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="answer">Answer</string>
+    <string name="your_answer">Your answer</string>
+    <string name="other_answer">Something else</string>
+    <string name="load_failed">Could not load: %1$s</string>
+    <string name="send_failed">Could not send: %1$s</string>
+    <string name="action_failed">That did not work: %1$s</string>
+    <plurals name="steps">
+        <item quantity="one">%d step</item>
+        <item quantity="other">%d steps</item>
+    </plurals>
+
+    <!-- New session -->
+    <string name="project">Project folder</string>
+    <string name="project_help">A folder on the server\'s computer</string>
+    <string name="agent">Agent</string>
+    <string name="first_prompt">What should the agent do?</string>
+    <string name="start_session">Start</string>
+    <string name="no_agents">The server has no agent available.</string>
+    <string name="create_failed">Could not start the session: %1$s</string>
+
+    <!-- Inbox -->
+    <string name="inbox_label">Inbox</string>
+    <string name="inbox_title">Waiting on you</string>
+    <string name="inbox_empty_title">Nothing waits on you</string>
+    <string name="inbox_empty_body">Sessions that need an answer or an approval, on any connected server, show up here.</string>
+</resources>

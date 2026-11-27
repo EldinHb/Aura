@@ -1,0 +1,175 @@
+package dev.aura.android.protocol
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+
+// The daemon's types (crates/aura-core/src/types.rs), as far as this app uses
+// them. Fields it does not read are left out; unknown ones are ignored.
+
+@Serializable
+data class WorktreeInfo(
+    @SerialName("repo_root") val repoRoot: String,
+    val path: String,
+    val branch: String,
+)
+
+@Serializable
+data class Session(
+    val id: String,
+    val provider: String,
+    val agent: String? = null,
+    val cwd: String = "",
+    val worktree: WorktreeInfo? = null,
+    val title: String = "",
+    val group: String? = null,
+    val status: String = "idle",
+    val mode: String = "structured",
+    val model: String? = null,
+    @SerialName("last_activity") val lastActivity: String = "",
+    val archived: Boolean = false,
+    val pinned: Boolean = false,
+    @SerialName("last_error") val lastError: String? = null,
+    @SerialName("pending_count") val pendingCount: Int = 0,
+    val attention: String? = null,
+    @SerialName("orchestrator_id") val orchestratorId: String? = null,
+    @SerialName("specialist_name") val specialistName: String? = null,
+)
+
+@Serializable
+data class Turn(
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val status: String,
+    val error: String? = null,
+)
+
+@Serializable
+data class Item(
+    val id: String,
+    @SerialName("session_id") val sessionId: String = "",
+    @SerialName("turn_id") val turnId: String? = null,
+    val kind: String,
+    val status: String = "completed",
+    val title: String? = null,
+    val text: String = "",
+    val data: JsonObject = JsonObject(emptyMap()),
+    @SerialName("parent_id") val parentId: String? = null,
+    @SerialName("started_at") val startedAt: String = "",
+)
+
+@Serializable
+data class Approval(
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val kind: String = "generic",
+    val title: String = "",
+    val description: String? = null,
+    val payload: JsonObject = JsonObject(emptyMap()),
+    val options: List<String> = emptyList(),
+)
+
+@Serializable
+data class ApprovalDecision(
+    val option: String,
+    @SerialName("updated_input") val updatedInput: JsonElement? = null,
+    val message: String? = null,
+)
+
+@Serializable
+data class QuestionOption(val label: String, val description: String? = null)
+
+@Serializable
+data class Question(
+    val id: String,
+    val header: String? = null,
+    val question: String,
+    val options: List<QuestionOption> = emptyList(),
+    @SerialName("multi_select") val multiSelect: Boolean = false,
+    @SerialName("allow_free_text") val allowFreeText: Boolean = false,
+    val secret: Boolean = false,
+)
+
+@Serializable
+data class UserInputRequest(
+    val id: String,
+    @SerialName("session_id") val sessionId: String,
+    val questions: List<Question> = emptyList(),
+)
+
+@Serializable
+data class UserInputResponse(
+    @SerialName("request_id") val requestId: String,
+    val answers: Map<String, List<String>>,
+    val declined: Boolean,
+)
+
+@Serializable
+data class Pending(
+    val approvals: List<Approval> = emptyList(),
+    val inputs: List<UserInputRequest> = emptyList(),
+)
+
+@Serializable
+data class Input(
+    val text: String,
+    val images: List<JsonElement> = emptyList(),
+    val steer: Boolean = false,
+)
+
+@Serializable
+data class StoredEvent(val seq: Long, val event: JsonObject)
+
+@Serializable
+data class AgentInfo(
+    val id: String,
+    @SerialName("display_name") val displayName: String,
+    val available: Boolean = false,
+)
+
+@Serializable
+data class Capabilities(val structured: Boolean = true)
+
+@Serializable
+data class ProviderInfo(
+    val kind: String,
+    @SerialName("display_name") val displayName: String,
+    val available: Boolean = false,
+    val capabilities: Capabilities = Capabilities(),
+    val agents: List<AgentInfo> = emptyList(),
+)
+
+@Serializable
+data class Project(
+    val path: String,
+    val repo: Boolean = false,
+    val sessions: Int = 0,
+    @SerialName("last_used") val lastUsed: String = "",
+)
+
+@Serializable
+data class CreateSessionOpts(
+    val provider: String,
+    val agent: String? = null,
+    val cwd: String,
+    @SerialName("initial_prompt") val initialPrompt: String? = null,
+)
+
+/** `remote.pair`'s answer. */
+@Serializable
+data class PairResult(
+    val deviceId: String,
+    val token: String,
+    val serverId: String,
+    val serverName: String,
+    val version: String = "",
+)
+
+/** `remote.auth`'s answer. */
+@Serializable
+data class AuthResult(
+    val serverId: String,
+    val serverName: String,
+    val version: String = "",
+)
