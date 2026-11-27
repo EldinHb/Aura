@@ -8,9 +8,9 @@
 //   view    {sessionId}                    what is known, without reading GitHub
 //   refresh {sessionId}                    collect and read every PR of the session now
 //   merge.defaults {repo, number}          → MergeDefaults: the squash commit GitHub would suggest
-//   merge {repo, number, sha, title, message, deleteBranch}
-//                                          → MergeResult; squash-merges at head `sha`, then deletes
-//                                            a same-repository head branch when asked
+//   merge {repo, number, sha, account, title, message, deleteBranch}
+//                                          → MergeResult; as `account`, re-checks the PR, squash-merges
+//                                            at head `sha`, then deletes a same-repository head branch when asked
 // Notification `changed {sessionIds}`: ask `view` again for those sessions.
 import { defineDaemon, type DaemonApi } from "@aura/mod-sdk/daemon";
 import { remoteGithub, type Github } from "@aura/github-client";
@@ -43,8 +43,7 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
     }),
     aura.rpc.handle("merge", (p) => {
       const req = mergeRequest(p);
-      const status = poller.statusOf(req.repo, req.number);
-      return merger.merge(req, status ? { headRef: status.merge.headRef, sameRepo: status.merge.sameRepo } : null);
+      return merger.merge(req, poller.statusOf(req.repo, req.number)?.merge.headSha ?? null);
     }),
     // A new worker, a finished turn (it may have pushed or opened a PR) or changed links
     // can change which PRs a tree has.

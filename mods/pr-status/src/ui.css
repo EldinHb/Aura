@@ -88,3 +88,4 @@ a.prs-check-name:hover { text-decoration: underline; }
 .prs-confirm .prs-check { margin: 4px 0 0; font-weight: 400; color: var(--fg); }
 .prs-confirm .err-text { margin: 4px 0 0; font-size: var(--fs-label-m); }
 .prs-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.prs-stale { margin: 0; font-weight: 500; color: var(--md-tertiary); }

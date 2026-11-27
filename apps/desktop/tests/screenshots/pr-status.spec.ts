@@ -38,7 +38,7 @@ const passing = (n: number) => ({ state: "passing", passing: n, failing: 0, pend
 
 const mergeInfo = (over: Record<string, unknown> = {}) => ({
   reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headSha: "f".repeat(40), headRef: "feature/news-translator",
-  sameRepo: true, squashAllowed: true, canMerge: true, ...over,
+  sameRepo: true, squashAllowed: true, canMerge: true, account: "github.com:eldin", ...over,
 });
 
 let n = 0;

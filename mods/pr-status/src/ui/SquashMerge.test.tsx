@@ -4,11 +4,11 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { UiApi } from "@aura/mod-sdk/ui";
 import type { MergeInfo, PrStatus } from "../shared/types";
 import { setCtx } from "./ctx";
-import { squashState } from "./squash";
+import { squashState } from "../shared/squash";
 import { DELETE_BRANCH_KEY, SquashMerge } from "./SquashMerge";
 
 const HEAD = "f".repeat(40);
-const approved: MergeInfo = { reviewDecision: "APPROVED", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headSha: HEAD, headRef: "feature/news", sameRepo: true, squashAllowed: true, canMerge: true };
+const approved: MergeInfo = { reviewDecision: "APPROVED", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headSha: HEAD, headRef: "feature/news", sameRepo: true, squashAllowed: true, canMerge: true, account: "github.com:eldin" };
 
 function status(merge: Partial<MergeInfo> = {}, over: Partial<PrStatus> = {}): PrStatus {
   return {
@@ -126,7 +126,7 @@ describe("SquashMerge", () => {
     expect(screen.getByRole("button", { name: "Merging…" })).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true);
     expect(rpc.mock.calls.filter(([n]) => n === "merge")).toEqual([["merge", {
-      repo: "acme/api", number: 7, sha: HEAD, title: "Rate limits (#7)", message: defaults.message, deleteBranch: false,
+      repo: "acme/api", number: 7, sha: HEAD, account: "github.com:eldin", title: "Rate limits (#7)", message: defaults.message, deleteBranch: false,
     }]]);
     await act(async () => finish({ merged: true, sha: "b", branchDeleted: false, branchError: null }));
     expect(toast).toHaveBeenCalledWith("Merged #7");
@@ -150,5 +150,61 @@ describe("SquashMerge", () => {
     // Trying again is one more request, not two.
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Merge" })));
     expect(rpc.mock.calls.filter(([n]) => n === "merge")).toHaveLength(2);
+  });
+
+  it("freezes the head and account when opened, and asks to review again when new commits arrive (review 4, items 1 and 3)", async () => {
+    const { rpc } = fakeCtx((name) => (name === "merge.defaults" ? defaults : name === "merge" ? { merged: true, sha: "b", branchDeleted: false, branchError: null } : null));
+    const { rerender } = render(<SquashMerge status={status()} onMerged={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Squash and merge" }));
+    await act(async () => {});
+    expect(screen.getByText("Merges as eldin")).toBeTruthy();
+    // A poll reads a new head, and gh switched accounts meanwhile.
+    rerender(<SquashMerge status={status({ headSha: "e".repeat(40), account: "github.com:other" })} onMerged={() => {}} />);
+    expect(screen.getByRole("alert").textContent).toBe("New commits were pushed — review again");
+    expect(screen.queryByRole("button", { name: "Merge" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    // Opened again, it is on the new head and account.
+    fireEvent.click(screen.getByRole("button", { name: "Squash and merge" }));
+    await act(async () => {});
+    expect(screen.getByText("Merges as other")).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Merge" })));
+    expect(rpc.mock.calls.filter(([n]) => n === "merge")[0][1]).toMatchObject({ sha: "e".repeat(40), account: "github.com:other" });
+  });
+
+  it("keeps the confirmed head when a poll only changes other facts", async () => {
+    const { rpc } = fakeCtx((name) => (name === "merge.defaults" ? defaults : name === "merge" ? { merged: true, sha: "b", branchDeleted: false, branchError: null } : null));
+    const { rerender } = render(<SquashMerge status={status()} onMerged={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Squash and merge" }));
+    await act(async () => {});
+    rerender(<SquashMerge status={status({ account: "github.com:other" }, { title: "Renamed" })} onMerged={() => {}} />);
+    expect((screen.getByLabelText("Commit title") as HTMLInputElement).value).toBe("Add limits (#7)");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Merge" })));
+    expect(rpc.mock.calls.filter(([n]) => n === "merge")[0][1]).toMatchObject({ sha: HEAD, account: "github.com:eldin", title: "Add limits (#7)" });
+  });
+
+  it("disables Merge in an open confirmation once the PR is blocked or no longer approved (review 4, item 2)", async () => {
+    const { rpc } = fakeCtx((name) => (name === "merge.defaults" ? defaults : null));
+    const { rerender } = render(<SquashMerge status={status()} onMerged={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Squash and merge" }));
+    await act(async () => {});
+    rerender(<SquashMerge status={status({ mergeStateStatus: "BLOCKED" })} onMerged={() => {}} />);
+    const merge = screen.getByRole("button", { name: "Merge" }) as HTMLButtonElement;
+    expect(merge.disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toBe("Can't merge now: Blocked by branch protection");
+    fireEvent.submit(merge.closest("form")!);
+    rerender(<SquashMerge status={status({ reviewDecision: "CHANGES_REQUESTED" })} onMerged={() => {}} />);
+    expect(screen.getByRole("status").textContent).toBe("Can't merge now: It is no longer open and approved");
+    rerender(<SquashMerge status={status()} onMerged={() => {}} />);
+    expect((screen.getByRole("button", { name: "Merge" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(rpc.mock.calls.filter(([n]) => n === "merge")).toHaveLength(0);
+  });
+
+  it("does not merge without a known account", async () => {
+    fakeCtx((name) => (name === "merge.defaults" ? defaults : null));
+    render(<SquashMerge status={status({ account: "" })} onMerged={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Squash and merge" }));
+    await act(async () => {});
+    expect((screen.getByRole("button", { name: "Merge" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toContain("The GitHub account is not known");
   });
 });

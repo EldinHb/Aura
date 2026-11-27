@@ -275,7 +275,10 @@ export class PrPoller {
     for (const ref of due) this.forced.delete(prKey(ref.url));
 
     if (due.length) {
+      // Whose permissions the read shows; a merge is later made as this account only.
+      const account = await this.gh.account().catch(() => "");
       const read = await readStatuses(this.gh, due);
+      for (const r of read) if (!(r instanceof Error)) r.merge.account = account;
       const paced = new Map<number, number>();
       const pace = async (base: number) => {
         if (!Number.isFinite(base)) return base;

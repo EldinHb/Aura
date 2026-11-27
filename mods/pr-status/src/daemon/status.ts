@@ -11,7 +11,7 @@ const OPINION = "state author{login}";
 
 export const STATUS_FRAGMENT =
   "fragment pull on PullRequest{number title url state isDraft mergeable mergeStateStatus reviewDecision author{login} " +
-  "headRefOid headRefName isCrossRepository viewerCanMergeAsAdmin " +
+  "headRefOid headRefName isCrossRepository " +
   `reviewRequests(first:100){${PAGE} nodes{requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login} ... on Mannequin{login}}}} ` +
   `commits(last:1){nodes{commit{oid statusCheckRollup{state contexts(first:100){totalCount ${PAGE} nodes{${CONTEXT}}}}}}} ` +
   `latestReviews(first:100){${PAGE} nodes{${REVIEW}}} ` +
@@ -186,7 +186,9 @@ export function toStatus(ref: Pick<PrRef, "url" | "repo" | "number">, node: any,
       sameRepo: node?.isCrossRepository === false,
       // Unknown (an older answer) is not "not allowed": GitHub decides when asked.
       squashAllowed: repo?.squashMergeAllowed !== false,
-      canMerge: WRITERS.includes(s(repo, "viewerPermission")) || node?.viewerCanMergeAsAdmin === true,
+      canMerge: WRITERS.includes(s(repo, "viewerPermission")),
+      // Set by the reader: who read it, and so whose permissions `canMerge` are.
+      account: "",
     },
   };
 }

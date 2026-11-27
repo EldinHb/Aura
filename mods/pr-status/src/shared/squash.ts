@@ -1,5 +1,6 @@
-// Whether "Squash and merge" shows on a card, and whether it can be used now.
-import type { PrStatus } from "../shared/types";
+// Whether "Squash and merge" shows on a card, and whether it can be used now. Shared: the UI
+// half offers it by these rules, and the daemon half checks them again right before merging.
+import type { PrStatus } from "./types";
 
 export type SquashState =
   | { kind: "ready" }
@@ -10,7 +11,8 @@ export type SquashState =
 
 /**
  * Only an open, approved PR (not a draft) offers it. It is usable when GitHub reports it
- * mergeable and clean (or clean but for hooks), and the account may merge.
+ * mergeable and clean (or clean but for hooks), and the account may write to the repository.
+ * There is no admin bypass: a blocked PR is not merged from here.
  */
 export function squashState(status: PrStatus): SquashState | null {
   const m = status.merge;

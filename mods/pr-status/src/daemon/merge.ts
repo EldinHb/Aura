@@ -1,13 +1,18 @@
 // "Squash and merge": the mod's one write to GitHub. It goes through the github mod's transport
-// (`api.request`), pinned to the head commit the card showed, and deletes the head branch after
-// it only when asked and only in the PR's own repository.
-import { has, list, messageOf, refPath, s, show, validateRepo, validateSha, type Github } from "@aura/github-client";
-import type { MergeDefaults, MergeResult } from "../shared/types";
+// as the account whose permissions the card showed (`requestFor`), checks the PR once more right
+// before the write (same head, still approved and clean), pins the merge to that head commit, and
+// deletes the head branch after it only when asked and only in the PR's own repository.
+import { errorData, has, list, messageOf, RateLimited, RejectedRequest, refPath, s, show, validateRepo, validateSha, type Github } from "@aura/github-client";
+import type { MergeDefaults, MergeResult, PrStatus } from "../shared/types";
+import { squashState } from "../shared/squash";
+import { readStatuses } from "./status";
 
 /** Thrown to the UI half with a `code` and a message meant for people. */
 export function mergeError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
+
+export const REVIEW_AGAIN = "New commits were pushed — review again";
 
 /** GitHub's own words and the HTTP status, from the transport's "<message> (HTTP <status>)". */
 function said(e: unknown): { text: string; status: number | null } {
@@ -19,35 +24,43 @@ function said(e: unknown): { text: string; status: number | null } {
 /** A failed merge as something to show in the card, GitHub's message kept. */
 export function mergeFailure(e: unknown): Error {
   const { text, status } = said(e);
+  // A rate limit comes as a 403 too: it is not a missing permission.
+  const limited = e instanceof RateLimited ? e : errorData(e)?.kind === "rate_limited" ? (e as { waitMs?: number | null }) : null;
+  if (limited) {
+    const wait = typeof limited.waitMs === "number" ? Math.max(1, Math.ceil(limited.waitMs / 60_000)) : null;
+    return mergeError("rate_limited", `GitHub's rate limit is reached; try again ${wait ? `in about ${wait} min` : "later"}. GitHub said: ${text}`);
+  }
   if (/merge queue/i.test(text)) return mergeError("merge_queue", `This branch merges through a merge queue; add it to the queue on GitHub. GitHub said: ${text}`);
   switch (status) {
     case 405:
       return mergeError("not_mergeable", `GitHub refused the merge: ${text}`);
     case 409:
-      return mergeError("head_moved", `New commits arrived since this card was read; refresh and look at them first. GitHub said: ${text}`);
+      return mergeError("head_moved", `${REVIEW_AGAIN}. GitHub said: ${text}`);
     case 403:
       return mergeError("forbidden", `You don't have permission to merge: ${text}`);
     case 404:
       return mergeError("not_found", `GitHub could not find the pull request, or you can't see it: ${text}`);
     case 422:
       return mergeError("invalid", `GitHub did not accept the merge: ${text}`);
-    default:
-      return mergeError("failed", `The merge failed: ${text}`);
   }
+  // `requestFor` refuses before sending when gh is signed in to another account now.
+  if (e instanceof RejectedRequest || errorData(e)?.kind === "rejected") {
+    return mergeError("account", `Not merged: the account shown is not the one signed in now; review again. ${text}`);
+  }
+  return mergeError("failed", `The merge failed: ${text}`);
 }
 
 export interface MergeRequest {
   repo: string;
   number: number;
-  /** The head commit the card showed. */
+  /** The head commit the confirmation showed. */
   sha: string;
+  /** "host:login" whose permissions the confirmation showed; the merge is made as this account only. */
+  account: string;
   title: string;
   message: string;
   deleteBranch: boolean;
 }
-
-/** The PR's head branch as this daemon last read it, for deleting it; null when it was not read. */
-export type HeadBranch = { headRef: string; sameRepo: boolean } | null;
 
 /** The parameters of the `merge` RPC, checked. */
 export function mergeRequest(p: any): MergeRequest {
@@ -66,13 +79,17 @@ export function mergeRequest(p: any): MergeRequest {
   } catch {
     throw invalid("sha must be the 40-character head commit");
   }
+  const account = typeof p?.account === "string" ? p.account : "";
+  if (!/^[^:\s]+:[^:\s]+$/.test(account)) throw invalid("account must be the host:login the confirmation showed");
   const title = typeof p?.title === "string" ? p.title.trim() : "";
   if (!title) throw invalid("The commit title is empty");
   const message = typeof p?.message === "string" ? p.message : "";
-  return {
-    repo, number, sha, title, message,
-    deleteBranch: p?.deleteBranch === true,
-  };
+  return { repo, number, sha, account, title, message, deleteBranch: p?.deleteBranch === true };
+}
+
+/** `gh`, with every request sent as `account` (refused when gh is signed in to another one). */
+function as(gh: Github, account: string): Github {
+  return { ...gh, request: (method, path, body) => gh.requestFor(account, method, path, body) };
 }
 
 /** Squash-merge PRs, one merge per PR at a time. */
@@ -81,14 +98,18 @@ export class Merger {
 
   constructor(private readonly gh: Github) {}
 
-  async merge(req: MergeRequest, head: HeadBranch): Promise<MergeResult> {
+  /** Merge as `req.account`, at `req.sha`; `lastSha` is the head this daemon last read (null: not read). */
+  async merge(req: MergeRequest, lastSha: string | null): Promise<MergeResult> {
     const key = `${req.repo}#${req.number}`.toLowerCase();
     if (this.running.has(key)) throw mergeError("busy", "This pull request is being merged already");
     this.running.add(key);
     try {
+      if (lastSha !== null && lastSha !== req.sha) throw mergeError("head_moved", REVIEW_AGAIN);
+      const gh = as(this.gh, req.account);
+      const now = await this.check(gh, req);
       let reply: any;
       try {
-        reply = await this.gh.request("PUT", `repos/${req.repo}/pulls/${req.number}/merge`, {
+        reply = await gh.request("PUT", `repos/${req.repo}/pulls/${req.number}/merge`, {
           merge_method: "squash",
           commit_title: req.title,
           commit_message: req.message,
@@ -99,19 +120,37 @@ export class Merger {
       }
       if (reply?.merged !== true) throw mergeError("not_mergeable", `GitHub did not merge: ${s(reply, "message") || "no reason given"}`);
       const result: MergeResult = { merged: true, sha: s(reply, "sha"), branchDeleted: false, branchError: null };
-      if (req.deleteBranch) Object.assign(result, await this.deleteBranch(req, head));
+      if (req.deleteBranch) Object.assign(result, await this.deleteBranch(gh, req, now));
       return result;
     } finally {
       this.running.delete(key);
     }
   }
 
-  /** Delete the merged head branch; never a fork's, and a branch already gone counts as deleted. */
-  private async deleteBranch(req: MergeRequest, head: HeadBranch): Promise<Pick<MergeResult, "branchDeleted" | "branchError">> {
-    if (!head?.headRef) return { branchDeleted: false, branchError: "The head branch is not known; it was left alone" };
-    if (!head.sameRepo) return { branchDeleted: false, branchError: "The branch is in a fork; it was left alone" };
+  /** Read the PR again as the account, right before the write: still at `sha`, and still mergeable by these rules. */
+  private async check(gh: Github, req: MergeRequest): Promise<PrStatus> {
+    let read: PrStatus | Error;
     try {
-      await this.gh.request("DELETE", `repos/${req.repo}/git/refs/heads/${refPath(head.headRef)}`);
+      [read] = await readStatuses(gh, [{ url: `https://github.com/${req.repo}/pull/${req.number}`, repo: req.repo, number: req.number }]);
+    } catch (e) {
+      read = e instanceof Error ? e : new Error(messageOf(e));
+    }
+    if (read instanceof Error) throw mergeFailure(read);
+    if (read.merge.headSha !== req.sha) throw mergeError("head_moved", REVIEW_AGAIN);
+    const state = squashState(read);
+    if (state?.kind !== "ready") {
+      const why = !state ? "it is no longer open and approved" : state.kind === "disabled" ? state.reasons.join(", ") : state.reason;
+      throw mergeError("not_eligible", `Not merged: ${why}`);
+    }
+    return read;
+  }
+
+  /** Delete the merged head branch as the account; never a fork's, and a branch already gone counts as deleted. */
+  private async deleteBranch(gh: Github, req: MergeRequest, pr: PrStatus): Promise<Pick<MergeResult, "branchDeleted" | "branchError">> {
+    if (!pr.merge.headRef) return { branchDeleted: false, branchError: "The head branch is not known; it was left alone" };
+    if (!pr.merge.sameRepo) return { branchDeleted: false, branchError: "The branch is in a fork; it was left alone" };
+    try {
+      await gh.request("DELETE", `repos/${req.repo}/git/refs/heads/${refPath(pr.merge.headRef)}`);
       return { branchDeleted: true, branchError: null };
     } catch (e) {
       if (messageOf(e).includes("Reference does not exist")) return { branchDeleted: true, branchError: null };

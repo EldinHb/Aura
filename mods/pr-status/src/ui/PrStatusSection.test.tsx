@@ -11,7 +11,7 @@ import { RENEW_MS } from "./usePullStatus";
 
 const NOW = Date.parse("2026-11-27T10:00:30Z");
 /** Merge facts of a PR that does not offer "Squash and merge" (not approved). */
-const noMerge = { reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headSha: "a".repeat(40), headRef: "feature", sameRepo: true, squashAllowed: true, canMerge: true };
+const noMerge = { reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headSha: "a".repeat(40), headRef: "feature", sameRepo: true, squashAllowed: true, canMerge: true, account: "github.com:me" };
 
 function entry(over: Partial<PrEntry["ref"]> & { status?: any; error?: string | null } = {}): PrEntry {
   const number = over.number ?? 1;

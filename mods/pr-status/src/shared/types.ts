@@ -95,8 +95,10 @@ export interface MergeInfo {
   sameRepo: boolean;
   /** The repository allows squash merges. */
   squashAllowed: boolean;
-  /** The signed-in account may merge (write access, or an admin's bypass). */
+  /** The account that read this may merge (write access; no admin bypass). */
   canMerge: boolean;
+  /** "host:login" of the account that read this, whose permissions `canMerge` gives. */
+  account: string;
 }
 
 /** The squash commit GitHub would suggest. */
