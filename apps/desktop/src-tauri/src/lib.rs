@@ -690,6 +690,7 @@ mod tests {
             data_dir: String::new(),
             daemon_pid: 1,
             version: VERSION.into(),
+            window_secret: None,
         }
     }
 
