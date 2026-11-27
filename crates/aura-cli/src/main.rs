@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::io::Write;
 
+mod extend;
 mod mcp;
 
 #[derive(Parser, Debug)]
@@ -114,6 +115,21 @@ enum Cmd {
     },
     /// List providers
     Providers,
+    /// Mods: list, approve, reload, read logs, or make a new one (`aura guide mods`)
+    Mods {
+        #[command(subcommand)]
+        cmd: extend::ModsCmd,
+    },
+    /// Themes: list, check, use, or make a new one (`aura guide themes`)
+    Themes {
+        #[command(subcommand)]
+        cmd: extend::ThemesCmd,
+    },
+    /// Print a guide for agents: `aura guide mods`, `aura guide themes`
+    Guide {
+        /// mods | themes (none: what there is)
+        topic: Option<String>,
+    },
     /// Serve an orchestrator's tools over MCP on stdin/stdout (Aura starts this itself)
     Mcp {
         /// The orchestrator session the tools act for
@@ -164,6 +180,15 @@ async fn main() -> Result<()> {
             (None, None) => bail!("give --orchestrator or --worker"),
         };
         return mcp::run(data_dir, role, token).await;
+    }
+    if let Some(done) = extend::offline(&data_dir, &cli.cmd, cli.json) {
+        return done;
+    }
+    if let Cmd::Themes {
+        cmd: extend::ThemesCmd::List,
+    } = &cli.cmd
+    {
+        return extend::themes_list(&data_dir, cli.json).await;
     }
     let client = connect_or_start(&data_dir).await?;
     match cli.cmd {
@@ -357,7 +382,10 @@ async fn main() -> Result<()> {
             let v = client.call("provider.list", json!({})).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
-        Cmd::Daemon { .. } | Cmd::Mcp { .. } => unreachable!(),
+        cmd @ (Cmd::Mods { .. } | Cmd::Themes { .. }) => {
+            extend::online(&client, cmd, cli.json).await?
+        }
+        Cmd::Daemon { .. } | Cmd::Mcp { .. } | Cmd::Guide { .. } => unreachable!(),
     }
     Ok(())
 }

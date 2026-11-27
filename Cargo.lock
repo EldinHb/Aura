@@ -329,6 +329,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "aura-core",
+ "aura-mods",
  "aura-rpc",
  "base64 0.22.1",
  "chrono",
@@ -338,6 +339,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tracing",

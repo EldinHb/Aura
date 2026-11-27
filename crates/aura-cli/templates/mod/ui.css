@@ -1,0 +1,17 @@
+/* {{NAME}}: styles for the UI half, loaded with it and removed with it.
+   Prefix every selector with .mod-{{ID}} so nothing else in Aura changes,
+   and use Aura's tokens (var(--fg), var(--accent), ...) so the mod follows
+   the user's theme. `aura guide themes` lists every token. */
+.mod-{{ID}}-body {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4) var(--space-2);
+}
+.mod-{{ID}}-message {
+  margin: 0 var(--space-4) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--shape-sm);
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+}

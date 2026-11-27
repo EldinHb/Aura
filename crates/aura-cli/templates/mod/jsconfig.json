@@ -1,0 +1,13 @@
+{
+  "//": "Lets editors (and `npx tsc -p .`) check daemon.js and ui.js against types/aura-mod.d.ts. Aura itself does not read this file.",
+  "compilerOptions": {
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["*.js", "types/*.d.ts"]
+}
