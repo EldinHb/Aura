@@ -238,24 +238,9 @@ pub const GROUPS: &[Group] = &[
     },
 ];
 
-/// The `--name: value;` declarations of the first block that starts with `selector {`.
+/// The `--name: value` declarations of the rule `selector` in `css`, whatever its formatting.
 fn declarations(css: &str, selector: &str) -> Vec<(String, String)> {
-    let Some(start) = css.find(&format!("{selector} {{")) else {
-        return vec![];
-    };
-    let body = &css[start + selector.len() + 2..];
-    let body = &body[..body.find("\n}").unwrap_or(body.len())];
-    body.lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            let rest = l.strip_prefix("--")?;
-            let (name, value) = rest.split_once(':')?;
-            Some((
-                format!("--{}", name.trim()),
-                value.trim().trim_end_matches(';').trim().to_string(),
-            ))
-        })
-        .collect()
+    crate::css::custom_properties(css, selector)
 }
 
 /// The tokens of `styles.css` with their dark and light values, in file order.
@@ -317,6 +302,13 @@ pub struct Theme {
     pub warnings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// For a theme with CSS, set by the daemon: `"needs_approval"` (its CSS
+    /// is withheld until the user approves it) or `"approved"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
+    /// The size of CSS that waits for approval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub css_bytes: Option<usize>,
 }
 
 /// Whether `id` may name a theme file: lowercase letters, digits and dashes.
@@ -330,67 +322,38 @@ pub fn valid_id(id: &str) -> bool {
         && !RESERVED_IDS.contains(&id)
 }
 
-/// `text` without `/* … */` comments.
-fn strip_comments(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find("/*") {
-        out.push_str(&rest[..i]);
-        match rest[i + 2..].find("*/") {
-            Some(j) => rest = &rest[i + 2 + j + 2..],
-            None => {
-                rest = "";
-            }
-        }
-    }
-    out.push_str(rest);
-    out
+/// Why `text` (a token value or a theme's CSS) would load something from
+/// outside the app or use a construct a theme may not. Escapes are decoded
+/// first (see [`crate::css`]); only `data:` URLs are allowed.
+pub fn remote_reference(text: &str) -> Option<String> {
+    crate::css::resource_problem(text)
 }
 
-/// Why `text` (a token value or a theme's CSS) would load something from
-/// outside the app, if it would. Only `data:` URLs may be used.
-pub fn remote_reference(text: &str) -> Option<String> {
-    let text = strip_comments(text);
-    let lower = text.to_ascii_lowercase();
-    if lower.contains("@import") {
-        return Some("@import is not allowed; put everything in the theme's own files".into());
-    }
-    // Take every url(…) out, refusing any that is not a data: URL.
-    let mut rest = lower.as_str();
-    let mut remaining = String::new();
-    while let Some(i) = rest.find("url(") {
-        remaining.push_str(&rest[..i]);
-        let after = &rest[i + 4..];
-        let trimmed = after.trim_start();
-        let (arg, tail) = match trimmed.chars().next() {
-            Some(q @ ('"' | '\'')) => {
-                let inner = &trimmed[1..];
-                let end = inner.find(q).unwrap_or(inner.len());
-                let tail = &inner[(end + 1).min(inner.len())..];
-                let close = tail.find(')').map(|c| c + 1).unwrap_or(tail.len());
-                (&inner[..end], &tail[close..])
-            }
-            _ => {
-                let end = trimmed.find(')').unwrap_or(trimmed.len());
-                (
-                    trimmed[..end].trim(),
-                    &trimmed[(end + 1).min(trimmed.len())..],
-                )
-            }
-        };
-        if !arg.trim_start().starts_with("data:") {
-            return Some(format!(
-                "url({}) is not allowed: only data: URLs are; Aura does not load files from the web or disk for a theme",
-                arg.chars().take(60).collect::<String>()
-            ));
+/// Levenshtein distance, for "did you mean".
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur.push(
+                (prev[j] + usize::from(ca != *cb))
+                    .min(prev[j + 1] + 1)
+                    .min(cur[j] + 1),
+            );
         }
-        rest = tail;
+        prev = cur;
     }
-    remaining.push_str(rest);
-    if remaining.contains("://") || remaining.contains("image-set(") {
-        return Some("a link to another site is not allowed; only data: URLs are".into());
-    }
-    None
+    prev[b.len()]
+}
+
+/// The token closest to a misspelt `name`, when one is close enough to be the likely intent.
+pub fn closest_token(name: &str) -> Option<&'static str> {
+    let (best, d) = tokens()
+        .iter()
+        .map(|t| (t.name.as_str(), distance(name, &t.name)))
+        .min_by_key(|(_, d)| *d)?;
+    (d <= (name.len() / 3).max(2)).then_some(best)
 }
 
 /// Validate a theme's `<id>.json` text and optional `<id>.css` text.
@@ -406,6 +369,8 @@ pub fn validate(id: &str, json: &str, css: Option<&str>) -> Theme {
         source: "user".into(),
         warnings: vec![],
         error: None,
+        approval: None,
+        css_bytes: None,
     };
     let mut errors: Vec<String> = vec![];
     if json.len() > MAX_JSON_BYTES {
@@ -469,9 +434,14 @@ pub fn validate(id: &str, json: &str, css: Option<&str>) -> Theme {
                     continue; // a comment
                 }
                 if !is_token(name) {
-                    t.warnings.push(format!(
-                        "{name} is not an Aura token; ignored (see `aura guide themes`)"
-                    ));
+                    t.warnings.push(match closest_token(name) {
+                        Some(near) => {
+                            format!("{name} is not an Aura token; ignored. Did you mean {near}?")
+                        }
+                        None => format!(
+                            "{name} is not an Aura token; ignored (see `aura guide themes`)"
+                        ),
+                    });
                     continue;
                 }
                 let Some(v) = value.as_str() else {
@@ -487,10 +457,8 @@ pub fn validate(id: &str, json: &str, css: Option<&str>) -> Theme {
                     t.warnings.push(format!(
                         "{name} is longer than {MAX_VALUE_CHARS} characters; ignored"
                     ));
-                } else if v.contains(['{', '}']) || v.contains("!important") {
-                    errors.push(format!(
-                        "{name}: a value may not contain braces or !important"
-                    ));
+                } else if let Some(why) = crate::css::single_value_problem(v) {
+                    errors.push(format!("{name}: {why}"));
                 } else if let Some(why) = remote_reference(v) {
                     errors.push(format!("{name}: {why}"));
                 } else {
@@ -534,8 +502,8 @@ pub fn load(json_path: &Path, id: &str, source: &str) -> Theme {
             t.error = Some(e);
             t
         }
-        Ok(json) => match css_path
-            .is_file()
+        Ok(json) => match std::fs::symlink_metadata(&css_path)
+            .is_ok()
             .then(|| read_capped(&css_path, MAX_CSS_BYTES))
         {
             Some(Err(e)) => {
@@ -553,22 +521,48 @@ pub fn load(json_path: &Path, id: &str, source: &str) -> Theme {
     t
 }
 
-fn read_capped(path: &Path, cap: usize) -> Result<String, String> {
+/// Read a theme file of at most `cap` bytes. The file is opened once and at
+/// most `cap + 1` bytes are read, so a huge or growing file costs nothing.
+/// It must be a regular file; a symlink is followed only when its target is
+/// inside the theme's own folder.
+pub fn read_capped(path: &Path, cap: usize) -> Result<String, String> {
+    use std::io::Read;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
-    let len = std::fs::metadata(path)
-        .map_err(|e| format!("cannot read {name}: {e}"))?
-        .len() as usize;
-    if len > cap {
+    let link = std::fs::symlink_metadata(path).map_err(|e| format!("cannot read {name}: {e}"))?;
+    if link.file_type().is_symlink() {
+        let folder = path.parent().and_then(|p| std::fs::canonicalize(p).ok());
+        let target =
+            std::fs::canonicalize(path).map_err(|e| format!("{name} is a broken symlink: {e}"))?;
+        if !folder.is_some_and(|f| target.starts_with(&f)) {
+            return Err(format!(
+                "{name} is a symlink to {}, outside the theme's folder; Aura reads theme files only from that folder",
+                target.display()
+            ));
+        }
+    }
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot read {name}: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("cannot read {name}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{name} is not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("cannot read {name}: {e}"))?;
+    if bytes.len() > cap {
+        let len = meta.len().max(bytes.len() as u64) as usize;
         return Err(format!(
             "{name} is {} KB; the limit is {} KB",
             len / 1024,
             cap / 1024
         ));
     }
-    std::fs::read_to_string(path).map_err(|e| format!("cannot read {name}: {e}"))
+    String::from_utf8(bytes).map_err(|_| format!("{name} is not UTF-8 text"))
 }
 
 /// The themes in `dir` (`*.json`), ids prefixed with `prefix` when given
@@ -580,7 +574,7 @@ pub fn list_dir(dir: &Path, prefix: Option<&str>, source: &str) -> Vec<Theme> {
     let mut out: Vec<Theme> = read
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json"))
+        .filter(|p| p.extension().is_some_and(|x| x == "json") && !p.is_dir())
         .filter_map(|p| {
             let stem = p.file_stem()?.to_string_lossy().to_string();
             let id = match prefix {
@@ -740,6 +734,119 @@ mod tests {
     }
 
     #[test]
+    fn token_values_cannot_inject_declarations() {
+        // The reviewer's case: this hid the whole app.
+        let t = validate(
+            "x",
+            r#"{"name":"X","base":"dark","tokens":{"--fg":"red;display:none"}}"#,
+            None,
+        );
+        assert!(
+            t.error.as_deref().unwrap().contains("--fg"),
+            "{:?}",
+            t.error
+        );
+        let t = validate(
+            "x",
+            r#"{"name":"X","base":"dark","tokens":{"--fg":"red !important"}}"#,
+            None,
+        );
+        assert!(t.error.is_some());
+        let t = validate(
+            "x",
+            r#"{"name":"X","base":"dark","tokens":{"--font":"\"a;b\", serif"}}"#,
+            None,
+        );
+        assert_eq!(t.error, None, "; inside a string is text");
+    }
+
+    #[test]
+    fn escaped_resources_are_refused_in_tokens_and_css() {
+        let t = validate(
+            "x",
+            r#"{"name":"X","base":"dark","tokens":{"--chevron":"u\\72l(https://evil.example/a.svg)"}}"#,
+            None,
+        );
+        assert!(
+            t.error.as_deref().unwrap().contains("--chevron"),
+            "{:?}",
+            t.error
+        );
+        let css = validate(
+            "x",
+            r#"{"name":"X","base":"dark"}"#,
+            Some(r#"@im\70ort "https://evil.example/x.css";"#),
+        );
+        assert!(
+            css.error.as_deref().unwrap().contains("@import"),
+            "{:?}",
+            css.error
+        );
+    }
+
+    #[test]
+    fn unknown_tokens_suggest_the_closest() {
+        assert_eq!(closest_token("--md-primay"), Some("--md-primary"));
+        assert_eq!(closest_token("--term-backround"), None, "too far: no guess");
+        assert_eq!(closest_token("--term-bgg"), Some("--term-bg"));
+        let t = validate(
+            "x",
+            r#"{"name":"X","base":"dark","tokens":{"--md-primay":"red"}}"#,
+            None,
+        );
+        assert!(
+            t.warnings[0].contains("Did you mean --md-primary?"),
+            "{:?}",
+            t.warnings
+        );
+    }
+
+    #[test]
+    fn reads_are_bounded_and_symlinks_stay_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("big.json"), vec![b' '; MAX_JSON_BYTES * 4]).unwrap();
+        let err = read_capped(&themes.join("big.json"), MAX_JSON_BYTES).unwrap_err();
+        assert!(err.contains("limit"), "{err}");
+        std::fs::create_dir_all(themes.join("dir.json")).unwrap();
+        assert!(
+            list_dir(&themes, None, "user")
+                .iter()
+                .all(|t| t.id != "dir"),
+            "a folder is not a theme"
+        );
+        #[cfg(unix)]
+        {
+            std::fs::write(
+                dir.path().join("outside.json"),
+                r#"{"name":"O","base":"dark"}"#,
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(dir.path().join("outside.json"), themes.join("out.json"))
+                .unwrap();
+            std::fs::write(themes.join("real.json"), r#"{"name":"R","base":"dark"}"#).unwrap();
+            std::os::unix::fs::symlink(themes.join("real.json"), themes.join("alias.json"))
+                .unwrap();
+            let list = list_dir(&themes, None, "user");
+            let out = list.iter().find(|t| t.id == "out").unwrap();
+            assert!(
+                out.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("outside the theme's folder"),
+                "{:?}",
+                out.error
+            );
+            assert_eq!(
+                list.iter().find(|t| t.id == "alias").unwrap().error,
+                None,
+                "a link inside the folder is fine"
+            );
+        }
+    }
+
+    #[test]
     fn light_values_fall_back_to_dark() {
         let t = tokens_by_name("--md-primary").unwrap();
         assert_eq!(t.dark, "#bcc2ff");
@@ -789,7 +896,7 @@ mod tests {
             r#"{"name":"X","base":"dark","tokens":{"--fg":"red} body {display:none"}}"#,
             None,
         );
-        assert!(braces.error.unwrap().contains("braces"));
+        assert!(braces.error.unwrap().contains("{ or }"));
         let big = validate("x", &" ".repeat(MAX_JSON_BYTES + 1), None);
         assert!(big.error.unwrap().contains("limit"));
     }
@@ -797,7 +904,7 @@ mod tests {
     #[test]
     fn remote_urls_are_refused_data_urls_allowed() {
         assert!(remote_reference(
-            "url(data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\"/>)"
+            "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\"/>')"
         )
         .is_none());
         assert!(remote_reference("url('data:image/png;base64,AAA') no-repeat").is_none());
