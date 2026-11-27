@@ -7,6 +7,7 @@
 
 pub mod client;
 pub mod fs;
+pub mod remote;
 pub mod server;
 pub mod update_lock;
 
@@ -73,6 +74,15 @@ pub const ERR_INTERNAL: i64 = -32000;
 /// The caller may not use this method: a session's tools asked for something
 /// that is the user's, or for another session.
 pub const ERR_FORBIDDEN: i64 = -32003;
+/// Remote listener: pair or authenticate first (`remote.pair` / `remote.auth`).
+/// The connection is closed after this answer.
+pub const ERR_NOT_AUTHENTICATED: i64 = -32010;
+/// Remote listener: unknown or revoked device, or a wrong token. Closes.
+pub const ERR_AUTH_FAILED: i64 = -32011;
+/// Remote listener: the pair code is invalid, expired or used. Closes.
+pub const ERR_PAIR_CODE: i64 = -32012;
+/// Remote listener: too many failed pair/auth attempts from this address. Closes.
+pub const ERR_RATE_LIMITED: i64 = -32013;
 
 pub fn encode_pty_frame(kind: u8, session_id: &str, data: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(1 + SESSION_ID_LEN + data.len());

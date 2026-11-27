@@ -125,6 +125,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: extend::ThemesCmd,
     },
+    /// Remote access for paired devices (the Aura phone app): status, on, off, pair, devices, revoke
+    Remote {
+        #[command(subcommand)]
+        cmd: RemoteCmd,
+    },
     /// Print a guide for agents: `aura guide mods`, `aura guide themes`
     Guide {
         /// mods | themes (none: what there is)
@@ -145,6 +150,32 @@ enum Cmd {
         #[arg(long)]
         worker: Option<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum RemoteCmd {
+    /// Whether remote access is on, where it listens, and its certificate fingerprint
+    Status,
+    /// Turn remote access on (and optionally move it)
+    On {
+        /// IP address to listen on: 0.0.0.0 (all IPv4, default), :: (all), 127.0.0.1 (SSH tunnel only)
+        #[arg(long)]
+        bind: Option<String>,
+        /// Port (default 7443)
+        #[arg(long)]
+        port: Option<u16>,
+        /// Name devices see for this computer (default: its host name)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Turn remote access off; connected devices are disconnected
+    Off,
+    /// Make a one-time pairing code (5 minutes) and the aura:// link for a QR code
+    Pair,
+    /// List paired devices
+    Devices,
+    /// Unpair a device and disconnect it
+    Revoke { device_id: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -384,10 +415,114 @@ async fn main() -> Result<()> {
             let v = client.call("provider.list", json!({})).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
+        Cmd::Remote { cmd } => remote(&client, cmd, cli.json).await?,
         cmd @ (Cmd::Mods { .. } | Cmd::Themes { .. }) => {
             extend::online(&client, cmd, cli.json).await?
         }
         Cmd::Daemon { .. } | Cmd::Mcp { .. } | Cmd::Guide { .. } => unreachable!(),
+    }
+    Ok(())
+}
+
+async fn remote(client: &RpcClient, cmd: RemoteCmd, as_json: bool) -> Result<()> {
+    use aura_rpc::remote::{PairingInfo, RemoteDevice, RemoteStatus};
+    let print_status = |s: &RemoteStatus| {
+        let state = match (s.enabled, s.listening) {
+            (false, _) => "off".to_string(),
+            (true, true) => format!("on, listening on {}:{}", s.bind_address, s.port),
+            (true, false) => format!(
+                "on, but not listening: {}",
+                s.error.as_deref().unwrap_or("unknown error")
+            ),
+        };
+        println!("remote access: {state}");
+        println!("server name:   {}", s.server_name);
+        println!(
+            "fingerprint:   {}",
+            s.fingerprint
+                .as_deref()
+                .unwrap_or("(made when first turned on)")
+        );
+        if !s.addresses.is_empty() {
+            println!("addresses:     {}", s.addresses.join(", "));
+        }
+    };
+    match cmd {
+        RemoteCmd::Status | RemoteCmd::On { .. } | RemoteCmd::Off => {
+            let s: RemoteStatus = match cmd {
+                RemoteCmd::Status => client.call_as("remote.status", json!({})).await?,
+                RemoteCmd::On { bind, port, name } => {
+                    client
+                        .call_as(
+                            "remote.configure",
+                            json!({ "enabled": true, "bindAddress": bind, "port": port, "serverName": name }),
+                        )
+                        .await?
+                }
+                _ => {
+                    client
+                        .call_as("remote.configure", json!({ "enabled": false }))
+                        .await?
+                }
+            };
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&s)?);
+            } else {
+                print_status(&s);
+            }
+        }
+        RemoteCmd::Pair => {
+            let p: PairingInfo = client.call_as("remote.startPairing", json!({})).await?;
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&p)?);
+            } else {
+                println!("code:        {}", p.code);
+                println!(
+                    "expires:     {}",
+                    p.expires_at
+                        .with_timezone(&chrono::Local)
+                        .format("%H:%M:%S")
+                );
+                println!("fingerprint: {}", p.fingerprint);
+                println!("addresses:   {}", p.addresses.join(", "));
+                println!("link:        {}", p.uri);
+            }
+        }
+        RemoteCmd::Devices => {
+            let devices: Vec<RemoteDevice> =
+                client.call_as("remote.listDevices", json!({})).await?;
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&devices)?);
+            } else if devices.is_empty() {
+                println!("no paired devices");
+            } else {
+                for d in devices {
+                    let seen = d
+                        .last_seen_at
+                        .map(|t| {
+                            t.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| "never".into());
+                    println!(
+                        "{}  {:24}  last seen {} from {}",
+                        d.device_id,
+                        truncate(&d.name, 24),
+                        seen,
+                        d.last_address.as_deref().unwrap_or("?")
+                    );
+                }
+            }
+        }
+        RemoteCmd::Revoke { device_id } => {
+            client
+                .call("remote.revokeDevice", json!({ "deviceId": device_id }))
+                .await?;
+            if !as_json {
+                println!("revoked {device_id}");
+            }
+        }
     }
     Ok(())
 }

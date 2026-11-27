@@ -1,0 +1,236 @@
+# Remote access — design and protocol
+
+Status: implemented on branch `feature/remote-server`. This file is the
+contract for remote clients (the Android app first). Field names below are
+exactly what goes over the wire.
+
+## 1. What it is
+
+Aura's daemon (`aurad`) serves its JSON-RPC 2.0 API on a loopback WebSocket
+for the desktop app and the CLI. Remote access adds an **opt-in second
+listener**: a TLS WebSocket, `wss://<host>:<port>/`, off by default, that
+speaks the same JSON-RPC protocol to paired devices, limited to an explicit
+allowlist of methods.
+
+- Default bind address `0.0.0.0`, default port `7443`.
+- Self-signed certificate made on first enable, kept in the data directory
+  (`<data_dir>/remote/cert.pem`, `key.pem`, 0600) and reused after that.
+  Clients **pin its SHA-256 fingerprint** (lowercase hex of the DER
+  certificate, no separators). There is no CA and the certificate's host name
+  is not meaningful: clients must skip host name verification and check the
+  fingerprint instead.
+- Config and paired devices live in `<data_dir>/remote/config.json` and
+  `devices.json` (0600). Changing the config starts, stops or rebinds the
+  listener at once; no daemon restart.
+- `serverId` is a random UUID made once per installation and kept in
+  `config.json`.
+
+Turning it on, from a terminal (the desktop UI uses the same RPCs):
+
+```bash
+aura remote on [--bind 0.0.0.0] [--port 7443] [--name "Studio Mac"]
+aura remote pair       # prints the code, fingerprint, addresses and the aura:// link
+aura remote devices    # aura remote revoke <deviceId>; aura remote off
+```
+
+## 2. Threat model (short)
+
+- **Network attacker** (same Wi-Fi, café, LAN): sees only TLS. Without the
+  pinned fingerprint a client refuses the connection, so no MITM. Without a
+  valid pair code or device token the attacker can only call `remote.pair` /
+  `remote.auth`, which are rate limited (5 failures per minute per IP, then
+  every attempt is refused and the connection closed). Pair codes are 8 chars
+  from a 31-character alphabet (`A–Z` and `2–9` without `I`, `L`, `O`) (~8.5·10¹¹), live 5 minutes and work once.
+- **Lost or stolen phone**: the user revokes the device on the desktop
+  (`remote.revokeDevice`); its live connections drop at once and its token is
+  refused from then on. Tokens are 32 random bytes and the daemon stores only
+  their SHA-256 hash.
+- **A paired device is the user** for what the allowlist permits: it can read
+  every session and send agents messages, and agents can run commands. It can
+  not change settings, read the file system directly, manage mods, delete
+  sessions, update Aura or manage remote access itself.
+- Out of scope: a process running as the same user on the desktop (it can
+  read the data directory and the local token anyway).
+
+## 3. Pairing flow
+
+1. On the desktop, the user enables remote access (`remote.configure
+   {enabled: true}`) and starts pairing (`remote.startPairing`). The app shows
+   the returned `uri` as a QR code plus the code, the fingerprint and the
+   addresses to pick from.
+2. The phone scans `aura://pair?host=<ip>&port=<port>&fp=<fingerprint>&code=<code>&name=<server name>`.
+   Every value is percent-encoded (an IPv6 host's colons as `%3A`, a space in
+   the name as `%20`). `host` is the first of `addresses`; the phone may offer
+   the others when it cannot reach that one.
+3. The phone opens `wss://host:port/` with TLS, accepting exactly the
+   certificate whose SHA-256 is `fp`.
+4. It calls `remote.pair {code, deviceName}` and gets
+   `{deviceId, token, serverId, serverName, version}`. It stores
+   `serverId, deviceId, token, host, port, fp` securely. The connection is now
+   authenticated as that device.
+5. On every later connection the phone calls `remote.auth {deviceId, token}`
+   first. A new `remote.startPairing` replaces the previous code.
+
+Before `remote.pair` or `remote.auth` succeeds, every other method is answered
+with **-32010** and the connection is closed. A connection that does not
+authenticate within 30 seconds is closed. A failed pair/auth answers with the
+error and closes the connection.
+
+## 4. Transport details
+
+- URL path: `/` (also accepted: `/ws`). Text frames carry JSON-RPC: requests
+  `{"id": 1, "method": "...", "params": {...}}`, responses
+  `{"id": 1, "result": ...}` or `{"id": 1, "error": {"code", "message", "data"?}}`,
+  notifications `{"method": "...", "params": ...}` (no `id`). The
+  `"jsonrpc": "2.0"` member is optional on requests and is not sent back,
+  same as the loopback API.
+- The server answers WebSocket pings with pongs. There is no app-level
+  heartbeat; use WebSocket pings (e.g. OkHttp `pingInterval`).
+- The server never sends binary (PTY) frames to remote clients, and ignores
+  binary frames from them.
+
+## 5. Error codes
+
+| code    | meaning | connection |
+|---------|---------|------------|
+| -32700  | parse error | stays |
+| -32601  | unknown method | stays |
+| -32602  | bad params (message says what) | stays |
+| -32000  | internal / the operation failed (message says why) | stays |
+| -32003  | forbidden: method not allowed for remote clients, or a parameter not allowed (e.g. `session.create` outside a known project) | stays |
+| -32010  | not authenticated yet: call `remote.pair` or `remote.auth` first | **closed** |
+| -32011  | auth failed: unknown or revoked device, or wrong token | **closed** |
+| -32012  | pair code invalid, expired or already used | **closed** |
+| -32013  | rate limited: too many failed pair/auth attempts from this IP; `data.retryAfterSecs` | **closed** |
+
+## 6. Pre-auth methods (remote listener only)
+
+### `remote.pair`
+params `{code: string, deviceName: string}` — `code` compared
+case-insensitively, spaces and dashes ignored. `deviceName` trimmed and
+truncated to 64 characters; empty becomes `"Device"`.
+result `{deviceId: string, token: string, serverId: string, serverName: string, version: string}`
+— `token` is 64 lowercase hex characters, shown only this once.
+
+### `remote.auth`
+params `{deviceId: string, token: string}`
+result `{serverId: string, serverName: string, version: string}`
+
+Both are refused with -32003 on the loopback listener.
+
+## 7. Local management methods (loopback only)
+
+Refused with -32003 on the remote listener (and for session tokens).
+
+### `remote.status` → `RemoteStatus`
+```ts
+{ enabled: boolean, bindAddress: string, port: number, serverName: string,
+  serverId: string, fingerprint: string | null, listening: boolean,
+  error: string | null, addresses: string[] }
+```
+`fingerprint` is null until the certificate exists (first enable).
+`error` says why the listener is not up (e.g. the port is taken).
+`addresses` are the machine's non-loopback IP addresses, IPv4 first.
+
+### `remote.configure` → `RemoteStatus`
+params `{enabled?: boolean, bindAddress?: string, port?: number, serverName?: string}`
+— omitted fields keep their value. `bindAddress` must be an IP address,
+`port` 1–65535, `serverName` 1–64 characters after trimming. Applied at once.
+A bind failure does not fail the call: it shows in `error`, `listening: false`.
+
+### `remote.startPairing` → `PairingInfo`
+```ts
+{ code: string, expiresAt: string /* RFC 3339 */, uri: string,
+  fingerprint: string, addresses: string[] }
+```
+Fails (-32000) when remote access is off.
+
+### `remote.listDevices` → `RemoteDevice[]`
+```ts
+{ deviceId: string, name: string, pairedAt: string, lastSeenAt: string | null,
+  lastAddress: string | null }
+```
+
+### `remote.revokeDevice` → `true`
+params `{deviceId: string}` — forgets the device and closes its live
+connections. Unknown id: -32000.
+
+## 8. Methods allowed for remote clients
+
+The single source of truth is `REMOTE_ALLOWED_METHODS` in
+`crates/aura-rpc/src/remote.rs`. Everything else gets -32003. Shapes are the
+ts-rs types in `apps/desktop/src/gen/` (`Session.ts`, `Event.ts`, …);
+snake_case field names unless noted.
+
+| method | params | result |
+|---|---|---|
+| `daemon.ping` | `{}` | `"pong"` |
+| `daemon.info` | `{}` | `{version, pid, started_at}` (redacted: no token, port or data dir) |
+| `provider.list` | `{}` | `ProviderInfo[]` — the agents: `kind`, `display_name`, `available`, `capabilities`, `agents` (ACP agents) |
+| `provider.models` | `{provider}` | `ModelInfo[]` |
+| `orchestrator.projects` | `{}` | `Project[]` — `{path, repo, groups, sessions, last_used}` |
+| `workspace.list` | `{}` | `Workspace[]` |
+| `session.list` | `{}` | `Session[]` — includes `status` (`idle`/`running`/`waiting_approval`/`waiting_input`/`error`/`exited`), `pending_count`, `attention` (`done`/`failed`/`waiting`/null) |
+| `session.get` | `{id}` | `Session` |
+| `session.history` | `{id, after_seq?: number = 0, limit?: number = 5000}` | `StoredEvent[]` — `{seq, ts, event}`; page with the last `seq` |
+| `session.pending` | `{}` | `{approvals: Approval[], inputs: UserInputRequest[]}` |
+| `session.attachment` | `{id, attachment}` | `{data: base64, media_type}` — images referenced from a transcript |
+| `session.send` | `{id, input: {text, images?: ImageInput[], steer?: bool}}` | `true` (starts the agent if it is not running). Images must carry `data` (base64) + `media_type`; an image with a `path` is refused with -32003 |
+| `session.interrupt` | `{id}` | `true` |
+| `session.stop` | `{id}` | `true` |
+| `session.respond_approval` | `{id, approval_id, decision: {option, updated_input?, message?}}` | `true` — `option`: `accept`/`accept_for_session`/`decline`/`cancel`/`edit_input` |
+| `session.respond_input` | `{id, response: {request_id, answers: {[questionId]: string[]}, declined?: bool}}` | `true` |
+| `session.mark_seen` | `{id}` | `Session` (clears `attention`) |
+| `session.create` | see below | `Session` |
+| `feature.list` | `{}` | `Feature[]` — a feature owner's questions to the user are in `questions` |
+| `feature.get` | `{id}` | `Feature` |
+| `feature.answer` | `{id, question, option?, text?}` | `Feature` — answer a feature owner's question (`id` is the owner session) |
+
+### `session.create` for remote clients
+Only these params are accepted (unknown ones: -32602):
+```ts
+{ provider: "claude" | "codex" | "acp", agent?: string, cwd: string,
+  title?: string, workspace?: string, model?: string, effort?: string,
+  permission_mode?: string, initial_prompt?: string,
+  worktree?: { branch: string, base?: string } }
+```
+`cwd` must be the `path` of a project from `orchestrator.projects`, or a
+folder inside one; otherwise -32003. `worktree.branch` may not contain `..`
+or start with `/`, `\` or `-` (-32003). Terminal sessions, custom commands,
+resuming native sessions, orchestrators and custom worktree paths are not
+available remotely.
+
+### Notifications
+After authentication the connection receives, unasked:
+
+- `event` — `params` is an `Event` (tagged by `type`, all but `workspaces_changed` and `specialist_suggestions_updated` with a
+  `session_id`): `session_created`, `session_updated` (status, pending count,
+  attention changes), `session_removed`, `turn_started`, `turn_completed`,
+  `item_started`, `item_delta`, `item_completed`, `approval_requested`,
+  `approval_resolved`, `user_input_requested`, `user_input_resolved`,
+  `notice`, `usage`, `process_exited`, `feature_updated`, `workspaces_changed`,
+  and a few more a client may ignore.
+- `lagged` — `{count}`: the client fell behind and events were dropped;
+  re-fetch `session.list` and the open session's `session.history`.
+
+A typical client: `remote.auth` → `session.list` + `session.pending` →
+keep the list fresh from `session_*` events; for an open session,
+`session.history {id}` then apply that session's item/turn events; show
+`approval_requested` / `user_input_requested` (and `session_updated` with
+`attention: "waiting"`) as notifications.
+
+## 9. Not allowed remotely (examples)
+
+`daemon.shutdown`, `daemon.window_hello`, `settings.*`, `fs.*`, `pty.*`,
+`mods.*`, `git.*`, `session.delete`, `session.delete_many`, `session.set`,
+`session.set_system_prompt`, `prompts.*`, `specialists.*`, `schedules.*`,
+`autonomy.set`, `remote.configure` and the other `remote.*` management
+methods, the update methods, and session-tool methods (`orchestrator.*`
+except `orchestrator.projects`, `owner.*`, `team.*`).
+
+## 10. Without the app: SSH tunnel
+
+The remote listener is a plain TLS WebSocket, so an SSH tunnel to it works
+too: `ssh -L 7443:127.0.0.1:7443 user@desktop`, then connect to
+`wss://127.0.0.1:7443/` with the same fingerprint. Bind address `127.0.0.1`
+keeps the listener off the network entirely in that setup.
