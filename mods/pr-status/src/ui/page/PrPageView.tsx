@@ -28,6 +28,7 @@ export interface PageProps {
 /** Open the PR's page in a main-area tab of its own (not the preview tab), or show the one already open. */
 export function openPrPage(pr: { repo: string; number: number; url: string; title: string }): void {
   const props: PageProps = { key: pr.url, title: `#${pr.number} ${pr.title}`, repo: pr.repo, number: pr.number, url: pr.url };
+  // A host before the option (Aura 0.4.0) ignores it and shows the page in the preview tab.
   getCtx()?.openView(PAGE_VIEW, props, { preview: false });
 }
 

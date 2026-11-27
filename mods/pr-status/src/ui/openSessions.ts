@@ -3,17 +3,45 @@
 // data too, through a background watch per open session. Both go when the session's tab closes
 // or it is deleted.
 import type { UiApi } from "@aura/mod-sdk/ui";
+import { useStore } from "@aura/host";
 import type { SessionView } from "../shared/types";
 import { getCtx } from "./ctx";
 import { RENEW_MS } from "./usePullStatus";
 
 const views = new Map<string, SessionView>();
 
+type OpenSessions = UiApi["sessions"];
+
+/**
+ * `ctx.sessions`, or on a host without it (Aura 0.4.0 and older) a stand-in where only the
+ * selected session is open: its cards are kept while it is selected, not after switching away.
+ */
+export function openSessionsOf(ctx: UiApi): OpenSessions {
+  const own = (ctx as Partial<UiApi>).sessions;
+  if (typeof own?.open === "function" && typeof own.onOpenChange === "function") return own;
+  const selected = () => {
+    const id = useStore.getState().selectedId;
+    return id ? [id] : [];
+  };
+  return {
+    open: selected,
+    onOpenChange(fn) {
+      let last = useStore.getState().selectedId;
+      return useStore.subscribe((st) => {
+        if (st.selectedId === last) return;
+        last = st.selectedId;
+        fn(selected());
+      });
+    },
+  };
+}
+
 /** The cards last shown for a session, if it is still open. */
 export const cachedView = (sessionId: string): SessionView | null => views.get(sessionId) ?? null;
 
 export function cacheView(view: SessionView): void {
-  if (getCtx()?.sessions.open().includes(view.sessionId)) views.set(view.sessionId, view);
+  const ctx = getCtx();
+  if (ctx && openSessionsOf(ctx).open().includes(view.sessionId)) views.set(view.sessionId, view);
 }
 
 /** Keep a background watch on each open session, and forget a session once it is closed. */
@@ -32,8 +60,9 @@ export function keepOpenSessions(ctx: UiApi): () => void {
     }
     open = now;
   };
-  sync(ctx.sessions.open());
-  const offOpen = ctx.sessions.onOpenChange(sync);
+  const sessions = openSessionsOf(ctx);
+  sync(sessions.open());
+  const offOpen = sessions.onOpenChange(sync);
   const renew = setInterval(() => open.forEach(watch), RENEW_MS);
   const offConnection = ctx.onConnection((state) => {
     if (state === "open") open.forEach(watch);
