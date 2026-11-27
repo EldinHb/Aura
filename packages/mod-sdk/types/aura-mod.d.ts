@@ -1099,16 +1099,22 @@ declare namespace Aura {
     context: { set(key: string, value: boolean | string | number | null): void };
 
     ui: {
+      /**
+       * A section at the bottom of the sidebar. `title`: Aura draws it as the
+       * section's heading, the same as its own sections; leave it out to draw
+       * your own (or none). `order`: lower comes first.
+       */
       sidebarSection(def: { id: string; title?: string; order?: number; component: ComponentType<SidebarSectionProps> }): Disposer;
       inspectorSection(def: { id: string; order?: number; component: ComponentType<InspectorSectionProps> }): Disposer;
       sessionRowChips(def: { id: string; order?: number; component: ComponentType<SessionRowProps> }): Disposer;
       branchDecoration(def: { id: string; component: ComponentType<BranchDecorationProps> }): Disposer;
       statusBarItem(def: { id: string; order?: number; component: ComponentType<{}> }): Disposer;
+      /** A tab in Settings. `title`: the tab's label. */
       settingsTab(def: { id: string; title: string; component: ComponentType<{}> }): Disposer;
       newSessionField(def: { id: string; component: ComponentType<NewSessionFieldProps> }): Disposer;
       inboxRenderer(def: { component: ComponentType<InboxItemProps>; open?(item: InboxItemProps["item"]): void }): Disposer;
       transcriptLinks(def: { id: string; detect(text: string, session: Session): TranscriptLink[] }): Disposer;
-      /** A full main-area view, opened with `openView`. */
+      /** A full main-area view, opened with `openView`. `title`: the label of its tab. */
       view(def: { id: string; title: string; component: ComponentType<ViewProps> }): Disposer;
       dialog(def: { id: string; component: ComponentType<DialogProps> }): Disposer;
     };
