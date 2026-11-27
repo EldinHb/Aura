@@ -219,8 +219,11 @@ describe("PrStatusSection", () => {
     expect(rpc).toHaveBeenLastCalledWith("watch", expect.objectContaining({ sessionId: "lead", refresh: false }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Refresh pull request status" })));
     expect(rpc).toHaveBeenLastCalledWith("refresh", { sessionId: "lead" });
+    // The kept view was asked for once at the start; another session's change asks nothing more.
+    const views = () => rpc.mock.calls.filter(([n]) => n === "view").length;
+    expect(views()).toBe(1);
     await act(async () => emit("changed", { sessionIds: ["other"] }));
-    expect(rpc).not.toHaveBeenCalledWith("view", expect.anything());
+    expect(views()).toBe(1);
     await act(async () => emit("changed", { sessionIds: ["lead"] }));
     expect(rpc).toHaveBeenLastCalledWith("view", { sessionId: "lead" });
     const viewer = rpc.mock.calls.find(([name]) => name === "watch")![1].viewer;

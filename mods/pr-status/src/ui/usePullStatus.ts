@@ -27,6 +27,7 @@ export function usePullStatus(sessionId: string) {
     setError(null);
     const take = (v: SessionView) => {
       if (!active || v.sessionId !== sessionId) return;
+      first = false;
       cacheView(v);
       setView(v);
       setError(null);
@@ -37,6 +38,10 @@ export function usePullStatus(sessionId: string) {
       ctx.rpc<SessionView>("watch", { viewer, sessionId, refresh }).then(take, fail);
     };
     const unwatch = () => void ctx.rpc("unwatch", { viewer }).catch(() => {});
+    // What the daemon half already knows (kept across restarts) shows at once; the watch below
+    // reads GitHub and answers later. A later answer is never replaced by this first one.
+    let first = true;
+    ctx.rpc<SessionView>("view", { sessionId }).then((v) => first && take(v), () => {});
     watch(true);
     const renew = setInterval(() => watch(false), RENEW_MS);
     // Nobody looks at a hidden window: stop its polling, and catch up when it shows again.
