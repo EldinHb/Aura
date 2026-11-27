@@ -44,6 +44,7 @@ export function fakeCtx() {
       delete: (key) => { storage.delete(key); },
     },
     settings: { get: () => null as any, set: settings, onChange: () => () => {} },
+    sessions: { open: () => [], onOpenChange: () => () => {} },
     commands: {
       register: (cmd) => { const id = cmd.id.startsWith("pull-requests.") ? cmd.id : `pull-requests.${cmd.id}`; commands.set(id, { ...cmd, id }); return () => { commands.delete(id); }; },
       run: (id, arg) => { void commands.get(id)?.run(arg); },

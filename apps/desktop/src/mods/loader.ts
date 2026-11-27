@@ -7,6 +7,8 @@
 import { create } from "zustand";
 import { useEffect } from "react";
 import { useStore } from "../state/store";
+import { onOpenSessionsChange, openSessionIds } from "./openSessions";
+import { openModView } from "./views";
 import { registerCommand, runCommand } from "../lib/commands";
 import { desktopNotify, onModNotificationClick } from "../lib/notify";
 import { RpcError, type RpcClient } from "../lib/rpc";
@@ -163,6 +165,10 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
         return track(() => set.delete(fn));
       },
     },
+    sessions: {
+      open: () => openSessionIds(),
+      onOpenChange: (fn: (ids: string[]) => void) => track(onOpenSessionsChange(fn)),
+    },
     commands: {
       register(cmd: { id: string; title: string; group: string; keywords?: string[]; when?: string; hidden?: boolean; run: (arg?: unknown) => void | Promise<void> }) {
         const full = cmd.id.startsWith(`${id}.`) ? cmd.id : `${id}.${cmd.id}`;
@@ -189,7 +195,7 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
       view: (d: Def<typeof slots.view>) => reg(slots.view, d.id, d),
       dialog: (d: Def<typeof slots.dialog>) => reg(slots.dialog, d.id, d),
     },
-    openView: (viewId: string, props?: unknown) => useStore.getState().openModView({ modId: id, id: viewId, props }),
+    openView: (viewId: string, props?: unknown, opts?: { preview?: boolean }) => openModView(id, viewId, props, opts),
     closeView: () => {
       const v = useStore.getState().modView;
       if (v?.modId === id) useStore.getState().closeModView();

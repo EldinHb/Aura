@@ -1,0 +1,197 @@
+/* PR status cards in the Inspector. Every class is prs- prefixed: all mods' stylesheets share
+   one page, and the pull-requests mod styles pr-*. Aura's own classes used: .inspector-section,
+   .btn, .dot, .notice, .err-text. Colours are Material 3 tokens: chips are a container with its
+   on-container text; status words are --md-success / --md-tertiary / --md-error on the card. */
+.prs-section { min-width: 0; }
+/* The title never truncates: when narrow, the timestamp and refresh wrap below it. */
+.prs-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; min-width: 0; margin: 0 0 10px; }
+.prs-head h4 { flex: 1 0 auto; margin: 0; white-space: nowrap; }
+.prs-head-meta { flex: none; margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: var(--fs-label-s); color: var(--fg-muted); }
+.prs-refresh { min-height: 24px; padding: 0 8px; }
+.prs-note { margin: 0 0 8px; min-width: 0; font-size: var(--fs-label-m); overflow-wrap: anywhere; }
+
+.prs-cards { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.prs-card { min-width: 0; padding: 10px 12px; border-radius: var(--shape-md); background: var(--md-surface-container); font-size: var(--fs-label-m); line-height: 18px; color: var(--fg); }
+.prs-title { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
+.prs-link { flex: 1 1 auto; min-width: 0; padding: 0; border: 0; background: none; font: inherit; font-weight: 500; text-align: left; cursor: pointer; color: var(--fg); text-decoration: none; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.prs-link:hover { text-decoration: underline; }
+.prs-github { flex: none; padding: 0 2px; color: var(--fg-muted); text-decoration: none; }
+.prs-github:hover { color: var(--accent-2); }
+
+/* State chips: a tonal container with its own on-colour; the word says the state. */
+.prs-chip { flex: none; display: inline-block; padding: 0 8px; border-radius: var(--shape-sm); font-size: 10.5px; font-weight: 600; line-height: 18px;
+  background: var(--md-surface-container-highest); color: var(--md-on-surface-variant); }
+.prs-chip-open { background: var(--md-primary-container); color: var(--md-on-primary-container); }
+.prs-chip-merged { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.prs-chip-closed { background: var(--md-error-container); color: var(--md-on-error-container); }
+
+.prs-meta-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-top: 2px; }
+.prs-meta-row > .prs-meta { flex: 1 1 auto; }
+.prs-unlink { flex: none; margin-left: auto; padding: 0; border: 0; background: none; font: inherit; font-size: var(--fs-label-s); color: var(--fg-muted); cursor: pointer; }
+.prs-unlink:hover { color: var(--fg); text-decoration: underline; }
+.prs-link-form { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0 0 10px; }
+.prs-link-form label { font-size: var(--fs-label-s); font-weight: 500; color: var(--fg-muted); }
+.prs-link-form input { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; font-size: var(--fs-label-m); }
+.prs-meta, .prs-sources { min-width: 0; margin-top: 2px; font-size: var(--fs-label-s); color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prs-source { padding: 0; border: 0; background: none; font: inherit; color: var(--accent-2); cursor: pointer; text-align: left; }
+.prs-source:hover { text-decoration: underline; }
+.prs-sources-row { display: flex; gap: 4px; }
+.prs-sources-row > * { flex: none; }
+.prs-sources-row > .prs-comma { margin-left: -4px; }
+.prs-source-list { list-style: none; margin: 2px 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-label-s); color: var(--fg-muted); }
+.prs-source-list li { display: flex; min-width: 0; }
+.prs-sources-row > .prs-source, .prs-source-list .prs-source { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.prs-line { display: flex; align-items: flex-start; gap: 6px; min-width: 0; margin: 6px 0 0; }
+.prs-line > .prs-dot { flex: none; margin-top: 5px; }
+.prs-grow { flex: 1 1 auto; }
+.prs-wrap, .prs-grow { min-width: 0; overflow-wrap: anywhere; }
+.prs-muted { color: var(--fg-muted); }
+.prs-word { font-weight: 500; }
+.prs-word.prs-ok { color: var(--md-success); }
+.prs-word.prs-warn { color: var(--md-tertiary); }
+.prs-word.prs-err { color: var(--md-error); }
+
+.prs-toggle { display: flex; align-items: flex-start; gap: 6px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--shape-xs); }
+.prs-toggle:hover .prs-grow { text-decoration: underline; }
+.prs-chevron { flex: none; width: 10px; height: 10px; margin-top: 4px; background: var(--chevron) no-repeat center / 8px 5px; transform: rotate(-90deg); transition: transform 0.12s; }
+.prs-chevron.prs-open { transform: none; }
+@media (prefers-reduced-motion: reduce) { .prs-chevron { transition: none; } }
+.prs-check-list { list-style: none; min-width: 0; margin: 4px 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.prs-check-list li { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.prs-check-list .prs-word { flex: none; font-size: var(--fs-label-s); }
+.prs-check-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-2); text-decoration: none; }
+a.prs-check-name:hover { text-decoration: underline; }
+
+/* Reviewers wrap as chips; a chip (avatar, login, state) stays on one line, its login shortened only when alone it is too wide. */
+.prs-people { min-width: 0; margin-top: 8px; }
+.prs-group-title { margin-bottom: 4px; font-size: var(--fs-label-s); color: var(--fg-muted); }
+.prs-chips { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+/* A chip stays within the card: a long login shortens (to 4em at least) and, when even that is
+   too wide, the state wraps under it, still in the same chip. */
+.prs-person { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-width: 0; max-width: 100%; overflow: hidden; }
+.prs-login { flex: 0 1 auto; min-width: 4em; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prs-person .prs-word { flex: none; font-size: var(--fs-label-s); }
+.prs-avatar { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-size: 10px; font-weight: 600; }
+.prs-avatar-team { border-radius: var(--shape-xs); }
+
+/* Merged and closed: folded, one line each. */
+.prs-cards + .prs-done { margin-top: 8px; }
+.prs-done-toggle { padding: 6px 4px; color: var(--fg-muted); font-size: var(--fs-label-m); font-weight: 500; }
+.prs-done-toggle:hover { background: var(--hover-layer); }
+.prs-done-list { list-style: none; min-width: 0; margin: 2px 0 0; padding: 0; }
+.prs-done-item { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.prs-done-row { flex: 1 1 auto; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px; border: 0; border-radius: var(--shape-sm); background: none; font: inherit; font-size: var(--fs-label-m); color: var(--fg); text-align: left; cursor: pointer; }
+.prs-done-row:hover { background: var(--hover-layer); }
+.prs-done-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prs-number { flex: none; font-size: var(--fs-label-s); }
+
+.prs-section a:focus-visible, .prs-section button:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 1px; border-radius: var(--shape-xs); }
+
+/* Squash and merge: the button with why it can't be used, and the inline confirmation. */
+.prs-merge { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; margin-top: 8px; }
+.prs-merge > button { flex: none; }
+.prs-merge-reason { flex: 1 1 120px; font-size: var(--fs-label-s); }
+.prs-confirm { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin-top: 8px; padding: 10px; border-radius: var(--shape-sm); background: var(--md-surface-container-high); }
+.prs-confirm label { font-size: var(--fs-label-s); font-weight: 500; color: var(--fg-muted); }
+.prs-confirm input:not([type=checkbox]), .prs-confirm textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; font-size: var(--fs-label-m); }
+.prs-confirm textarea { resize: vertical; min-height: 64px; }
+.prs-confirm .prs-check { margin: 4px 0 0; font-weight: 400; color: var(--fg); }
+.prs-confirm .err-text { margin: 4px 0 0; font-size: var(--fs-label-m); }
+.prs-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.prs-stale { margin: 0; font-weight: 500; color: var(--md-tertiary); }
+
+/* The PR page (`pr` view): GitHub's layout in Aura's Material 3 tokens. */
+.prs-page { container-type: inline-size; height: 100%; overflow: auto; box-sizing: border-box; padding: 20px 28px 40px; font-size: 14px; line-height: 1.5; color: var(--fg); }
+.prs-page .prs-ok { color: var(--md-success); }
+.prs-page .prs-err { color: var(--md-error); }
+.prs-page .prs-warn { color: var(--md-tertiary); }
+.prs-page-head { padding-bottom: 12px; border-bottom: 1px solid var(--md-outline-variant); }
+.prs-page-titlerow { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 16px; }
+.prs-page-title { flex: 1 1 320px; min-width: 0; margin: 0; font-size: 24px; font-weight: 400; line-height: 1.3; overflow-wrap: anywhere; }
+.prs-page-number { color: var(--fg-muted); font-weight: 300; }
+.prs-page-actions { flex: none; display: flex; align-items: center; gap: 8px; font-size: var(--fs-label-m); color: var(--fg-muted); }
+.prs-page-actions > a { text-decoration: none; }
+.prs-page-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; color: var(--fg-muted); }
+.prs-page-sub strong { color: var(--fg); font-weight: 600; }
+.prs-ref { padding: 1px 6px; border-radius: var(--shape-xs); background: var(--md-secondary-container); color: var(--md-on-secondary-container); font: 12px var(--mono); }
+.prs-copy { margin-left: 4px; padding: 0 4px; border: 0; background: none; color: var(--fg-muted); cursor: pointer; border-radius: var(--shape-xs); }
+.prs-copy:hover { background: var(--hover-layer); color: var(--fg); }
+
+/* State pills, as on GitHub: open green, draft grey, merged violet, closed red; on-colours for text. */
+.prs-pill { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: var(--shape-full); font-size: 14px; font-weight: 500; line-height: 20px; }
+.prs-pill-open { background: var(--md-success); color: var(--md-on-success); }
+.prs-pill-draft { background: var(--md-surface-container-highest); color: var(--md-on-surface); }
+.prs-pill-merged { background: var(--md-primary); color: var(--md-on-primary); }
+.prs-pill-closed { background: var(--md-error); color: var(--md-on-error); }
+
+/* The tabs wrap rather than scroll, so all four show at any width. */
+.prs-page-tabs { display: flex; flex-wrap: wrap; gap: 0 2px; margin: 16px 0 20px; border-bottom: 1px solid var(--md-outline-variant); }
+.prs-page-tab { position: relative; flex: none; padding: 8px 12px; white-space: nowrap; border: 0; background: none; color: var(--fg-muted); font: inherit; font-weight: 500; cursor: pointer; border-radius: var(--shape-sm) var(--shape-sm) 0 0; }
+.prs-page-tab:hover { background: var(--hover-layer); color: var(--fg); }
+.prs-page-tab.prs-active { color: var(--fg); }
+.prs-page-tab.prs-active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--md-tertiary); }
+.prs-count { display: inline-block; min-width: 18px; margin-left: 4px; padding: 0 6px; border-radius: var(--shape-full); background: var(--md-surface-container-highest); color: var(--fg); font-size: 12px; text-align: center; }
+
+/* Main column and the details column on its right; below it when narrow. */
+.prs-page-body { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; }
+.prs-page-main { flex: 999 1 480px; min-width: 0; }
+.prs-page-side { flex: 1 0 220px; min-width: 0; }
+
+.prs-box { margin-bottom: 16px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); background: var(--panel); overflow: hidden; }
+.prs-box-head { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--md-outline-variant); background: var(--md-surface-container); color: var(--fg-muted); font-size: 13px; }
+.prs-box-head strong { color: var(--fg); }
+.prs-box-head > .prs-wrap { flex: 1 1 auto; }
+.prs-time { color: inherit; text-decoration: none; }
+.prs-time:hover { text-decoration: underline; }
+.prs-box-body { padding: 12px 14px; min-width: 0; overflow-wrap: anywhere; }
+.prs-box-body > * > :first-child { margin-top: 0; }
+.prs-box-body > * > :last-child { margin-bottom: 0; }
+.prs-badge { flex: none; padding: 0 8px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-full); font-size: 12px; font-weight: 500; color: var(--fg-muted); }
+
+.prs-timeline { list-style: none; margin: 0 0 0 18px; padding: 0 0 0 18px; border-left: 2px solid var(--md-outline-variant); }
+.prs-timeline > li { margin-left: -18px; padding-left: 0; }
+.prs-timeline > li > .prs-box { margin-left: 18px; }
+.prs-event { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0 14px; color: var(--fg-muted); font-size: 13px; }
+.prs-event strong { color: var(--fg); }
+.prs-event-dot { flex: none; width: 12px; height: 12px; margin: 4px 0 0 -7px; border-radius: 50%; background: var(--md-surface-container-highest); box-shadow: 0 0 0 3px var(--frame); }
+.prs-sha { padding: 0 4px; border-radius: var(--shape-xs); background: var(--md-surface-container-high); color: var(--fg); font: 12px var(--mono); text-decoration: none; }
+.prs-link-inline { color: var(--accent-2); text-decoration: none; }
+.prs-link-inline:hover { text-decoration: underline; }
+.prs-thread { margin-top: 10px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); overflow: hidden; }
+.prs-thread-file { padding: 6px 10px; background: var(--md-surface-container); font-size: 12px; overflow-wrap: anywhere; }
+.prs-snippet { margin: 0; padding: 4px 10px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px solid var(--md-outline-variant); }
+.prs-thread-comment { padding: 8px 10px; border-top: 1px solid var(--md-outline-variant); font-size: 13px; }
+
+.prs-mergebox { margin: 8px 0 0 18px; padding: 12px 16px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); background: var(--panel); }
+.prs-mergebox-row { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 8px 0; border-bottom: 1px solid var(--md-outline-variant); }
+.prs-mergebox-row:last-of-type { border-bottom: 0; }
+.prs-mergebox-row > .prs-dot { flex: none; margin-top: 7px; }
+.prs-mergebox .prs-confirm { background: var(--md-surface-container); }
+
+.prs-rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); }
+.prs-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 14px; border-bottom: 1px solid var(--md-outline-variant); }
+.prs-row:last-child { border-bottom: 0; }
+.prs-row-sub { display: block; font-size: 12px; }
+.prs-check-label { flex: none; width: 92px; }
+
+.prs-files-summary { margin: 0 0 8px; }
+.prs-files-note { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--shape-sm); background: var(--md-tertiary-container); color: var(--md-on-tertiary-container); }
+.prs-files-note > a { color: inherit; text-decoration: underline; }
+.prs-file-list { list-style: none; margin: 0 0 16px; padding: 8px 14px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); font-size: 13px; }
+.prs-file-list li { overflow-wrap: anywhere; }
+.prs-file { margin-bottom: 16px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); overflow: hidden; }
+.prs-file-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 0; background: var(--md-surface-container); color: var(--fg); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.prs-file-head:hover { background: var(--md-surface-container-high); }
+.prs-patch { overflow-x: auto; }
+.prs-patch > table { border: 0; }
+.prs-file-note { margin: 0; padding: 10px 12px; font-size: 13px; }
+
+.prs-side-block { padding: 0 0 14px; margin-bottom: 14px; border-bottom: 1px solid var(--md-outline-variant); font-size: 13px; }
+.prs-side-title { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--fg-muted); }
+.prs-side-row { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 2px 0; }
+.prs-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.prs-label { padding: 0 8px; border-radius: var(--shape-full); font-size: 12px; font-weight: 500; line-height: 20px; }
+.prs-page a:focus-visible, .prs-page button:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 1px; }

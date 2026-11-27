@@ -123,6 +123,14 @@ export interface UiApi {
     onChange(fn: (key: string, value: Json) => void): Disposer;
   };
 
+  /** The sessions open in this window, read-only. */
+  sessions: {
+    /** Ids of the sessions open here: each session's main-area tab (in tab order), and the selected session. */
+    open(): string[];
+    /** Called with `open()` whenever that list changes (a tab opened or closed, another session selected). */
+    onOpenChange(fn: (ids: string[]) => void): Disposer;
+  };
+
   commands: { register(cmd: CommandDef): Disposer; run(id: string, arg?: unknown): void };
   keys: {
     bind(binding: KeyBindingDef): Disposer;
@@ -153,7 +161,13 @@ export interface UiApi {
     dialog(def: { id: string; component: ComponentType<DialogProps> }): Disposer;
   };
 
-  openView(id: string, props?: unknown): void;
+  /**
+   * Open one of this mod's views in a main-area tab. By default it is the preview tab, which the
+   * next preview replaces (as a session picked in the sidebar is); `{ preview: false }` gives it
+   * a tab of its own that stays. Either way the same view with the same props (or the same
+   * `props.key`) shows the tab it already has.
+   */
+  openView(id: string, props?: unknown, opts?: { preview?: boolean }): void;
   closeView(): void;
   /** The mod view that is open, if it is one of this mod's. */
   activeView(): { id: string; props: any } | null;

@@ -229,6 +229,8 @@ export default function activate(ctx: UiApi): void | (() => void)
 * `ctx.on(name, fn)` subscribes to the mod's `mod.<id>.<name>` notifications.
 * `ctx.client` is the core RPC client (same object core uses).
 * `ctx.storage` is `localStorage` namespaced to `aura.mod.<id>.`.
+* `ctx.sessions.open()` lists the sessions open in the window (session tabs and
+  the selected one) and `ctx.sessions.onOpenChange(fn)` follows it; read-only.
 
 **Commands and keys**
 
@@ -246,7 +248,7 @@ export default function activate(ctx: UiApi): void | (() => void)
 | Slot | Replaces today's hard-coded |
 | --- | --- |
 | `ctx.ui.sidebarSection({id, title, order, component})` | `<ReviewSidebar/>` in `Sidebar.tsx`, PR keyboard nav |
-| `ctx.ui.view({id, title, component})` + `ctx.ui.openView(id, props)` | `prMode` / `PullWorkspace` in `App.tsx` |
+| `ctx.ui.view({id, title, component})` + `ctx.openView(id, props, {preview?})` | `prMode` / `PullWorkspace` in `App.tsx` |
 | `ctx.ui.inspectorSection({id, order, when, component})` | `<WatchSection/>`, `<SessionLinks/>` in `Inspector.tsx` |
 | `ctx.ui.sessionRowChips({component})` | `SessionRowLinks` / `BranchPullChip` in `Sidebar.tsx` |
 | `ctx.ui.branchDecoration({component})` | PR half of `BranchStatus.tsx` |
@@ -400,6 +402,14 @@ What the first draft did not foresee and the build added:
   tools, `ctx.notify` and `ctx.window` in the UI API.
 - `mods.session_data.set`: a new-session field's `data` is stored on the new
   session as that mod's session data.
+- `ctx.sessions.open()` and `ctx.sessions.onOpenChange(fn)`: the ids of the
+  sessions open in the window (each session's main-area tab, in order, and the
+  selected session), read-only, so a mod can keep per-session state for exactly
+  those without reading Aura's store.
+- `ctx.openView(id, props, { preview: false })` opens a view in a main-area tab of
+  its own that stays; without it the view takes the preview tab, which the next
+  preview replaces. The same view and props (or `props.key`) always shows the tab
+  it already has.
 - Lagging notification clients get `notifications.lagged` and refresh.
 - The data migration is store migration v5 (`crates/aura-store/src/lib.rs`);
   pre-review workspaces now live in `<data dir>/mod-data/pull-requests/`, and
