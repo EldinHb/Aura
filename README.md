@@ -668,6 +668,9 @@ aura kill <id>           # stop the process, keep the session resumable
 aura rm <id> [--worktree]
 aura events              # live JSON event stream
 aura history <id>
+aura mods list|new|approve|enable|disable|reload|rescan|logs|call   # see "Mods and themes"
+aura themes list|new|check|use
+aura guide [mods|themes] # guides for coding agents, built into the binary
 ```
 
 On macOS the installed binary is at `/Applications/Aura.app/Contents/MacOS/aura`;
@@ -721,7 +724,31 @@ commands, keys, settings. Aura ships two, which are on unless you turn them off:
 
 Settings → Mods lists them with what each may do, their settings and their log,
 and lets you disable, reload or approve them. Your own mods go in
-`~/.aura/mods/<id>`; see [docs/mods/WRITING.md](docs/mods/WRITING.md) to write one.
+`~/.aura/mods/<id>`: Aura picks them up while it runs, asks you to approve each
+one once, and reloads a mod when you save one of its files. No build step is
+needed: a mod can be plain JavaScript files.
+
+**Themes** change Aura's look: a JSON file in `~/.aura/themes/<id>.json` that
+starts from the dark or light theme and overrides its design tokens (colours,
+fonts, spacing, corners), optionally with a CSS file next to it. Pick one in
+Settings → General → Theme; saved changes apply at once.
+
+### For agents
+
+Ask your coding agent to make a mod or a theme for you. Everything it needs is
+built into the `aura` command, so it works on any machine with Aura installed:
+
+```bash
+aura guide mods            # how to write a mod: manifest, both APIs, the edit loop, an example
+aura guide themes          # how to write a theme, with every token and its defaults
+aura mods new my-mod       # a working mod (sidebar section, inspector section, daemon RPC)
+aura themes new my-theme --base dark
+```
+
+The same guides are in [docs/agents/creating-mods.md](docs/agents/creating-mods.md)
+and [docs/agents/creating-themes.md](docs/agents/creating-themes.md). To write a mod
+in TypeScript inside this repository, with tests, see
+[docs/mods/WRITING.md](docs/mods/WRITING.md).
 
 ## Pull requests and pre-reviews
 
@@ -988,6 +1015,7 @@ packages/mod-sdk            @aura/mod-sdk: mod API types, `aura-mod build`, test
 packages/github-client      @aura/github-client: GitHub reads and writes shared by the mods
 mods/                       the bundled mods (github, pull-requests)
 docs/mods                   the mod design and how to write one
+docs/agents                 the guides `aura guide` prints (making mods and themes)
 docs/protocol               captured Claude / Codex traffic and notes
 scripts/                    export-ts.sh (Rust -> TS types), build-sidecars.sh, build-mods.sh, install-macos.sh,
                             updater-manifest.mjs (the release's latest.json), test-update-macos.sh

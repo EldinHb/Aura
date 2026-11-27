@@ -6,6 +6,7 @@
 //! persists events through a [`store::Store`] and fans them out to clients.
 
 pub mod autonomy;
+pub mod css;
 pub mod event;
 pub mod features;
 pub mod load_balancer;
@@ -20,6 +21,7 @@ pub mod specialists;
 pub mod store;
 pub mod suggestions;
 pub mod test_support;
+pub mod themes;
 pub mod types;
 pub mod which;
 

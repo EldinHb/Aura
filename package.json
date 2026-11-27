@@ -5,7 +5,8 @@
   "scripts": {
     "mods:build": "node packages/mod-sdk/cli.mjs build mods/github mods/pull-requests",
     "mods:test": "pnpm --filter \"./mods/*\" test",
-    "mods:typecheck": "pnpm --filter \"./mods/*\" typecheck"
+    "mods:typecheck": "pnpm --filter ./packages/mod-sdk --filter \"./mods/*\" typecheck",
+    "mods:dts": "node packages/mod-sdk/gen-dts.mjs"
   },
   "packageManager": "pnpm@10.34.9",
   "pnpm": {

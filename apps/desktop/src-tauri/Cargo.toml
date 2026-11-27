@@ -48,6 +48,7 @@ dirs = { workspace = true }
 tauri = { version = "2", features = ["test"] }
 # Paused time, for the check schedule.
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

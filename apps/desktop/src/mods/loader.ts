@@ -14,6 +14,8 @@ import type { Session } from "../gen";
 import { clearModContext, setModContext, slots, type InboxItem, type Registry } from "./registry";
 import { installHostModules } from "./host";
 import { useModInbox } from "./inbox";
+import { reportModUiError } from "./report";
+import { openApprovalPrompt } from "./ApprovalDialog";
 
 export { useModInbox };
 
@@ -36,12 +38,29 @@ export type ModInfo = {
   settings: Array<{ key: string; type: string; label: string; description?: string; default?: unknown; options?: Array<{ value: string; label: string }> }>;
   settingValues: Record<string, unknown>;
   broken?: boolean;
+  /** Where ui.js does not parse (from the daemon's check), as "ui.js:3:10: SyntaxError: …". */
+  uiError?: string | null;
+  /** Why the files on disk were not loaded; the previous version keeps running. */
+  reloadError?: string | null;
 };
 
 /** What a mod passes to a `ctx.ui.*` slot: the slot's item plus its id. */
 type Def<R> = R extends Registry<infer T> ? T & { id: string; order?: number } : never;
 
-type Loaded = { version: string; js: string; css: string | null; dispose: () => void; uiError?: string };
+type Loaded = { version: string; rev: number; js: string; css: string | null; dispose: () => void; uiError?: string };
+
+/**
+ * `e` as "ui.js:12:5: TypeError: …": the first place in its stack that is in
+ * the mod's file (a blob: URL, as the browser names it), when the browser
+ * gives one. A syntax error found while importing often has none; the
+ * daemon's own check of ui.js reports those with their place.
+ */
+export function locateUiError(e: unknown, file = "ui.js"): string {
+  const err = e instanceof Error ? e : new Error(String(e));
+  const text = `${err.name}: ${err.message}`;
+  const at = (err.stack ?? "").match(/blob:[^\s)]*?:(\d+):(\d+)/);
+  return at ? `${file}:${at[1]}:${at[2]}: ${text}` : text;
+}
 
 export const useMods = create<{ mods: ModInfo[]; uiErrors: Record<string, string>; loaded: string[] }>(() => ({
   mods: [],
@@ -206,9 +225,11 @@ function makeCtx(info: ModInfo, track: (d: () => void) => () => void) {
 }
 
 async function load(info: ModInfo) {
-  const src = await client().call<{ js: string | null; css: string | null; version: string }>("mods.ui_source", { id: info.id });
+  const src = await client().call<{ js: string | null; css: string | null; version: string; rev?: number }>("mods.ui_source", { id: info.id });
+  const rev = src.rev ?? 0;
   const old = loaded.get(info.id);
-  if (old && old.js === src.js && old.css === src.css) return;
+  // The daemon bumps `rev` when the UI half must load again (mod.json changed, an explicit reload).
+  if (old && old.js === src.js && old.css === src.css && old.rev === rev) return;
   // A new version takes over the old one's tabs.
   if (old) unload(info.id, false);
   if (!src.js) return;
@@ -230,6 +251,7 @@ async function load(info: ModInfo) {
   }
   const entry: Loaded = {
     version: src.version,
+    rev,
     js: src.js,
     css: src.css,
     dispose: () => {
@@ -258,9 +280,11 @@ async function load(info: ModInfo) {
     });
   } catch (e) {
     console.error(`[mod ${info.id}] failed to load its UI`, e);
+    const where = locateUiError(e);
+    reportModUiError(info.id, "ui.js failed to load", where);
     entry.dispose();
     loaded.delete(info.id);
-    useMods.setState((s) => ({ uiErrors: { ...s.uiErrors, [info.id]: String((e as Error)?.message ?? e) }, loaded: [...loaded.keys()] }));
+    useMods.setState((s) => ({ uiErrors: { ...s.uiErrors, [info.id]: where }, loaded: [...loaded.keys()] }));
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -327,7 +351,12 @@ export function useModLoader() {
     });
     const offNote = c.onNotification((method, params) => {
       const p = (params ?? {}) as { modId?: string; title?: unknown; body?: unknown; target?: unknown; key?: string; value?: unknown };
-      if (method === "mods.changed") {
+      if (method === "approval.request") {
+        // `aura mods approve` / `aura themes approve`: the main window shows the prompt.
+        const p2 = (params ?? {}) as { kind?: string; id?: string };
+        if (new URLSearchParams(location.search).get("window") !== "session" && (p2.kind === "mod" || p2.kind === "theme") && p2.id)
+          openApprovalPrompt(p2.kind, p2.id);
+      } else if (method === "mods.changed") {
         void syncMods();
         void refreshInbox();
       } else if (method === "mods.inbox.changed" || method === "notifications.lagged") void refreshInbox();
@@ -364,5 +393,7 @@ export const modsApi = {
   reload: (id: string) => client().call("mods.reload", { id }),
   rescan: () => client().call("mods.rescan", {}),
   logs: (id: string) => client().call<string[]>("mods.logs", { id }),
+  /** The user's mods folder (and $AURA_MODS_DIR, when set). */
+  dirs: () => client().call<{ user: string | null; dev: string | null }>("mods.dirs", {}),
   setSetting: (id: string, key: string, value: unknown) => client().call("mods.settings.set", { id, key, value }),
 };

@@ -52,6 +52,8 @@ export function useKeyboard() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // An approval prompt owns its keys (Tab, Enter, Escape) and nothing else may act meanwhile.
+      if (document.querySelector("dialog.aura-protected[open]")) return;
       const st = useStore.getState();
       // Hint mode and the palette own the keyboard while active.
       if (st.hintMode || st.paletteOpen) return;

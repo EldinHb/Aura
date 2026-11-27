@@ -8,20 +8,8 @@ import { useStore } from "../state/store";
 import { modsApi, syncMods, useMods, type ModInfo } from "./loader";
 import { slots, useSlot } from "./registry";
 import { ModPiece } from "./Slots";
-
-function describePermissions(p: Record<string, unknown>): string[] {
-  const out: string[] = [];
-  const list = (v: unknown) => (Array.isArray(v) ? (v as string[]) : []);
-  if (list(p.process).length) out.push(`Run programs: ${list(p.process).join(", ")}`);
-  if (list(p.net).length) out.push(`Reach: ${list(p.net).join(", ")}`);
-  if (p.sessions === "read") out.push("Read your sessions and their events");
-  if (p.sessions === "write") out.push("Read your sessions, start them and send them messages");
-  if (p.git) out.push("Use git in your repositories");
-  if (p.agents) out.push("Run agents (read-only) on files");
-  if (p.orchestratorTools) out.push("Add tools to orchestrator sessions");
-  if (list(p.mods).length) out.push(`Use the mods: ${list(p.mods).join(", ")}`);
-  return out.length ? out : ["Nothing beyond its own storage"];
-}
+import { describePermissions } from "./permissions";
+import { openApprovalPrompt } from "./ApprovalDialog";
 
 const STATE_LABEL: Record<string, string> = {
   running: "Running",
@@ -80,6 +68,8 @@ function ModCard({ mod }: { mod: ModInfo }) {
       {mod.description && <div className="dim">{mod.description}</div>}
       {mod.status?.error && <pre className="mod-error">{mod.status.error}</pre>}
       {uiError && <pre className="mod-error">Interface: {uiError}</pre>}
+      {mod.uiError && mod.uiError !== uiError && <pre className="mod-error">ui error: {mod.uiError}</pre>}
+      {mod.reloadError && <pre className="mod-error">{mod.reloadError}</pre>}
       {!mod.broken && (
         <>
           <ul className="mod-perms">
@@ -90,8 +80,8 @@ function ModCard({ mod }: { mod: ModInfo }) {
           {mod.settings?.length > 0 && <div className="mod-settings">{mod.settings.map((s) => <Setting key={s.key} mod={mod} s={s} />)}</div>}
           <div className="mod-actions">
             {state === "needs_approval" && (
-              <button className="btn small" onClick={() => act(() => modsApi.approve(mod.id))} data-hint>
-                Approve and start
+              <button className="btn small" onClick={() => openApprovalPrompt("mod", mod.id)} data-hint>
+                Review and approve…
               </button>
             )}
             {mod.enabled ? (
@@ -121,15 +111,24 @@ function ModCard({ mod }: { mod: ModInfo }) {
 export function ModsSettings() {
   const mods = useMods((s) => s.mods);
   const toast = useStore((st) => st.toast);
+  const [dirs, setDirs] = useState<{ user: string | null; dev: string | null } | null>(null);
   useEffect(() => {
     void syncMods();
+    // An older daemon has no mods.dirs; the text then names the default folder.
+    modsApi.dirs().then(setDirs, () => setDirs(null));
   }, []);
   return (
     <div className="mods-settings">
       <p className="dim">
         Mods add features to Aura. Their background part runs inside Aura's daemon and can only do what is listed under each; their interface part runs in
-        this window with Aura's own rights, so install mods only from people you trust. Put a mod's folder in <code>~/.aura/mods</code> and rescan.
+        this window with Aura's own rights, so install mods only from people you trust. Put a mod's folder in <code className="mods-dir">{dirs?.user ?? "~/.aura/mods"}</code>: Aura finds it
+        and asks you to approve it. For agents: <code>aura guide mods</code> explains how to make one, and <code>aura mods new &lt;id&gt;</code> starts one.
       </p>
+      {dirs?.dev && (
+        <p className="dim">
+          Also loading development mods from <code>{dirs.dev}</code> (<code>AURA_MODS_DIR</code>).
+        </p>
+      )}
       <div className="mod-actions">
         <button className="btn small" onClick={() => modsApi.rescan().then(() => syncMods()).catch((e) => toast(String(e?.message ?? e), "error"))} data-hint>
           Rescan mod folders

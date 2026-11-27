@@ -14,9 +14,13 @@ function auraDevDaemonInfo() {
                 var _a;
                 var dir = (_a = process.env.AURA_DATA_DIR) !== null && _a !== void 0 ? _a : path.join(os.homedir(), ".aura");
                 try {
-                    var data = fs.readFileSync(path.join(dir, "daemon.json"), "utf8");
+                    var info = JSON.parse(fs.readFileSync(path.join(dir, "daemon.json"), "utf8"));
+                    // Development only: a daemon started by hand with --window-secret-stdin, and the same
+                    // secret in AURA_DEV_WINDOW_SECRET, lets this dev window approve. Never in a build.
+                    if (process.env.AURA_DEV_WINDOW_SECRET)
+                        info.windowSecret = process.env.AURA_DEV_WINDOW_SECRET;
                     res.setHeader("content-type", "application/json");
-                    res.end(data);
+                    res.end(JSON.stringify(info));
                 }
                 catch (_b) {
                     res.statusCode = 404;

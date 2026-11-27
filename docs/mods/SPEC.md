@@ -167,9 +167,10 @@ a user can fork a bundled mod):
 
 1. Bundled mods: `<app resources>/mods/*`. The desktop passes the path to
    `aurad` as `--mods-dir` when it spawns the daemon.
-2. User mods: `<data dir>/mods/*` (`~/.aura/mods` by default).
-3. Development: `$AURA_MODS_DIR`, which also turns on file watching and
-   hot reload.
+2. User mods: `<data dir>/mods/*` (`~/.aura/mods` by default). Watched: a
+   changed mod reloads, a new or removed folder is picked up (see
+   [docs/agents/creating-mods.md](../agents/creating-mods.md)).
+3. Development: `$AURA_MODS_DIR`, watched the same way.
 
 Enabled/disabled state and permission approvals are stored in core settings
 under `mods.state.v1`.

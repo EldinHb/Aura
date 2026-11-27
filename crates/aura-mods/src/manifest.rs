@@ -8,6 +8,19 @@ use std::path::{Path, PathBuf};
 /// The mod API major version this host implements.
 pub const API_VERSION: u32 = 1;
 
+/// Largest `mod.json`.
+pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
+/// Largest `daemon.js` or `ui.js`: far beyond any hand-written mod, small
+/// enough that reading and parsing it stays quick.
+pub const MAX_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
+/// Largest `ui.css`.
+pub const MAX_STYLES_BYTES: usize = 1024 * 1024;
+
+/// Read a file of a mod, at most `cap` bytes (one open, never more read).
+pub fn read_mod_file(path: &Path, cap: usize) -> Result<String> {
+    aura_core::themes::read_capped(path, cap).map_err(|e| anyhow::anyhow!(e))
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionAccess {
@@ -135,8 +148,7 @@ pub fn entry_path(dir: &Path, rel: &str) -> Result<PathBuf> {
 impl Manifest {
     pub fn load(dir: &Path) -> Result<Manifest> {
         let path = dir.join("mod.json");
-        let text =
-            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let text = read_mod_file(&path, MAX_MANIFEST_BYTES)?;
         let m: Manifest =
             serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
         m.validate(dir)?;
@@ -170,15 +182,24 @@ impl Manifest {
                 )
             })?;
         }
-        for (what, entry) in [
-            ("daemon", &self.daemon),
-            ("ui", &self.ui),
-            ("styles", &self.styles),
+        for (what, entry, cap) in [
+            ("daemon", &self.daemon, MAX_SCRIPT_BYTES),
+            ("ui", &self.ui, MAX_SCRIPT_BYTES),
+            ("styles", &self.styles, MAX_STYLES_BYTES),
         ] {
             if let Some(rel) = entry {
                 let p = entry_path(dir, rel)?;
                 if !p.is_file() {
                     bail!("{}: {what} file {} is missing", self.id, p.display());
+                }
+                let len = p.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                if len > cap {
+                    bail!(
+                        "{}: {rel} is {} KB; the limit is {} KB",
+                        self.id,
+                        len / 1024,
+                        cap / 1024
+                    );
                 }
             }
         }

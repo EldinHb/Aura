@@ -481,3 +481,82 @@ fn run(
     drop(activation);
     Ok(())
 }
+
+/// How long a syntax check may take before it is given up (the file then
+/// counts as not loadable). With files capped at 4 MB this is never reached
+/// by a real file.
+pub const SYNTAX_CHECK_LIMIT: Duration = Duration::from_secs(3);
+
+/// [`check_module_syntax`] on a blocking thread, given up after `limit`: never
+/// on the async runtime, so a slow parse cannot stall the daemon (its RPC, its
+/// signals) and nothing waits on it longer than `limit`.
+pub async fn check_module_syntax_within(
+    name: &str,
+    source: String,
+    limit: Duration,
+) -> Result<(), String> {
+    let n = name.to_string();
+    let deadline = Instant::now() + limit;
+    let task =
+        tokio::task::spawn_blocking(move || check_module_syntax_until(&n, &source, Some(deadline)));
+    match tokio::time::timeout(limit, task).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => Err(format!("{name}: the syntax check failed: {e}")),
+        Err(_) => Err(format!(
+            "{name}: checking it took longer than {} s; Aura did not load it",
+            limit.as_secs_f32()
+        )),
+    }
+}
+
+/// Parse `source` as an ES module without running it (a UI half, which runs
+/// in the window, never here). `Err` reads `<name>:<line>:<column>: <error>`
+/// when QuickJS gives a place.
+pub fn check_module_syntax(name: &str, source: &str) -> Result<(), String> {
+    check_module_syntax_until(name, source, None)
+}
+
+fn check_module_syntax_until(
+    name: &str,
+    source: &str,
+    deadline: Option<Instant>,
+) -> Result<(), String> {
+    let rt = Runtime::new().map_err(|e| e.to_string())?;
+    rt.set_memory_limit(MEMORY_LIMIT);
+    if let Some(d) = deadline {
+        // QuickJS calls this while it works; past the deadline it gives up.
+        rt.set_interrupt_handler(Some(Box::new(move || Instant::now() > d)));
+    }
+    let ctx = Context::full(&rt).map_err(|e| e.to_string())?;
+    ctx.with(|ctx| match Module::declare(ctx.clone(), name, source) {
+        Ok(_) => Ok(()),
+        Err(_) if deadline.is_some_and(|d| Instant::now() > d) => Err(format!(
+            "{name}: checking it took longer than {} s; Aura did not load it",
+            SYNTAX_CHECK_LIMIT.as_secs_f32()
+        )),
+        Err(rquickjs::Error::Exception) => {
+            let v = ctx.catch();
+            let obj = v.as_object();
+            let get = |key: &str| obj.and_then(|o| o.get::<_, String>(key).ok());
+            let message = get("message").unwrap_or_else(|| "syntax error".into());
+            let kind = get("name").unwrap_or_else(|| "SyntaxError".into());
+            // "    at ui.js:3:10"
+            let place = get("stack").and_then(|stack| {
+                stack
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("at ").map(str::to_string))
+                    .filter(|p| p.starts_with(name))
+            });
+            if let Some(module) = message.strip_prefix("could not load module ") {
+                return Err(format!(
+                    "{name}: imports {module}, but a UI half is one file and may not import anything; take React and Aura's parts from globalThis.__aura.modules"
+                ));
+            }
+            Err(match place {
+                Some(p) => format!("{p}: {kind}: {message}"),
+                None => format!("{name}: {kind}: {message}"),
+            })
+        }
+        Err(e) => Err(format!("{name}: {e}")),
+    })
+}

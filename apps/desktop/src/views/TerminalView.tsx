@@ -8,6 +8,7 @@ import { base64ToBytes } from "../lib/rpc";
 import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
 import { useTabActive } from "../components/tabActive";
+import { THEME_APPLIED_EVENT, terminalTheme } from "../lib/terminalTheme";
 
 /**
  * Embedded terminal for a PTY-backed session. Attaches on mount, replays the
@@ -38,14 +39,8 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
       cursorBlink: true,
       allowProposedApi: true,
       scrollback: 10000,
-      theme: {
-        background: "#0b0d13",
-        foreground: "#e6e8ef",
-        cursor: "#8b7cff",
-        selectionBackground: "rgba(139,124,255,0.35)",
-        black: "#1b1f2d", red: "#ff6b7a", green: "#4ad295", yellow: "#f2b84b", blue: "#62b0ff", magenta: "#c792ea", cyan: "#5ee0c8", white: "#d0d4e0",
-        brightBlack: "#6b7490", brightRed: "#ff8a95", brightGreen: "#7fe0b3", brightYellow: "#ffd07a", brightBlue: "#8cc6ff", brightMagenta: "#dcb3f5", brightCyan: "#8fece0", brightWhite: "#ffffff",
-      },
+      // The palette comes from the theme's --term-* tokens, and follows it (below).
+      theme: terminalTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -112,6 +107,10 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
         resize();
       })
       .catch(() => {});
+    const onTheme = () => {
+      term.options.theme = terminalTheme();
+    };
+    window.addEventListener(THEME_APPLIED_EVENT, onTheme);
     const onFocus = () => setFocus("main");
     term.textarea?.addEventListener("focus", onFocus);
     requestAnimationFrame(() => {
@@ -125,6 +124,7 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
       onData.dispose();
       onBinary.dispose();
       term.textarea?.removeEventListener("focus", onFocus);
+      window.removeEventListener(THEME_APPLIED_EVENT, onTheme);
       client.ptyDetach(sessionId).catch(() => {});
       term.dispose();
     };

@@ -2,6 +2,8 @@ import { registerScheduleCommands, useScheduleSync } from "./features/schedules/
 import { useUpdateChecks } from "./features/updates/updates";
 import "./features/schedules/schedules.css";
 import { useModLoader } from "./mods/loader";
+import { useThemeLoader } from "./state/themes";
+import { ApprovalDialog } from "./mods/ApprovalDialog";
 import { useWaitingSound } from "./state/waitingSound";
 import { ModView } from "./mods/Slots";
 import { MainTabs, TabPane } from "./components/MainTabs";
@@ -12,9 +14,9 @@ import "./mods/mods.css";
 import { useEffect } from "react";
 import { useStore, selectSelected } from "./state/store";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
-import { discoverDaemon, isTauri, type ConnInfo } from "./lib/connection";
+import { discoverDaemon, isTauri, windowClient, type ConnInfo } from "./lib/connection";
 import { DaemonLink, connectWindow } from "./lib/daemonLink";
-import { RpcClient } from "./lib/rpc";
+import type { RpcClient } from "./lib/rpc";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
 import { registerGitCommands } from "./commands/git";
@@ -63,19 +65,9 @@ export default function App() {
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed) || windowMode === "session";
   const inspectorOpen = useStore((s) => s.inspectorOpen) && windowMode !== "session" && !modViewOpen;
   const focus = useStore((s) => s.focus);
-  const theme = useStore((s) => s.settings.theme);
   const fontSize = useStore((s) => s.settings.fontSize);
 
-  useEffect(() => {
-    // Native controls (select menus, scrollbars, checkboxes) follow the window appearance, not our CSS, so pin the
-    // window to the chosen theme; "system" releases it and then tracks the OS as it changes.
-    if (isTauri()) import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme === "system" ? null : theme)).catch(() => {});
-    const media = matchMedia("(prefers-color-scheme: light)");
-    const apply = () => { document.documentElement.dataset.theme = theme === "system" ? (media.matches ? "light" : "dark") : theme; };
-    apply();
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, [theme]);
+  useThemeLoader();
 
   useEffect(() => {
     document.documentElement.style.setProperty("--font-size", `${fontSize}px`);
@@ -97,7 +89,8 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     const st = useStore.getState;
     const link = new DaemonLink<RpcClient>({
-      makeClient: (info) => new RpcClient(info.port, info.token),
+      // Says the window secret on every (re)connection (see windowClient).
+      makeClient: windowClient,
       // Subscribes and loads on the new client; it becomes the window's in
       // `commit`, once this succeeded. Events, the connection state and a
       // refresh on every reconnect are state/daemonSync.ts's.
@@ -219,6 +212,8 @@ export default function App() {
       </div>
       <StatusBar />
       <Overlays />
+      {/* Approval prompts: a top-layer dialog no stylesheet can hide (protected.css). */}
+      <ApprovalDialog />
     </div>
   );
 }

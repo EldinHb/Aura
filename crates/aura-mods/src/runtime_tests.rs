@@ -219,3 +219,28 @@ async fn a_busy_loop_is_interrupted() {
     assert_eq!(ok.unwrap(), json!(1));
     assert!(started.elapsed() >= crate::runtime::BUSY_LIMIT);
 }
+
+#[test]
+fn a_ui_half_is_syntax_checked_without_running_it() {
+    use crate::runtime::check_module_syntax;
+    // Valid, and never run: __aura does not exist here.
+    assert_eq!(
+        check_module_syntax(
+            "ui.js",
+            "const React = __aura.modules.react;\nexport default function activate(ctx) {}\n"
+        ),
+        Ok(())
+    );
+    let jsx = check_module_syntax(
+        "ui.js",
+        "const a = 1;\nexport default function activate(ctx) {\n  return <div/>;\n}\n",
+    )
+    .unwrap_err();
+    assert!(jsx.starts_with("ui.js:3:10: SyntaxError:"), "{jsx}");
+    let import = check_module_syntax(
+        "ui.js",
+        "import React from 'react';\nexport default () => {};\n",
+    )
+    .unwrap_err();
+    assert!(import.contains("may not import"), "{import}");
+}

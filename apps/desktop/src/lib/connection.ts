@@ -1,6 +1,13 @@
 /** Find the daemon: Tauri command in the app, URL/dev endpoint in a browser. */
+import { RpcClient } from "./rpc";
 
-export type ConnInfo = { port: number; token: string; data_dir?: string; version?: string };
+/**
+ * `window_secret`: the secret the desktop shell gave the daemon it spawned;
+ * presenting it (`daemon.window_hello`) makes this connection Aura's window,
+ * the only one that may grant approvals. Absent when the daemon was not
+ * spawned by this app process.
+ */
+export type ConnInfo = { port: number; token: string; data_dir?: string; version?: string; window_secret?: string | null; windowSecret?: string | null };
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -20,4 +27,21 @@ export async function discoverDaemon(): Promise<ConnInfo> {
   const info = (await res.json()) as ConnInfo;
   if (!info.port) throw new Error("daemon.json is incomplete");
   return info;
+}
+
+/**
+ * A client for `info` that says `daemon.window_hello` with the window secret
+ * on every (re)connection: each is a new connection to the daemon, and a
+ * daemon the shell started again (a restart, a recovery after a failed
+ * update) comes with a new secret in its announcement. Not yet connected.
+ */
+export function windowClient(info: ConnInfo): RpcClient {
+  const client = new RpcClient(info.port, info.token);
+  const secret = info.window_secret ?? info.windowSecret ?? null;
+  if (secret) {
+    client.onState((s) => {
+      if (s === "open") void client.call("daemon.window_hello", { secret }).catch((e: unknown) => console.warn("not Aura's window:", e));
+    });
+  }
+  return client;
 }

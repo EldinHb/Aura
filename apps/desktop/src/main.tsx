@@ -1,3 +1,5 @@
+// First, before any other stylesheet: declares the protected layer (see the file).
+import "./protected.css";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";

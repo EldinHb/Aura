@@ -223,7 +223,8 @@ export type UiSettings = {
   leader: string;
   keymapPreset: "default" | "vim";
   keymapOverrides: { keys: string; command: string; when?: string }[];
-  theme: "dark" | "light" | "system";
+  /** "dark", "light", "system", or the id of a user theme (state/themes.ts). */
+  theme: string;
   fontSize: number;
   notifications: boolean;
   confirmDelete: boolean;

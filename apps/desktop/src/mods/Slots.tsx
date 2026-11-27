@@ -7,6 +7,8 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import type { Session } from "../gen";
 import { useStore } from "../state/store";
 import { slots, useSlot, type Entry } from "./registry";
+import { reportModUiError } from "./report";
+import { locateUiError } from "./loader";
 
 class ModBoundary extends Component<{ modId: string; children: ReactNode; quiet?: boolean }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -15,6 +17,7 @@ class ModBoundary extends Component<{ modId: string; children: ReactNode; quiet?
   }
   componentDidCatch(error: unknown, info: ErrorInfo) {
     console.error(`[mod ${this.props.modId}] failed to render`, error, info.componentStack);
+    reportModUiError(this.props.modId, "a component failed to render", locateUiError(error));
   }
   render() {
     if (!this.state.error) return this.props.children;
@@ -41,6 +44,8 @@ export function SidebarModSections({ focused }: { focused: boolean }) {
     <>
       {sections.map((s) => (
         <ModPiece key={s.key} entry={s}>
+          {/* `title`: the same heading Aura's own sidebar sections have. */}
+          {s.title && <div className="section-title mod-section-title">{s.title}</div>}
           <s.component focused={focused} />
         </ModPiece>
       ))}
