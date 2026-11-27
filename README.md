@@ -1022,6 +1022,7 @@ packages/github-client      @aura/github-client: GitHub reads and writes shared 
 mods/                       the bundled mods (github, pull-requests, pr-status)
 docs/mods                   the mod design and how to write one
 docs/agents                 the guides `aura guide` prints (making mods and themes)
+docs/releases               hand-written release notes, put first in the GitHub release
 docs/protocol               captured Claude / Codex traffic and notes
 scripts/                    export-ts.sh (Rust -> TS types), build-sidecars.sh, build-mods.sh, install-macos.sh,
                             updater-manifest.mjs (the release's latest.json), test-update-macos.sh
@@ -1041,7 +1042,10 @@ on macOS (Apple Silicon and Intel), Windows and Linux. To publish one:
 
 The workflow refuses a tag that does not match the version in `tauri.conf.json`. It
 builds every installer into a draft release and publishes it once all platforms
-succeed, with release notes generated from the commits since the previous tag.
+succeed, with release notes generated from the commits since the previous tag. Notes
+written by hand go in `docs/releases/<version>.md` (`docs/releases/0.5.0.md`, say): the
+workflow puts them first, above the generated ones. The release's notes are also what
+the app's update banner links to and what `latest.json` carries.
 
 Every installer is signed for the updater. Before publishing, the workflow assembles
 `latest.json` from the signatures ([`scripts/updater-manifest.mjs`](scripts/updater-manifest.mjs))

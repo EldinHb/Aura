@@ -50,10 +50,15 @@ jobs:
         # The id comes from the create response itself: listing releases right
         # after creating one can miss the new draft, and an empty id makes the
         # build jobs skip uploading without failing.
+        # Hand-written notes in docs/releases/<version>.md go first; GitHub
+        # puts the notes it generates from the commits after them.
         run: |
+          notes="docs/releases/${GITHUB_REF_NAME#v}.md"
+          body=()
+          if [ -f "$notes" ]; then body=(-F "body=@$notes"); fi
           id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
             -f tag_name="$GITHUB_REF_NAME" -f name="Aura $GITHUB_REF_NAME" \
-            -F draft=true -F generate_release_notes=true --jq .id)
+            "${body[@]}" -F draft=true -F generate_release_notes=true --jq .id)
           if [ -z "$id" ]; then
             echo "::error::creating the draft release returned no id"
             exit 1
