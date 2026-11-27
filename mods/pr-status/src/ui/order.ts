@@ -3,12 +3,17 @@ import type { PrEntry } from "../shared/types";
 
 const isDone = (e: PrEntry) => e.status?.state === "merged" || e.status?.state === "closed";
 
-/** Open work first (not ready, then ready, then drafts; still loading with the not ready), merged and closed apart. */
+/**
+ * Open work first (not ready, then ready, then drafts; still loading with the not ready),
+ * merged and closed apart. Within a group: the most recently updated first, then the highest
+ * number, so the order does not depend on how the sessions were listed.
+ */
 export function splitPulls(pulls: PrEntry[]): { active: PrEntry[]; done: PrEntry[] } {
   const rank = (e: PrEntry) => (e.status?.state === "draft" ? 2 : e.status?.readiness?.ready ? 1 : 0);
-  const active = pulls.filter((e) => !isDone(e)).map((e, i) => ({ e, i }));
-  active.sort((a, b) => rank(a.e) - rank(b.e) || a.i - b.i);
-  return { active: active.map((x) => x.e), done: pulls.filter(isDone) };
+  const recent = (a: PrEntry, b: PrEntry) =>
+    (b.status?.updatedAt ?? "").localeCompare(a.status?.updatedAt ?? "") || b.ref.number - a.ref.number || a.ref.repo.localeCompare(b.ref.repo);
+  const active = pulls.filter((e) => !isDone(e)).sort((a, b) => rank(a) - rank(b) || recent(a, b));
+  return { active, done: pulls.filter(isDone).sort(recent) };
 }
 
 /**

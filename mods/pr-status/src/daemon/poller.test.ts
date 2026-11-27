@@ -536,4 +536,21 @@ describe("PrPoller", () => {
       expect(t.poller.cached()).toMatchObject({ entries: 0, trees: 0 });
     });
   });
+
+  describe("QA", () => {
+    it("asks GitHub for notifications only while a PR is on screen", async () => {
+      t.linked.lead = [];
+      t.poller.invalidate();
+      await t.watch();
+      for (let i = 0; i < 5; i++) {
+        t.advance(POLL_MS);
+        await t.renew();
+      }
+      expect(t.fake.notifiedCalls).toHaveLength(0);
+      t.linked.lead = [URL1];
+      t.poller.invalidate();
+      await t.renew();
+      expect(t.fake.notifiedCalls.length).toBeGreaterThan(0);
+    });
+  });
 });

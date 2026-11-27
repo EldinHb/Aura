@@ -10,7 +10,7 @@ const REVIEW = "state author{__typename login}";
 const OPINION = "state author{login}";
 
 export const STATUS_FRAGMENT =
-  "fragment pull on PullRequest{number title url state isDraft mergeable mergeStateStatus reviewDecision author{login} " +
+  "fragment pull on PullRequest{number title url state isDraft mergeable mergeStateStatus reviewDecision updatedAt author{login} " +
   "headRefOid headRefName isCrossRepository " +
   `reviewRequests(first:100){${PAGE} nodes{requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login} ... on Mannequin{login}}}} ` +
   `commits(last:1){nodes{commit{oid statusCheckRollup{state contexts(first:100){totalCount ${PAGE} nodes{${CONTEXT}}}}}}} ` +
@@ -167,6 +167,7 @@ export function toStatus(ref: Pick<PrRef, "url" | "repo" | "number">, node: any,
     number: ref.number,
     title: s(node, "title"),
     author: s(node?.author, "login"),
+    updatedAt: s(node, "updatedAt"),
     state,
     reviewers: reviewerGroups(node, !truncated.reviewers),
     checks,

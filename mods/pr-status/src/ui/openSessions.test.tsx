@@ -16,7 +16,7 @@ function view(sessionId: string, number: number, title: string): SessionView {
   const entry: PrEntry = {
     ref: { url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, sources: [{ sessionId, title: sessionId, worker: false }] },
     status: {
-      url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, title, author: "me", state: "open",
+      url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, title, author: "me", updatedAt: "2026-11-27T09:00:00Z", state: "open",
       reviewers: { reviewed: [], pending: [], complete: true },
       checks: { state: "passing", passing: 1, failing: 0, pending: 0, total: 1, open: [], complete: true },
       readiness: { ready: true, reasons: [] },

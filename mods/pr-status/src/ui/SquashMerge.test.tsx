@@ -12,7 +12,7 @@ const approved: MergeInfo = { reviewDecision: "APPROVED", mergeable: "MERGEABLE"
 
 function status(merge: Partial<MergeInfo> = {}, over: Partial<PrStatus> = {}): PrStatus {
   return {
-    url: "https://github.com/acme/api/pull/7", repo: "acme/api", number: 7, title: "Add limits", author: "me", state: "open",
+    url: "https://github.com/acme/api/pull/7", repo: "acme/api", number: 7, title: "Add limits", author: "me", updatedAt: "2026-11-27T09:00:00Z", state: "open",
     reviewers: { reviewed: [], pending: [], complete: true },
     checks: { state: "passing", passing: 3, failing: 0, pending: 0, total: 3, open: [], complete: true },
     readiness: { ready: true, reasons: [] },
@@ -206,5 +206,27 @@ describe("SquashMerge", () => {
     await act(async () => {});
     expect((screen.getByRole("button", { name: "Merge" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("status").textContent).toContain("The GitHub account is not known");
+  });
+
+  it("cancels on Escape, keeping Escape from Aura's keys only while it is open (QA)", async () => {
+    fakeCtx((name) => (name === "merge.defaults" ? defaults : null));
+    const outside = vi.fn();
+    document.addEventListener("keydown", outside);
+    try {
+      render(<SquashMerge status={status()} onMerged={() => {}} />);
+      fireEvent.click(screen.getByRole("button", { name: "Squash and merge" }));
+      await act(async () => {});
+      const form = screen.getByRole("form", { name: "Squash and merge #7" });
+      // Aura's global keymap leaves Escape alone inside [data-own-escape] (hooks/useCommandContext.ts).
+      expect(form.hasAttribute("data-own-escape")).toBe(true);
+      fireEvent.keyDown(screen.getByLabelText("Commit title"), { key: "Escape" });
+      expect(screen.queryByRole("form")).toBeNull();
+      expect(outside).not.toHaveBeenCalled();
+      // Closed, Escape is Aura's again.
+      fireEvent.keyDown(screen.getByRole("button", { name: "Squash and merge" }), { key: "Escape" });
+      expect(outside).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener("keydown", outside);
+    }
   });
 });

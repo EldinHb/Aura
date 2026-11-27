@@ -123,6 +123,8 @@ export interface PrStatus {
   number: number;
   title: string;
   author: string;
+  /** When GitHub last saw a change to the PR (ISO); orders the cards. */
+  updatedAt: string;
   state: PrState;
   reviewers: Reviewers;
   checks: Checks;

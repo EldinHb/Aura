@@ -289,7 +289,8 @@ export class PrPoller {
 
     const visible = new Map<string, PrRef>();
     for (const refs of trees.values()) for (const ref of refs) visible.set(prKey(ref.url), ref);
-    const notified = await this.gh.notified().catch(() => null);
+    // Notifications only matter for PRs on screen; a session without any asks GitHub nothing.
+    const notified = visible.size ? await this.gh.notified().catch(() => null) : null;
     const due = [...visible.entries()].filter(([key, ref]) => this.isDue(key, ref, notified, now)).map(([, ref]) => ref);
     for (const ref of due) this.forced.delete(prKey(ref.url));
 

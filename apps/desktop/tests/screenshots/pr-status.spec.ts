@@ -46,7 +46,7 @@ function pr(repo: string, number: number, title: string, sources: unknown[], sta
   n++;
   return {
     ref: { url: `https://github.com/${repo}/pull/${number}`, repo, number, sources },
-    status: { url: `https://github.com/${repo}/pull/${number}`, repo, number, title, author: "eldin", reviewers: { reviewed: [], pending: [], complete: true }, checks: passing(12), readiness: null, merge: mergeInfo(), ...status },
+    status: { url: `https://github.com/${repo}/pull/${number}`, repo, number, title, author: "eldin", updatedAt: at(10 + n), reviewers: { reviewed: [], pending: [], complete: true }, checks: passing(12), readiness: null, merge: mergeInfo(), ...status },
     readAt: at(10 + n),
     error: null,
   };
@@ -181,7 +181,7 @@ const overflow = () => {
 };
 
 for (const theme of ["dark", "light"] as const) {
-  for (const width of [280, 340, 420]) {
+  for (const width of [200, 240, 280, 340, 420]) {
     test(`pr status cards ${theme} ${width}`, async ({ page }) => {
       await page.setViewportSize({ width: 1440, height: 2400 });
       await page.addInitScript((t) => localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: t })), theme);
@@ -196,6 +196,8 @@ for (const theme of ["dark", "light"] as const) {
       await section.getByRole("button", { name: /Checks failing/ }).click();
       await page.waitForTimeout(250);
       expect(await page.evaluate(overflow)).toEqual([]);
+      // The heading is never cut short: the timestamp wraps below it instead.
+      expect(await section.locator(".prs-head h4").evaluate((h) => h.scrollWidth <= h.clientWidth)).toBe(true);
       await section.screenshot({ path: `${OUT}/${theme}-${width}.png` });
       await section.getByRole("button", { name: /Merged & closed/ }).click();
       await section.getByRole("button", { name: "this session + 4 workers" }).first().click();

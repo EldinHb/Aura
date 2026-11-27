@@ -104,7 +104,8 @@ function ConfirmSquash({ status, opened, blocked, close, onMerged }: {
   };
 
   return (
-    <form className="prs-confirm" aria-label={`Squash and merge #${status.number}`}
+    // `data-own-escape`: Aura's global keys leave Escape to this form while it is open.
+    <form className="prs-confirm" data-own-escape aria-label={`Squash and merge #${status.number}`}
       onSubmit={(e) => {
         e.preventDefault();
         void merge();

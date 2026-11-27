@@ -27,7 +27,7 @@ const url = `https://github.com/${repo}/pull/1290`;
 const title = ":sparkles: Rate limit the news API per tenant and per key, with Retry-After on 429";
 const person = (name: string, state: string, previous: string | null = null) => ({ name, kind: name.includes("/") ? "team" : "user", state, previous });
 const status = {
-  url, repo, number: 1290, title, author: "eldin", state: "open",
+  url, repo, number: 1290, title, author: "eldin", updatedAt: at(60), state: "open",
   reviewers: { reviewed: [person("Renevdo", "APPROVED"), person("martijntakken", "COMMENTED")], pending: [person("wortell/portal-maintainers", "PENDING")], complete: true },
   checks: { state: "passing", passing: 11, failing: 0, pending: 0, total: 11, open: [], complete: true },
   readiness: { ready: true, reasons: [] },

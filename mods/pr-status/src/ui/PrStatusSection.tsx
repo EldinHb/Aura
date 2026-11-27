@@ -39,7 +39,9 @@ export function PrStatusSection({ session }: InspectorSectionProps) {
       {error && <p className="err-text prs-note" role="alert">Could not update: {error}</p>}
       {active.length > 0 && (
         <div className="prs-cards">
-          {active.map((entry) => <PrCard key={entry.ref.url} entry={entry} rootId={session.id} now={now} onMerged={() => void refresh()} />)}
+          {active.map((entry) => (
+            <PrCard key={entry.ref.url} entry={entry} rootId={session.id} now={now} onMerged={() => void refresh()} explained={!!view.blocked || !!error} />
+          ))}
         </div>
       )}
       {done.length > 0 && <DoneGroup pulls={done} />}
@@ -51,7 +53,8 @@ function StateChip({ state }: { state: PrState }) {
   return <span className={clsx("prs-chip", `prs-chip-${state}`)}>{STATE_LABEL[state]}</span>;
 }
 
-function PrCard({ entry, rootId, now, onMerged }: { entry: PrEntry; rootId: string; now: number; onMerged: () => void }) {
+/** `explained`: the section already says why it is not updating, so a card does not repeat it. */
+function PrCard({ entry, rootId, now, onMerged, explained }: { entry: PrEntry; rootId: string; now: number; onMerged: () => void; explained: boolean }) {
   const { ref, status } = entry;
   const title = status?.title || `${ref.repo}#${ref.number}`;
   return (
@@ -62,10 +65,11 @@ function PrCard({ entry, rootId, now, onMerged }: { entry: PrEntry; rootId: stri
           onClick={() => openPrPage({ repo: ref.repo, number: ref.number, url: ref.url, title })}>{title}</button>
         <ExternalLink href={ref.url} className="prs-github" aria-label={`Open #${ref.number} on GitHub`} title="Open on GitHub">↗</ExternalLink>
       </div>
-      <div className="prs-meta" title={`${ref.repo} #${ref.number}`}>{ref.repo} #{ref.number}</div>
+      {/* Without data the title already is "repo#n". */}
+      {status && <div className="prs-meta" title={`${ref.repo} #${ref.number}`}>{ref.repo} #{ref.number}</div>}
       <Sources sources={ref.sources} rootId={rootId} />
       {!status && !entry.error && <p className="prs-line prs-muted">Loading…</p>}
-      {entry.error && (
+      {entry.error && !(explained && !status) && (
         <p className="err-text prs-line prs-wrap" title={entry.error}>
           Could not read{entry.readAt ? `; showing ${ago(entry.readAt, now)}` : ""}: {entry.error}
         </p>
@@ -109,8 +113,8 @@ function Sources({ sources, rootId }: { sources: PrSource[]; rootId: string }) {
   const summary = `${own ? "this session + " : ""}${workers} worker${workers === 1 ? "" : "s"}`;
   return (
     <>
-      <div className="prs-sources" title={all}>
-        from{" "}
+      <div className="prs-sources prs-sources-row" title={all}>
+        <span>from</span>
         <button className="prs-source" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(!open)}>{summary}</button>
       </div>
       {open && (

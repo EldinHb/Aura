@@ -18,7 +18,7 @@ function entry(over: Partial<PrEntry["ref"]> & { status?: any; error?: string | 
   return {
     ref: { url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, sources: over.sources ?? [{ sessionId: "lead", title: "Lead", worker: false }] },
     status: over.status === undefined ? {
-      url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, title: "Add rate limiting", author: "me", state: "open",
+      url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, title: "Add rate limiting", author: "me", updatedAt: "2026-11-27T09:00:00Z", state: "open",
       reviewers: {
         reviewed: [{ name: "alice", kind: "user", state: "APPROVED", previous: null }],
         pending: [{ name: "bob", kind: "user", state: "PENDING", previous: "CHANGES_REQUESTED" }, { name: "acme/core", kind: "team", state: "PENDING", previous: null }],
@@ -96,6 +96,21 @@ describe("PrStatusSection", () => {
     fireEvent.click(title);
     const page = { key: "https://github.com/acme/api/pull/1", title: "#1 Add rate limiting", repo: "acme/api", number: 1, url: "https://github.com/acme/api/pull/1" };
     expect(openView.mock.calls).toEqual([["pr", page], ["pr", page]]);
+  });
+
+  it("shows a card without data once, with one error line (QA)", async () => {
+    const failed = { ...entry({ status: null, error: "Could not resolve to a PullRequest" }), readAt: null };
+    fakeCtx({ sessionId: "lead", pulls: [failed], blocked: null });
+    const { unmount } = render(<PrStatusSection session={lead} />);
+    const card = await screen.findByRole("article");
+    expect(card.textContent!.match(/acme\/api ?#1/g)).toHaveLength(1);
+    expect(within(card).getAllByText(/Could not read/)).toHaveLength(1);
+    unmount();
+    // With the section saying why nothing updates, the card does not say it again.
+    fakeCtx({ sessionId: "lead", pulls: [failed], blocked: "GitHub login expired." });
+    render(<PrStatusSection session={lead} />);
+    expect((await screen.findByRole("status")).textContent).toContain("GitHub login expired.");
+    expect(within(screen.getByRole("article")).queryByText(/Could not read/)).toBeNull();
   });
 
   it("expands the checks to the failing and pending ones, linked", async () => {

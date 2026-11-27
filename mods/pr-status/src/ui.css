@@ -3,9 +3,10 @@
    .btn, .dot, .notice, .err-text. Colours are Material 3 tokens: chips are a container with its
    on-container text; status words are --md-success / --md-tertiary / --md-error on the card. */
 .prs-section { min-width: 0; }
-.prs-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; margin: 0 0 10px; }
-.prs-head h4 { flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prs-head-meta { flex: none; display: flex; align-items: center; gap: 8px; font-size: var(--fs-label-s); color: var(--fg-muted); }
+/* The title never truncates: when narrow, the timestamp and refresh wrap below it. */
+.prs-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; min-width: 0; margin: 0 0 10px; }
+.prs-head h4 { flex: 1 0 auto; margin: 0; white-space: nowrap; }
+.prs-head-meta { flex: none; margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: var(--fs-label-s); color: var(--fg-muted); }
 .prs-refresh { min-height: 24px; padding: 0 8px; }
 .prs-note { margin: 0 0 8px; min-width: 0; font-size: var(--fs-label-m); overflow-wrap: anywhere; }
 
@@ -60,8 +61,10 @@ a.prs-check-name:hover { text-decoration: underline; }
 .prs-people { min-width: 0; margin-top: 8px; }
 .prs-group-title { margin-bottom: 4px; font-size: var(--fs-label-s); color: var(--fg-muted); }
 .prs-chips { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
-.prs-person { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
-.prs-login { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A chip stays within the card: a long login shortens (to 4em at least) and, when even that is
+   too wide, the state wraps under it, still in the same chip. */
+.prs-person { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-width: 0; max-width: 100%; overflow: hidden; }
+.prs-login { flex: 0 1 auto; min-width: 4em; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prs-person .prs-word { flex: none; font-size: var(--fs-label-s); }
 .prs-avatar { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
   background: var(--md-secondary-container); color: var(--md-on-secondary-container); font-size: 10px; font-weight: 600; }

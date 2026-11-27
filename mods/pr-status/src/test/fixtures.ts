@@ -77,6 +77,7 @@ export function fakeGithub(nodes: Record<number, any> = {}) {
     }),
   };
   const pages: Array<{ query: string; variables: any }> = [];
+  const notifiedCalls: number[] = [];
   const gh: Github = {
     async request(_method, _path, body: any) {
       if (body.variables?.after !== undefined) {
@@ -107,10 +108,13 @@ export function fakeGithub(nodes: Record<number, any> = {}) {
       paceCalls.push(base);
       return state.pace(base);
     },
-    notified: async () => state.notified,
+    notified: async () => {
+      notifiedCalls.push(Date.now());
+      return state.notified;
+    },
     memo: () => null,
   };
-  return { gh, state, queries, paceCalls, pages };
+  return { gh, state, queries, paceCalls, pages, notifiedCalls };
 }
 
 export { Notified };

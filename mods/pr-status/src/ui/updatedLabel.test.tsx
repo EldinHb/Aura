@@ -14,7 +14,7 @@ function entry(number: number, state: "open" | "merged", readAt: string): PrEntr
   return {
     ref: { url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, sources: [{ sessionId: "lead", title: "Lead", worker: false }] },
     status: {
-      url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, title: `PR ${number}`, author: "me", state,
+      url: `https://github.com/acme/api/pull/${number}`, repo: "acme/api", number, title: `PR ${number}`, author: "me", updatedAt: "2026-11-27T09:00:00Z", state,
       reviewers: { reviewed: [], pending: [], complete: true },
       checks: { state: "passing", passing: 1, failing: 0, pending: 0, total: 1, open: [], complete: true },
       readiness: state === "open" ? { ready: true, reasons: [] } : null,
