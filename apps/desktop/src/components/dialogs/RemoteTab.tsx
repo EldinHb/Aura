@@ -5,7 +5,8 @@ import { Modal } from "../Modal";
 import { useStore } from "../../state/store";
 import { downloadManually } from "../../features/updates/updates";
 import { exactTime, timeAgo } from "../../lib/time";
-import { countdown, MAX_PORT, MIN_PORT, pairingUriFor, validateRemoteForm, type PairingInfo, type RemoteDevice, type RemoteForm, type RemoteStatus } from "../../lib/remote";
+import type { PairingInfo, RemoteDevice, RemoteConfigure, RemoteStatus } from "../../gen";
+import { countdown, MAX_PORT, MIN_PORT, pairingUriFor, validateRemoteForm, type RemoteForm } from "../../lib/remote";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const formOf = (s: RemoteStatus): RemoteForm => ({ serverName: s.serverName, bindAddress: s.bindAddress, port: String(s.port) });
@@ -33,6 +34,7 @@ export function RemoteTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pairing, setPairing] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     if (!client) return;
@@ -50,21 +52,23 @@ export function RemoteTab() {
     try {
       setDevices(await client.remoteListDevices());
     } catch (e) {
-      toast(`Could not load devices: ${message(e)}`, "error");
+      setActionError(`Could not load devices: ${message(e)}`);
     }
-  }, [client, toast]);
+  }, [client]);
   useEffect(() => {
     void loadStatus();
     void loadDevices();
   }, [loadStatus, loadDevices]);
 
-  const configure = async (config: Parameters<NonNullable<typeof client>["remoteConfigure"]>[0]) => {
+  const configure = async (config: RemoteConfigure) => {
     if (!client) return;
     try {
-      await client.remoteConfigure(config);
-      await loadStatus();
+      const next = await client.remoteConfigure(config);
+      setStatus(next);
+      setForm(formOf(next));
+      setActionError(null);
     } catch (e) {
-      toast(`Could not save: ${message(e)}`, "error");
+      setActionError(`Could not save: ${message(e)}`);
     }
   };
   const revoke = async (device: RemoteDevice) => {
@@ -72,16 +76,18 @@ export function RemoteTab() {
     try {
       await client.remoteRevokeDevice(device.deviceId);
       setConfirming(null);
+      setActionError(null);
       await loadDevices();
       toast(`Revoked ${device.name}`);
     } catch (e) {
-      toast(`Could not revoke ${device.name}: ${message(e)}`, "error");
+      setActionError(`Could not revoke ${device.name}: ${message(e)}`);
     }
   };
 
   if (loadError) return <div className="err-text">Could not load remote access: {loadError}</div>;
   if (!status || !form) return <div className="dim">Loading…</div>;
 
+  const fingerprint = status.fingerprint;
   const errors = validateRemoteForm(form);
   const invalid = Object.keys(errors).length > 0;
   const dirty = JSON.stringify(form) !== JSON.stringify(formOf(status));
@@ -90,6 +96,7 @@ export function RemoteTab() {
 
   return (
     <div className="remote-tab">
+      {actionError && <div className="err-text" role="alert" style={{ marginBottom: 8 }}>{actionError}</div>}
       <label className="check-row">
         <input type="checkbox" data-autofocus checked={status.enabled} onChange={(e) => void configure({ enabled: e.target.checked })} /> Allow remote clients
       </label>
@@ -131,7 +138,7 @@ export function RemoteTab() {
 
       <div className="field" role="status">
         <label>Status</label>
-        {status.error ? (
+        {status.enabled && status.error ? (
           <span className="err-text">{status.error}</span>
         ) : (
           <span>{!status.enabled ? "Off" : status.listening ? `Listening on ${status.bindAddress}:${status.port}` : "Not listening"}</span>
@@ -140,12 +147,18 @@ export function RemoteTab() {
       <div className="field">
         <label htmlFor="remote-fingerprint">Certificate fingerprint</label>
         <div className="row-controls">
-          <code id="remote-fingerprint" className="grow" style={{ wordBreak: "break-all", userSelect: "text" }}>{status.fingerprint}</code>
-          <button type="button" className="btn small" data-hint onClick={() => void copy(status.fingerprint, "Fingerprint")}>
-            Copy
-          </button>
+          {fingerprint ? (
+            <>
+              <code id="remote-fingerprint" className="grow" style={{ wordBreak: "break-all", userSelect: "text" }}>{fingerprint}</code>
+              <button type="button" className="btn small" data-hint onClick={() => void copy(fingerprint, "Fingerprint")}>
+                Copy
+              </button>
+            </>
+          ) : (
+            <span id="remote-fingerprint" className="dim">Made the first time you allow remote clients</span>
+          )}
         </div>
-        <span className="dim" style={{ fontSize: 11 }}>The Android app shows this when it connects; it should match.</span>
+        <span className="dim" style={{ fontSize: 11 }}>The pairing link carries it, and the Android app only connects to a server with this certificate.</span>
       </div>
 
       <div className="provider-card">

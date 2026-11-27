@@ -1,62 +1,39 @@
-/** Types of the daemon's local-only `remote.*` methods (remote clients: the Android app). */
+/** Helpers for the daemon's local-only `remote.*` methods (remote clients: the Android app); the types are in `../gen`. */
 
-export type RemoteStatus = {
-  enabled: boolean;
-  bindAddress: string;
-  port: number;
-  serverName: string;
-  /** SHA-256 fingerprint of the server certificate. */
-  fingerprint: string;
-  listening: boolean;
-  error?: string;
-  /** Addresses a device on the network can reach this machine at. */
-  addresses: string[];
-};
-
-export type RemoteConfig = Partial<Pick<RemoteStatus, "enabled" | "bindAddress" | "port" | "serverName">>;
-
-export type PairingInfo = {
-  code: string;
-  /** ISO time the code stops working. */
-  expiresAt: string;
-  /** The link the QR code carries. */
-  uri: string;
-  fingerprint: string;
-  addresses: string[];
-};
-
-export type RemoteDevice = {
-  deviceId: string;
-  name: string;
-  pairedAt: string;
-  lastSeenAt: string | null;
-  lastAddress: string | null;
-};
-
-export const DEFAULT_BIND_ADDRESS = "0.0.0.0";
-export const DEFAULT_PORT = 7443;
+/** The daemon takes 1–65535; below 1024 needs privileges, so the page asks for 1024 and up. */
 export const MIN_PORT = 1024;
 export const MAX_PORT = 65535;
 
+const MAX_NAME = 64;
+
 export type RemoteForm = { serverName: string; bindAddress: string; port: string };
+
 export type RemoteFormErrors = Partial<Record<keyof RemoteForm, string>>;
+
+const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
+/** An IPv4 address, or something that looks like IPv6 (the daemon has the last word). */
+function isIpAddress(value: string): boolean {
+  return IPV4.test(value) || (value.includes(":") && /^[0-9a-fA-F:.]+$/.test(value));
+}
 
 /** What is wrong with the form, per field; empty when it can be saved. */
 export function validateRemoteForm(form: RemoteForm): RemoteFormErrors {
   const errors: RemoteFormErrors = {};
-  if (!form.serverName.trim()) errors.serverName = "Give this computer a name";
-  if (!form.bindAddress.trim()) errors.bindAddress = "Enter an address, such as 0.0.0.0 or 127.0.0.1";
+  const name = form.serverName.trim();
+  if (!name) errors.serverName = "Give this computer a name";
+  else if (name.length > MAX_NAME) errors.serverName = `At most ${MAX_NAME} characters`;
+  if (!isIpAddress(form.bindAddress.trim())) errors.bindAddress = "Enter an IP address, such as 0.0.0.0 or 127.0.0.1";
   const port = Number(form.port);
   if (!/^\d+$/.test(form.port.trim()) || port < MIN_PORT || port > MAX_PORT) errors.port = `A port between ${MIN_PORT} and ${MAX_PORT}`;
   return errors;
 }
 
-/** The pairing link pointing at `host`: its `host` parameter when it has one, else the link's own host. */
+/** The pairing link (`aura://pair?host=…&port=…&fp=…&code=…&name=…`) pointing at `host`; the other parameters stay as they are. */
 export function pairingUriFor(uri: string, host: string): string {
   try {
     const url = new URL(uri);
-    if (url.searchParams.has("host")) url.searchParams.set("host", host);
-    else url.hostname = host;
+    url.searchParams.set("host", host);
     return url.toString();
   } catch {
     return uri;

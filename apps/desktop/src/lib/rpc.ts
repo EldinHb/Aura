@@ -33,6 +33,10 @@ import type {
   UserInputRequest,
   DaemonInfo,
   Group,
+  PairingInfo,
+  RemoteConfigure,
+  RemoteDevice,
+  RemoteStatus,
   BranchStatus,
   Autonomy,
   Feature,
@@ -48,7 +52,6 @@ import type {
   Workspace,
   BulkDeleteResult,
 } from "../gen";
-import type { PairingInfo, RemoteConfig, RemoteDevice, RemoteStatus } from "./remote";
 
 export const FRAME_PTY_OUTPUT = 1;
 export const FRAME_PTY_INPUT = 2;
@@ -391,8 +394,8 @@ export class RpcClient {
   remoteStatus() {
     return this.call<RemoteStatus>("remote.status");
   }
-  remoteConfigure(config: RemoteConfig) {
-    return this.call<unknown>("remote.configure", config);
+  remoteConfigure(config: RemoteConfigure) {
+    return this.call<RemoteStatus>("remote.configure", config);
   }
   remoteStartPairing() {
     return this.call<PairingInfo>("remote.startPairing");
