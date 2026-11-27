@@ -4,55 +4,83 @@ import type { Session } from "../../gen";
 import { Modal } from "../Modal";
 import { useStore, waitsOnUser } from "../../state/store";
 import { workersUnder } from "../../lib/sessionFolder";
+import { forestOf } from "../../state/forest";
 import { relTime } from "../../lib/platform";
 import { stateWord, statusClass } from "../../lib/sessionStatus";
 
 type Scope = "workspace" | "all";
 
-/** A group of the list: an orchestrator's direct workers, the workers whose orchestrator is gone, or the scheduled runs. */
+/** A group of the list: the sessions that failed to delete, an orchestrator's workers, the workers whose orchestrator is gone, or the scheduled runs. */
 export type CleanupGroup = { key: string; label: string; orchestrator: Session | null; rows: Session[] };
 
-/** Whether `s` (with everything under it) is done enough to delete without asking: nothing works or waits on the user. */
-function finished(s: Session, sessions: Record<string, Session>): boolean {
-  return [s, ...workersUnder(s.id, sessions)].every((x) => x.status !== "running" && !waitsOnUser(x));
+export const FAILED_GROUP = "\u0000failed";
+export const SCHEDULED_GROUP = "\u0000scheduled";
+const ORPHANS_GROUP = "\u0000orphans";
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** "Nightly · 27 Nov 03:00": a scheduled run by its task and when it started, in local time. */
+export function runLabel(s: Session): string {
+  const d = new Date(s.created_at);
+  const when = Number.isNaN(d.getTime()) ? "" : ` · ${d.getDate()} ${MONTHS[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${s.scheduled_task_name ?? s.title}${when}`;
+}
+
+/** Whether `s` is done enough to delete without asking: it neither works nor waits on the user. */
+function finished(s: Session): boolean {
+  return s.status !== "running" && !waitsOnUser(s);
 }
 
 /**
- * What the cleanup dialog lists. For `orchestratorId`, that orchestrator's
- * direct workers. Otherwise, in `workspace` (null for every workspace): one
- * group per top-level orchestrator with workers, most recent first; the
- * workers whose orchestrator is gone; and last the top-level scheduled runs,
- * newest first. Workers in a group are oldest first.
+ * What the cleanup dialog lists. Only sessions that are no orchestrator and
+ * have no workers are listed, so deleting one never takes a tree along.
+ * First, `failedIds` that still exist ("Couldn't delete"), wherever they are
+ * now. Then, for `orchestratorId`, the workers of it and of each orchestrator
+ * under it; otherwise, in `workspace` (null for every workspace), a group per
+ * orchestrator with workers, most recent first, the workers whose
+ * orchestrator is gone, and last the scheduled runs that lead (newest
+ * first). Workers in a group are oldest first.
  */
-export function cleanupGroups(sessions: Record<string, Session>, orchestratorId: string | null, workspace: string | null): CleanupGroup[] {
-  const all = Object.values(sessions);
-  const oldest = (a: Session, b: Session) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id);
-  const workersOf = (id: string) => all.filter((w) => w.orchestrator_id === id).sort(oldest);
+export function cleanupGroups(sessions: Record<string, Session>, orchestratorId: string | null, workspace: string | null, failedIds: string[] = []): CleanupGroup[] {
+  const forest = forestOf(sessions);
+  const failed = failedIds.map((id) => sessions[id]).filter((s): s is Session => !!s);
+  const failedSet = new Set(failed.map((s) => s.id));
+  const listable = (s: Session) => !s.orchestrator && forest.childrenOf(s.id).length === 0 && !failedSet.has(s.id);
+  const workersOf = (id: string) => forest.childrenOf(id).filter(listable);
+  const ownerLabel = (o: Session) => (o.scheduled_task_id ? runLabel(o) : o.title);
+  const groups: CleanupGroup[] = failed.length ? [{ key: FAILED_GROUP, label: "Couldn't delete", orchestrator: null, rows: failed }] : [];
+  const byActivity = (a: Session, b: Session) => b.last_activity.localeCompare(a.last_activity) || a.id.localeCompare(b.id);
   if (orchestratorId) {
     const o = sessions[orchestratorId];
-    return o ? [{ key: o.id, label: o.title, orchestrator: o, rows: workersOf(o.id) }].filter((g) => g.rows.length > 0) : [];
+    if (!o) return groups;
+    for (const owner of [o, ...forest.descendantsOf(o.id)]) {
+      const rows = workersOf(owner.id);
+      if (rows.length) groups.push({ key: owner.id, label: ownerLabel(owner), orchestrator: owner, rows });
+    }
+    return groups;
   }
+  const all = Object.values(sessions);
   const inScope = (s: Session) => workspace === null || s.workspace === workspace;
-  const scheduledRun = (s: Session): boolean => !!s.scheduled_task_id || (!!s.orchestrator_id && !!sessions[s.orchestrator_id] && scheduledRun(sessions[s.orchestrator_id]));
-  const groups: CleanupGroup[] = all
-    .filter((o) => !o.orchestrator_id && !scheduledRun(o) && inScope(o) && all.some((w) => w.orchestrator_id === o.id))
-    .sort((a, b) => b.last_activity.localeCompare(a.last_activity) || a.id.localeCompare(b.id))
-    .map((o) => ({ key: o.id, label: o.title, orchestrator: o, rows: workersOf(o.id) }));
-  const orphans = all.filter((w) => w.orchestrator_id && !sessions[w.orchestrator_id] && inScope(w)).sort(oldest);
-  if (orphans.length) groups.push({ key: "\u0000orphans", label: "No orchestrator", orchestrator: null, rows: orphans });
-  const runs = all.filter((s) => s.scheduled_task_id && !s.orchestrator_id && inScope(s)).sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
-  if (runs.length) groups.push({ key: "\u0000scheduled", label: "Scheduled runs", orchestrator: null, rows: runs });
+  for (const owner of all.filter((o) => inScope(o) && workersOf(o.id).length > 0).sort(byActivity)) {
+    groups.push({ key: owner.id, label: ownerLabel(owner), orchestrator: owner, rows: workersOf(owner.id) });
+  }
+  const leads = all.filter((s) => !forest.parentOf(s.id) && listable(s) && inScope(s));
+  const orphans = leads.filter((s) => s.orchestrator_id && !forest.scheduledTaskOf(s)).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  if (orphans.length) groups.push({ key: ORPHANS_GROUP, label: "No orchestrator", orchestrator: null, rows: orphans });
+  const runs = leads.filter((s) => forest.scheduledTaskOf(s)).sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
+  if (runs.length) groups.push({ key: SCHEDULED_GROUP, label: "Scheduled runs", orchestrator: null, rows: runs });
   return groups;
 }
 
 /**
  * The rows checked when the dialog opens, and by "Select finished": idle,
- * finished, failed, exited and archived workers. Not a worker that works or
- * waits on the user (nor a sub-orchestrator whose tree does), and never a
- * scheduled run.
+ * finished, failed, exited and archived workers. Not one that works or waits
+ * on the user, and nothing of a scheduled run.
  */
 export function defaultPicks(groups: CleanupGroup[], sessions: Record<string, Session>): string[] {
-  return groups.filter((g) => g.key !== "\u0000scheduled").flatMap((g) => g.rows.filter((s) => finished(s, sessions)).map((s) => s.id));
+  const forest = forestOf(sessions);
+  return groups.filter((g) => g.key !== SCHEDULED_GROUP && g.key !== FAILED_GROUP).flatMap((g) => g.rows.filter((s) => finished(s) && !forest.scheduledTaskOf(s)).map((s) => s.id));
 }
 
 /** Every session deleting `ids` deletes: each one with its workers. */
@@ -79,11 +107,13 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
   const activeWorkspace = useStore((s) => (s.workspaces.length ? s.activeWorkspace : null));
   const hasWorkspaces = useStore((s) => s.workspaces.length > 1);
   const [scope, setScope] = useState<Scope>(initialScope);
-  const groups = useMemo(() => cleanupGroups(sessions, orchestratorId ?? null, scope === "all" ? null : activeWorkspace), [sessions, orchestratorId, scope, activeWorkspace]);
+  const [failed, setFailed] = useState<Record<string, string>>({});
+  // Failed sessions stay listed with their reason, wherever they are now.
+  const groups = useMemo(() => cleanupGroups(sessions, orchestratorId ?? null, scope === "all" ? null : activeWorkspace, Object.keys(failed)), [sessions, orchestratorId, scope, activeWorkspace, failed]);
   const [picked, setPicked] = useState<string[]>(() => defaultPicks(groups, sessions));
   const [confirming, setConfirming] = useState(false);
+  /** While deleting: every session the call deletes, trees included, to count down. */
   const [busy, setBusy] = useState<string[] | null>(null);
-  const [failed, setFailed] = useState<Record<string, string>>({});
   const [summary, setSummary] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,7 +130,7 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
     setConfirming(false);
     setError(null);
     setSummary(null);
-    setBusy(ids);
+    setBusy(affected(ids, sessions).map((s) => s.id));
     try {
       const result = await client.deleteSessions(ids);
       const reasons = Object.fromEntries(result.failed.map((f) => [f.id, f.error]));
@@ -110,7 +140,7 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
         return;
       }
       setFailed(reasons);
-      // Deleted rows go; failed rows stay checked with their reason.
+      // Deleted rows go; failed rows stay checked with their reason. Counts are in sessions, trees included.
       setPicked(result.failed.map((f) => f.id));
       setSummary(`Deleted ${result.deleted.length}. ${result.failed.length} couldn't be deleted.`);
     } catch (e) {
@@ -248,7 +278,7 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
               {g.rows.map((s) => {
                 const under = workersUnder(s.id, sessions).length;
                 const why = failed[s.id];
-                const label = g.key === "\u0000scheduled" ? `${s.scheduled_task_name ?? s.title} · ${new Date(s.created_at).toLocaleString()}` : s.title;
+                const label = s.scheduled_task_id ? runLabel(s) : s.title;
                 return (
                   <label key={s.id} className={clsx("cleanup-row", why && "failed")}>
                     <input type="checkbox" disabled={!!busy} checked={live.includes(s.id)} onChange={(e) => toggle([s.id], e.target.checked)} />

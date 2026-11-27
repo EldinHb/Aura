@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { BulkDeleteResult, Session, Workspace } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { defaultSettings, useStore } from "../../state/store";
-import { WorkersCleanupDialog, cleanupGroups, defaultPicks } from "./WorkersCleanupDialog";
+import { WorkersCleanupDialog, cleanupGroups, defaultPicks, runLabel } from "./WorkersCleanupDialog";
 
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false, workspace: "one",
@@ -16,7 +16,8 @@ const toast = vi.fn();
 /**
  * Orchestrator "lead" with an idle, a finished, a failed, an archived, a
  * working and a waiting worker, and a sub-orchestrator whose own worker is
- * done; an orphaned worker; a scheduled run; and in workspace two another orchestra.
+ * done; an orphaned worker; a scheduled run; a scheduled orchestrator run
+ * with a worker; and in workspace two another orchestra.
  */
 function setup() {
   const list = [
@@ -27,10 +28,12 @@ function setup() {
     session("old", { orchestrator_id: "lead", archived: true, created_at: "2026-11-20T04:00:00Z" }),
     session("busy", { orchestrator_id: "lead", status: "running", created_at: "2026-11-20T05:00:00Z" }),
     session("asks", { orchestrator_id: "lead", pending_count: 1, created_at: "2026-11-20T06:00:00Z" }),
-    session("sub", { orchestrator_id: "lead", orchestrator: true, created_at: "2026-11-20T07:00:00Z" }),
+    session("sub", { orchestrator_id: "lead", orchestrator: true, created_at: "2026-11-20T07:00:00Z", last_activity: "2026-11-20T08:00:00Z" }),
     session("subw", { orchestrator_id: "sub", attention: "done" }),
     session("orphan", { orchestrator_id: "gone" }),
     session("run", { scheduled_task_id: "t", scheduled_task_name: "Nightly" }),
+    session("srun", { scheduled_task_id: "t2", scheduled_task_name: "Weekly", orchestrator: true, created_at: new Date(2026, 10, 27, 3, 0).toISOString() }),
+    session("sw", { orchestrator_id: "srun", scheduled_run: "t2" }),
     session("lead2", { orchestrator: true, workspace: "two" }),
     session("w2", { orchestrator_id: "lead2", workspace: "two" }),
   ];
@@ -48,34 +51,46 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-const checked = () => [...document.querySelectorAll<HTMLInputElement>(".cleanup-row input:checked")].map((el) => el.closest("label")!.querySelector(".cleanup-title")!.textContent!.split(" ")[0]);
+const checked = () => [...document.querySelectorAll<HTMLInputElement>(".cleanup-row input:checked")].map((el) => el.closest("label")!.querySelector(".cleanup-title")!.firstChild!.textContent);
+const deferred = <T,>() => {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+};
 
-it("groups workers by orchestrator in the workspace, orphans and scheduled runs last", () => {
+it("never lists an orchestrator: each orchestrator's workers get a group, scheduled orchestrator runs by task and time", () => {
   const groups = cleanupGroups(useStore.getState().sessions, null, "one");
   expect(groups.map((g) => [g.label, g.rows.map((s) => s.id)])).toEqual([
-    ["lead", ["idle", "done", "failed", "old", "busy", "asks", "sub"]],
+    ["lead", ["idle", "done", "failed", "old", "busy", "asks"]],
+    ["sub", ["subw"]],
+    ["Weekly · 27 Nov 03:00", ["sw"]],
     ["No orchestrator", ["orphan"]],
     ["Scheduled runs", ["run"]],
   ]);
+  const rows = groups.flatMap((g) => g.rows.map((s) => s.id));
+  for (const orchestrator of ["lead", "sub", "srun"]) expect(rows).not.toContain(orchestrator);
   // Every workspace: the other orchestra too.
   expect(cleanupGroups(useStore.getState().sessions, null, null).map((g) => g.label)).toContain("lead2");
+  // From one orchestrator: its workers and those of the orchestrators under it.
+  expect(cleanupGroups(useStore.getState().sessions, "lead", null).map((g) => g.label)).toEqual(["lead", "sub"]);
 });
 
-it("preselects what is done: not what works or waits on the user, not a sub-orchestra still busy, never a scheduled run", () => {
+it("names a scheduled run by its task, day and time", () => {
+  expect(runLabel(session("r", { scheduled_task_name: "Nightly", created_at: new Date(2026, 10, 27, 3, 5).toISOString() }))).toBe("Nightly · 27 Nov 03:05");
+});
+
+it("preselects what is done: not what works or waits on the user, nothing of a scheduled run", () => {
   const sessions = useStore.getState().sessions;
-  expect(defaultPicks(cleanupGroups(sessions, null, "one"), sessions)).toEqual(["idle", "done", "failed", "old", "sub", "orphan"]);
-  const busy = { ...sessions, subw: { ...sessions.subw, status: "running" as const } };
-  expect(defaultPicks(cleanupGroups(busy, null, "one"), busy)).not.toContain("sub");
+  expect(defaultPicks(cleanupGroups(sessions, null, "one"), sessions)).toEqual(["idle", "done", "failed", "old", "subw", "orphan"]);
 });
 
 it("deletes the selection after one confirmation that says what is still working or waiting", async () => {
   deleteSessions.mockResolvedValue({ deleted: ["idle", "busy", "asks"], failed: [] });
   render(<WorkersCleanupDialog orchestratorId="lead" />);
-  expect(checked()).toEqual(["idle", "done", "failed", "old", "sub"]);
+  expect(checked()).toEqual(["idle", "done", "failed", "old", "subw"]);
   fireEvent.click(screen.getByRole("button", { name: "Select none" }));
   expect(screen.getByRole("button", { name: /Delete 0 sessions/ }).hasAttribute("disabled")).toBe(true);
   for (const id of ["idle", "busy", "asks"]) fireEvent.click(screen.getByRole("checkbox", { name: new RegExp(`^${id}`) }));
-  // A waiting row says so in words.
   // A waiting row says so once, in its chip.
   expect(screen.getByRole("checkbox", { name: /^asks/ }).closest("label")!.textContent!.match(/waiting on you/g)).toHaveLength(1);
   expect(screen.getByRole("checkbox", { name: /^busy/ }).closest("label")!.querySelector(".cleanup-state")!.textContent).toMatch(/^working · /);
@@ -89,29 +104,37 @@ it("deletes the selection after one confirmation that says what is still working
   expect(toast).toHaveBeenCalledWith("Deleted 3 worker sessions");
 });
 
-it("skips the confirmation when deleting is not confirmed, and counts a sub-orchestrator's workers", async () => {
+it("counts in sessions throughout: the button, the countdown while deleting, and the daemon's own deleted list", async () => {
   useStore.setState({ settings: { ...defaultSettings, confirmDelete: false } });
-  deleteSessions.mockResolvedValue({ deleted: ["sub", "subw"], failed: [] });
+  const call = deferred<BulkDeleteResult>();
+  deleteSessions.mockReturnValue(call.promise);
   render(<WorkersCleanupDialog orchestratorId="lead" />);
   fireEvent.click(screen.getByRole("button", { name: "Select none" }));
-  fireEvent.click(screen.getByRole("checkbox", { name: /^sub/ }));
-  fireEvent.click(screen.getByRole("button", { name: /Delete 2 sessions/ }));
-  await waitFor(() => expect(deleteSessions).toHaveBeenCalledWith(["sub"]));
+  for (const id of ["idle", "done", "subw"]) fireEvent.click(screen.getByRole("checkbox", { name: new RegExp(`^${id}`) }));
+  fireEvent.click(screen.getByRole("button", { name: /Delete 3 sessions/ }));
+  expect(screen.getByRole("button", { name: /Deleting 0 of 3…/ })).toBeTruthy();
+  // The daemon's events take sessions away while the call runs.
+  act(() => useStore.getState().removeSession("idle"));
+  expect(screen.getByRole("button", { name: /Deleting 1 of 3…/ })).toBeTruthy();
+  await act(async () => call.resolve({ deleted: ["idle", "done", "subw"], failed: [] }));
+  expect(toast).toHaveBeenCalledWith("Deleted 3 worker sessions");
 });
 
-it("keeps failed rows checked with their reason, and retries only those", async () => {
+it("keeps every failed session listed with its reason, wherever it went, and retries only those", async () => {
   useStore.setState({ settings: { ...defaultSettings, confirmDelete: false } });
-  deleteSessions.mockResolvedValueOnce({ deleted: ["idle", "done", "old"], failed: [{ id: "failed", error: "Couldn't stop the process: busy" }, { id: "sub", error: "locked" }] });
+  deleteSessions.mockResolvedValueOnce({ deleted: ["idle", "done", "old", "sub"], failed: [{ id: "failed", error: "Couldn't stop the process: busy" }, { id: "subw", error: "locked" }] });
   render(<WorkersCleanupDialog orchestratorId="lead" />);
-  fireEvent.click(screen.getByRole("button", { name: /Delete 6 sessions/ }));
-  await waitFor(() => expect(screen.getByText("Deleted 3. 2 couldn't be deleted.")).toBeTruthy());
-  // The daemon's events take the deleted rows away.
-  act(() => { for (const id of ["idle", "done", "old"]) useStore.getState().removeSession(id); });
-  expect(checked()).toEqual(["failed", "sub"]);
-  expect(screen.getByText("Couldn't stop the process: busy")).toBeTruthy();
-  deleteSessions.mockResolvedValueOnce({ deleted: ["failed", "sub", "subw"], failed: [] });
+  fireEvent.click(screen.getByRole("button", { name: /Delete 5 sessions/ }));
+  await waitFor(() => expect(screen.getByText("Deleted 4. 2 couldn't be deleted.")).toBeTruthy());
+  // The daemon's events take the deleted rows away; subw's orchestrator went too, so it is under lead no more.
+  act(() => { for (const id of ["idle", "done", "old", "sub"]) useStore.getState().removeSession(id); });
+  const group = screen.getByRole("group", { name: "Couldn't delete" });
+  expect(group.textContent).toContain("Couldn't stop the process: busy");
+  expect(group.textContent).toContain("locked");
+  expect(checked()).toEqual(["failed", "subw"]);
+  deleteSessions.mockResolvedValueOnce({ deleted: ["failed", "subw"], failed: [] });
   fireEvent.click(screen.getByRole("button", { name: "Retry failed" }));
-  await waitFor(() => expect(deleteSessions).toHaveBeenLastCalledWith(["failed", "sub"]));
+  await waitFor(() => expect(deleteSessions).toHaveBeenLastCalledWith(["failed", "subw"]));
   await waitFor(() => expect(useStore.getState().dialog.kind).toBe("none"));
 });
 
@@ -119,7 +142,7 @@ it("says why when the daemon cannot be reached, and deletes nothing here", async
   useStore.setState({ settings: { ...defaultSettings, confirmDelete: false } });
   deleteSessions.mockRejectedValue(new Error("connection closed"));
   render(<WorkersCleanupDialog orchestratorId="lead" />);
-  fireEvent.click(screen.getByRole("button", { name: /Delete 6 sessions/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Delete 5 sessions/ }));
   await waitFor(() => expect(screen.getByText("Couldn't delete: connection closed")).toBeTruthy());
   expect(useStore.getState().sessions.idle).toBeTruthy();
   expect(checked()).toHaveLength(5);
