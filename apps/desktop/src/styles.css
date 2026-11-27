@@ -1088,9 +1088,10 @@ input[type=checkbox], input[type=radio] { accent-color: var(--md-primary); }
 .session-row:hover .row-action, .session-row .row-action:focus-visible { display: inline-block; }
 .session-row .row-action:hover { color: var(--fg); background: var(--hover-layer); }
 
-/* The status rail: pinned between the list and the scheduled tasks line; the list keeps at least 40% of the height. */
+/* The status rail: pinned between the list and the scheduled tasks line; the list keeps at least 40% of the height.
+   The rail keeps its own height up to 30% (then scrolls), so the mods' sidebar sections below it give way first. */
 .session-list { min-height: 40%; }
-.status-rail { flex: 0 1 auto; min-height: 0; max-height: 60%; overflow: auto; padding: 4px 8px 6px; border-top: 1px solid var(--md-outline-variant); }
+.status-rail { flex: 0 0 auto; min-height: 0; max-height: 30%; overflow: auto; padding: 4px 8px 6px; border-top: 1px solid var(--md-outline-variant); }
 .rail-block + .rail-block { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--md-outline-variant); }
 .status-rail .rail-heading { display: block; width: 100%; padding: 8px 12px 2px; text-align: left; text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px; }
 .status-rail button.rail-heading { cursor: pointer; border-radius: var(--shape-sm); }

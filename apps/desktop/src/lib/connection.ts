@@ -1,5 +1,6 @@
 /** Find the daemon: Tauri command in the app, URL/dev endpoint in a browser. */
 import { RpcClient } from "./rpc";
+import { appLog, describe } from "./appLog";
 
 /**
  * `window_secret`: the secret the desktop shell gave the daemon it spawned;
@@ -39,8 +40,13 @@ export function windowClient(info: ConnInfo): RpcClient {
   const client = new RpcClient(info.port, info.token);
   const secret = info.window_secret ?? info.windowSecret ?? null;
   if (secret) {
+    // Said in the app's log: whether this window may approve is otherwise seen only in the prompt.
     client.onState((s) => {
-      if (s === "open") void client.call("daemon.window_hello", { secret }).catch((e: unknown) => console.warn("not Aura's window:", e));
+      if (s === "open")
+        void client.call("daemon.window_hello", { secret }).then(
+          () => appLog("info", "window: the daemon accepted the window secret; approvals can be granted here"),
+          (e: unknown) => appLog("warn", `window: the daemon refused the window secret: ${describe(e)}`),
+        );
     });
   }
   return client;
