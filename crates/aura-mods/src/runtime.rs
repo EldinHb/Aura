@@ -474,3 +474,39 @@ fn run(
     drop(activation);
     Ok(())
 }
+
+/// Parse `source` as an ES module without running it (a UI half, which runs
+/// in the window, never here). `Err` reads `<name>:<line>:<column>: <error>`
+/// when QuickJS gives a place.
+pub fn check_module_syntax(name: &str, source: &str) -> Result<(), String> {
+    let rt = Runtime::new().map_err(|e| e.to_string())?;
+    rt.set_memory_limit(MEMORY_LIMIT);
+    let ctx = Context::full(&rt).map_err(|e| e.to_string())?;
+    ctx.with(|ctx| match Module::declare(ctx.clone(), name, source) {
+        Ok(_) => Ok(()),
+        Err(rquickjs::Error::Exception) => {
+            let v = ctx.catch();
+            let obj = v.as_object();
+            let get = |key: &str| obj.and_then(|o| o.get::<_, String>(key).ok());
+            let message = get("message").unwrap_or_else(|| "syntax error".into());
+            let kind = get("name").unwrap_or_else(|| "SyntaxError".into());
+            // "    at ui.js:3:10"
+            let place = get("stack").and_then(|stack| {
+                stack
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("at ").map(str::to_string))
+                    .filter(|p| p.starts_with(name))
+            });
+            if let Some(module) = message.strip_prefix("could not load module ") {
+                return Err(format!(
+                    "{name}: imports {module}, but a UI half is one file and may not import anything; take React and Aura's parts from globalThis.__aura.modules"
+                ));
+            }
+            Err(match place {
+                Some(p) => format!("{p}: {kind}: {message}"),
+                None => format!("{name}: {kind}: {message}"),
+            })
+        }
+        Err(e) => Err(format!("{name}: {e}")),
+    })
+}

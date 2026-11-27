@@ -19,6 +19,17 @@ use tokio::sync::broadcast;
 /// The longest a `mod.<id>.<name>` call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const LOG_LINES: usize = 300;
+/// File events settle for this long, with no new event, before mods reload.
+const QUIET: Duration = Duration::from_millis(400);
+/// A burst of events never delays a reload longer than this.
+const MAX_SETTLE: Duration = Duration::from_secs(5);
+/// `mods.ui_log`: at most this many reports per mod per window.
+const UI_LOG_LIMIT: u32 = 20;
+const UI_LOG_WINDOW: Duration = Duration::from_secs(10);
+/// Core setting with the approved CSS of themes (`themes.approve`).
+pub const THEMES_STATE_KEY: &str = "themes.state.v1";
+/// Core setting holding the theme the windows show (`themes.use`).
+pub const THEME_KEY: &str = "ui.theme";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -50,6 +61,60 @@ struct SavedState {
     /// The permissions the user approved, per mod.
     #[serde(default)]
     approved: BTreeMap<String, Permissions>,
+    /// The folder each approval was given for. An approval holds only for that
+    /// folder, so another folder cannot take over an approved mod's id.
+    #[serde(default)]
+    approved_dirs: BTreeMap<String, String>,
+}
+
+/// Themes whose CSS the user approved: the exact CSS, per theme id and file.
+#[derive(Default, Serialize, Deserialize)]
+struct ThemesState {
+    #[serde(default)]
+    approved: BTreeMap<String, ApprovedCss>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq)]
+struct ApprovedCss {
+    path: String,
+    css: String,
+}
+
+/// A folder's identity for approvals.
+fn identity(dir: &Path) -> String {
+    std::fs::canonicalize(dir)
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+/// What a mod's files were when it was (re)loaded, to tell what changed.
+#[derive(Clone, Default, PartialEq, Debug)]
+struct Stamp {
+    manifest: u64,
+    daemon: u64,
+    ui: u64,
+}
+
+fn file_hash(path: Option<PathBuf>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match path.and_then(|p| std::fs::read(p).ok()) {
+        Some(bytes) => bytes.hash(&mut h),
+        None => 0u8.hash(&mut h),
+    }
+    h.finish()
+}
+
+impl Stamp {
+    fn of(dir: &Path, m: &Manifest) -> Stamp {
+        let at = |rel: &Option<String>| rel.as_deref().and_then(|r| entry_path(dir, r).ok());
+        Stamp {
+            manifest: file_hash(Some(dir.join("mod.json"))),
+            daemon: file_hash(at(&m.daemon)),
+            ui: file_hash(at(&m.ui)) ^ file_hash(at(&m.styles)).rotate_left(1),
+        }
+    }
 }
 
 pub(crate) struct Entry {
@@ -61,7 +126,36 @@ pub(crate) struct Entry {
     event_types: HashSet<String>,
     mod_subs: HashSet<(String, String)>,
     tools: Vec<Value>,
-    logs: VecDeque<String>,
+    /// The last lines of the mod's log, each with a sequence number that only grows.
+    logs: VecDeque<(u64, String)>,
+    /// Why the UI half's file does not parse, if it does not.
+    ui_error: Option<String>,
+    /// Why the files on disk were not loaded (the previous version keeps running).
+    reload_error: Option<String>,
+    /// Bumped whenever the UI half must load again.
+    ui_rev: u64,
+    stamp: Stamp,
+}
+
+impl Entry {
+    fn new(manifest: Manifest, dir: PathBuf, source: ModSource) -> Entry {
+        let stamp = Stamp::of(&dir, &manifest);
+        Entry {
+            manifest,
+            dir,
+            source,
+            status: Status::Stopped,
+            runtime: None,
+            event_types: HashSet::new(),
+            mod_subs: HashSet::new(),
+            tools: vec![],
+            logs: VecDeque::new(),
+            ui_error: None,
+            reload_error: None,
+            ui_rev: 0,
+            stamp,
+        }
+    }
 }
 
 pub struct Config {
@@ -84,6 +178,10 @@ pub(crate) struct Inner {
     /// Agent runs a mod may cancel, by mod id and run id.
     pub(crate) runs: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     lifecycle: tokio::sync::Mutex<()>,
+    /// Sequence numbers of log lines, across all mods.
+    log_seq: std::sync::atomic::AtomicU64,
+    /// `mods.ui_log` rate limit per mod: window start, reports in it, dropped in it.
+    ui_reports: Mutex<std::collections::HashMap<String, (std::time::Instant, u32, u32)>>,
 }
 
 #[derive(Clone)]
@@ -110,9 +208,12 @@ impl ModHost {
             inbox: Default::default(),
             runs: Default::default(),
             lifecycle: Default::default(),
+            log_seq: Default::default(),
+            ui_reports: Default::default(),
         });
         let host = ModHost(inner);
         host.discover();
+        host.migrate_approvals();
         host.forward_events();
         host.start_all().await;
         host.watch_dirs();
@@ -134,8 +235,19 @@ impl ModHost {
         futures::future::join_all(running.iter().map(|r| r.stop())).await;
     }
 
-    /// Every mod in the configured folders, and the folders that hold a mod.json that does not load.
+    /// Every mod in the configured folders by id, and the folders whose
+    /// mod.json does not load (or whose id another folder holds). A later
+    /// source (user over bundled, dev over user) replaces an earlier one's
+    /// mod with the same id; within one source the folder that holds the id
+    /// now keeps it, so a second folder cannot take it over.
     fn scan(&self) -> (BTreeMap<String, Entry>, Vec<(PathBuf, String)>) {
+        let incumbents: BTreeMap<String, PathBuf> = self
+            .0
+            .mods
+            .read()
+            .iter()
+            .map(|(id, e)| (id.clone(), e.dir.clone()))
+            .collect();
         let mut found: BTreeMap<String, Entry> = BTreeMap::new();
         let mut broken = vec![];
         for (source, root) in &self.0.config.dirs {
@@ -148,27 +260,34 @@ impl ModHost {
                 .filter(|p| p.join("mod.json").is_file())
                 .collect();
             dirs.sort();
+            // This source's folders by id, the incumbent first.
+            let mut here: BTreeMap<String, Entry> = BTreeMap::new();
             for dir in dirs {
                 match Manifest::load(&dir) {
                     Ok(manifest) => {
                         let id = manifest.id.clone();
-                        if let Some(old) = found.get(&id) {
-                            tracing::info!(mod_id = %id, "{} replaces {}", dir.display(), old.dir.display());
+                        let entry = Entry::new(manifest, dir.clone(), *source);
+                        match here.get(&id) {
+                            None => {
+                                here.insert(id, entry);
+                            }
+                            Some(other) => {
+                                let keep_new = incumbents.get(&id) == Some(&dir)
+                                    && incumbents.get(&id) != Some(&other.dir);
+                                let (winner, loser) = if keep_new {
+                                    (entry, other.dir.clone())
+                                } else {
+                                    (here.remove(&id).unwrap(), dir.clone())
+                                };
+                                let msg = format!(
+                                    "its id {id:?} is already used by {}",
+                                    winner.dir.display()
+                                );
+                                tracing::warn!("mod in {} not loaded: {msg}", loser.display());
+                                broken.push((loser, msg));
+                                here.insert(id, winner);
+                            }
                         }
-                        found.insert(
-                            id,
-                            Entry {
-                                manifest,
-                                dir,
-                                source: *source,
-                                status: Status::Stopped,
-                                runtime: None,
-                                event_types: HashSet::new(),
-                                mod_subs: HashSet::new(),
-                                tools: vec![],
-                                logs: VecDeque::new(),
-                            },
-                        );
                     }
                     Err(e) => {
                         tracing::warn!("mod in {} not loaded: {e:#}", dir.display());
@@ -176,7 +295,14 @@ impl ModHost {
                     }
                 }
             }
+            for (id, e) in here {
+                if let Some(old) = found.get(&id) {
+                    tracing::info!(mod_id = %id, "{} replaces {}", e.dir.display(), old.dir.display());
+                }
+                found.insert(id, e);
+            }
         }
+        broken.sort();
         (found, broken)
     }
 
@@ -187,55 +313,204 @@ impl ModHost {
         *self.0.broken.write() = broken;
     }
 
-    /// Pick up mods added to (or removed from) the user and dev folders since
-    /// the last scan, without restarting the others. Returns whether anything changed.
-    async fn discover_new(&self) -> bool {
-        let added: Vec<String> = {
-            let _l = self.0.lifecycle.lock().await;
-            let (found, broken) = self.scan();
-            let gone: Vec<String> = self
-                .0
-                .mods
-                .read()
-                .iter()
-                .filter(|(id, e)| {
-                    e.source != ModSource::Bundled
-                        && !found.contains_key(*id)
-                        && !e.dir.join("mod.json").is_file()
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            for id in &gone {
-                self.stop_mod(id).await;
-                self.0.mods.write().remove(id);
-                tracing::info!(mod_id = %id, "mod folder removed");
-            }
-            let mut added = vec![];
-            {
-                let mut mods = self.0.mods.write();
-                for (id, e) in found {
-                    if !mods.contains_key(&id) {
-                        tracing::info!(mod_id = %id, dir = %e.dir.display(), "new mod found");
-                        mods.insert(id.clone(), e);
-                        added.push(id);
-                    }
+    /// Approvals from before they were tied to a folder: tie each to the folder
+    /// that holds its mod now, and drop those whose mod is not installed.
+    fn migrate_approvals(&self) {
+        let mut saved = self.saved();
+        let legacy: Vec<String> = saved
+            .approved
+            .keys()
+            .filter(|id| !saved.approved_dirs.contains_key(*id))
+            .cloned()
+            .collect();
+        if legacy.is_empty() {
+            return;
+        }
+        for id in legacy {
+            match self.0.mods.read().get(&id) {
+                Some(e) => {
+                    saved.approved_dirs.insert(id, identity(&e.dir));
+                }
+                None => {
+                    saved.approved.remove(&id);
                 }
             }
-            let broken_changed = *self.0.broken.read() != broken;
-            *self.0.broken.write() = broken;
-            if added.is_empty() && gone.is_empty() && !broken_changed {
-                return false;
+        }
+        let _ = self.save(&saved);
+    }
+
+    /// Bring the running mods in line with the folders: new, removed, moved
+    /// and renamed folders, a user mod replacing a bundled one, and changed
+    /// files. A changed half reloads alone (ui.js/ui.css: the UI half;
+    /// daemon.js: the daemon half; mod.json: both). New files are checked
+    /// first: if they do not load, the running version stays and the reason
+    /// is logged. Returns whether anything changed.
+    pub async fn reconcile(&self) -> bool {
+        let _l = self.0.lifecycle.lock().await;
+        let (mut found, broken) = self.scan();
+        let mut changed = false;
+        let broken_dirs: HashSet<PathBuf> = broken.iter().map(|(d, _)| d.clone()).collect();
+        let current: Vec<(String, PathBuf, ModSource, Stamp, bool)> = self
+            .0
+            .mods
+            .read()
+            .iter()
+            .map(|(id, e)| {
+                (
+                    id.clone(),
+                    e.dir.clone(),
+                    e.source,
+                    e.stamp.clone(),
+                    matches!(e.status, Status::Running),
+                )
+            })
+            .collect();
+        for (id, dir, source, stamp, running) in current {
+            let same_place = found
+                .get(&id)
+                .is_some_and(|c| c.dir == dir && c.source == source);
+            if !same_place {
+                // A new mod.json that does not load: keep what runs, say why.
+                // (An id clash is not that: a valid mod.json with a new id is a new mod.)
+                if dir.join("mod.json").is_file()
+                    && broken_dirs.contains(&dir)
+                    && !found.values().any(|c| c.dir == dir)
+                    && Manifest::load(&dir).is_err()
+                {
+                    let why = broken
+                        .iter()
+                        .find(|(d, _)| *d == dir)
+                        .map(|(_, w)| w.clone())
+                        .unwrap_or_default();
+                    self.set_reload_error(
+                        &id,
+                        Some(format!(
+                            "mod.json not loaded, the previous version keeps running: {why}"
+                        )),
+                    );
+                    found.remove(&id);
+                    changed = true;
+                    continue;
+                }
+                // Gone, moved, renamed, its id changed, or replaced by another source's folder.
+                self.stop_mod(&id).await;
+                self.0.mods.write().remove(&id);
+                tracing::info!(mod_id = %id, dir = %dir.display(), "mod removed or replaced");
+                changed = true;
+                continue;
             }
-            added
-        };
-        for id in added {
-            let _l = self.0.lifecycle.lock().await;
-            if let Err(e) = self.start_mod(&id, &mut vec![]).await {
+            let c = found.remove(&id).expect("same place");
+            if c.stamp == stamp {
+                // The files are back to what runs: nothing to report any more.
+                let pending = self
+                    .0
+                    .mods
+                    .read()
+                    .get(&id)
+                    .is_some_and(|e| e.reload_error.is_some());
+                if pending {
+                    self.0.log(
+                        &id,
+                        "info",
+                        "the files on disk match the running version again",
+                    );
+                    self.set_reload_error(&id, None);
+                    changed = true;
+                }
+                continue;
+            }
+            changed = true;
+            self.set_reload_error(&id, None);
+            if c.stamp.manifest != stamp.manifest || c.stamp.daemon != stamp.daemon || !running {
+                // Check the daemon file before stopping what runs.
+                if let Some(rel) = &c.manifest.daemon {
+                    let text =
+                        entry_path(&c.dir, rel).and_then(|p| Ok(std::fs::read_to_string(p)?));
+                    let problem = match text {
+                        Ok(t) => crate::runtime::check_module_syntax(rel, &t).err(),
+                        Err(e) => Some(format!("{rel}: {e:#}")),
+                    };
+                    if let Some(p) = problem {
+                        if running {
+                            self.set_reload_error(
+                                &id,
+                                Some(format!(
+                                    "not reloaded, the previous version keeps running: {p}"
+                                )),
+                            );
+                            continue;
+                        }
+                    }
+                }
+                let what = if c.stamp.manifest != stamp.manifest {
+                    "mod.json changed; reloading both halves"
+                } else if c.stamp.daemon != stamp.daemon {
+                    "daemon files changed; restarting the daemon half (the UI half stays)"
+                } else {
+                    "files changed; starting again"
+                };
+                self.0.log(&id, "info", what);
+                let both = c.stamp.manifest != stamp.manifest || c.stamp.ui != stamp.ui;
+                self.stop_mod(&id).await;
+                if let Some(e) = self.0.mods.write().get_mut(&id) {
+                    e.manifest = c.manifest.clone();
+                    e.stamp = c.stamp.clone();
+                    e.status = Status::Stopped;
+                    if both {
+                        e.ui_rev += 1;
+                    }
+                }
+                if let Err(e) = self.start_mod(&id, &mut vec![]).await {
+                    tracing::warn!(mod_id = %id, "not started: {}", e.message);
+                }
+            } else {
+                // Only the UI half's files.
+                if let Some(e) = self.0.mods.write().get_mut(&id) {
+                    e.stamp = c.stamp.clone();
+                }
+                self.reload_ui(&id);
+            }
+        }
+        // New folders, and the new place of moved or replaced ones: the normal
+        // approval check applies, so a new folder never inherits an approval.
+        let added: Vec<String> = found.keys().cloned().collect();
+        {
+            let mut mods = self.0.mods.write();
+            for (id, e) in found {
+                tracing::info!(mod_id = %id, dir = %e.dir.display(), "mod found");
+                mods.insert(id, e);
+            }
+        }
+        for id in &added {
+            changed = true;
+            if let Err(e) = self.start_mod(id, &mut vec![]).await {
                 tracing::warn!(mod_id = %id, "not started: {}", e.message);
             }
         }
-        self.changed();
-        true
+        // Broken folders that are not a running mod's pending files.
+        let held: HashSet<PathBuf> = self.0.mods.read().values().map(|e| e.dir.clone()).collect();
+        let broken: Vec<(PathBuf, String)> = broken
+            .into_iter()
+            .filter(|(d, _)| !held.contains(d))
+            .collect();
+        if *self.0.broken.read() != broken {
+            *self.0.broken.write() = broken;
+            changed = true;
+        }
+        drop(_l);
+        if changed {
+            self.changed();
+        }
+        changed
+    }
+
+    fn set_reload_error(&self, id: &str, error: Option<String>) {
+        if let Some(e) = &error {
+            self.0.log(id, "error", e);
+        }
+        if let Some(e) = self.0.mods.write().get_mut(id) {
+            e.reload_error = error;
+        }
     }
 
     fn saved(&self) -> SavedState {
@@ -254,12 +529,18 @@ impl ModHost {
             .set_setting(STATE_KEY, &serde_json::to_string(state)?)
     }
 
+    /// Bundled mods are trusted. Any other mod needs an approval given for
+    /// this id, in this folder, that covers its permissions.
     fn approved(&self, saved: &SavedState, e: &Entry) -> bool {
         e.source == ModSource::Bundled
-            || saved
+            || (saved
                 .approved
                 .get(&e.manifest.id)
                 .is_some_and(|a| e.manifest.permissions.within(a))
+                && saved
+                    .approved_dirs
+                    .get(&e.manifest.id)
+                    .is_some_and(|d| *d == identity(&e.dir)))
     }
 
     /// Start every enabled, approved mod, dependencies first.
@@ -303,8 +584,8 @@ impl ModHost {
             let fail = |this: &Self, err: ModError| {
                 if let Some(e) = this.0.mods.write().get_mut(id) {
                     e.status = Status::Failed(err.message.clone());
-                    e.logs.push_back(format!("error: {}", err.message));
                 }
+                this.0.log(id, "error", &err.message);
                 err
             };
 
@@ -387,6 +668,7 @@ impl ModHost {
                 e.status = Status::Running;
                 e.runtime = runtime;
             }
+            self.check_ui(id);
             tracing::info!(mod_id = %id, version = %manifest.version, source = ?source, "mod started");
             Ok(())
         })
@@ -413,17 +695,45 @@ impl ModHost {
         }
     }
 
-    /// Re-read a mod's files and restart it.
+    /// Re-read a mod's files and restart both halves.
     pub async fn reload(&self, id: &str) -> Result<(), ModError> {
+        self.restart(id, true).await
+    }
+
+    /// Re-read the manifest and restart the daemon half; with `ui`, the UI
+    /// half loads again too even when its files did not change.
+    async fn restart(&self, id: &str, ui: bool) -> Result<(), ModError> {
+        if ui {
+            if let Some(e) = self.0.mods.write().get_mut(id) {
+                e.ui_rev += 1;
+            }
+        }
         let _l = self.0.lifecycle.lock().await;
         self.stop_mod(id).await;
         let dir = self.0.mods.read().get(id).map(|e| e.dir.clone());
         if let Some(dir) = dir {
             match Manifest::load(&dir) {
+                // An id is the mod's identity (its approval, storage and RPC
+                // namespace): a new one is a new mod, found by `reconcile`.
+                Ok(m) if m.id != id => {
+                    let msg = format!(
+                        "mod.json now says id {:?}; an id cannot change in place. Aura treats the folder as a new mod, which needs approval",
+                        m.id
+                    );
+                    if let Some(e) = self.0.mods.write().get_mut(id) {
+                        e.status = Status::Failed(msg.clone());
+                    }
+                    self.0.log(id, "error", &msg);
+                    drop(_l);
+                    self.reconcile().await;
+                    return Err(ModError::invalid(msg));
+                }
                 Ok(m) => {
                     if let Some(e) = self.0.mods.write().get_mut(id) {
+                        e.stamp = Stamp::of(&dir, &m);
                         e.manifest = m;
                         e.status = Status::Stopped;
+                        e.reload_error = None;
                     }
                 }
                 Err(err) => {
@@ -442,6 +752,42 @@ impl ModHost {
 
     fn changed(&self) {
         self.0.broadcast("mods.changed", json!({}));
+    }
+
+    /// Syntax-check a running mod's UI half, remember the result, and log a problem.
+    fn check_ui(&self, id: &str) {
+        let (dir, ui) = match self.0.mods.read().get(id) {
+            Some(e) => (e.dir.clone(), e.manifest.ui.clone()),
+            None => return,
+        };
+        let error = ui.and_then(|rel| {
+            let text = entry_path(&dir, &rel).and_then(|p| Ok(std::fs::read_to_string(p)?));
+            match text {
+                Ok(text) => crate::runtime::check_module_syntax(&rel, &text).err(),
+                Err(e) => Some(format!("{rel}: {e:#}")),
+            }
+        });
+        if let Some(e) = &error {
+            self.0.log(id, "ui error", e);
+        }
+        if let Some(e) = self.0.mods.write().get_mut(id) {
+            e.ui_error = error;
+        }
+    }
+
+    /// The UI half's files changed: check them and let the windows load them again.
+    /// The daemon half keeps running, with its state.
+    fn reload_ui(&self, id: &str) {
+        self.0.log(
+            id,
+            "info",
+            "UI files changed; reloading the UI half (the daemon half keeps running)",
+        );
+        if let Some(e) = self.0.mods.write().get_mut(id) {
+            e.ui_rev += 1;
+        }
+        self.check_ui(id);
+        self.changed();
     }
 
     /// Core events to the mods that listen for them; session data goes with its session.
@@ -546,14 +892,18 @@ impl ModHost {
             let _keep = watcher;
             while let Some(first) = rx.recv().await {
                 let mut paths = vec![first];
-                // Editors and builds write several files; settle first.
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                while let Ok(p) = rx.try_recv() {
-                    paths.push(p);
+                // A trailing debounce: wait for QUIET with no new event, so a
+                // multi-step save (or a build) is seen once, finished.
+                let start = tokio::time::Instant::now();
+                loop {
+                    let left = MAX_SETTLE.saturating_sub(start.elapsed());
+                    match tokio::time::timeout(QUIET.min(left), rx.recv()).await {
+                        Ok(Some(p)) if !left.is_zero() => paths.push(p),
+                        _ => break,
+                    }
                 }
                 let mut themes_changed = false;
-                let mut reload: HashSet<String> = HashSet::new();
-                let mut rescan = false;
+                let mut mods_touched = false;
                 {
                     let mods = host.0.mods.read();
                     for p in &paths {
@@ -561,48 +911,22 @@ impl ModHost {
                             themes_changed = true;
                             continue;
                         }
-                        let owner = mods.values().find(|e| {
-                            e.source != ModSource::Bundled
-                                && (p.starts_with(&e.dir) || p.starts_with(canon(&e.dir)))
+                        if !mod_roots.iter().any(|r| p.starts_with(r)) {
+                            continue;
+                        }
+                        let in_themes = mods.values().any(|e| {
+                            p.starts_with(e.dir.join("themes"))
+                                || p.starts_with(canon(&e.dir).join("themes"))
                         });
-                        match owner {
-                            Some(e) => {
-                                let dir = if p.starts_with(&e.dir) {
-                                    e.dir.clone()
-                                } else {
-                                    canon(&e.dir)
-                                };
-                                let rel = p.strip_prefix(&dir).unwrap_or(p);
-                                if rel.starts_with("themes") {
-                                    themes_changed = true;
-                                } else if rel.as_os_str().is_empty() && !e.dir.exists() {
-                                    rescan = true;
-                                } else {
-                                    reload.insert(e.manifest.id.clone());
-                                }
-                            }
-                            None => {
-                                if mod_roots.iter().any(|r| p.starts_with(r)) {
-                                    rescan = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                if rescan && host.discover_new().await {
-                    themes_changed = true;
-                }
-                for id in reload {
-                    let dir = host.0.mods.read().get(&id).map(|e| e.dir.clone());
-                    if dir.is_some_and(|d| !d.join("mod.json").is_file()) {
-                        if host.discover_new().await {
+                        if in_themes {
                             themes_changed = true;
+                        } else {
+                            mods_touched = true;
                         }
-                        continue;
                     }
-                    tracing::info!(mod_id = %id, "files changed; reloading");
-                    host.0.log(&id, "info", "files changed; reloading");
-                    let _ = host.reload(&id).await;
+                }
+                if mods_touched && host.reconcile().await {
+                    themes_changed = true;
                 }
                 if themes_changed {
                     host.0.broadcast("themes.changed", json!({}));
@@ -629,7 +953,57 @@ impl ModHost {
                 &format!("mod:{id}"),
             ));
         }
+        // A theme's CSS can restyle any screen, so it waits for the user's
+        // approval, given for this exact CSS. Tokens alone need none.
+        let state = self.themes_state();
+        for t in &mut out {
+            if let Some(css) = t.css.take() {
+                let ok = state
+                    .approved
+                    .get(&t.id)
+                    .is_some_and(|a| a.path == t.path && a.css == css);
+                if ok {
+                    t.css = Some(css);
+                    t.approval = Some("approved".into());
+                } else {
+                    t.css_bytes = Some(css.len());
+                    t.approval = Some("needs_approval".into());
+                }
+            }
+        }
         out
+    }
+
+    fn themes_state(&self) -> ThemesState {
+        self.0
+            .manager
+            .get_setting(THEMES_STATE_KEY)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// The theme `id` as on disk, with its CSS (approved or not).
+    fn theme_with_css(&self, id: &str) -> Option<aura_core::themes::Theme> {
+        let (dir, prefix, stem) = match id.split_once(':') {
+            Some((m, name)) => (
+                self.0.mods.read().get(m)?.dir.join("themes"),
+                Some(m.to_string()),
+                name.to_string(),
+            ),
+            None => (self.themes_dir(), None, id.to_string()),
+        };
+        aura_core::themes::list_dir(
+            &dir,
+            prefix.as_deref(),
+            &prefix
+                .as_ref()
+                .map(|m| format!("mod:{m}"))
+                .unwrap_or_else(|| "user".into()),
+        )
+        .into_iter()
+        .find(|t| t.id == id && stem.len() <= id.len())
     }
 
     /// The `mods.*` and `mod.<id>.*` RPC methods. `session` is the calling
@@ -640,6 +1014,31 @@ impl ModHost {
         params: &Value,
         session: Option<&str>,
     ) -> Result<Option<Value>> {
+        self.handle_as(method, params, session, false).await
+    }
+
+    /// Like [`handle`](Self::handle). `window` says the call comes from Aura's
+    /// own window (its WebSocket's Origin is the app's). Granting an approval
+    /// needs it: an agent running `aura mods approve` can only ask the window
+    /// to show the prompt.
+    pub async fn handle_as(
+        &self,
+        method: &str,
+        params: &Value,
+        session: Option<&str>,
+        window: bool,
+    ) -> Result<Option<Value>> {
+        let needs_window = |what: &str| -> Result<()> {
+            if window && session.is_none() {
+                Ok(())
+            } else {
+                Err(crate::runtime::ModError::new(
+                    "needs_window",
+                    format!("{what} is granted only by a click in Aura's window; `aura mods approve` / `aura themes approve` ask the window to show the prompt"),
+                )
+                .into())
+            }
+        };
         if let Some(rest) = method.strip_prefix("mod.") {
             let Some((id, name)) = rest.split_once('.') else {
                 anyhow::bail!("mod methods are mod.<id>.<name>");
@@ -689,16 +1088,18 @@ impl ModHost {
                 json!(true)
             }
             "mods.approve" => {
+                needs_window("A mod's approval")?;
                 let id = id()?;
-                let perms = self
+                let (perms, dir) = self
                     .0
                     .mods
                     .read()
                     .get(&id)
-                    .map(|e| e.manifest.permissions.clone())
+                    .map(|e| (e.manifest.permissions.clone(), identity(&e.dir)))
                     .context("no such mod")?;
                 let mut saved = self.saved();
                 saved.approved.insert(id.clone(), perms);
+                saved.approved_dirs.insert(id.clone(), dir);
                 self.save(&saved)?;
                 {
                     let _l = self.0.lifecycle.lock().await;
@@ -715,17 +1116,66 @@ impl ModHost {
                 self.reload(&id).await?;
                 json!(true)
             }
-            "mods.rescan" => {
-                let _l = self.0.lifecycle.lock().await;
-                let ids: Vec<String> = self.0.mods.read().keys().cloned().collect();
-                for id in ids {
-                    self.stop_mod(&id).await;
+            // Ask the open windows to show the approval prompt for a mod or a
+            // theme's CSS. Anyone may ask; only the window's click grants.
+            "mods.request_approval" | "themes.request_approval" => {
+                let id = id()?;
+                let kind = if method.starts_with("mods.") {
+                    "mod"
+                } else {
+                    "theme"
+                };
+                if kind == "mod" {
+                    let state = self
+                        .0
+                        .mods
+                        .read()
+                        .get(&id)
+                        .map(|e| e.status.clone())
+                        .context("no such mod; `aura mods list` shows them")?;
+                    if state != Status::NeedsApproval {
+                        anyhow::bail!(
+                            "mod {id} does not need approval (it is {})",
+                            serde_json::to_value(&state)?["state"]
+                                .as_str()
+                                .unwrap_or("?")
+                        );
+                    }
+                } else {
+                    let t = self
+                        .themes()
+                        .into_iter()
+                        .find(|t| t.id == id)
+                        .context("no such theme; `aura themes list` shows them")?;
+                    if t.approval.as_deref() != Some("needs_approval") {
+                        anyhow::bail!("theme {id} has no CSS waiting for approval");
+                    }
                 }
-                self.discover();
-                drop(_l);
-                self.start_all().await;
+                self.0
+                    .broadcast("approval.request", json!({"kind": kind, "id": id}));
                 json!(true)
             }
+            "themes.approve" => {
+                needs_window("A theme's approval")?;
+                let id = id()?;
+                let t = self.theme_with_css(&id).context("no such theme")?;
+                let css = t.css.clone().context("this theme has no CSS to approve")?;
+                let mut state = self.themes_state();
+                state.approved.insert(
+                    id.clone(),
+                    ApprovedCss {
+                        path: t.path.clone(),
+                        css,
+                    },
+                );
+                self.0
+                    .manager
+                    .set_setting(THEMES_STATE_KEY, &serde_json::to_string(&state)?)?;
+                self.0.broadcast("themes.changed", json!({}));
+                json!(true)
+            }
+            // Look for added, removed, moved and changed mods; the others keep running.
+            "mods.rescan" => json!(self.reconcile().await),
             // Where the user's (and the dev) mods live, for Settings › Mods.
             "mods.dirs" => {
                 let dir = |source: ModSource| {
@@ -750,15 +1200,36 @@ impl ModHost {
                 ))?)
             }
             // `aura themes use <id>`: the open windows switch to it.
+            // The theme every window shows, kept by the daemon so it survives
+            // restarts and reaches windows opened later. `aura themes use` refuses
+            // a theme that cannot be used; Settings may pick one anyway (it then
+            // shows the base and the reason), with `allowInvalid`.
             "themes.use" => {
                 let id = id()?;
+                let allow_invalid = params
+                    .get("allowInvalid")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let builtin = aura_core::themes::RESERVED_IDS.contains(&id.as_str());
-                if !builtin && !self.themes().iter().any(|t| t.id == id) {
-                    anyhow::bail!("no theme {id}; `aura themes list` shows the themes");
+                if !builtin {
+                    let theme = self.themes().into_iter().find(|t| t.id == id);
+                    match theme {
+                        None => anyhow::bail!("no theme {id}; `aura themes list` shows the themes"),
+                        Some(t) if !allow_invalid => {
+                            if let Some(e) = t.error {
+                                anyhow::bail!("theme {id} cannot be used: {e}. Fix it, then check it with `aura themes check {id}`");
+                            }
+                        }
+                        Some(_) => {}
+                    }
                 }
+                self.0.manager.set_setting(THEME_KEY, &id)?;
                 self.0.broadcast("themes.use", json!({"id": id}));
                 json!(true)
             }
+            "themes.current" => json!({"id": self.0.manager.get_setting(THEME_KEY).ok().flatten()}),
+            // `aura mods new`: find the new folder now instead of when the watcher fires.
+            "mods.discover" => json!(self.reconcile().await),
             // Something a mod's UI half reports (a load error, a component that threw),
             // so it shows in `aura mods logs <id>` next to the daemon half's lines.
             "mods.ui_log" => {
@@ -769,18 +1240,49 @@ impl ModHost {
                     .filter(|l| matches!(*l, "info" | "warn" | "error"))
                     .unwrap_or("error");
                 let message = params.get("message").and_then(Value::as_str).unwrap_or("");
-                self.0.log(&id, &format!("ui {level}"), message);
-                json!(true)
+                if !self.0.mods.read().contains_key(&id) {
+                    anyhow::bail!("no mod {id}");
+                }
+                // A UI half that throws in a loop must not flood the log.
+                let (allowed, dropped) = {
+                    let mut reports = self.0.ui_reports.lock();
+                    let now = std::time::Instant::now();
+                    let slot = reports.entry(id.clone()).or_insert((now, 0, 0));
+                    let mut dropped = 0;
+                    if now.duration_since(slot.0) >= UI_LOG_WINDOW {
+                        dropped = slot.2;
+                        *slot = (now, 0, 0);
+                    }
+                    slot.1 += 1;
+                    let allowed = slot.1 <= UI_LOG_LIMIT;
+                    if !allowed {
+                        slot.2 += 1;
+                    }
+                    (allowed, dropped)
+                };
+                if dropped > 0 {
+                    self.0.log(&id, "ui warn", &format!("{dropped} more UI reports were dropped (at most {UI_LOG_LIMIT} per {} s)", UI_LOG_WINDOW.as_secs()));
+                }
+                if allowed {
+                    self.0.log(&id, &format!("ui {level}"), message);
+                }
+                json!(allowed)
             }
+            // Plain: the lines. With `after` (a sequence number, 0 for all):
+            // {lines: [{seq, text}], first, last}, to follow the log without
+            // losing repeated lines; `first` > after + 1 means lines rolled off.
             "mods.logs" => {
                 let id = id()?;
-                json!(self
-                    .0
-                    .mods
-                    .read()
-                    .get(&id)
-                    .map(|e| e.logs.iter().cloned().collect::<Vec<_>>())
-                    .unwrap_or_default())
+                let mods = self.0.mods.read();
+                let logs = mods.get(&id).map(|e| e.logs.clone()).unwrap_or_default();
+                match params.get("after").and_then(Value::as_u64) {
+                    None => json!(logs.iter().map(|(_, l)| l.clone()).collect::<Vec<_>>()),
+                    Some(after) => json!({
+                        "lines": logs.iter().filter(|(n, _)| *n > after).map(|(n, l)| json!({"seq": n, "text": l})).collect::<Vec<_>>(),
+                        "first": logs.front().map(|(n, _)| *n),
+                        "last": logs.back().map(|(n, _)| *n),
+                    }),
+                }
             }
             "mods.settings.get" => self.0.settings_of(&id()?),
             "mods.settings.set" => {
@@ -859,6 +1361,8 @@ impl ModHost {
                     "approved": self.approved(&saved, e),
                     "hasUi": m.ui.is_some(),
                     "hasDaemon": m.daemon.is_some(),
+                    "uiError": e.ui_error,
+                    "reloadError": e.reload_error,
                     "permissions": m.permissions,
                     "dependsOn": m.depends_on,
                     "settings": m.settings,
@@ -879,10 +1383,15 @@ impl ModHost {
     }
 
     fn ui_source(&self, id: &str) -> Result<Value> {
-        let (manifest, dir, status) = {
+        let (manifest, dir, status, rev) = {
             let mods = self.0.mods.read();
             let e = mods.get(id).context("no such mod")?;
-            (e.manifest.clone(), e.dir.clone(), e.status.clone())
+            (
+                e.manifest.clone(),
+                e.dir.clone(),
+                e.status.clone(),
+                e.ui_rev,
+            )
         };
         if status != Status::Running {
             anyhow::bail!("mod {id} is not running");
@@ -896,6 +1405,7 @@ impl ModHost {
         Ok(json!({
             "id": id,
             "version": manifest.version,
+            "rev": rev,
             "js": read(&manifest.ui)?,
             "css": read(&manifest.styles)?,
         }))
@@ -971,7 +1481,11 @@ impl Inner {
                 chrono::Local::now().format("%H:%M:%S"),
                 message.chars().take(4000).collect::<String>()
             );
-            e.logs.push_back(line);
+            let seq = self
+                .log_seq
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            e.logs.push_back((seq, line));
             while e.logs.len() > LOG_LINES {
                 e.logs.pop_front();
             }
