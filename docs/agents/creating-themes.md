@@ -25,10 +25,17 @@ watches the folder: saving a theme file applies the change to the open windows
 at once, with no reload.
 
 A theme made of tokens only needs no approval. A theme with a CSS file does:
-CSS can restyle any screen, so Aura applies a theme's CSS only after the user
+its CSS can restyle every screen in Aura, including the cards where you
+approve what agents run, so Aura applies a theme's CSS only after the user
 approved that exact CSS, in a prompt like the one for mods. Until then, and
 whenever the CSS changes afterwards, only its tokens apply. Changing only the
 tokens never asks again.
+
+On a system whose web engine has no CSS cascade layers (macOS 12.0 to 12.2,
+with Safari before 15.4), Aura cannot keep its approval prompts out of a
+theme's CSS, so it never applies theme CSS there, approved or not: only the
+tokens. Settings › General says so under the theme picker ("This system can't
+protect approval prompts from theme CSS, so only its colours are used").
 
 ## Quick start
 
@@ -126,9 +133,10 @@ Warnings leave the theme usable and are shown too:
 - an unknown top-level field
 
 Beyond those checks the CSS is not judged; a CSS syntax mistake only drops
-the broken rule, as in any stylesheet. Whatever a theme's CSS does, Aura's
-approval prompts stay as they are: they are drawn above everything and
-styled in a layer no theme can override.
+the broken rule, as in any stylesheet. Approved CSS can restyle every screen
+in Aura, including the cards where you approve what agents run; only Aura's
+approval prompts for mods and themes stay as they are: they are drawn above
+everything and styled in a cascade layer no theme can override.
 
 ## How to design one
 

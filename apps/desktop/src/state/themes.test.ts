@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { applyTheme, isSingleValue, resolveTheme, setTokens, type UserTheme } from "./themes";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyTheme, cssLayersSupported, isSingleValue, resolveTheme, setTokens, type UserTheme } from "./themes";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -8,6 +8,12 @@ const values = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
   value: { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => values.set(k, v), removeItem: (k: string) => values.delete(k), clear: () => values.clear() },
+});
+
+// The engine has cascade layers unless a test says otherwise (jsdom has none).
+const g = globalThis as { CSSLayerBlockRule?: unknown };
+beforeEach(() => {
+  g.CSSLayerBlockRule = class {};
 });
 
 const theme = (over: Partial<UserTheme> = {}): UserTheme => ({
@@ -123,6 +129,16 @@ describe("theme-boot.js (before the first paint)", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
 
+  it("applies only the tokens where cascade layers are missing", () => {
+    delete g.CSSLayerBlockRule;
+    localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "ocean" }));
+    localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme({ css: ".a{}", approval: "approved" })));
+    new Function(boot)();
+    expect(document.documentElement.dataset.userTheme).toBe("ocean");
+    expect(document.getElementById("aura-user-theme-tokens")).not.toBeNull();
+    expect(document.getElementById("aura-user-theme-css")).toBeNull();
+  });
+
   it("never applies CSS that waits for approval", () => {
     localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "ocean" }));
     localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme({ css: ".a{}", approval: "needs_approval" })));
@@ -151,6 +167,19 @@ describe("applyTheme", () => {
     expect(root.dataset.userTheme).toBeUndefined();
     expect(document.getElementById("aura-user-theme-tokens")).toBeNull();
     expect(document.getElementById("aura-user-theme-css")).toBeNull();
+  });
+
+  it("leaves an approved theme's CSS out where cascade layers are missing, and keeps its tokens", () => {
+    delete g.CSSLayerBlockRule;
+    expect(cssLayersSupported()).toBe(false);
+    applyTheme({ base: "dark", theme: theme({ base: "dark", css: ".sidebar { display: none }", approval: "approved" }), problem: null });
+    expect(document.getElementById("aura-user-theme-css")).toBeNull();
+    const rule = (document.getElementById("aura-user-theme-tokens") as HTMLStyleElement).sheet!.cssRules[0] as CSSStyleRule;
+    expect(rule.style.getPropertyValue("--md-primary").trim()).toBe("#0066cc");
+    g.CSSLayerBlockRule = class {};
+    expect(cssLayersSupported()).toBe(true);
+    applyTheme({ base: "dark", theme: theme({ base: "dark", css: ".sidebar { display: none }", approval: "approved" }), problem: null });
+    expect(document.getElementById("aura-user-theme-css")).not.toBeNull();
   });
 
   it("keeps its styles last in <head>, after styles added later", () => {

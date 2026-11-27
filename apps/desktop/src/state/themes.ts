@@ -158,12 +158,26 @@ function putTheme(r: ResolvedTheme) {
   }
   root.dataset.userTheme = r.theme.id;
   setTokens(styleEl(TOKENS_ID), r.theme.tokens);
-  // Only approved CSS ever arrives here (the daemon withholds the rest).
-  if (r.theme.css && r.theme.approval !== "needs_approval") {
+  // Only approved CSS ever arrives here (the daemon withholds the rest), and only
+  // where cascade layers keep approval prompts out of its reach.
+  if (r.theme.css && r.theme.approval !== "needs_approval" && cssLayersSupported()) {
     const css = styleEl(CSS_ID);
     if (css.textContent !== r.theme.css) css.textContent = r.theme.css;
   } else document.getElementById(CSS_ID)?.remove();
 }
+
+/**
+ * Whether this browser engine has cascade layers. Approval prompts are kept
+ * out of a theme's reach by a cascade layer (protected.css); an engine
+ * without them (Safari before 15.4, so macOS 12.0–12.2) would ignore that
+ * layer, so there a theme's CSS is never applied, only its tokens.
+ */
+export function cssLayersSupported(win: { CSSLayerBlockRule?: unknown } = globalThis as never): boolean {
+  return typeof win.CSSLayerBlockRule === "function";
+}
+
+/** Settings' explanation when a theme's CSS is left out for that reason. */
+export const NO_LAYERS_NOTE = "This system can't protect approval prompts from theme CSS, so only its colours are used.";
 
 /** Fetch the theme list again (also after an approval). */
 export async function refreshThemes() {

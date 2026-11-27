@@ -14,7 +14,7 @@ import { ModSettingsTab, ModsSettings, useModSettingsTabs } from "../../mods/Mod
 import { MAX_SOUND_FILE, SOUND_CHOICES, playSound } from "../../lib/sound";
 import { SpecialistsTab } from "./SpecialistsTab";
 import { AutonomyPicker } from "../AutonomyPicker";
-import { isBuiltinTheme, resolveTheme, useThemes } from "../../state/themes";
+import { cssLayersSupported, isBuiltinTheme, NO_LAYERS_NOTE, resolveTheme, useThemes } from "../../state/themes";
 import { openApprovalPrompt } from "../../mods/ApprovalDialog";
 
 type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "mods";
@@ -215,7 +215,10 @@ function ThemeField() {
         )}
       </select>
       {resolved.problem && <small className="theme-problem">{resolved.problem}</small>}
-      {current && !current.error && current.approval === "needs_approval" && (
+      {current && !current.error && (current.approval === "approved" || current.approval === "needs_approval") && !cssLayersSupported() && (
+        <small className="theme-problem">{NO_LAYERS_NOTE}</small>
+      )}
+      {current && !current.error && current.approval === "needs_approval" && cssLayersSupported() && (
         <small className="theme-problem">
           Its CSS ({current.cssBytes ?? 0} bytes) waits for your approval; only its colours and other tokens apply until then.{" "}
           <button type="button" className="btn small" data-hint onClick={() => openApprovalPrompt("theme", current.id)}>

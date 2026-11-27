@@ -37,7 +37,8 @@
         if (/^--[a-z0-9-]+$/.test(name) && typeof v === "string" && !/[{}]/.test(v)) rule.style.setProperty(name, v);
       }
     }
-    if (typeof t.css === "string" && t.css && t.approval !== "needs_approval") {
+    // Without cascade layers approval prompts cannot be protected from theme CSS: tokens only.
+    if (typeof t.css === "string" && t.css && t.approval !== "needs_approval" && typeof window.CSSLayerBlockRule === "function") {
       var css = document.createElement("style");
       css.id = "aura-user-theme-css";
       css.textContent = t.css;
