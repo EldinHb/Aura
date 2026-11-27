@@ -266,6 +266,9 @@ impl AcpDriver {
     ) -> Result<Self> {
         let mut cmd = tokio::process::Command::new(binary);
         cmd.args(&spec.command[1..])
+            // What the agent runs knows it is inside Aura (see `aura remote`).
+            .env("AURA_SESSION", "1")
+            .env("AURA_SESSION_ID", &session.id)
             .envs(&spec.env)
             .current_dir(&session.cwd)
             .stdin(std::process::Stdio::piped())

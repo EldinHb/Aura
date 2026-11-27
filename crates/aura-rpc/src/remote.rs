@@ -63,6 +63,10 @@ pub const MAX_FAILURES: usize = 5;
 pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// A remote connection that has not paired or authenticated by then is closed.
 pub const AUTH_DEADLINE: Duration = Duration::from_secs(30);
+/// Largest WebSocket message (and frame) the remote listener takes.
+pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+/// Largest message before authentication; a bigger one closes the connection.
+pub const MAX_PRE_AUTH_MESSAGE: usize = 64 * 1024;
 const MAX_DEVICE_NAME: usize = 64;
 const MAX_SERVER_NAME: usize = 64;
 

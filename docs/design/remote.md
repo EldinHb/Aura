@@ -33,6 +33,11 @@ aura remote pair       # prints the code, fingerprint, addresses and the aura://
 aura remote devices    # aura remote revoke <deviceId>; aura remote off
 ```
 
+`aura remote on` and `aura remote pair` ask for confirmation at a terminal
+and refuse to run inside an Aura session (when `AURA_SESSION_ID` or
+`AURA_SESSION` is set, which Aura sets for every agent and terminal it
+starts) or without a terminal on stdin.
+
 ## 2. Threat model (short)
 
 - **Network attacker** (same Wi-Fi, café, LAN): sees only TLS. Without the
@@ -49,6 +54,12 @@ aura remote devices    # aura remote revoke <deviceId>; aura remote off
   every session and send agents messages, and agents can run commands. It can
   not change settings, read the file system directly, manage mods, delete
   sessions, update Aura or manage remote access itself.
+- **An agent on the desktop opening remote access**: a session's tools
+  (session tokens) may only turn remote access off and revoke devices;
+  enabling, moving (bind/port) and pairing are refused with -32003. The CLI
+  refuses `on`/`pair` inside an Aura session and without a terminal. This
+  raises the bar; it is not a hard boundary against an agent that runs as the
+  user, strips its environment and reads `daemon.json` itself.
 - Out of scope: a process running as the same user on the desktop (it can
   read the data directory and the local token anyway).
 
@@ -84,6 +95,8 @@ error and closes the connection.
   notifications `{"method": "...", "params": ...}` (no `id`). The
   `"jsonrpc": "2.0"` member is optional on requests and is not sent back,
   same as the loopback API.
+- Message (and frame) limit: 16 MB. Before authentication, any message over
+  64 KB closes the connection without an answer.
 - The server answers WebSocket pings with pongs. There is no app-level
   heartbeat; use WebSocket pings (e.g. OkHttp `pingInterval`).
 - The server never sends binary (PTY) frames to remote clients, and ignores
@@ -120,7 +133,11 @@ Both are refused with -32003 on the loopback listener.
 
 ## 7. Local management methods (loopback only)
 
-Refused with -32003 on the remote listener (and for session tokens).
+Refused with -32003 on the remote listener. A session's tools (session
+tokens) may only call `remote.configure {enabled: false}` (also with
+`serverName`) and `remote.revokeDevice`; enabling, `bindAddress`, `port`,
+`remote.startPairing`, `remote.status` and `remote.listDevices` are refused
+for them with -32003.
 
 ### `remote.status` → `RemoteStatus`
 ```ts

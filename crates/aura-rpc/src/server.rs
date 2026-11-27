@@ -251,6 +251,9 @@ fn authorize(caller: &Caller, method: &str, params: &Value) -> Result<(), Dispat
             let acts_for = |key: &str| params.get(key).and_then(Value::as_str) == Some(id.as_str());
             let allowed = match method {
                 "daemon.ping" | "provider.list" | "provider.models" | "orchestrator.projects" => true,
+                // Closing remote access is anyone's; opening it is refused in
+                // `dispatch` (see `remote.configure`).
+                "remote.configure" | "remote.revokeDevice" => true,
                 // Mods' orchestrator tools act for the calling session, which the host is told.
                 "mods.tools.list" | "mods.tools.call" => true,
                 m if m.starts_with("orchestrator.") => acts_for("orchestrator"),
@@ -310,8 +313,9 @@ async fn remote_ws_handler(
         device: parking_lot::Mutex::new(None),
         deadline: tokio::time::Instant::now() + crate::remote::AUTH_DEADLINE,
     });
-    // Enough for a few pasted images in a message; less than loopback's.
-    ws.max_message_size(32 * 1024 * 1024)
+    // Images go as base64 in the message: 16 MB holds a few.
+    ws.max_message_size(crate::remote::MAX_MESSAGE)
+        .max_frame_size(crate::remote::MAX_MESSAGE)
         .on_upgrade(move |socket| handle_socket(socket, state, Caller::Remote(conn)))
 }
 
@@ -681,6 +685,22 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
             },
             _ = remote_closed(remote.as_ref(), &mut kill) => break,
         };
+        // Before authentication only a small pair/auth request makes sense:
+        // anything bigger is not a client of ours.
+        if remote.as_ref().is_some_and(|c| c.device().is_none()) {
+            let size = match &msg {
+                Message::Text(t) => t.len(),
+                Message::Binary(b) => b.len(),
+                _ => 0,
+            };
+            if size > crate::remote::MAX_PRE_AUTH_MESSAGE {
+                tracing::warn!(
+                    size,
+                    "remote client sent a large message before authenticating; closing"
+                );
+                break;
+            }
+        }
         match msg {
             Message::Text(text) => {
                 let req: Request = match serde_json::from_str(&text) {
@@ -925,9 +945,33 @@ async fn dispatch(
         "remote.status" => ok(state.remote.status()),
         "remote.configure" => {
             let change: crate::remote::RemoteConfigure = params(p)?;
+            // An agent must not open this machine to the network: a
+            // session's tools may only turn remote access off.
+            if session.is_some()
+                && (change.enabled == Some(true)
+                    || change.bind_address.is_some()
+                    || change.port.is_some())
+            {
+                return Err(DispatchError {
+                    code: ERR_FORBIDDEN,
+                    message: "a session's tools may turn remote access off, not on or move it; the user does that in Aura".into(),
+                    data: None,
+                });
+            }
             ok(state.remote.configure(state, change).await?)
         }
-        "remote.startPairing" => ok(state.remote.start_pairing()?),
+        "remote.startPairing" => {
+            // Unreachable for session tokens (see `authorize`); kept here too
+            // so a change there cannot let an agent pair a device.
+            if session.is_some() {
+                return Err(DispatchError {
+                    code: ERR_FORBIDDEN,
+                    message: "a session's tools may not pair devices".into(),
+                    data: None,
+                });
+            }
+            ok(state.remote.start_pairing()?)
+        }
         "remote.listDevices" => ok(state.remote.list_devices()),
         "remote.revokeDevice" => {
             #[derive(Deserialize)]

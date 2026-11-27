@@ -727,6 +727,9 @@ aura remote revoke <device-id>    # unpair and disconnect a device
 aura remote off
 ```
 
+`on` and `pair` ask you to confirm at a terminal, and refuse to run inside an
+Aura session, so an agent cannot open your machine to the network.
+
 The daemon serves a second WebSocket, with TLS and a self-signed certificate made
 the first time you turn it on. The phone pins that certificate's fingerprint when
 it pairs, so nobody in between can listen in. Pairing uses a one-time code; after

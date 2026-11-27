@@ -745,3 +745,65 @@ async fn a_taken_port_shows_as_an_error() {
         .unwrap();
     assert_eq!(status["listening"], json!(true), "{status}");
 }
+
+#[tokio::test]
+async fn a_sessions_tools_may_close_remote_access_but_not_open_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let project = tempfile::tempdir().unwrap();
+    let s: Session = d
+        .local
+        .call_as(
+            "session.create",
+            json!({"provider": "claude", "cwd": project.path().to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let tools = RpcClient::connect(d.server.info.port, &d.manager.session_token(&s.id))
+        .await
+        .unwrap();
+    let forbidden = |r: anyhow::Result<Value>| {
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains(&aura_rpc::ERR_FORBIDDEN.to_string()), "{e}");
+    };
+    forbidden(
+        tools
+            .call("remote.configure", json!({"enabled": true}))
+            .await,
+    );
+    forbidden(tools.call("remote.configure", json!({"port": 9999})).await);
+    forbidden(
+        tools
+            .call("remote.configure", json!({"bindAddress": "0.0.0.0"}))
+            .await,
+    );
+    forbidden(tools.call("remote.startPairing", json!({})).await);
+    forbidden(tools.call("remote.listDevices", json!({})).await);
+
+    // The user turns it on and pairs a device; the agent may close it all.
+    let (port, fp) = enable(&d).await;
+    let (_live, device, _) = pair(&d, port, &fp).await;
+    tools
+        .call("remote.revokeDevice", json!({"deviceId": device}))
+        .await
+        .unwrap();
+    let status = tools
+        .call("remote.configure", json!({"enabled": false}))
+        .await
+        .unwrap();
+    assert_eq!(status["listening"], json!(false));
+}
+
+#[tokio::test]
+async fn a_large_message_before_authentication_closes_the_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let (port, fp) = enable(&d).await;
+    let mut r = connect(port, &fp).await;
+    let big = json!({"id": 1, "method": "remote.auth", "params": {"deviceId": "x".repeat(70 * 1024), "token": "t"}});
+    r.ws.send(Message::Text(big.to_string())).await.unwrap();
+    r.closed().await;
+    // Not counted as a failed attempt, and small requests still work.
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+    assert_eq!(r.ok("daemon.ping", json!({})).await, json!("pong"));
+}

@@ -452,6 +452,12 @@ async fn remote(client: &RpcClient, cmd: RemoteCmd, as_json: bool) -> Result<()>
             let s: RemoteStatus = match cmd {
                 RemoteCmd::Status => client.call_as("remote.status", json!({})).await?,
                 RemoteCmd::On { bind, port, name } => {
+                    let now: RemoteStatus = client.call_as("remote.status", json!({})).await?;
+                    confirm_remote(&format!(
+                        "Allow remote clients on {}:{}?",
+                        bind.as_deref().unwrap_or(&now.bind_address),
+                        port.unwrap_or(now.port)
+                    ))?;
                     client
                         .call_as(
                             "remote.configure",
@@ -472,6 +478,7 @@ async fn remote(client: &RpcClient, cmd: RemoteCmd, as_json: bool) -> Result<()>
             }
         }
         RemoteCmd::Pair => {
+            confirm_remote("Let a new device pair with this computer?")?;
             let p: PairingInfo = client.call_as("remote.startPairing", json!({})).await?;
             if as_json {
                 println!("{}", serde_json::to_string_pretty(&p)?);
@@ -525,6 +532,37 @@ async fn remote(client: &RpcClient, cmd: RemoteCmd, as_json: bool) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// Opening remote access is the user's alone: refused inside an Aura
+/// session (an agent, or a terminal Aura started), and asked at a terminal.
+fn confirm_remote(question: &str) -> Result<()> {
+    use std::io::IsTerminal;
+    if let Some(var) = inside_aura_session(|k| std::env::var_os(k)) {
+        bail!(
+            "this runs inside an Aura session ({var} is set): agents may not open remote access. Run it in your own terminal, or use Aura's settings"
+        );
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "opening remote access needs a confirmation at a terminal: run it in your own terminal"
+        );
+    }
+    eprint!("{question} [y/N] ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES") {
+        bail!("not confirmed; nothing changed");
+    }
+    Ok(())
+}
+
+/// The variable that shows this process runs inside an Aura session, if any.
+fn inside_aura_session(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<&'static str> {
+    ["AURA_SESSION_ID", "AURA_SESSION"]
+        .into_iter()
+        .find(|k| var(k).is_some_and(|v| !v.is_empty()))
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -755,4 +793,22 @@ async fn attach_session(client: &RpcClient, id: &str) -> Result<()> {
     let _ = client.call("pty.detach", json!({ "id": id })).await;
     println!();
     result
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::inside_aura_session;
+    use std::ffi::OsString;
+
+    #[test]
+    fn a_session_is_known_by_its_variables() {
+        let none = |_: &str| None;
+        assert_eq!(inside_aura_session(none), None);
+        let claude = |k: &str| (k == "AURA_SESSION_ID").then(|| OsString::from("abc"));
+        assert_eq!(inside_aura_session(claude), Some("AURA_SESSION_ID"));
+        let codex = |k: &str| (k == "AURA_SESSION").then(|| OsString::from("1"));
+        assert_eq!(inside_aura_session(codex), Some("AURA_SESSION"));
+        let empty = |_: &str| Some(OsString::new());
+        assert_eq!(inside_aura_session(empty), None);
+    }
 }
