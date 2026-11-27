@@ -31,7 +31,8 @@ pub struct ExtCall {
 
 /// Extra method handler registered by the daemon (git, mods, etc.). Return
 /// `Ok(None)` when the method is not yours.
-pub type ExtHandler = Arc<dyn Fn(ExtCall) -> BoxFuture<'static, Result<Option<Value>>> + Send + Sync>;
+pub type ExtHandler =
+    Arc<dyn Fn(ExtCall) -> BoxFuture<'static, Result<Option<Value>>> + Send + Sync>;
 
 /// An extension's error with a stable string code and optional data, sent to
 /// the client as the error's `data: {code, data}`.
@@ -1173,6 +1174,48 @@ async fn dispatch(
             m.delete_group(&name)?;
             ok(true)
         }
+        "workspace.list" => ok(m.list_workspaces()?),
+        "workspace.create" => {
+            #[derive(Deserialize)]
+            struct P {
+                name: String,
+            }
+            let P { name } = params(p)?;
+            ok(m.create_workspace(&name)?)
+        }
+        "workspace.rename" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                name: String,
+            }
+            let P { id, name } = params(p)?;
+            ok(m.rename_workspace(&id, &name)?)
+        }
+        "workspace.delete" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                #[serde(default)]
+                move_to: Option<String>,
+            }
+            let P { id, move_to } = params(p)?;
+            ok(m.delete_workspace(&id, move_to.as_deref())?)
+        }
+        "workspace.touch" => {
+            let IdParams { id } = params(p)?;
+            m.touch_workspace(&id)?;
+            ok(true)
+        }
+        "session.set_workspace" => {
+            #[derive(Deserialize)]
+            struct P {
+                id: String,
+                workspace: String,
+            }
+            let P { id, workspace } = params(p)?;
+            ok(m.set_session_workspace(&id, &workspace)?)
+        }
         "session.set_pinned" => {
             #[derive(Deserialize)]
             struct P {
@@ -1230,6 +1273,26 @@ async fn dispatch(
             drop(attached);
             result?;
             ok(true)
+        }
+        "session.delete_many" => {
+            #[derive(Deserialize)]
+            struct P {
+                ids: Vec<String>,
+                #[serde(default)]
+                remove_worktree: bool,
+            }
+            let P {
+                ids,
+                remove_worktree,
+            } = params(p)?;
+            let result = m.delete_many(&ids, remove_worktree).await;
+            // Those deleted stream to this client no more.
+            let mut attached = attached.lock();
+            for id in &result.deleted {
+                attached.remove(id);
+            }
+            drop(attached);
+            ok(result)
         }
         "session.switch_mode" => {
             #[derive(Deserialize)]

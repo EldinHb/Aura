@@ -80,11 +80,16 @@ async fn terminal_session_roundtrip_over_ws() {
     assert_eq!(session.mode, SessionMode::Terminal);
     assert_eq!(session.status, SessionStatus::Running);
 
-    // SessionCreated arrives
-    let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    // SessionCreated arrives, after the default workspace this store did not have yet
+    let ev = loop {
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if !matches!(ev, Event::WorkspacesChanged { .. }) {
+            break ev;
+        }
+    };
     assert!(matches!(ev, Event::SessionCreated { .. }));
 
     client
@@ -225,4 +230,112 @@ async fn explains_errors_from_a_daemon_of_another_version() {
         err.contains("could not read the reply to daemon.ping") && err.contains("aurad 0.0.1"),
         "{err}"
     );
+}
+
+#[tokio::test]
+async fn workspaces_over_ws() {
+    let dir = tempfile::tempdir().unwrap();
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::default());
+    let manager = Manager::new(store, vec![Arc::new(TerminalOnly)], None);
+    let server = RpcServer::start(manager.clone(), dir.path(), None)
+        .await
+        .unwrap();
+    let client = RpcClient::connect(server.info.port, &server.info.token)
+        .await
+        .unwrap();
+    let mut events = client.events();
+
+    let list: Vec<Workspace> = client.call_as("workspace.list", json!({})).await.unwrap();
+    assert_eq!(list.len(), 1);
+    let default = list[0].clone();
+    let infra: Workspace = client
+        .call_as("workspace.create", json!({ "name": "Infra" }))
+        .await
+        .unwrap();
+    let err = client
+        .call("workspace.create", json!({ "name": "INFRA" }))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already exists"), "{err}");
+    let renamed: Workspace = client
+        .call_as(
+            "workspace.rename",
+            json!({ "id": infra.id, "name": "Infra 2" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "Infra 2");
+    // The list is announced as it changes.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut announced = None;
+    while announced.is_none() && tokio::time::Instant::now() < deadline {
+        if let Ok(Ok(Event::WorkspacesChanged { workspaces })) =
+            tokio::time::timeout(Duration::from_millis(500), events.recv()).await
+        {
+            if workspaces.iter().any(|w| w.name == "Infra 2") {
+                announced = Some(workspaces);
+            }
+        }
+    }
+    assert_eq!(announced.unwrap().len(), 2);
+
+    // Created without one: where the user last was.
+    client
+        .call("workspace.touch", json!({ "id": infra.id }))
+        .await
+        .unwrap();
+    let create = |workspace: Option<&str>| {
+        let mut p = json!({
+            "provider": "terminal",
+            "cwd": dir.path().to_string_lossy(),
+            "command": ["/bin/sh"],
+        });
+        if let Some(w) = workspace {
+            p["workspace"] = json!(w);
+        }
+        client.call_as::<Session>("session.create", p)
+    };
+    let a = create(None).await.unwrap();
+    assert_eq!(a.workspace, infra.id);
+    let b = create(Some(&default.id)).await.unwrap();
+    assert_eq!(b.workspace, default.id);
+
+    let moved: Vec<Session> = client
+        .call_as(
+            "session.set_workspace",
+            json!({ "id": b.id, "workspace": infra.id }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].workspace, infra.id);
+
+    // Holding sessions, a workspace needs somewhere to put them.
+    assert!(client
+        .call("workspace.delete", json!({ "id": infra.id }))
+        .await
+        .is_err());
+    let left: Vec<Workspace> = client
+        .call_as(
+            "workspace.delete",
+            json!({ "id": infra.id, "move_to": default.id }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(left, vec![default.clone()]);
+
+    let result: BulkDeleteResult = client
+        .call_as(
+            "session.delete_many",
+            json!({ "ids": [a.id, "nope", b.id] }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.deleted, vec![a.id.clone(), b.id.clone()]);
+    assert_eq!(result.failed.len(), 1);
+    assert_eq!(result.failed[0].id, "nope");
+    let list: Vec<Session> = client.call_as("session.list", json!({})).await.unwrap();
+    assert!(list.is_empty());
+    let _ = server.shutdown.send(());
 }
