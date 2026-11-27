@@ -127,8 +127,9 @@ a.prs-check-name:hover { text-decoration: underline; }
 .prs-pill-merged { background: var(--md-primary); color: var(--md-on-primary); }
 .prs-pill-closed { background: var(--md-error); color: var(--md-on-error); }
 
-.prs-page-tabs { display: flex; gap: 4px; margin: 16px 0 20px; border-bottom: 1px solid var(--md-outline-variant); overflow-x: auto; }
-.prs-page-tab { position: relative; flex: none; padding: 8px 14px; border: 0; background: none; color: var(--fg-muted); font: inherit; font-weight: 500; cursor: pointer; border-radius: var(--shape-sm) var(--shape-sm) 0 0; }
+/* The tabs wrap rather than scroll, so all four show at any width. */
+.prs-page-tabs { display: flex; flex-wrap: wrap; gap: 0 2px; margin: 16px 0 20px; border-bottom: 1px solid var(--md-outline-variant); }
+.prs-page-tab { position: relative; flex: none; padding: 8px 12px; white-space: nowrap; border: 0; background: none; color: var(--fg-muted); font: inherit; font-weight: 500; cursor: pointer; border-radius: var(--shape-sm) var(--shape-sm) 0 0; }
 .prs-page-tab:hover { background: var(--hover-layer); color: var(--fg); }
 .prs-page-tab.prs-active { color: var(--fg); }
 .prs-page-tab.prs-active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--md-tertiary); }

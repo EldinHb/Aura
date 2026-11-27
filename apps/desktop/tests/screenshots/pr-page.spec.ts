@@ -94,6 +94,10 @@ const files = [
 const view = { sessionId: lead, blocked: null, pulls: [{ ref: { url, repo, number: 1290, sources: [{ sessionId: worker, title: sessions[1].title, worker: true }] }, status, readAt: at(0.2), error: null }] };
 const modInfo = { id: "pr-status", name: "PR status", version: "1.0.0", source: "bundled", dir: "/bundled/pr-status", status: { state: "running" }, enabled: true, approved: true, hasUi: true, hasDaemon: true, permissions: {}, dependsOn: {}, settings: [], settingValues: {} };
 
+/** The page of a busy PR: four-digit counts on every tab. */
+let busy = false;
+const busyPage = () => ({ ...page, commentCount: 1284, commitCount: 1045, changedFiles: 3000, checks: Array.from({ length: 1187 }, (_, i) => check(`job ${i}`, "CI", "passing", "Success", 60)) });
+
 async function mockDaemon(p: Page) {
   const js = read("pr-status/dist/ui.js");
   const css = read("pr-status/dist/ui.css");
@@ -112,7 +116,7 @@ async function mockDaemon(p: Page) {
         case "mods.ui_source": result = { js, css, version: "1.0.0" }; break;
         case "mod.pr-status.watch": result = params.background ? null : view; break;
         case "mod.pr-status.view": case "mod.pr-status.refresh": result = view; break;
-        case "mod.pr-status.page.get": result = page; break;
+        case "mod.pr-status.page.get": result = busy ? busyPage() : page; break;
         case "mod.pr-status.page.files": result = files; break;
         case "mod.github.pulls.sessions": result = [lead, worker]; break;
         case "git.branch_status": result = null; break;
@@ -171,6 +175,12 @@ for (const theme of ["dark", "light"] as const) {
       await expect(view.getByRole("heading", { level: 1 })).toContainText("#1290");
       const main = await view.evaluate((el) => Math.round(el.getBoundingClientRect().width));
       expect(Math.abs(main - width)).toBeLessThan(60);
+      // All four tabs show whole, without scrolling the tab row (QA: at 700 px "Files changed" was cut off).
+      const tabs = await view.getByRole("tablist").evaluate((list) => {
+        const box = list.getBoundingClientRect();
+        return { scrolls: list.scrollWidth > list.clientWidth, outside: [...list.children].filter((t) => t.getBoundingClientRect().right > box.right + 0.5).map((t) => t.textContent) };
+      });
+      expect(tabs).toEqual({ scrolls: false, outside: [] });
       await p.waitForTimeout(300);
       await view.screenshot({ path: `${OUT}/conversation-${theme}-${width}.png` });
       if (width === 1000) {
@@ -188,4 +198,27 @@ for (const theme of ["dark", "light"] as const) {
       }
     });
   }
+}
+
+for (const [width, viewport] of [[700, 988], [600, 888]] as const) {
+  test(`all four tabs show whole at ${width} px, also with four-digit counts`, async ({ page: p }) => {
+    busy = true;
+    try {
+      await p.setViewportSize({ width: viewport, height: 1200 });
+      await mockDaemon(p);
+      await p.clock.setFixedTime(now);
+      await p.goto(`/?port=19998&token=shots&session=${lead}`);
+      await p.locator(".prs-section").getByRole("button", { name: title }).click();
+      const list = p.locator(".prs-page").getByRole("tablist");
+      await expect(list.getByRole("tab")).toHaveCount(4);
+      const tabs = await list.evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        return { scrolls: el.scrollWidth > el.clientWidth, outside: [...el.children].filter((t) => t.getBoundingClientRect().right > box.right + 0.5).map((t) => t.textContent) };
+      });
+      expect(tabs).toEqual({ scrolls: false, outside: [] });
+      await list.screenshot({ path: `${OUT}/tabs-busy-${width}.png` });
+    } finally {
+      busy = false;
+    }
+  });
 }
