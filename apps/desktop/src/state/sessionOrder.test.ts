@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session } from "../gen";
-import { STATE_SECTION, selectNestedRows, selectSessionSections, selectVisibleSessions, useStore } from "./store";
+import { STATE_SECTION, rollupOf, selectListedSessions, treeOf, selectNestedRows, selectSessionSections, selectVisibleSessions, useStore } from "./store";
 
 function session(id: string, patch: Partial<Session> = {}): Session {
   return { id, title: id, cwd: `/work/${id}`, provider: "claude", status: "idle", mode: "structured", archived: false, pinned: false, pending_count: 0,
@@ -116,9 +116,18 @@ describe("session order", () => {
     expect(n.overflow).toBe(true);
   });
 
-  it("keeps orchestrators that point at each other, each a leader", () => {
-    useStore.getState().setSessions([session("a", { orchestrator_id: "b" }), session("b", { orchestrator_id: "a" }), session("c")]);
-    expect(visible()).toEqual(["a", "b", "c"]);
+  it("breaks an orchestrator cycle at its oldest session: one leader, each session listed and counted once", () => {
+    // a and b point at each other, c works under a; a is the oldest.
+    useStore.getState().setSessions([session("b", { orchestrator_id: "a" }), session("a", { orchestrator_id: "b" }), session("c", { orchestrator_id: "a", pending_count: 1 }), session("d")]);
+    expect(visible()).toEqual(["a", "d"]);
+    const st = useStore.getState();
+    expect(selectListedSessions(st).map((s) => s.id)).toEqual(["a", "b", "c", "d"]);
+    expect(treeOf("a", st.sessions).map((s) => s.id)).toEqual(["b", "c"]);
+    expect(rollupOf(st.sessions.a, st.sessions)).toBe("waiting");
+    // b's own report of the loop changes nothing: the cycle still breaks at a.
+    useStore.getState().upsertSession(session("b", { orchestrator_id: "a", status: "running" }));
+    expect(visible()).toEqual(["a", "d"]);
+    expect(selectListedSessions(useStore.getState()).map((s) => s.id)).toEqual(["a", "b", "c", "d"]);
   });
 
   it("forgets expanded leaders that no longer exist", () => {
