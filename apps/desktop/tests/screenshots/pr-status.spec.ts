@@ -35,8 +35,8 @@ const check = (name: string, state: string) => ({ name, url: `https://github.com
 
 const ready = pr(412, "Add per-plan rate limiting", [[lead, "Public API rate limits", false], [api, "Rate limiter middleware", true]], {
   state: "open",
-  reviewers: { reviewed: [{ name: "alice", kind: "user", state: "APPROVED", previous: null }, { name: "dmitri", kind: "user", state: "APPROVED", previous: null }], pending: [] },
-  checks: { state: "passing", passing: 12, failing: 0, pending: 0, total: 12, open: [] },
+  reviewers: { reviewed: [{ name: "alice", kind: "user", state: "APPROVED", previous: null }, { name: "dmitri", kind: "user", state: "APPROVED", previous: null }], pending: [], complete: true },
+  checks: { state: "passing", passing: 12, failing: 0, pending: 0, total: 12, open: [], complete: true },
   readiness: { ready: true, reasons: [] },
 });
 const failing = pr(415, "Return Retry-After on 429 responses", [[api, "Rate limiter middleware", true]], {
@@ -44,14 +44,15 @@ const failing = pr(415, "Return Retry-After on 429 responses", [[api, "Rate limi
   reviewers: {
     reviewed: [{ name: "carol", kind: "user", state: "COMMENTED", previous: null }],
     pending: [{ name: "bob", kind: "user", state: "PENDING", previous: "CHANGES_REQUESTED" }, { name: "acme/platform", kind: "team", state: "PENDING", previous: null }],
+    complete: true,
   },
-  checks: { state: "failing", passing: 9, failing: 2, pending: 1, total: 12, open: [check("integration-tests", "failing"), check("lint", "failing"), check("e2e (chromium)", "pending")] },
+  checks: { state: "failing", passing: 9, failing: 2, pending: 1, total: 12, open: [check("integration-tests", "failing"), check("lint", "failing"), check("e2e (chromium)", "pending")], complete: true },
   readiness: { ready: false, reasons: ["review_required", "checks_failing"] },
 });
 const merged = pr(409, "Document the rate limit headers", [[docs, "API reference docs", true]], {
   state: "merged",
-  reviewers: { reviewed: [{ name: "alice", kind: "user", state: "APPROVED", previous: null }], pending: [] },
-  checks: { state: "passing", passing: 4, failing: 0, pending: 0, total: 4, open: [] },
+  reviewers: { reviewed: [{ name: "alice", kind: "user", state: "APPROVED", previous: null }], pending: [], complete: true },
+  checks: { state: "passing", passing: 4, failing: 0, pending: 0, total: 4, open: [], complete: true },
   readiness: null,
 });
 const view = { sessionId: lead, pulls: [ready, failing, merged], blocked: null };

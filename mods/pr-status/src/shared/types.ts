@@ -18,8 +18,11 @@ export interface PrRef {
 
 export type PrState = "draft" | "open" | "merged" | "closed";
 
-/** A reviewer's latest review, or `PENDING` while their review is requested. */
-export type ReviewState = "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "PENDING";
+/**
+ * A reviewer's latest review, or `PENDING` while their review is requested. `DISMISSED`
+ * counts as neither an approval nor a change request.
+ */
+export type ReviewState = "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" | "PENDING";
 
 export interface Reviewer {
   /** A login, or `org/team` for a team. */
@@ -34,6 +37,8 @@ export interface Reviewers {
   reviewed: Reviewer[];
   /** Requested and not reviewed since, re-requests included. */
   pending: Reviewer[];
+  /** False when GitHub had more reviews or requests than were read. */
+  complete: boolean;
 }
 
 export type ChecksState = "passing" | "failing" | "pending" | "none";
@@ -53,6 +58,8 @@ export interface Checks {
   total: number;
   /** The failing checks, then the pending ones. */
   open: Check[];
+  /** False when not every check was read; `state` is then GitHub's own rollup. */
+  complete: boolean;
 }
 
 /** Why an open PR cannot be merged yet. `unknown`: GitHub is still computing mergeability. */
@@ -65,6 +72,7 @@ export type Blocker =
   | "conflicts"
   | "behind"
   | "blocked"
+  | "unstable"
   | "unknown";
 
 export interface Readiness {

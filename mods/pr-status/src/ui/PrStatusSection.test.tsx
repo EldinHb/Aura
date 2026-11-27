@@ -20,10 +20,11 @@ function entry(over: Partial<PrEntry["ref"]> & { status?: any; error?: string | 
       reviewers: {
         reviewed: [{ name: "alice", kind: "user", state: "APPROVED", previous: null }],
         pending: [{ name: "bob", kind: "user", state: "PENDING", previous: "CHANGES_REQUESTED" }, { name: "acme/core", kind: "team", state: "PENDING", previous: null }],
+        complete: true,
       },
       checks: { state: "failing", passing: 7, failing: 1, pending: 1, total: 9, open: [
         { name: "test", url: "https://ci.example/test", state: "failing" }, { name: "e2e", url: null, state: "pending" },
-      ] },
+      ], complete: true },
       readiness: { ready: false, reasons: ["review_required", "checks_failing"] },
     } : over.status,
     readAt: "2026-11-27T10:00:00Z",
@@ -112,6 +113,21 @@ describe("PrStatusSection", () => {
     const cards = await screen.findAllByRole("article");
     expect(cards.map((c) => within(c).queryByRole("group", { name: "Still to review" }) !== null)).toEqual([false, false, true]);
     expect(within(cards[0]).getByRole("group", { name: "Reviewed" })).toBeTruthy();
+  });
+
+  it("shows dismissed reviews, an UNSTABLE merge state and an incomplete reviewer list (review items 1, 5, 7)", async () => {
+    const base = entry().status;
+    fakeCtx({ sessionId: "lead", pulls: [entry({ status: {
+      ...base,
+      reviewers: { reviewed: [{ name: "erin", kind: "user", state: "DISMISSED", previous: null }], pending: [{ name: "finn", kind: "user", state: "PENDING", previous: "DISMISSED" }], complete: false },
+      readiness: { ready: false, reasons: ["unstable"] },
+    } })], blocked: null });
+    render(<PrStatusSection session={lead} />);
+    const card = await screen.findByRole("article");
+    expect(within(card).getByRole("group", { name: "Reviewed" }).textContent).toContain("erinDismissed");
+    expect(within(card).getByTitle("finn: re-requested, previously dismissed")).toBeTruthy();
+    expect(card.textContent).toContain("Not ready: Checks not passing");
+    expect(card.textContent).toContain("Too many reviewers to list them all here");
   });
 
   it("watches while shown, renews, refreshes on demand, follows changes and lets go when unmounted", async () => {

@@ -20,8 +20,10 @@ const review = (login: string, state: string, typename = "User") => ({ state, su
 export function prNode(over: {
   number?: number; title?: string; state?: string; isDraft?: boolean; mergeable?: string; mergeStateStatus?: string; reviewDecision?: string | null;
   author?: string; requested?: Array<[string, string]>; reviews?: Array<[string, string] | [string, string, string]>; opinions?: Array<[string, string]>;
-  checks?: any[]; rollup?: string | null;
+  checks?: any[]; rollup?: string | null; checksTotal?: number; morePages?: Array<"checks" | "reviews" | "opinions" | "requests">;
 } = {}) {
+  const page = (kind: "checks" | "reviews" | "opinions" | "requests") =>
+    ({ pageInfo: { hasNextPage: (over.morePages ?? []).includes(kind), endCursor: `${kind}-1` } });
   return {
     number: over.number ?? 1,
     title: over.title ?? "A change",
@@ -33,16 +35,17 @@ export function prNode(over: {
     reviewDecision: over.reviewDecision ?? null,
     author: { login: over.author ?? "me" },
     reviewRequests: {
+      ...page("requests"),
       nodes: (over.requested ?? []).map(([type, name]) => ({
         requestedReviewer: type === "Team" ? { __typename: "Team", combinedSlug: name } : { __typename: type, login: name },
       })),
     },
-    latestReviews: { nodes: (over.reviews ?? []).map(([login, state, typename]) => review(login, state, typename)) },
-    latestOpinionatedReviews: { nodes: (over.opinions ?? []).map(([login, state]) => ({ state, author: { login } })) },
+    latestReviews: { ...page("reviews"), nodes: (over.reviews ?? []).map(([login, state, typename]) => review(login, state, typename)) },
+    latestOpinionatedReviews: { ...page("opinions"), nodes: (over.opinions ?? []).map(([login, state]) => ({ state, author: { login } })) },
     commits: {
-      nodes: [{ commit: { statusCheckRollup: over.rollup === null ? null : {
+      nodes: [{ commit: { oid: "head", statusCheckRollup: over.rollup === null ? null : {
         state: over.rollup ?? "SUCCESS",
-        contexts: { totalCount: (over.checks ?? [run("build")]).length, nodes: over.checks ?? [run("build")] },
+        contexts: { totalCount: over.checksTotal ?? (over.checks ?? [run("build")]).length, ...page("checks"), nodes: over.checks ?? [run("build")] },
       } } }],
     },
   };
@@ -62,9 +65,18 @@ export function fakeGithub(nodes: Record<number, any> = {}) {
     notified: null as Notified | null,
     pace: (base: number) => base,
     fail: null as Error | null,
+    /** Answers a follow-up page query (one with `$after`): its `data`. */
+    page: ((query: string, variables: any): any => {
+      throw new Error(`no page for ${query.slice(0, 60)} ${JSON.stringify(variables)}`);
+    }),
   };
+  const pages: Array<{ query: string; variables: any }> = [];
   const gh: Github = {
     async request(_method, _path, body: any) {
+      if (body.variables?.after !== undefined) {
+        pages.push({ query: body.query, variables: body.variables });
+        return { data: state.page(body.query, body.variables) };
+      }
       const query: string = body.query;
       const data: Record<string, any> = {};
       const asked: number[] = [];
@@ -92,7 +104,7 @@ export function fakeGithub(nodes: Record<number, any> = {}) {
     notified: async () => state.notified,
     memo: () => null,
   };
-  return { gh, state, queries, paceCalls };
+  return { gh, state, queries, paceCalls, pages };
 }
 
 export { Notified };

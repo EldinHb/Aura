@@ -32,7 +32,7 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
     // A new worker, a finished turn (it may have pushed or opened a PR) or changed links
     // can change which PRs a tree has.
     aura.events.on("session_created", () => poller.invalidate()),
-    aura.events.on("session_removed", () => poller.invalidate()),
+    aura.events.on("session_removed", (e) => poller.forgetSession(e.session_id)),
     aura.events.on("turn_completed", () => poller.invalidate()),
     aura.mods.on("github", "links.changed", () => poller.invalidate()),
   ];

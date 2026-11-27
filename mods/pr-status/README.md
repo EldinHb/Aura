@@ -27,14 +27,13 @@ GitHub blocked (`api.blocked`): one inline reason, the cards stay, dated.
   session: github `sessions.prs` (chosen `links.prs`, else `detected`), `links.all` →
   `pulls`, and `branch_pull` of its branch (`git.branchStatus` + github `repo`).
   Deduplicated by URL; each card lists the sessions it came from.
-- Status: one batched GraphQL query (`batchNodes`, 20 PRs each): state, draft,
-  `mergeable`, `mergeStateStatus`, `reviewDecision`, review requests, latest reviews, and
-  the head commit's `statusCheckRollup` contexts.
+- Status: one batched GraphQL query (`batchNodes`, 20 PRs each), then the pages left of the
+  checks and reviews (up to 10 each; beyond that GitHub's rollup state is used and the
+  reviewer list is marked incomplete). Branch PRs come from a paced queue, 2 a round.
 
 ## Polling (daemon half)
-The UI half `watch`es the shown session (a 90 s lease, renewed every 30 s, dropped on
-unmount or a hidden window). A 5 s tick reads only watched PRs that are due: every 60 s,
-20 s while checks are pending or mergeability is unknown, each stretched by `api.pace`;
-at once on `api.notified` activity, on `watch` (section shown) and on `refresh`.
-Failures back off (doubling, up to 15 min). Merged or closed PRs are read once more and
-then left alone. Nothing is read while `api.blocked` gives a reason.
+The UI half `watch`es the shown session (a 90 s lease, renewed every 30 s). A 5 s tick
+reads watched PRs that are due: every 60 s, 20 s while checks run or mergeability is
+unknown, 15 min once closed, never once merged; at least `api.pace`, and after failures
+a doubling back-off up to 15 min. Once per new `api.notified` entry, on `watch` and on
+`refresh`. Unseen data is forgotten after 10 min. Nothing is read while `api.blocked`.

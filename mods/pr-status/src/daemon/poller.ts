@@ -1,5 +1,6 @@
 // Keeps the PRs someone is looking at up to date. The UI half `watch`es the session its
-// Inspector shows; each tick reads only the watched PRs that are due, in one batched query.
+// Inspector shows; each tick reads only the watched PRs that are due, in one batched query,
+// then looks up a few branch PRs from its discovery queue.
 import type { BranchStatus, DaemonApi, Session } from "@aura/mod-sdk";
 import { messageOf, type Github, type Notified } from "@aura/github-client";
 import type { PrEntry, PrRef, PrStatus, SessionView } from "../shared/types";
@@ -12,24 +13,36 @@ export const LEASE_MS = 90_000;
 export const POLL_MS = 60_000;
 /** While checks run or GitHub is still computing mergeability. */
 export const FAST_POLL_MS = 20_000;
+/** A closed PR can be reopened; without a notification it is looked at this often. */
+export const CLOSED_POLL_MS = 15 * 60_000;
 export const MAX_BACKOFF_MS = 15 * 60_000;
 /** A session tree's PRs are collected again after this long, or at once on a change. */
 export const COLLECT_TTL_MS = 60_000;
 /** A branch's PR is looked up again after this long, or at once when the branch moves. */
 export const BRANCH_TTL_MS = 5 * 60_000;
+/** A branch lookup that failed is tried again after this long. */
+export const BRANCH_RETRY_MS = 60_000;
+/** Branch lookups per round, at most; rounds with lookups are paced like a TICK_MS poll. */
+export const DISCOVERY_PER_TICK = 2;
+/** What nobody looked at for this long is forgotten; each cache keeps at most MAX_CACHED. */
+export const RETAIN_MS = 10 * 60_000;
+export const MAX_CACHED = 200;
+/** Notifications are dated by GitHub's clock; one this much older than a read may still be news to it. */
+const NOTIFY_SKEW_MS = 2 * 60_000;
 
-/** How often a PR is read: fast while something is about to change, never once merged or closed. */
+/** How often a PR is read: fast while something is about to change, slowly once closed, never once merged. */
 export function baseDelay(status: PrStatus | null): number {
   if (!status) return POLL_MS;
-  if (status.state === "merged" || status.state === "closed") return Infinity;
+  if (status.state === "merged") return Infinity;
+  if (status.state === "closed") return CLOSED_POLL_MS;
   if (status.checks.state === "pending" || status.readiness?.reasons.includes("unknown")) return FAST_POLL_MS;
   return POLL_MS;
 }
 
-/** The wait before the next read: the paced one, or after failures a doubling back-off up to MAX_BACKOFF_MS. */
+/** The wait before the next read: the paced one, and after failures at least a doubling back-off (up to MAX_BACKOFF_MS). */
 export function nextDelay(base: number, paced: number, failures: number): number {
   if (failures <= 0) return paced;
-  return Math.min(Math.max(paced, base * 2 ** failures), MAX_BACKOFF_MS);
+  return Math.max(paced, Math.min(base * 2 ** failures, MAX_BACKOFF_MS));
 }
 
 interface Entry {
@@ -39,8 +52,30 @@ interface Entry {
   error: string | null;
   failures: number;
   nextAt: number;
-  /** Merged or closed when last read: not read again unless asked to. */
+  /** Merged when last read: not read again unless asked to. */
   final: boolean;
+  /** The latest notification (its time) this PR was read after; a newer one reads it again. */
+  noted: string | null;
+  /** When a watched tree last held it. */
+  seen: number;
+}
+
+/** Where to look for a session folder's branch PR. */
+interface BranchTarget {
+  cwd: string;
+  branch: string;
+  headRepo: string | null;
+  /** Branch, upstream and head: a lookup for another stamp answers another question. */
+  stamp: string;
+}
+
+interface BranchFound {
+  branch: string;
+  stamp: string;
+  url: string | null;
+  at: number;
+  failed: boolean;
+  used: number;
 }
 
 export type GithubCall = (name: string, params?: unknown) => Promise<any>;
@@ -61,8 +96,16 @@ export class PrPoller {
   private viewers = new Map<string, { sessionId: string; until: number }>();
   private entries = new Map<string, Entry>();
   private trees = new Map<string, { refs: PrRef[]; at: number }>();
-  private branches = new Map<string, { stamp: string; url: string | null; at: number }>();
-  private repos = new Map<string, string | null>();
+  /** Bumped by every invalidation: a collection started before one is not kept. */
+  private generation = 0;
+  private collecting = new Map<string, { generation: number; refs: Promise<PrRef[]> }>();
+  private branches = new Map<string, BranchFound>();
+  private repos = new Map<string, { repo: string | null; at: number; used: number }>();
+  /** Branch lookups waiting, by folder; the latest target of a folder wins. */
+  private discovery = new Map<string, BranchTarget>();
+  private discoverAt = 0;
+  /** Folders of the sessions collected, so a removed session's caches can go. */
+  private folders = new Map<string, string>();
   private forced = new Set<string>();
   private blocked: string | null = null;
   private queue: Promise<void> = Promise.resolve();
@@ -79,7 +122,8 @@ export class PrPoller {
     this.viewers.set(viewer, { sessionId, until: this.now() + LEASE_MS });
     if (refresh) {
       const refs = await this.refsOf(sessionId);
-      // A PR read moments ago (another viewer, the previous tick) is fresh enough.
+      // A PR read moments ago (another viewer, the previous tick) is fresh enough; a closed one
+      // is looked at again, as it may have been reopened.
       for (const ref of refs) {
         const e = this.entries.get(prKey(ref.url));
         if (!e?.final && !(e?.readAt && this.now() - e.readAt < TICK_MS * 2)) this.forced.add(prKey(ref.url));
@@ -93,17 +137,31 @@ export class PrPoller {
     this.viewers.delete(viewer);
   }
 
-  /** Collect the session's PRs again and read every one of them now, merged and closed ones too. */
+  /** Collect the session's PRs again and read every one of them now, merged ones too. */
   async refresh(sessionId: string): Promise<SessionView> {
-    this.trees.delete(sessionId);
+    this.invalidate();
     for (const ref of await this.refsOf(sessionId)) this.forced.add(prKey(ref.url));
     await this.tick();
     return this.view(sessionId);
   }
 
-  /** Sessions or links changed: collect the watched trees again on the next tick. */
+  /** Sessions or links changed: collections running now are dropped, and the watched trees collected again. */
   invalidate(): void {
+    this.generation++;
     this.trees.clear();
+  }
+
+  /** A session is gone: forget its tree, its watches and its folder's branch caches. */
+  forgetSession(sessionId: string): void {
+    this.invalidate();
+    for (const [viewer, w] of this.viewers) if (w.sessionId === sessionId) this.viewers.delete(viewer);
+    const cwd = this.folders.get(sessionId);
+    this.folders.delete(sessionId);
+    if (cwd && ![...this.folders.values()].includes(cwd)) {
+      this.branches.delete(cwd);
+      this.repos.delete(cwd);
+      this.discovery.delete(cwd);
+    }
   }
 
   /** What is known of the session's PRs, without reading GitHub. */
@@ -116,7 +174,7 @@ export class PrPoller {
     return { sessionId, pulls, blocked: this.blocked };
   }
 
-  /** One round, after any running one: read the watched PRs that are due. */
+  /** One round, after any running one: read the watched PRs that are due, then a few branch lookups. */
   tick(): Promise<void> {
     const run = this.queue.then(() => this.round());
     this.queue = run.catch(() => {});
@@ -139,18 +197,25 @@ export class PrPoller {
     };
   }
 
+  /** How many PRs, branch lookups and folders are remembered; for tests. */
+  cached() {
+    return { entries: this.entries.size, branches: this.branches.size, repos: this.repos.size, trees: this.trees.size };
+  }
+
   private async round(): Promise<void> {
     const now = this.now();
     for (const [viewer, w] of this.viewers) if (w.until <= now) this.viewers.delete(viewer);
     const watched = [...new Set([...this.viewers.values()].map((w) => w.sessionId))];
+    for (const id of this.trees.keys()) if (!watched.includes(id)) this.trees.delete(id);
+    this.evict(now);
     if (watched.length === 0) return;
 
     const changed = new Set<string>();
-    const before = new Map(watched.map((id) => [id, this.trees.get(id)?.refs]));
     const trees = new Map<string, PrRef[]>();
     for (const id of watched) {
+      const before = this.trees.get(id)?.refs;
       trees.set(id, await this.refsOf(id));
-      if (!sameRefs(before.get(id), trees.get(id)!)) changed.add(id);
+      if (!sameRefs(before, trees.get(id)!)) changed.add(id);
     }
 
     const blocked = await this.gh.blocked().catch((e) => messageOf(e));
@@ -162,6 +227,10 @@ export class PrPoller {
 
     const visible = new Map<string, PrRef>();
     for (const refs of trees.values()) for (const ref of refs) visible.set(prKey(ref.url), ref);
+    for (const key of visible.keys()) {
+      const e = this.entries.get(key);
+      if (e) e.seen = now;
+    }
     const notified = await this.gh.notified().catch(() => null);
     const due = [...visible.entries()].filter(([key, ref]) => this.isDue(key, ref, notified, now)).map(([, ref]) => ref);
     for (const ref of due) this.forced.delete(prKey(ref.url));
@@ -179,14 +248,19 @@ export class PrPoller {
         const key = prKey(ref.url);
         const old = this.entries.get(key);
         const result = read[i];
-        const entry: Entry = { ref, status: old?.status ?? null, readAt: old?.readAt ?? null, error: null, failures: 0, nextAt: 0, final: false };
+        const entry: Entry = {
+          ref, status: old?.status ?? null, readAt: old?.readAt ?? null, error: null, failures: 0, nextAt: 0, final: false,
+          // This read covers every notification known now, failed or not: a failed read is retried on its schedule.
+          noted: notified?.pulls[notifyKey(ref)] ?? old?.noted ?? null,
+          seen: at,
+        };
         if (result instanceof Error) {
           entry.error = result.message;
           entry.failures = (old?.failures ?? 0) + 1;
         } else {
           entry.status = result;
           entry.readAt = at;
-          entry.final = result.state === "merged" || result.state === "closed";
+          entry.final = result.state === "merged";
         }
         const base = baseDelay(entry.error ? null : entry.status);
         entry.nextAt = at + nextDelay(base, await pace(base), entry.failures);
@@ -196,6 +270,7 @@ export class PrPoller {
       for (const [id, refs] of trees) if (refs.some((r) => keys.has(prKey(r.url)))) changed.add(id);
     }
     this.announce(changed);
+    await this.discover();
   }
 
   private isDue(key: string, ref: PrRef, notified: Notified | null, now: number): boolean {
@@ -204,22 +279,39 @@ export class PrPoller {
     if (!e) return true;
     if (e.final) return false;
     if (now >= e.nextAt) return true;
-    return !!notified && e.readAt !== null && notified.changed(ref.repo, ref.number, new Date(e.readAt).toISOString());
+    // After a failure the retry waits for its back-off, notification or not.
+    if (e.failures > 0) return false;
+    // Each notification reads the PR once: one already handled, or older than the last read, does not.
+    const at = notified?.pulls[notifyKey(ref)];
+    if (!at || at === e.noted) return false;
+    return e.readAt === null || Date.parse(at) > e.readAt - NOTIFY_SKEW_MS;
   }
 
   private announce(sessionIds: Set<string>): void {
     if (sessionIds.size) this.aura.emit("changed", { sessionIds: [...sessionIds] });
   }
 
-  /** The session tree's PRs, collected again once COLLECT_TTL_MS old or invalidated. */
+  /** The session tree's PRs: collected again once COLLECT_TTL_MS old or invalidated, one collection at a time. */
   private async refsOf(sessionId: string): Promise<PrRef[]> {
     const saved = this.trees.get(sessionId);
     if (saved && this.now() - saved.at < COLLECT_TTL_MS) return saved.refs;
-    const refs = await this.collect(sessionId);
-    this.trees.set(sessionId, { refs, at: this.now() });
-    return refs;
+    const running = this.collecting.get(sessionId);
+    if (running && running.generation === this.generation) return running.refs;
+    const generation = this.generation;
+    const refs = this.collect(sessionId);
+    this.collecting.set(sessionId, { generation, refs });
+    try {
+      const found = await refs;
+      // Invalidated meanwhile: these links may be older than the change, so collect again.
+      if (generation !== this.generation) return this.refsOf(sessionId);
+      this.trees.set(sessionId, { refs: found, at: this.now() });
+      return found;
+    } finally {
+      if (this.collecting.get(sessionId)?.refs === refs) this.collecting.delete(sessionId);
+    }
   }
 
+  /** The tree's PRs from what is known now: its links, and the branch PRs found so far (others are queued). */
   private async collect(sessionId: string): Promise<PrRef[]> {
     const tree = sessionTree(await this.aura.sessions.list(), sessionId);
     if (tree.length === 0) return [];
@@ -228,8 +320,7 @@ export class PrPoller {
       this.github("links.all", {}).catch((e) => warn("session links", e, {})),
     ]);
     const branch = new Map<string, string | null>();
-    // Branch lookups are GitHub reads; while GitHub is blocked the ones known stay.
-    for (const { session } of tree) branch.set(session.id, await this.branchPull(session));
+    for (const { session } of tree) branch.set(session.id, await this.knownBranchPull(session));
     const prsOf = (id: string): SessionPrs => ({
       linked: strings(linked?.[id]),
       pulls: strings(links?.[id]?.pulls),
@@ -238,30 +329,89 @@ export class PrPoller {
     return collectPulls(tree, prsOf);
   }
 
-  /** The URL of the PR opened from the session's current branch, if any. */
-  private async branchPull(session: Session): Promise<string | null> {
+  /** The PR known for the session's current branch; queues a lookup when there is none yet or it is old. */
+  private async knownBranchPull(session: Session): Promise<string | null> {
     if (session.folderless || !session.cwd) return null;
     const cwd = session.cwd;
+    this.folders.set(session.id, cwd);
+    let git: BranchStatus | null;
     try {
-      const git = (await this.aura.git.branchStatus(cwd)) as BranchStatus | null;
-      const branch = git?.upstream_branch ?? git?.branch;
-      if (!branch) return null;
-      const stamp = `${branch}|${git?.upstream_repo ?? ""}|${git?.head ?? ""}|${git?.ahead ?? 0}`;
-      const saved = this.branches.get(cwd);
-      if (saved && saved.stamp === stamp && this.now() - saved.at < BRANCH_TTL_MS) return saved.url;
-      if (this.blocked) return saved?.url ?? null;
-      if (!this.repos.has(cwd)) this.repos.set(cwd, (await this.github("repo", { cwd })) ?? null);
-      const repo = this.repos.get(cwd);
-      if (!repo) return null;
-      const pull = await this.github("branch_pull", { repo, head_repo: git?.upstream_repo ?? repo, branch });
-      const url = typeof pull?.url === "string" ? pull.url : null;
-      this.branches.set(cwd, { stamp, url, at: this.now() });
-      return url;
+      git = (await this.aura.git.branchStatus(cwd)) as BranchStatus | null;
     } catch (e) {
-      return warn(`the branch PR of ${cwd}`, e, this.branches.get(cwd)?.url ?? null);
+      return warn(`the branch of ${cwd}`, e, null);
+    }
+    const branch = git?.upstream_branch ?? git?.branch;
+    if (!branch) return null;
+    const stamp = `${branch}|${git?.upstream_repo ?? ""}|${git?.head ?? ""}|${git?.ahead ?? 0}`;
+    const found = this.branches.get(cwd);
+    const now = this.now();
+    if (found) found.used = now;
+    const fresh = found && found.stamp === stamp && now - found.at < (found.failed ? BRANCH_RETRY_MS : BRANCH_TTL_MS);
+    if (!fresh) this.discovery.set(cwd, { cwd, branch, headRepo: git?.upstream_repo ?? null, stamp });
+    // Until the lookup answers, the PR found for the same branch still stands.
+    return found && found.branch === branch ? found.url : null;
+  }
+
+  /** Look up a few queued branch PRs, paced; a new answer has the trees collected again. */
+  private async discover(): Promise<void> {
+    if (this.discovery.size === 0 || this.blocked || this.now() < this.discoverAt) return;
+    const batch = [...this.discovery.values()].slice(0, DISCOVERY_PER_TICK);
+    let found = false;
+    for (const target of batch) {
+      const before = this.branches.get(target.cwd);
+      const answer = await this.lookUp(target);
+      // A newer target for the folder (the branch moved) or a forgotten folder: this answer is obsolete.
+      const queued = this.discovery.get(target.cwd);
+      if (queued !== target) continue;
+      this.discovery.delete(target.cwd);
+      this.branches.set(target.cwd, { ...answer, branch: target.branch, stamp: target.stamp, at: this.now(), used: this.now() });
+      if (answer.url !== (before?.branch === target.branch ? before.url : null)) found = true;
+    }
+    this.discoverAt = this.now() + (await this.gh.pace(TICK_MS).catch(() => TICK_MS)) - TICK_MS;
+    if (found) this.invalidate();
+  }
+
+  private async lookUp(target: BranchTarget): Promise<{ url: string | null; failed: boolean }> {
+    const previous = this.branches.get(target.cwd);
+    const keep = previous && previous.branch === target.branch ? previous.url : null;
+    try {
+      const repo = await this.repoOf(target.cwd);
+      if (!repo) return { url: null, failed: false };
+      const pull = await this.github("branch_pull", { repo, head_repo: target.headRepo ?? repo, branch: target.branch });
+      return { url: typeof pull?.url === "string" ? pull.url : null, failed: false };
+    } catch (e) {
+      return { url: warn(`the branch PR of ${target.cwd}`, e, keep), failed: true };
     }
   }
+
+  private async repoOf(cwd: string): Promise<string | null> {
+    const now = this.now();
+    const saved = this.repos.get(cwd);
+    if (saved && now - saved.at < BRANCH_TTL_MS) {
+      saved.used = now;
+      return saved.repo;
+    }
+    const repo = ((await this.github("repo", { cwd })) as string | null) ?? null;
+    this.repos.set(cwd, { repo, at: now, used: now });
+    return repo;
+  }
+
+  /** Forget what nobody looked at for RETAIN_MS, and the oldest beyond MAX_CACHED. */
+  private evict(now: number): void {
+    const keep = <V>(map: Map<string, V>, used: (v: V) => number, drop?: (key: string) => void) => {
+      for (const [key, v] of map) if (now - used(v) >= RETAIN_MS) (map.delete(key), drop?.(key));
+      const over = map.size - MAX_CACHED;
+      if (over > 0) {
+        for (const [key] of [...map].sort(([, a], [, b]) => used(a) - used(b)).slice(0, over)) (map.delete(key), drop?.(key));
+      }
+    };
+    keep(this.entries, (e) => e.seen, (key) => this.forced.delete(key));
+    keep(this.branches, (b) => b.used);
+    keep(this.repos, (r) => r.used);
+  }
 }
+
+const notifyKey = (ref: Pick<PrRef, "repo" | "number">) => `${ref.repo.toLowerCase()}#${ref.number}`;
 
 function warn<T>(what: string, e: unknown, fallback: T): T {
   console.warn(`PR status: could not read ${what}: ${messageOf(e)}`);

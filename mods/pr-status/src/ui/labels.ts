@@ -7,6 +7,7 @@ export const REVIEW_LABEL: Record<ReviewState, string> = {
   APPROVED: "Approved",
   CHANGES_REQUESTED: "Changes requested",
   COMMENTED: "Commented",
+  DISMISSED: "Dismissed",
   PENDING: "Pending",
 };
 
@@ -19,6 +20,7 @@ export const BLOCKER_LABEL: Record<Blocker, string> = {
   conflicts: "Merge conflicts",
   behind: "Behind base branch",
   blocked: "Blocked by branch protection",
+  unstable: "Checks not passing",
   unknown: "GitHub is still checking mergeability",
 };
 

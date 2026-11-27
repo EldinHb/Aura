@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checksRollup, mergeReadiness, readStatuses, reviewerGroups, toStatus } from "./status";
+import { checksRollup, MAX_PAGES, mergeReadiness, readStatuses, reviewerGroups, toStatus } from "./status";
 import { ctxStatus, fakeGithub, prNode, run } from "../test/fixtures";
 
 const ref = { url: "https://github.com/acme/api/pull/1", repo: "acme/api", number: 1 };
@@ -42,6 +42,18 @@ describe("reviewerGroups", () => {
   });
 });
 
+describe("reviewerGroups: dismissed reviews (review item 7)", () => {
+  it("keeps a reviewer whose latest review was dismissed, as Dismissed, not as a verdict", () => {
+    const groups = reviewerGroups(prNode({ reviews: [["alice", "DISMISSED"], ["bob", "APPROVED"]], opinions: [["alice", "DISMISSED"], ["bob", "APPROVED"]] }));
+    expect(groups.reviewed.map((r) => [r.name, r.state])).toEqual([["bob", "APPROVED"], ["alice", "DISMISSED"]]);
+  });
+
+  it("keeps a dismissed review as the previous one of a re-requested reviewer", () => {
+    const groups = reviewerGroups(prNode({ requested: [["User", "alice"]], reviews: [["alice", "DISMISSED"]] }));
+    expect(groups.pending).toEqual([{ name: "alice", kind: "user", state: "PENDING", previous: "DISMISSED" }]);
+  });
+});
+
 describe("checksRollup", () => {
   it("counts check runs and statuses and lists failing then pending ones", () => {
     const checks = checksRollup(prNode({ checks: [
@@ -63,8 +75,63 @@ describe("checksRollup", () => {
 
   it("is passing when everything passed, none without checks, and falls back on GitHub's state", () => {
     expect(checksRollup({ state: "SUCCESS", contexts: { totalCount: 1, nodes: [run("a", "NEUTRAL")] } }).state).toBe("passing");
-    expect(checksRollup(null)).toEqual({ state: "none", passing: 0, failing: 0, pending: 0, total: 0, open: [] });
+    expect(checksRollup(null)).toEqual({ state: "none", passing: 0, failing: 0, pending: 0, total: 0, open: [], complete: true });
     expect(checksRollup({ state: "FAILURE", contexts: { totalCount: 150, nodes: [] } })).toMatchObject({ state: "failing", total: 150 });
+  });
+});
+
+describe("checks past the first page (review item 1)", () => {
+  const passing = Array.from({ length: 100 }, (_, i) => run(`job-${String(i).padStart(3, "0")}`));
+
+  it("takes GitHub's rollup when a page is only partly read", () => {
+    const rollup = prNode({ checks: passing, checksTotal: 140, rollup: "FAILURE" }).commits.nodes[0].commit.statusCheckRollup!;
+    expect(checksRollup(rollup)).toMatchObject({ state: "failing", passing: 100, failing: 0, total: 140, complete: false });
+    expect(checksRollup({ ...rollup, contexts: { ...rollup.contexts, pageInfo: { hasNextPage: true } } })).toMatchObject({ state: "failing", complete: false });
+  });
+
+  it("reads the remaining pages of the head commit's checks", async () => {
+    const { gh, state, pages } = fakeGithub({ 1: prNode({ number: 1, checks: passing, checksTotal: 101, morePages: ["checks"] }) });
+    state.page = (query, variables) => {
+      expect(query).toContain("object(oid:$oid)");
+      expect(variables).toMatchObject({ owner: "acme", name: "api", oid: "head", after: "checks-1" });
+      return { repository: { object: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false, endCursor: "x" }, nodes: [run("zz-deploy", "FAILURE")] } } } } };
+    };
+    const [status] = await readStatuses(gh, [ref]);
+    expect(pages).toHaveLength(1);
+    expect(status).toMatchObject({ checks: { state: "failing", passing: 100, failing: 1, complete: true }, readiness: { ready: false, reasons: ["checks_failing"] } });
+  });
+
+  it("stops after MAX_PAGES and then trusts GitHub's rollup", async () => {
+    const { gh, state, pages } = fakeGithub({ 1: prNode({ number: 1, checks: passing, checksTotal: 5000, rollup: "FAILURE", morePages: ["checks"] }) });
+    state.page = () => ({ repository: { object: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage: true, endCursor: "n" }, nodes: [run("more")] } } } } });
+    const [status] = await readStatuses(gh, [ref]);
+    expect(pages).toHaveLength(MAX_PAGES - 1);
+    expect(status).toMatchObject({ checks: { state: "failing", failing: 0, complete: false }, readiness: { ready: false, reasons: ["checks_failing"] } });
+  });
+
+  it("is not ready when GitHub says UNSTABLE, whatever the checks read say", () => {
+    const open = { state: "open" as const, mergeable: "MERGEABLE", reviewDecision: "APPROVED" };
+    expect(mergeReadiness({ ...open, mergeStateStatus: "UNSTABLE", checks: "passing" })).toEqual({ ready: false, reasons: ["unstable"] });
+    expect(mergeReadiness({ ...open, mergeStateStatus: "UNSTABLE", checks: "failing" })).toEqual({ ready: false, reasons: ["checks_failing"] });
+  });
+});
+
+describe("reviewers past the first page (review item 5)", () => {
+  it("reads every page of latest and opinionated reviews before grouping", async () => {
+    const { gh, state } = fakeGithub({ 1: prNode({ number: 1, reviews: [["alice", "COMMENTED"]], morePages: ["reviews", "opinions"] }) });
+    state.page = (query) =>
+      query.includes("latestOpinionatedReviews")
+        ? { repository: { pullRequest: { latestOpinionatedReviews: { pageInfo: { hasNextPage: false }, nodes: [{ state: "CHANGES_REQUESTED", author: { login: "alice" } }] } } } }
+        : { repository: { pullRequest: { latestReviews: { pageInfo: { hasNextPage: false }, nodes: [{ state: "APPROVED", author: { __typename: "User", login: "zed" } }] } } } };
+    const [status] = await readStatuses(gh, [ref]);
+    expect(status).toMatchObject({ reviewers: { complete: true, reviewed: [{ name: "alice", state: "CHANGES_REQUESTED" }, { name: "zed", state: "APPROVED" }] } });
+  });
+
+  it("marks the reviewers incomplete when pages are left or a page fails", async () => {
+    const { gh } = fakeGithub({ 1: prNode({ number: 1, reviews: [["alice", "APPROVED"]], morePages: ["reviews"] }) });
+    const [status] = await readStatuses(gh, [ref]);
+    expect(status).toMatchObject({ reviewers: { complete: false, reviewed: [{ name: "alice" }] } });
+    expect(reviewerGroups(prNode({ morePages: ["requests"] })).complete).toBe(false);
   });
 });
 
