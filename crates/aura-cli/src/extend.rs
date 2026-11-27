@@ -40,20 +40,14 @@ pub enum ModsCmd {
         #[arg(long)]
         force: bool,
     },
-    /// Approve a mod's permissions and start it (the same as Approve in Settings › Mods)
-    Approve {
-        id: String,
-    },
-    Enable {
-        id: String,
-    },
-    Disable {
-        id: String,
-    },
+    /// Ask the open Aura window to show a mod's approval prompt. Only a click there approves it
+    Approve { id: String },
+    /// Turn a disabled mod back on (it starts if it is approved)
+    Enable { id: String },
+    /// Turn a mod off: it stops and stays off across restarts until enabled
+    Disable { id: String },
     /// Re-read a mod's files and restart it
-    Reload {
-        id: String,
-    },
+    Reload { id: String },
     /// Look for added and removed mod folders
     Rescan,
     /// Print a mod's log: its console output, errors, and its UI half's errors
@@ -95,8 +89,10 @@ pub enum ThemesCmd {
     },
     /// Validate a theme (by id, or a path to its .json); exits 1 when it cannot be used
     Check { theme: String },
-    /// Switch the open Aura windows to a theme (dark, light, system or a theme id)
+    /// Show a theme in Aura (dark, light, system or a theme id); kept across restarts. Exits 1 for a theme that cannot be used
     Use { id: String },
+    /// Ask the open Aura window to show the approval prompt for a theme's CSS. Only a click there approves it
+    Approve { id: String },
 }
 
 /// `aura guide [topic]`.
@@ -286,6 +282,10 @@ pub fn new_theme(
 
 /// A theme by path or id: `<id>`, or `<mod id>:<name>` for a user mod's theme.
 pub fn find_theme(data_dir: &Path, theme: &str) -> Result<themes::Theme> {
+    if looks_like_path(theme) {
+        return check_path(theme);
+    }
+    check_id(theme)?;
     let as_path = Path::new(theme);
     if theme.ends_with(".json") && as_path.is_file() {
         let stem = as_path
@@ -318,6 +318,113 @@ pub fn find_theme(data_dir: &Path, theme: &str) -> Result<themes::Theme> {
     Ok(themes::load(&path, &id, &source))
 }
 
+/// Whether `aura themes check` was given a file rather than an id.
+fn looks_like_path(arg: &str) -> bool {
+    arg.contains('/') || arg.contains('\\') || arg.ends_with(".json")
+}
+
+/// A theme file named by path, checked on disk without the daemon.
+fn check_path(arg: &str) -> Result<themes::Theme> {
+    let given = Path::new(arg);
+    let path = match std::fs::canonicalize(given) {
+        Ok(p) => p,
+        Err(_) => bail!("no such file: {arg}"),
+    };
+    if path.extension().is_none_or(|x| x != "json") {
+        bail!("{arg} is not a theme: a theme is a .json file");
+    }
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut t = themes::load(&path, &stem, "user");
+    if !themes::valid_id(&stem) && t.error.is_none() {
+        t.error = Some(format!(
+            "the file name {stem:?} is not a theme id: use lowercase letters, digits and dashes (dark, light and system are taken)"
+        ));
+        t.tokens.clear();
+        t.css = None;
+    }
+    Ok(t)
+}
+
+/// The same id rule discovery uses (`<mod id>:<name>` for a mod's theme).
+fn check_id(id: &str) -> Result<()> {
+    if themes::RESERVED_IDS.contains(&id) {
+        bail!("{id} is a built-in theme, not a file; there is nothing to check");
+    }
+    let stem = id.split_once(':').map(|(_, n)| n).unwrap_or(id);
+    if !themes::valid_id(stem) {
+        bail!("{id:?} is not a theme id: use lowercase letters, digits and dashes (`aura themes list` shows the themes)");
+    }
+    Ok(())
+}
+
+/// `aura themes check`: a path is checked on disk; an id is looked up the way
+/// Aura finds themes (through the daemon when one runs, so mods' themes and
+/// CSS approval count), else on disk.
+pub async fn themes_check(data_dir: &Path, theme: &str, as_json: bool) -> Result<bool> {
+    let t = if looks_like_path(theme) {
+        check_path(theme)?
+    } else {
+        check_id(theme)?;
+        match RpcClient::connect_from_dir(data_dir).await {
+            Ok(c) => {
+                let v = c.call("themes.get", json!({"id": theme})).await?;
+                serde_json::from_value::<WireTheme>(v)?.into()
+            }
+            Err(_) => find_theme(data_dir, theme)?,
+        }
+    };
+    print_check(&t, as_json)
+}
+
+/// A theme as the daemon sends it.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireTheme {
+    id: String,
+    name: String,
+    #[serde(default)]
+    author: Option<String>,
+    base: String,
+    #[serde(default)]
+    tokens: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    css: Option<String>,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    warnings: Vec<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    approval: Option<String>,
+    #[serde(default)]
+    css_bytes: Option<usize>,
+}
+
+impl From<WireTheme> for themes::Theme {
+    fn from(w: WireTheme) -> Self {
+        themes::Theme {
+            id: w.id,
+            name: w.name,
+            author: w.author,
+            base: w.base,
+            tokens: w.tokens,
+            css: w.css,
+            path: w.path,
+            source: w.source,
+            warnings: w.warnings,
+            error: w.error,
+            approval: w.approval,
+            css_bytes: w.css_bytes,
+        }
+    }
+}
+
 /// Exit code 1 when the theme cannot be used.
 pub fn print_check(t: &themes::Theme, as_json: bool) -> Result<bool> {
     if as_json {
@@ -339,6 +446,13 @@ pub fn print_check(t: &themes::Theme, as_json: bool) -> Result<bool> {
     for w in &t.warnings {
         println!("  warning: {w}");
     }
+    if t.approval.as_deref() == Some("needs_approval") {
+        println!(
+            "  its CSS ({} bytes) waits for approval in Aura: `aura themes approve {}` shows the prompt; meanwhile only its tokens apply",
+            t.css_bytes.unwrap_or(0),
+            t.id
+        );
+    }
     Ok(t.error.is_none())
 }
 
@@ -350,6 +464,9 @@ fn print_themes(list: &[themes::Theme], dir: &str) {
     for t in list {
         let status = match (&t.error, t.warnings.len()) {
             (Some(e), _) => format!("invalid: {e}"),
+            (None, _) if t.approval.as_deref() == Some("needs_approval") => {
+                "ok; its CSS waits for approval".into()
+            }
             (None, 0) => "ok".into(),
             (None, n) => format!("ok, {n} warning{}", if n == 1 { "" } else { "s" }),
         };
@@ -368,35 +485,10 @@ fn print_themes(list: &[themes::Theme], dir: &str) {
 }
 
 /// The commands that work without a daemon. `None` when the command needs one.
-pub fn offline(data_dir: &Path, cmd: &crate::Cmd, as_json: bool) -> Option<Result<()>> {
+pub fn offline(data_dir: &Path, cmd: &crate::Cmd) -> Option<Result<()>> {
     use crate::Cmd;
     Some(match cmd {
         Cmd::Guide { topic } => guide(topic.as_deref()),
-        Cmd::Mods {
-            cmd: ModsCmd::New { id, ui, daemon, name, force },
-        } => new_mod(data_dir, id, *ui, *daemon, name.clone(), *force).map(|dir| {
-            let files: Vec<String> = std::fs::read_dir(&dir)
-                .map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
-                .unwrap_or_default();
-            let mut files = files;
-            files.sort();
-            println!("Created {}\n  {}\n", dir.display(), files.join("  "));
-            println!("Next:");
-            let mut steps = vec![
-                (format!("aura mods approve {id}"), "start it; Aura asks once for every mod it did not ship with"),
-                (String::new(), "(the user may approve it in Settings › Mods instead)"),
-                (format!("aura mods logs {id} -f"), "follow its log while you work"),
-            ];
-            if *daemon || !*ui {
-                steps.push((format!("aura mods call {id} hello '{{\"name\":\"Ada\"}}'"), "try the daemon half"));
-            }
-            let width = steps.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
-            for (cmd, what) in steps {
-                println!("  {cmd:<width$}  {what}");
-            }
-            println!("Aura reloads the mod whenever you save one of its files.");
-            println!("Reference: aura guide mods · types: {}", dir.join("types/aura-mod.d.ts").display());
-        }),
         Cmd::Themes {
             cmd: ThemesCmd::New { id, base, name, css, force },
         } => new_theme(data_dir, id, base, name.clone(), *css, *force).map(|path| {
@@ -410,16 +502,84 @@ pub fn offline(data_dir: &Path, cmd: &crate::Cmd, as_json: bool) -> Option<Resul
             println!("  aura themes use {id}      show it in the open Aura windows (or Settings › General › Theme)");
             println!("Saved changes apply at once. Reference: aura guide themes");
         }),
-        Cmd::Themes {
-            cmd: ThemesCmd::Check { theme },
-        } => find_theme(data_dir, theme).and_then(|t| {
-            if !print_check(&t, as_json)? {
-                std::process::exit(1);
-            }
-            Ok(())
-        }),
         _ => return None,
     })
+}
+
+/// Commands that work without a daemon but use one when it runs (they never start one).
+pub async fn early(data_dir: &Path, cmd: &crate::Cmd, as_json: bool) -> Option<Result<()>> {
+    use crate::Cmd;
+    Some(match cmd {
+        Cmd::Mods {
+            cmd:
+                ModsCmd::New {
+                    id,
+                    ui,
+                    daemon,
+                    name,
+                    force,
+                },
+        } => match new_mod(data_dir, id, *ui, *daemon, name.clone(), *force) {
+            Err(e) => Err(e),
+            Ok(dir) => {
+                // A running Aura lists it now, instead of when its watcher fires.
+                if let Ok(c) = RpcClient::connect_from_dir(data_dir).await {
+                    let _ = c.call("mods.discover", json!({})).await;
+                }
+                print_new_mod(&dir, id, *ui, *daemon);
+                Ok(())
+            }
+        },
+        Cmd::Themes {
+            cmd: ThemesCmd::Check { theme },
+        } => match themes_check(data_dir, theme, as_json).await {
+            Ok(true) => Ok(()),
+            Ok(false) => std::process::exit(1),
+            Err(e) => Err(e),
+        },
+        Cmd::Themes {
+            cmd: ThemesCmd::List,
+        } => themes_list(data_dir, as_json).await,
+        _ => return None,
+    })
+}
+
+fn print_new_mod(dir: &Path, id: &str, ui: bool, daemon: bool) {
+    let mut files: Vec<String> = std::fs::read_dir(dir)
+        .map(|r| {
+            r.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    println!("Created {}\n  {}\n", dir.display(), files.join("  "));
+    println!("Next:");
+    let mut steps = vec![
+        (
+            format!("aura mods approve {id}"),
+            "Aura's window shows the approval prompt; the user clicks Approve",
+        ),
+        (
+            format!("aura mods logs {id} -f"),
+            "follow its log while you work",
+        ),
+    ];
+    if daemon || !ui {
+        steps.push((
+            format!("aura mods call {id} hello '{{\"name\":\"Ada\"}}'"),
+            "try the daemon half",
+        ));
+    }
+    let width = steps.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
+    for (cmd, what) in steps {
+        println!("  {cmd:<width$}  {what}");
+    }
+    println!("Aura reloads a half when you save one of its files.");
+    println!(
+        "Reference: aura guide mods · types: {}",
+        dir.join("types/aura-mod.d.ts").display()
+    );
 }
 
 /// `aura themes list`: from the daemon when one runs (it knows the mods' themes), else from disk.
@@ -443,17 +603,10 @@ pub async fn themes_list(data_dir: &Path, as_json: bool) -> Result<()> {
     }
     let parsed: Vec<themes::Theme> = list
         .iter()
-        .map(|v| themes::Theme {
-            id: v["id"].as_str().unwrap_or_default().into(),
-            name: v["name"].as_str().unwrap_or_default().into(),
-            author: None,
-            base: v["base"].as_str().unwrap_or_default().into(),
-            tokens: Default::default(),
-            css: None,
-            path: v["path"].as_str().unwrap_or_default().into(),
-            source: v["source"].as_str().unwrap_or_default().into(),
-            warnings: serde_json::from_value(v["warnings"].clone()).unwrap_or_default(),
-            error: v["error"].as_str().map(str::to_string),
+        .filter_map(|v| {
+            serde_json::from_value::<WireTheme>(v.clone())
+                .ok()
+                .map(Into::into)
         })
         .collect();
     print_themes(&parsed, &dir);
@@ -510,11 +663,20 @@ pub async fn online(client: &RpcClient, cmd: crate::Cmd, as_json: bool) -> Resul
                     if let Some(e) = m["status"]["error"].as_str() {
                         println!("    error: {e}");
                     }
+                    if let Some(e) = m["uiError"].as_str() {
+                        println!("    ui error: {e}");
+                    }
+                    if let Some(e) = m["reloadError"].as_str() {
+                        println!("    reload error: {e}");
+                    }
                 }
             }
             ModsCmd::Approve { id } => {
-                client.call("mods.approve", json!({"id": id})).await?;
-                print_state(client, &id).await?;
+                client
+                    .call("mods.request_approval", json!({"id": id}))
+                    .await?;
+                println!("Approve it in Aura: its window now shows the approval prompt for {id}, with what the mod may do.");
+                println!("(If Aura is not open, the mod waits; Settings › Mods lists it.) Only a click there approves a mod.");
             }
             ModsCmd::Enable { id } => {
                 client.call("mods.enable", json!({"id": id})).await?;
@@ -534,22 +696,33 @@ pub async fn online(client: &RpcClient, cmd: crate::Cmd, as_json: bool) -> Resul
                 println!("rescanned; `aura mods list` shows what was found");
             }
             ModsCmd::Logs { id, follow } => {
-                let mut printed: Vec<String> = vec![];
+                // Followed by sequence number, so repeated lines are all shown.
+                let mut after = 0u64;
+                let mut first_round = true;
                 loop {
-                    let lines: Vec<String> =
-                        serde_json::from_value(client.call("mods.logs", json!({"id": id})).await?)
-                            .unwrap_or_default();
-                    // The log is a ring: print what came after the last line printed.
-                    let start = match printed.last() {
-                        None => 0,
-                        Some(last) => lines
-                            .iter()
-                            .rposition(|l| l == last)
-                            .map(|i| i + 1)
-                            .unwrap_or(0),
-                    };
-                    for l in &lines[start..] {
-                        println!("{l}");
+                    let v = client
+                        .call("mods.logs", json!({"id": id, "after": after}))
+                        .await?;
+                    if !first_round {
+                        if let Some(first) = v["first"].as_u64() {
+                            if first > after + 1 {
+                                println!(
+                                    "… {} lines rolled off the log before they were shown",
+                                    first - after - 1
+                                );
+                            }
+                        }
+                    }
+                    let lines = v["lines"].as_array().cloned().unwrap_or_default();
+                    for l in &lines {
+                        println!("{}", l["text"].as_str().unwrap_or(""));
+                    }
+                    if let Some(last) = lines
+                        .last()
+                        .and_then(|l| l["seq"].as_u64())
+                        .or_else(|| v["last"].as_u64())
+                    {
+                        after = after.max(last);
                     }
                     if !follow {
                         if lines.is_empty() {
@@ -557,7 +730,7 @@ pub async fn online(client: &RpcClient, cmd: crate::Cmd, as_json: bool) -> Resul
                         }
                         break;
                     }
-                    printed = lines;
+                    first_round = false;
                     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
                 }
             }
@@ -575,7 +748,20 @@ pub async fn online(client: &RpcClient, cmd: crate::Cmd, as_json: bool) -> Resul
         Cmd::Themes { cmd } => match cmd {
             ThemesCmd::Use { id } => {
                 client.call("themes.use", json!({"id": id})).await?;
-                println!("asked the open Aura windows to show {id}");
+                println!("Aura shows {id} now, in every window and after a restart.");
+                if !themes::RESERVED_IDS.contains(&id.as_str()) {
+                    if let Ok(t) = client.call("themes.get", json!({"id": id})).await {
+                        if t["approval"] == "needs_approval" {
+                            println!("Its CSS waits for approval: `aura themes approve {id}` shows the prompt in Aura; until then only its tokens apply.");
+                        }
+                    }
+                }
+            }
+            ThemesCmd::Approve { id } => {
+                client
+                    .call("themes.request_approval", json!({"id": id}))
+                    .await?;
+                println!("Approve it in Aura: its window now shows the approval prompt for the CSS of {id}. Only a click there approves it.");
             }
             ThemesCmd::List | ThemesCmd::New { .. } | ThemesCmd::Check { .. } => {
                 unreachable!("handled before")
@@ -672,7 +858,8 @@ mod tests {
         .await;
         let call = |m: &'static str, p: Value| {
             let host = host.clone();
-            async move { host.handle(m, &p, None).await.map(|v| v.unwrap()) }
+            // As Aura's window, the only caller that may approve.
+            async move { host.handle_as(m, &p, None, true).await.map(|v| v.unwrap()) }
         };
         let list = call("mods.list", json!({})).await.unwrap();
         assert_eq!(list[0]["status"]["state"], "needs_approval", "{list}");
@@ -733,6 +920,42 @@ mod tests {
         .unwrap();
         assert_eq!(by_path.id, "my-dark");
         assert!(find_theme(tmp.path(), "nope").is_err());
+    }
+
+    #[test]
+    fn theme_check_resolves_paths_and_ids_like_aura() {
+        let err = find_theme(Path::new("/tmp"), "./nope.json")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err, "no such file: ./nope.json",
+            "a clean message, no mangled path"
+        );
+        let err = find_theme(Path::new("/tmp"), "dark")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("built-in theme"), "{err}");
+        let err = find_theme(Path::new("/tmp"), "Bad Id")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a theme id"), "{err}");
+        // A file named like a reserved id is not a theme Aura would list.
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("dark.json");
+        std::fs::write(&p, r#"{"name":"D","base":"dark"}"#).unwrap();
+        let t = find_theme(tmp.path(), &p.to_string_lossy()).unwrap();
+        assert!(t.error.unwrap().contains("not a theme id"));
+        // Relative paths resolve against the working folder.
+        let cwd = std::env::current_dir().unwrap();
+        std::fs::write(
+            tmp.path().join("rel.json"),
+            r#"{"name":"R","base":"light"}"#,
+        )
+        .unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let t = find_theme(tmp.path(), "./rel.json");
+        std::env::set_current_dir(cwd).unwrap();
+        assert_eq!(t.unwrap().error, None);
     }
 
     #[test]

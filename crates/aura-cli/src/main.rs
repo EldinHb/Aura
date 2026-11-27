@@ -181,14 +181,11 @@ async fn main() -> Result<()> {
         };
         return mcp::run(data_dir, role, token).await;
     }
-    if let Some(done) = extend::offline(&data_dir, &cli.cmd, cli.json) {
+    if let Some(done) = extend::offline(&data_dir, &cli.cmd) {
         return done;
     }
-    if let Cmd::Themes {
-        cmd: extend::ThemesCmd::List,
-    } = &cli.cmd
-    {
-        return extend::themes_list(&data_dir, cli.json).await;
+    if let Some(done) = extend::early(&data_dir, &cli.cmd, cli.json).await {
+        return done;
     }
     let client = connect_or_start(&data_dir).await?;
     match cli.cmd {

@@ -5,9 +5,12 @@
 // `import`: everything goes through `aura`, and only as far as the
 // permissions in mod.json allow. Write plain modern JavaScript (ES2022).
 //
-// Edit, save, and Aura reloads the mod by itself. `aura mods logs {{ID}}`
-// shows what console.log wrote and any error. `aura guide mods` is the full
-// reference; types/aura-mod.d.ts has every API with its types.
+// Edit, save, and Aura restarts this daemon half by itself (ui.js is left
+// alone). A restart loses what variables held: keep what must last in
+// aura.storage, and per-session data in aura.sessions.data(id).
+// `aura mods logs {{ID}}` shows what console.log wrote and any error.
+// `aura guide mods` is the full reference; types/aura-mod.d.ts has every
+// API with its types.
 
 /** @param {Aura.DaemonApi} aura */
 export default function activate(aura) {

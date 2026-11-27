@@ -5,15 +5,18 @@
 // `import`: React and Aura's components come from globalThis.__aura, and
 // elements are made with h(type, props, ...children).
 //
-// Save the file and Aura reloads the mod. Errors appear in Settings › Mods
-// and in `aura mods logs {{ID}}`. `aura guide mods` is the full reference.
+// Save the file and Aura reloads this UI half; the daemon half keeps running.
+// Errors (with line and column) appear in `aura mods list`, in
+// `aura mods logs {{ID}}` and in Settings › Mods. `aura guide mods` is the
+// full reference.
 
 const React = __aura.modules.react; // Aura's React: never load another copy
 const { useEffect, useState } = React;
 const h = React.createElement;
 
 /**
- * A section at the bottom of the sidebar.
+ * A section at the bottom of the sidebar. Aura draws its heading from the
+ * `title` given to ctx.ui.sidebarSection below; this draws only the body.
  * @param {{ ctx: Aura.UiApi, focused: boolean }} props
  */
 function SidebarPanel({ ctx }) {
@@ -45,7 +48,6 @@ function SidebarPanel({ ctx }) {
   return h(
     "div",
     { className: "mod-{{ID}}" },
-    h("div", { className: "section-title" }, "{{NAME}}"),
     h(
       "div",
       { className: "mod-{{ID}}-body" },
@@ -71,6 +73,7 @@ function InspectorPanel({ session }) {
 
 /** @param {Aura.UiApi} ctx */
 export default function activate(ctx) {
+  // `title` becomes the section's heading, like Aura's own sections.
   ctx.ui.sidebarSection({ id: "panel", title: "{{NAME}}", order: 100, component: (p) => h(SidebarPanel, { ctx, ...p }) });
   ctx.ui.inspectorSection({ id: "session", order: 100, component: InspectorPanel });
 
