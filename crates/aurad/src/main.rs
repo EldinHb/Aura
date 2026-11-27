@@ -174,7 +174,7 @@ async fn main() -> Result<()> {
                 return Ok(Some(result));
             }
             match mods
-                .handle(&call.method, &call.params, call.session.as_deref())
+                .handle_as(&call.method, &call.params, call.session.as_deref(), call.window)
                 .await
             {
                 Ok(Some(result)) => return Ok(Some(result)),

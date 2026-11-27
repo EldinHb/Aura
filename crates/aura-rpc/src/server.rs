@@ -27,6 +27,21 @@ pub struct ExtCall {
     /// The session whose tools made the call, when the connection holds a
     /// session token; None for the user (the app, the CLI).
     pub session: Option<String>,
+    /// The connection comes from Aura's own window: its WebSocket handshake
+    /// carried the app's Origin. The CLI sends none. Only the window may grant
+    /// approvals; see [`is_app_origin`].
+    pub window: bool,
+}
+
+/// Whether `origin` is Aura's own window: the Tauri app, or the Vite dev
+/// server on this machine. A same-user program can forge it, but an agent
+/// running `aura` cannot: it makes the window the one place that grants.
+pub fn is_app_origin(origin: &str) -> bool {
+    let local_port = |rest: &str| rest.split_once(':').is_some_and(|(host, port)| {
+        matches!(host, "localhost" | "127.0.0.1") && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+    });
+    matches!(origin, "tauri://localhost" | "http://tauri.localhost" | "https://tauri.localhost")
+        || origin.strip_prefix("http://").is_some_and(local_port)
 }
 
 /// Extra method handler registered by the daemon (git, mods, etc.). Return
@@ -205,7 +220,12 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
+    let window = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+        .is_some_and(is_app_origin);
     let caller = match q.token.as_deref() {
         Some(t) if t == state.token => Caller::User,
         Some(t) => match state.manager.session_for_token(t) {
@@ -218,11 +238,11 @@ async fn ws_handler(
         None => return (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response(),
     };
     ws.max_message_size(64 * 1024 * 1024)
-        .on_upgrade(move |socket| handle_socket(socket, state, caller))
+        .on_upgrade(move |socket| handle_socket(socket, state, caller, window))
         .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
+async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller, window: bool) {
     tracing::info!("rpc client connected");
     // A session's tools get answers only: no events, notifications or
     // terminal output of the user's sessions.
@@ -379,7 +399,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
                                 Caller::Session { id, .. } => Some(id.clone()),
                                 Caller::User => None,
                             };
-                            dispatch(&state, &attached, req, session).await
+                            dispatch(&state, &attached, req, session, window).await
                         }
                         Err(e) => Err(e),
                     };
@@ -478,6 +498,7 @@ async fn dispatch(
     attached: &Arc<parking_lot::Mutex<HashSet<String>>>,
     req: Request,
     session: Option<String>,
+    window: bool,
 ) -> Result<Value, DispatchError> {
     let m = &state.manager;
     let p = &req.params;
@@ -1388,6 +1409,7 @@ async fn dispatch(
                     method: other.to_string(),
                     params: p.clone(),
                     session: session.clone(),
+                    window,
                 };
                 if let Some(v) = ext(call).await? {
                     return Ok(v);
@@ -1398,6 +1420,21 @@ async fn dispatch(
                 message: format!("unknown method {other}"),
                 data: None,
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::is_app_origin;
+
+    #[test]
+    fn only_the_app_is_the_window() {
+        for o in ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "http://localhost:1420", "http://127.0.0.1:5173"] {
+            assert!(is_app_origin(o), "{o}");
+        }
+        for o in ["", "null", "https://evil.example", "http://localhost", "http://localhost:1420.evil.example", "http://localhost.evil:1420", "file://"] {
+            assert!(!is_app_origin(o), "{o}");
         }
     }
 }
