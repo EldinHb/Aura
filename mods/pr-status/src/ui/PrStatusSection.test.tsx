@@ -105,6 +105,15 @@ describe("PrStatusSection", () => {
     expect(screen.getByText("updated 30s ago")).toBeTruthy();
   });
 
+  it("hides who is still to review once a PR is merged or closed", async () => {
+    const done = (state: string, number: number) => entry({ number, status: { ...entry({ number }).status, state, readiness: null } });
+    fakeCtx({ sessionId: "lead", pulls: [done("merged", 1), done("closed", 2), entry({ number: 3 })], blocked: null });
+    render(<PrStatusSection session={lead} />);
+    const cards = await screen.findAllByRole("article");
+    expect(cards.map((c) => within(c).queryByRole("group", { name: "Still to review" }) !== null)).toEqual([false, false, true]);
+    expect(within(cards[0]).getByRole("group", { name: "Reviewed" })).toBeTruthy();
+  });
+
   it("watches while shown, renews, refreshes on demand, follows changes and lets go when unmounted", async () => {
     const { rpc, emit } = fakeCtx({ sessionId: "lead", pulls: [entry()], blocked: null });
     const { unmount } = render(<PrStatusSection session={lead} />);

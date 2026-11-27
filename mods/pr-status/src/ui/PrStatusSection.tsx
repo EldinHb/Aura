@@ -91,7 +91,8 @@ function PrBody({ status }: { status: PrStatus }) {
       )}
       <ChecksLine status={status} />
       <ReviewerGroup title="Reviewed" people={status.reviewers.reviewed} />
-      <ReviewerGroup title="Still to review" people={status.reviewers.pending} />
+      {/* GitHub keeps requests open after a merge or close; nobody is still to review then. */}
+      {(status.state === "open" || status.state === "draft") && <ReviewerGroup title="Still to review" people={status.reviewers.pending} />}
     </>
   );
 }
