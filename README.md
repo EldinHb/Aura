@@ -744,6 +744,12 @@ this machine only and tunnel to it: `aura remote on --bind 127.0.0.1`, then on
 the other machine `ssh -L 7443:127.0.0.1:7443 you@your-mac` and connect to
 `wss://127.0.0.1:7443/` with the same fingerprint.
 
+**Android app.** Download `Aura-<version>-android.apk` from the
+[latest release](https://github.com/EldinHb/Aura/releases/latest), copy it to the
+phone and open it (Android asks to allow installing from that source), then tap
+**Add server** and scan the code from `aura remote pair` or Settings → Remote access.
+To build it yourself, see [`apps/android/README.md`](apps/android/README.md).
+
 The protocol, the threat model and the exact methods remote clients may call are in
 [`docs/design/remote.md`](docs/design/remote.md).
 

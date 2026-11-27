@@ -7,6 +7,12 @@
 # published only once all builds succeed, so a half-filled release is never
 # visible.
 #
+# The Android app is built by its own job and attached to the same release as
+# Aura-<version>-android.apk. It is signed with the release keystore in the
+# AURA_ANDROID_* secrets; without them the build falls back to the debug key,
+# and the APK is then debug-signed: it installs, but cannot update (or be
+# updated by) an APK signed with the release key.
+#
 # Updates: every installer is signed for tauri-plugin-updater with the key in
 # the TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets
 # (the public key is in tauri.conf.json). The publish job assembles latest.json
@@ -40,6 +46,15 @@ jobs:
           version=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $version"
+            exit 1
+          fi
+
+      # The Android APK's file name and version come from versionName.
+      - name: Check tag matches Android version
+        run: |
+          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' apps/android/app/build.gradle.kts)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the Android versionName '$version' in apps/android/app/build.gradle.kts"
             exit 1
           fi
 
@@ -147,8 +162,55 @@ jobs:
           # the platforms another job just added.
           includeUpdaterJson: false
 
+  android:
+    needs: create-release
+    name: Android
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      # The app compiles against platform 37 (compileSdk in app/build.gradle.kts).
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-37.0"
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Signed with the keystore in the secrets (the names app/build.gradle.kts
+      # reads). Without them the APK is signed with the debug key.
+      - name: Build the release APK
+        working-directory: apps/android
+        env:
+          AURA_ANDROID_KEYSTORE: ${{ secrets.AURA_ANDROID_KEYSTORE }}
+          AURA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.AURA_ANDROID_KEYSTORE_PASSWORD }}
+          AURA_ANDROID_KEY_ALIAS: ${{ secrets.AURA_ANDROID_KEY_ALIAS }}
+          AURA_ANDROID_KEY_PASSWORD: ${{ secrets.AURA_ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$AURA_ANDROID_KEYSTORE" ]; then
+            echo "::warning::no AURA_ANDROID_KEYSTORE secret: the APK is signed with the debug key"
+          fi
+          ./gradlew assembleRelease
+
+      - name: Upload the APK to the release
+        run: |
+          apk="Aura-${GITHUB_REF_NAME#v}-android.apk"
+          cp apps/android/app/build/outputs/apk/release/app-release.apk "$apk"
+          # A re-run replaces the one it uploaded before.
+          for asset in $(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
+              --jq ".[] | select(.name == \"$apk\") | .id"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset"
+          done
+          gh api -X POST -H "Content-Type: application/vnd.android.package-archive" --input "$apk" \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$apk" \
+            --jq '"uploaded " + .name'
+
   publish-release:
-    needs: [create-release, build]
+    needs: [create-release, build, android]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

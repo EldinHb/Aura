@@ -1,6 +1,6 @@
 # Remote access — design and protocol
 
-Status: implemented on branch `feature/remote-server`. This file is the
+Status: implemented (released in 0.6.0). This file is the
 contract for remote clients (the Android app first). Field names below are
 exactly what goes over the wire.
 

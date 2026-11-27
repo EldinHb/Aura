@@ -10,13 +10,12 @@ Kotlin, Jetpack Compose and Material 3 (Material You: dynamic color on
 Android 12+, light and dark following the system). Android 8.0 (API 26) and
 later.
 
-The protocol it speaks is in [`docs/design/remote.md`](../../docs/design/remote.md)
-(on the remote-access branch until that merges).
+The protocol it speaks is in [`docs/design/remote.md`](../../docs/design/remote.md).
 
 ## Build
 
 You need JDK 17 or later (Android Studio's bundled JDK works) and the Android
-SDK with platform 36.
+SDK with platform 37.
 
 ```bash
 cd apps/android
