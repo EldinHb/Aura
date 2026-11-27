@@ -31,7 +31,8 @@ import { Overlays } from "./components/Overlays";
 import { isMac } from "./lib/platform";
 import { desktopNotify } from "./lib/notify";
 import clsx from "clsx";
-import type { Event } from "./gen";
+import type { Event, Session, Workspace } from "./gen";
+import { EventGate } from "./state/eventGate";
 
 const params = new URLSearchParams(location.search);
 const windowMode = params.get("window"); // "session" for a detached single-session window
@@ -99,15 +100,29 @@ export default function App() {
         if (cancelled) return client.close();
         st().setClient(client);
         st().setConnection("open");
+        // Events are held while a snapshot loads and replayed over it (see EventGate).
+        const gate = new EventGate<Event>((ev) => st().applyEvent(ev));
+        offEvent = client.onEvent((ev: Event) => {
+          gate.push(ev);
+          notifyIfNeeded(ev);
+        });
         const refresh = async () => {
-          // A daemon from before workspaces has none to list: the sidebar is then not scoped.
-          const [providers, sessions, info, workspaces] = await Promise.all([client.providers(), client.sessions(), client.daemonInfo(), client.workspaces().catch(() => [])]);
-          st().setProviders(providers);
-          st().setWorkspaces(workspaces);
-          st().setSessions(sessions);
+          let sessions: Session[] = [];
+          let workspaces: Workspace[] = [];
+          await gate.during(
+            // A daemon from before workspaces has none to list: the sidebar is then not scoped.
+            () => Promise.all([client.providers(), client.sessions(), client.daemonInfo(), client.workspaces().catch(() => [])]),
+            ([providers, list, info, spaces]) => {
+              sessions = list;
+              workspaces = spaces;
+              st().setProviders(providers);
+              st().setWorkspaces(spaces);
+              st().setSessions(list);
+              useStore.setState({ daemonVersion: info.version });
+            },
+          );
           const active = st().activeWorkspace;
           if (workspaces.length && active) client.touchWorkspace(active).catch((error: unknown) => console.warn("Could not tell the daemon the active workspace:", error));
-          useStore.setState({ daemonVersion: info.version });
           // A daemon from before feature owners has none to list.
           client.features().then(setFeatures, () => {});
           client.roleSuggestions().then(setRoleSuggestions, () => {});
@@ -115,10 +130,6 @@ export default function App() {
           else if (!st().selectedId && !st().modView && sessions.length > 0 && windowMode !== "session") { const first = selectVisibleSessions(st())[0]; if (first) st().select(first.id); }
         };
         await refresh();
-        offEvent = client.onEvent((ev: Event) => {
-          st().applyEvent(ev);
-          notifyIfNeeded(ev);
-        });
         offState = client.onState((s) => {
           st().setConnection(s);
           if (s === "open") void refresh();

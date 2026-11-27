@@ -24,8 +24,12 @@ function remember(w: Workspace) {
   st.setWorkspaces(list);
 }
 
-/** Create a workspace and switch to it, or rename workspace `id`. */
-export function WorkspaceEditDialog({ id }: { id?: string }) {
+/**
+ * Create a workspace and switch to it, or rename workspace `id`. With
+ * `moveSessionId` (from "Move to workspace… → New workspace…"), the new
+ * workspace gets that session instead, and the toast offers to go there.
+ */
+export function WorkspaceEditDialog({ id, moveSessionId }: { id?: string; moveSessionId?: string }) {
   const workspaces = useStore((s) => s.workspaces);
   const client = useStore((s) => s.client);
   const closeDialog = useStore((s) => s.closeDialog);
@@ -44,7 +48,9 @@ export function WorkspaceEditDialog({ id }: { id?: string }) {
       const w = id ? await client.renameWorkspace(id, value.trim()) : await client.createWorkspace(value.trim());
       remember(w);
       closeDialog();
-      if (!id) useStore.getState().switchWorkspace(w.id);
+      const moving = moveSessionId ? useStore.getState().sessions[moveSessionId] : undefined;
+      if (!id && moving) await moveTo(moving, w).catch((e: unknown) => useStore.getState().toast(message(e), "error"));
+      else if (!id) useStore.getState().switchWorkspace(w.id);
     } catch (e) {
       setError(message(e));
       setBusy(false);
@@ -206,7 +212,7 @@ export function WorkspaceMoveDialog({ sessionId }: { sessionId: string }) {
     const w = filtered[i];
     if (!session) return;
     if (w === null) {
-      useStore.getState().openDialog({ kind: "workspace-edit" });
+      useStore.getState().openDialog({ kind: "workspace-edit", moveSessionId: session.id });
       return;
     }
     if (!w) return;

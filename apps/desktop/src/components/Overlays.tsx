@@ -40,7 +40,7 @@ function CurrentDialog() {
     case "confirm":
       return <ConfirmDialog title={dialog.title} message={dialog.message} onConfirm={dialog.onConfirm} danger={dialog.danger} confirmLabel={dialog.confirmLabel} focusCancel={dialog.focusCancel} />;
     case "workspace-edit":
-      return <WorkspaceEditDialog key={dialog.id ?? "new"} id={dialog.id} />;
+      return <WorkspaceEditDialog key={dialog.id ?? "new"} id={dialog.id} moveSessionId={dialog.moveSessionId} />;
     case "workspace-delete":
       return <WorkspaceDeleteDialog key={dialog.id} id={dialog.id} />;
     case "workspace-move":
