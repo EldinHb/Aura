@@ -96,7 +96,7 @@ class AddServerViewModel(private val container: AppContainer, initialLink: Strin
         return when (e) {
             is RpcException -> when (e.code) {
                 RemoteErrors.PAIR_CODE_INVALID -> UiMessage.Res(R.string.pair_code_invalid)
-                RemoteErrors.RATE_LIMITED -> UiMessage.Res(R.string.pair_rate_limited, listOf(e.retryAfterSecs ?: 60))
+                RemoteErrors.RATE_LIMITED -> UiMessage.Plural(R.plurals.pair_rate_limited, (e.retryAfterSecs ?: 60).toInt())
                 else -> UiMessage.Res(R.string.pair_refused, listOf(e.message ?: ""))
             }
             is HandshakeRejectedException -> UiMessage.Text(e.message ?: "")
