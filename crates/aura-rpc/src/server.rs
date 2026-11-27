@@ -364,8 +364,9 @@ fn in_known_project(cwd: &str, projects: &[Project]) -> bool {
         .any(|p| path.starts_with(std::path::Path::new(&p.path)))
 }
 
-/// A remote device's request, once [`authorize`] let it through: two
-/// methods are narrowed, the rest is the user's [`dispatch`].
+/// A remote device's request, once [`authorize`] let it through: three
+/// methods are narrowed (see `REMOTE_ALLOWED_METHODS`), the rest is the
+/// user's [`dispatch`].
 async fn remote_dispatch(
     state: &AppState,
     attached: &Arc<parking_lot::Mutex<HashSet<String>>>,
@@ -384,6 +385,19 @@ async fn remote_dispatch(
             "pid": state.info.pid,
             "started_at": state.info.started_at,
         })),
+        // Images by value only: a path would have the daemon read any file
+        // on this machine for the device (and keep it as an attachment).
+        "session.send" => {
+            let by_path = req.params["input"]["images"]
+                .as_array()
+                .is_some_and(|images| images.iter().any(|i| !i["path"].is_null()));
+            if by_path {
+                return Err(forbidden(
+                    "remote devices send images as `data` (base64), not as a `path` on this machine".into(),
+                ));
+            }
+            dispatch(state, attached, req, None, window).await
+        }
         "session.create" => {
             let o: RemoteCreateSession = params(&req.params)?;
             if o.provider == ProviderKind::Terminal {
@@ -396,6 +410,16 @@ async fn remote_dispatch(
             let projects = tokio::task::spawn_blocking(move || m.projects())
                 .await
                 .map_err(|e| anyhow!(e))??;
+            // The worktree's folder is named after the branch.
+            if let Some(w) = &o.worktree {
+                let b = w.branch.trim();
+                if b.is_empty() || b.contains("..") || b.starts_with(['/', '\\', '-']) {
+                    return Err(forbidden(format!(
+                        "`{}` is not a branch name a remote device may use",
+                        w.branch
+                    )));
+                }
+            }
             if !in_known_project(&o.cwd, &projects) {
                 return Err(forbidden(format!(
                     "`{}` is not in a known project: pick a path from orchestrator.projects",

@@ -670,6 +670,7 @@ aura events              # live JSON event stream
 aura history <id>
 aura mods list|new|approve|enable|disable|reload|rescan|logs|call   # see "Mods and themes"
 aura themes list|new|check|use
+aura remote status|on|off|pair|devices|revoke   # see "Remote access"
 aura guide [mods|themes] # guides for coding agents, built into the binary
 ```
 
@@ -709,6 +710,39 @@ and errors in the window itself. It keeps 5 files of 5 MB (`aura-desktop.log`, t
 
 See [`PLAN.md`](PLAN.md) for the full architecture and
 [`docs/protocol/`](docs/protocol) for the captured Claude Code and Codex protocols.
+
+## Remote access
+
+Aura can let your phone (the Aura Android app, and later other clients) see and
+drive your sessions over the network: list them, read transcripts live, send
+messages, answer approvals and questions, interrupt or stop, and start a new
+session in a project you already use. It is **off by default**.
+
+```bash
+aura remote on                    # listen on 0.0.0.0:7443 (TLS)
+aura remote on --port 8443 --bind 192.168.1.10 --name "Studio Mac"
+aura remote pair                  # one-time code + aura:// link (valid 5 minutes)
+aura remote devices               # paired devices, last seen
+aura remote revoke <device-id>    # unpair and disconnect a device
+aura remote off
+```
+
+The daemon serves a second WebSocket, with TLS and a self-signed certificate made
+the first time you turn it on. The phone pins that certificate's fingerprint when
+it pairs, so nobody in between can listen in. Pairing uses a one-time code; after
+that the device has its own token, which you can revoke at any time. Failed
+attempts are rate limited. Remote devices get only what a phone needs: they cannot
+change settings, browse files, manage mods, delete sessions, use terminals or
+change remote access itself. Everything lives in `~/.aura/remote/` (readable only
+by you), and changes apply without restarting the daemon.
+
+**SSH tunnel.** Instead of opening the port to your network you can bind it to
+this machine only and tunnel to it: `aura remote on --bind 127.0.0.1`, then on
+the other machine `ssh -L 7443:127.0.0.1:7443 you@your-mac` and connect to
+`wss://127.0.0.1:7443/` with the same fingerprint.
+
+The protocol, the threat model and the exact methods remote clients may call are in
+[`docs/design/remote.md`](docs/design/remote.md).
 
 ## Mods and themes
 

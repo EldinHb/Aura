@@ -22,10 +22,11 @@ use tokio::sync::{broadcast, oneshot};
 use ts_rs::TS;
 
 /// The methods a paired remote device may call once authenticated. Every
-/// other method is refused with `ERR_FORBIDDEN`. Two of them are narrowed
+/// other method is refused with `ERR_FORBIDDEN`. Three of them are narrowed
 /// for remote callers (see `server::remote_dispatch`): `daemon.info` leaves
-/// out the local token, port and data directory, and `session.create` only
-/// takes a known project and a few options.
+/// out the local token, port and data directory, `session.send` takes images
+/// by value only, never a path, and `session.create` only takes a known
+/// project and a few options.
 pub const REMOTE_ALLOWED_METHODS: &[&str] = &[
     "daemon.ping",
     "daemon.info",
@@ -462,7 +463,7 @@ impl RemoteService {
         let mut i = self.inner.lock();
         if !i.config.enabled {
             bail!(
-                "remote access is off: turn it on first (remote.configure {{\"enabled\": true}})"
+                "remote access is off: turn it on first (`aura remote on`, or remote.configure {{\"enabled\": true}})"
             );
         }
         let fingerprint = i

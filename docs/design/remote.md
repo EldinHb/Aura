@@ -25,6 +25,14 @@ allowlist of methods.
 - `serverId` is a random UUID made once per installation and kept in
   `config.json`.
 
+Turning it on, from a terminal (the desktop UI uses the same RPCs):
+
+```bash
+aura remote on [--bind 0.0.0.0] [--port 7443] [--name "Studio Mac"]
+aura remote pair       # prints the code, fingerprint, addresses and the aura:// link
+aura remote devices    # aura remote revoke <deviceId>; aura remote off
+```
+
 ## 2. Threat model (short)
 
 - **Network attacker** (same Wi-Fi, café, LAN): sees only TLS. Without the
@@ -32,7 +40,7 @@ allowlist of methods.
   valid pair code or device token the attacker can only call `remote.pair` /
   `remote.auth`, which are rate limited (5 failures per minute per IP, then
   every attempt is refused and the connection closed). Pair codes are 8 chars
-  from a 31-letter alphabet (~8.5·10¹¹), live 5 minutes and work once.
+  from a 31-character alphabet (`A–Z` and `2–9` without `I`, `L`, `O`) (~8.5·10¹¹), live 5 minutes and work once.
 - **Lost or stolen phone**: the user revokes the device on the desktop
   (`remote.revokeDevice`); its live connections drop at once and its token is
   refused from then on. Tokens are 32 random bytes and the daemon stores only
@@ -50,7 +58,10 @@ allowlist of methods.
    {enabled: true}`) and starts pairing (`remote.startPairing`). The app shows
    the returned `uri` as a QR code plus the code, the fingerprint and the
    addresses to pick from.
-2. The phone scans `aura://pair?host=<ip>&port=<port>&fp=<fingerprint>&code=<code>&name=<server name, URL-encoded>`.
+2. The phone scans `aura://pair?host=<ip>&port=<port>&fp=<fingerprint>&code=<code>&name=<server name>`.
+   Every value is percent-encoded (an IPv6 host's colons as `%3A`, a space in
+   the name as `%20`). `host` is the first of `addresses`; the phone may offer
+   the others when it cannot reach that one.
 3. The phone opens `wss://host:port/` with TLS, accepting exactly the
    certificate whose SHA-256 is `fp`.
 4. It calls `remote.pair {code, deviceName}` and gets
@@ -164,7 +175,7 @@ snake_case field names unless noted.
 | `session.history` | `{id, after_seq?: number = 0, limit?: number = 5000}` | `StoredEvent[]` — `{seq, ts, event}`; page with the last `seq` |
 | `session.pending` | `{}` | `{approvals: Approval[], inputs: UserInputRequest[]}` |
 | `session.attachment` | `{id, attachment}` | `{data: base64, media_type}` — images referenced from a transcript |
-| `session.send` | `{id, input: {text, images?: ImageInput[], steer?: bool}}` | `true` (starts the agent if it is not running) |
+| `session.send` | `{id, input: {text, images?: ImageInput[], steer?: bool}}` | `true` (starts the agent if it is not running). Images must carry `data` (base64) + `media_type`; an image with a `path` is refused with -32003 |
 | `session.interrupt` | `{id}` | `true` |
 | `session.stop` | `{id}` | `true` |
 | `session.respond_approval` | `{id, approval_id, decision: {option, updated_input?, message?}}` | `true` — `option`: `accept`/`accept_for_session`/`decline`/`cancel`/`edit_input` |
@@ -184,7 +195,8 @@ Only these params are accepted (unknown ones: -32602):
   worktree?: { branch: string, base?: string } }
 ```
 `cwd` must be the `path` of a project from `orchestrator.projects`, or a
-folder inside one; otherwise -32003. Terminal sessions, custom commands,
+folder inside one; otherwise -32003. `worktree.branch` may not contain `..`
+or start with `/`, `\` or `-` (-32003). Terminal sessions, custom commands,
 resuming native sessions, orchestrators and custom worktree paths are not
 available remotely.
 

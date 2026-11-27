@@ -456,6 +456,14 @@ async fn pair_then_auth_then_list_sessions() {
     assert_eq!(
         r.err(
             "session.create",
+            json!({"provider": "claude", "cwd": project_dir, "worktree": {"branch": "../../escape"}})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    assert_eq!(
+        r.err(
+            "session.create",
             json!({"provider": "terminal", "cwd": project_dir})
         )
         .await,
@@ -468,6 +476,16 @@ async fn pair_then_auth_then_list_sessions() {
         )
         .await,
         aura_rpc::ERR_PARAMS
+    );
+
+    // Images go by value, never as a path on the daemon's machine.
+    assert_eq!(
+        r.err(
+            "session.send",
+            json!({"id": created_id, "input": {"text": "look", "images": [{"path": "/etc/hosts"}]}}),
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN
     );
 
     // WebSocket pings are answered.
