@@ -75,6 +75,21 @@ describe("update state machine", () => {
     expect(bannerOf(asked)?.kind).toBe("ready");
   });
 
+  it("keeps a downloaded update offered while a later check runs", () => {
+    const ready = run([{ type: "check", manual: false }, { type: "checked", info: info("0.5.0"), at: 1 }, { type: "downloaded" }]);
+    const checking = run([{ type: "check", manual: false }], ready);
+    expect(checking.phase).toMatchObject({ kind: "checking", ready: info("0.5.0") });
+    expect(bannerOf(checking)).toBe(checking.phase);
+    // The same version again: ready at once, nothing to download.
+    expect(run([{ type: "checked", info: info("0.5.0"), at: 2 }], checking).phase).toEqual({ kind: "ready", info: info("0.5.0") });
+    // A newer one downloads.
+    expect(run([{ type: "checked", info: info("0.5.1"), at: 2 }], checking).phase.kind).toBe("downloading");
+    // A failed check leaves it ready.
+    expect(run([{ type: "failed", error: { kind: "network", message: "offline" } }], checking).phase).toEqual({ kind: "ready", info: info("0.5.0") });
+    // Later during the check hides it.
+    expect(bannerOf(run([{ type: "later" }], checking))).toBeNull();
+  });
+
   it("does not start a second check while one runs or a download does", () => {
     const checking = run([{ type: "check", manual: false }]);
     expect(run([{ type: "check", manual: false }], checking)).toBe(checking);
@@ -245,6 +260,24 @@ describe("updater", () => {
     expect(toast.actions?.map((a) => a.label)).toEqual(["Download manually"]);
     toast.actions![0].run();
     expect(shell.openUrl).toHaveBeenCalledWith("https://github.com/EldinHb/Aura/releases/latest");
+  });
+
+  it("checks again while an update waits, without downloading it twice", async () => {
+    const shell = fakeShell({ check: vi.fn(async () => info()) });
+    await startUpdates(shell);
+    await checkForUpdates(false);
+    await checkForUpdates(false);
+    expect(shell.check).toHaveBeenCalledTimes(2);
+    expect(shell.download).toHaveBeenCalledTimes(1);
+    expect(useUpdates.getState().state.phase.kind).toBe("ready");
+    // Asked by hand, it says the update waits.
+    await checkForUpdates(true);
+    expect(toasts().map((t) => t.message)).toEqual(["Aura 0.5.0 is ready; restart to update"]);
+    // A manual check that fails says so and keeps the update ready.
+    vi.mocked(shell.check).mockRejectedValueOnce({ kind: "network", message: "offline" });
+    await checkForUpdates(true);
+    expect(toasts().at(-1)?.message).toContain("Could not check for updates: offline.");
+    expect(useUpdates.getState().state.phase.kind).toBe("ready");
   });
 
   it("shows a failed install, keeps the app running and does not relaunch", async () => {

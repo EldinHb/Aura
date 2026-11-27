@@ -18,6 +18,7 @@ import {
   reduce,
   showsError,
   type Action,
+  type Phase,
   type Support,
   type UpdateError,
   type UpdateInfo,
@@ -115,9 +116,14 @@ async function openUrl(url: string) {
 }
 
 function fail(e: unknown) {
-  dispatch({ type: "failed", error: toUpdateError(e) });
-  const phase = st().phase;
-  if (phase.kind !== "error") return;
+  const before = st().phase;
+  const error = toUpdateError(e);
+  dispatch({ type: "failed", error });
+  const after = st().phase;
+  // A failed check with an update already downloaded goes back to it; asked for, the failure is still shown.
+  const phase: Phase | null =
+    after.kind === "error" ? after : before.kind === "checking" ? { kind: "error", during: "check", manual: before.manual, error, info: null } : null;
+  if (phase?.kind !== "error") return;
   deps?.log(`update ${phase.during} failed (${phase.manual ? "asked" : "automatic"})`, phase.error);
   if (showsError(phase)) app().toast(errorMessage(phase), "error", { actions: [{ label: "Download manually", run: downloadManually }] });
 }
@@ -149,6 +155,8 @@ export async function checkForUpdates(manual = false): Promise<void> {
     if (st().phase.kind === "idle" && manual) app().toast(`You're up to date${current ? ` (Aura ${current})` : ""}`);
     return;
   }
+  // Asked by hand while the same version waits for the restart: the banner says so.
+  if (manual && st().phase.kind === "ready") app().toast(`Aura ${info.version} is ready; restart to update`);
   deps.log(`Aura ${info.version} is available`);
   if (st().phase.kind === "downloading") await download();
 }
@@ -175,7 +183,14 @@ function workingSessions(): number {
 export async function restartToUpdate(): Promise<void> {
   const phase = st().phase;
   if (phase.kind !== "ready") {
-    app().toast(phase.kind === "available" ? "This copy of Aura cannot update itself; download the update from the release page" : "No update is ready to install", "warn");
+    app().toast(
+      phase.kind === "available"
+        ? "This copy of Aura cannot update itself; download the update from the release page"
+        : phase.kind === "checking" && phase.ready
+          ? "Checking for a newer version first; try again in a moment"
+          : "No update is ready to install",
+      "warn",
+    );
     return;
   }
   const working = workingSessions();

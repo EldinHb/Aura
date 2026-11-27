@@ -23,7 +23,8 @@ export type UpdateError = { kind: UpdateErrorKind; message: string };
 /** `manual`: the user asked (the command, the tray, Settings), so the outcome is shown. */
 export type Phase =
   | { kind: "idle" }
-  | { kind: "checking"; manual: boolean }
+  /** `ready`: an update already downloaded, still waiting for the restart while this check runs. */
+  | { kind: "checking"; manual: boolean; ready: UpdateInfo | null }
   | { kind: "downloading"; manual: boolean; info: UpdateInfo; downloaded: number; total: number | null }
   /** Downloaded and verified; installs when the user restarts. */
   | { kind: "ready"; info: UpdateInfo }
@@ -53,6 +54,7 @@ export const initialState = (lastCheck: number | null = null): UpdateState => ({
 
 /** The update the phase is about, if any. */
 export function infoOf(phase: Phase): UpdateInfo | null {
+  if (phase.kind === "checking") return phase.ready;
   return "info" in phase ? phase.info : null;
 }
 
@@ -76,13 +78,16 @@ export function reduce(state: UpdateState, action: Action): UpdateState {
         if (action.manual && (phase.kind === "checking" || phase.kind === "downloading")) return { ...state, dismissed, phase: { ...phase, manual: true } };
         return state;
       }
-      return { ...state, dismissed, phase: { kind: "checking", manual: action.manual } };
+      // A downloaded update keeps its banner while the check looks for a newer one.
+      return { ...state, dismissed, phase: { kind: "checking", manual: action.manual, ready: phase.kind === "ready" ? phase.info : null } };
     }
     case "checked": {
       if (phase.kind !== "checking") return state;
       const { info } = action;
       if (!info) return { ...state, lastCheck: action.at, phase: { kind: "idle" } };
       if (info.support.kind === "manual") return { ...state, lastCheck: action.at, phase: { kind: "available", info } };
+      // The same version as the one downloaded: the shell kept its package.
+      if (phase.ready?.version === info.version) return { ...state, lastCheck: action.at, phase: { kind: "ready", info } };
       return { ...state, lastCheck: action.at, phase: { kind: "downloading", manual: phase.manual, info, downloaded: 0, total: null } };
     }
     case "progress":
@@ -97,6 +102,8 @@ export function reduce(state: UpdateState, action: Action): UpdateState {
     case "failed": {
       const during = phase.kind === "checking" ? "check" : phase.kind === "downloading" ? "download" : phase.kind === "installing" ? "install" : null;
       if (!during) return state;
+      // A failed check leaves a downloaded update ready; the caller shows the error if it was asked for.
+      if (phase.kind === "checking" && phase.ready) return { ...state, phase: { kind: "ready", info: phase.ready } };
       // The user started the install, so its failure is always shown.
       const manual = during === "install" || manualOf(phase);
       return { ...state, phase: { kind: "error", during, manual, error: action.error, info: infoOf(phase) } };
@@ -114,6 +121,7 @@ export function bannerOf(state: UpdateState): Phase | null {
   if (phase.kind === "installing") return phase;
   if (phase.kind === "downloading" && phase.manual) return phase;
   if ((phase.kind === "ready" || phase.kind === "available") && state.dismissed !== phase.info.version) return phase;
+  if (phase.kind === "checking" && phase.ready && state.dismissed !== phase.ready.version) return phase;
   return null;
 }
 

@@ -26,12 +26,14 @@ export function UpdateBanner({ phase }: { phase: Phase }) {
       </div>
     );
   }
-  if (phase.kind !== "ready" && phase.kind !== "available") return null;
-  const { info } = phase;
+  // While a check looks for a newer version, the downloaded one stays offered.
+  const kind = phase.kind === "checking" && phase.ready ? "ready" : phase.kind;
+  const info = phase.kind === "checking" ? phase.ready : "info" in phase ? phase.info : null;
+  if ((kind !== "ready" && kind !== "available") || !info) return null;
   return (
-    <div className="toast update-banner" data-update={phase.kind}>
+    <div className="toast update-banner" data-update={kind}>
       <div className="update-text">
-        {phase.kind === "ready" ? (
+        {kind === "ready" ? (
           <span className="toast-msg">
             Aura {info.version} is ready —{" "}
             <button type="button" className="toast-action strong" data-command="updates.restart" onClick={() => void restartToUpdate()}>
@@ -45,7 +47,7 @@ export function UpdateBanner({ phase }: { phase: Phase }) {
           </>
         )}
         <span className="update-actions">
-          {phase.kind === "available" && (
+          {kind === "available" && (
             <button type="button" className="toast-action strong" data-hint onClick={downloadManually}>
               Download
             </button>
