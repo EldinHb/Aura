@@ -2173,3 +2173,72 @@ async fn an_orchestrators_tasks_go_in_its_workspace_and_only_the_user_moves_them
         .to_string();
     assert!(err.contains("the user's to choose"), "{err}");
 }
+
+#[tokio::test]
+async fn a_run_goes_where_its_task_is_when_its_session_is_placed() {
+    let w = World::new();
+    let default = w.m.list_workspaces().unwrap()[0].id.clone();
+    let task_in = |ws: &str| {
+        w.svc
+            .create(
+                ScheduledTaskInput {
+                    workspace: Some(ws.into()),
+                    allow_overlap: Some(true),
+                    ..w.input("quick: check", every_hour())
+                },
+                &Editor::User,
+            )
+            .unwrap()
+    };
+
+    // The scheduler read the task (collect_due, run_now) and made the run's
+    // options; then the task's workspace was deleted and the task moved.
+    let a = w.m.create_workspace("A").unwrap().id;
+    let b = w.m.create_workspace("B").unwrap().id;
+    let t = task_in(&a);
+    let opts = w.svc.session_opts(&w.svc.get(&t.id).unwrap());
+    w.m.delete_workspace(&a, Some(&b)).unwrap();
+    let s = w.m.create_session(opts).await.unwrap();
+    assert_eq!(s.workspace, b, "where the task is now, not the default one");
+
+    // The task deleted meanwhile: the workspace it was read with.
+    let c = w.m.create_workspace("C").unwrap().id;
+    let t = task_in(&c);
+    let opts = w.svc.session_opts(&w.svc.get(&t.id).unwrap());
+    w.svc.delete(&t.id).unwrap();
+    assert_eq!(w.m.create_session(opts).await.unwrap().workspace, c);
+
+    // The task and its workspace deleted: the default one, and the run starts.
+    let d = w.m.create_workspace("D").unwrap().id;
+    let t = task_in(&d);
+    let opts = w.svc.session_opts(&w.svc.get(&t.id).unwrap());
+    w.svc.delete(&t.id).unwrap();
+    w.m.delete_workspace(&d, None).unwrap();
+    assert_eq!(w.m.create_session(opts).await.unwrap().workspace, default);
+}
+
+#[tokio::test]
+async fn tasks_moved_out_of_a_deleted_workspace_are_announced() {
+    let mut w = World::new();
+    let old = w.m.create_workspace("Old").unwrap().id;
+    let target = w.m.create_workspace("Target").unwrap().id;
+    let moved = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                workspace: Some(old.clone()),
+                ..w.input("quick: check", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    let stays = w.task("quick: other", every_hour());
+    w.changes();
+    w.m.delete_workspace(&old, Some(&target)).unwrap();
+    assert_eq!(
+        w.changes(),
+        [json!({ "method": "schedules.changed", "params": { "id": moved.id } })]
+    );
+    assert_eq!(w.svc.get(&moved.id).unwrap().workspace, target);
+    assert_ne!(w.svc.get(&stays.id).unwrap().workspace, target);
+}

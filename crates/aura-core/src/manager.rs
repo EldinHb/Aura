@@ -82,6 +82,9 @@ struct Sourced {
     event: Event,
 }
 
+/// See [`Manager::on_scheduled_task_changed`].
+pub type ScheduledTaskListener = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// What deleting a session and the sessions under it did.
 struct TreeDeletion {
     deleted: Vec<SessionId>,
@@ -134,6 +137,10 @@ struct Inner {
     /// Serialises read-modify-write updates of scheduled task records: the
     /// scheduler's, and a workspace's tasks moving when it is deleted.
     scheduled_tasks: Mutex<()>,
+    /// Told the id of a scheduled task the manager changed (moved out of a
+    /// deleted workspace), so the scheduler announces it; see
+    /// [`Manager::on_scheduled_task_changed`].
+    scheduled_task_changed: Mutex<Option<ScheduledTaskListener>>,
     /// Serialises read-modify-write updates of feature records.
     features: Mutex<()>,
     /// Serialises changes to the stored specialists.
@@ -178,6 +185,7 @@ impl Manager {
             groups: Mutex::new(()),
             workspaces: Mutex::new(()),
             scheduled_tasks: Mutex::new(()),
+            scheduled_task_changed: Mutex::new(None),
             features: Mutex::new(()),
             specialists: Mutex::new(()),
             suggestions: Mutex::new(()),
@@ -197,6 +205,20 @@ impl Manager {
     /// [`crate::ScheduleService`].
     pub(crate) fn lock_scheduled_tasks(&self) -> parking_lot::MutexGuard<'_, ()> {
         self.inner.scheduled_tasks.lock()
+    }
+
+    /// Call `f` with the id of each scheduled task the manager itself
+    /// changes. The scheduler sets it, to announce those changes as it does
+    /// its own. `f` must not block or take the manager's locks.
+    pub fn on_scheduled_task_changed(&self, f: ScheduledTaskListener) {
+        *self.inner.scheduled_task_changed.lock() = Some(f);
+    }
+
+    pub(crate) fn scheduled_task_changed(&self, id: &str) {
+        let f = self.inner.scheduled_task_changed.lock().clone();
+        if let Some(f) = f {
+            f(id);
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -1676,7 +1698,8 @@ impl Manager {
     }
 
     /// Change a session, then store and announce it. `f` returns whether it
-    /// changed anything; if not, nothing is stored or announced. The sessions
+    /// changed anything; if not, nothing is stored or announced. When the
+    /// store fails, the session stays as it was and the error is returned. The sessions
     /// lock is held until the change is stored and broadcast, so two changes
     /// at once (an RPC and the event loop) are stored and announced in the
     /// order they were made, and neither overwrites the other with a stale copy.
@@ -1690,14 +1713,19 @@ impl Manager {
         let s = sessions
             .get_mut(id)
             .ok_or_else(|| anyhow!("unknown session {id}"))?;
-        if !f(s) {
-            return Ok(s.clone());
+        let mut updated = s.clone();
+        if !f(&mut updated) {
+            // Nothing to store; what `f` touched anyway is kept, as before.
+            *s = updated.clone();
+            return Ok(updated);
         }
         if activity {
-            s.last_activity = crate::now();
+            updated.last_activity = crate::now();
         }
-        let updated = s.clone();
+        // Stored before the live session changes: a change that cannot be
+        // stored is not made, so a retry sees what is really stored.
         self.inner.store.upsert_session(&updated)?;
+        *s = updated.clone();
         self.broadcast(Event::SessionUpdated {
             session: updated.clone(),
         });

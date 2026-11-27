@@ -177,8 +177,8 @@ impl ScheduleService {
         events: broadcast::Sender<Value>,
         clock: Clock,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            manager,
+        let service = Arc::new(Self {
+            manager: manager.clone(),
             store,
             events,
             clock,
@@ -186,7 +186,16 @@ impl ScheduleService {
             fresh: Mutex::new(HashMap::new()),
             wake: Notify::new(),
             stop: Notify::new(),
-        })
+        });
+        // Tasks the manager moves (out of a deleted workspace) are announced
+        // like the scheduler's own changes.
+        let weak = Arc::downgrade(&service);
+        manager.on_scheduled_task_changed(Arc::new(move |id| {
+            if let Some(service) = weak.upgrade() {
+                service.changed(id);
+            }
+        }));
+        service
     }
 
     fn now(&self) -> DateTime<Utc> {
@@ -508,10 +517,7 @@ impl ScheduleService {
                 );
             }
         }
-        let started = match self.session_opts(task) {
-            Ok(opts) => self.manager.create_session(opts).await,
-            Err(e) => Err(e),
-        };
+        let started = self.manager.create_session(self.session_opts(task)).await;
         self.starting.lock().remove(&task.id);
         match started {
             Ok(session) => {
@@ -622,7 +628,8 @@ impl ScheduleService {
         false
     }
 
-    fn session_opts(&self, task: &ScheduledTask) -> Result<CreateSessionOpts> {
+    /// What a run of `task` starts its session with.
+    pub fn session_opts(&self, task: &ScheduledTask) -> CreateSessionOpts {
         let local = self.now().with_timezone(&Local);
         let (provider, agent) = parse_agent(&task.agent).unwrap_or((ProviderKind::Claude, None));
         let worktree = task.worktree.then(|| WorktreeOpts {
@@ -630,7 +637,7 @@ impl ScheduleService {
             base: None,
             path: None,
         });
-        Ok(CreateSessionOpts {
+        CreateSessionOpts {
             provider,
             agent,
             cwd: task.cwd.clone(),
@@ -640,8 +647,10 @@ impl ScheduleService {
                 local.format("%a %-d %b %H:%M")
             )),
             group: task.group.clone(),
-            // The task's own workspace; one deleted meanwhile is the default one's.
-            workspace: Some(self.manager.workspace_or_default(&task.workspace)?),
+            // As the task was read. The manager places the run where the task
+            // is when the session is stored: its workspace may be deleted,
+            // and the task moved, in between.
+            workspace: Some(task.workspace.clone()),
             model: task.model.clone(),
             effort: task.effort.clone(),
             permission_mode: task.permission_mode.clone(),
@@ -656,7 +665,7 @@ impl ScheduleService {
             autonomy: task.autonomy.clone(),
             scheduled_task: Some((task.id.clone(), task.name.clone())),
             ..Default::default()
-        })
+        }
     }
 
     fn record(

@@ -50,9 +50,9 @@ impl Manager {
                 position: list.iter().map(|w| w.position + 1).max().unwrap_or(0),
             };
             self.save_workspace(&workspace)?;
+            self.workspaces_changed();
             workspace
         };
-        self.workspaces_changed();
         Ok(workspace)
     }
 
@@ -63,9 +63,9 @@ impl Manager {
             let mut workspace = find(&list, id)?.clone();
             workspace.name = valid_name(name, &list, Some(id))?;
             self.save_workspace(&workspace)?;
+            self.workspaces_changed();
             workspace
         };
-        self.workspaces_changed();
         Ok(workspace)
     }
 
@@ -73,89 +73,108 @@ impl Manager {
     /// moved to `move_to` first, which is required when it holds anything:
     /// deleting a workspace never deletes a session. The last workspace
     /// cannot be deleted. Returns the workspaces left.
+    ///
+    /// All or nothing, as far as the store allows: when something cannot be
+    /// moved, what was moved is put back and the workspace stays.
     pub fn delete_workspace(&self, id: &str, move_to: Option<&str>) -> Result<Vec<Workspace>> {
-        let left = {
-            let _guard = self.inner.workspaces.lock();
-            let list = self.ensure_workspaces_locked()?;
-            let gone = find(&list, id)?.clone();
-            if list.len() == 1 {
+        let _guard = self.inner.workspaces.lock();
+        let list = self.ensure_workspaces_locked()?;
+        let gone = find(&list, id)?.clone();
+        if list.len() == 1 {
+            bail!(
+                "“{}” is the only workspace, and Aura needs at least one",
+                gone.name
+            );
+        }
+        let move_to = move_to.map(str::trim).filter(|t| !t.is_empty());
+        if let Some(t) = move_to {
+            if t == id {
                 bail!(
-                    "“{}” is the only workspace, and Aura needs at least one",
+                    "cannot move what “{}” holds into itself; name another workspace",
                     gone.name
                 );
             }
-            let move_to = move_to.map(str::trim).filter(|t| !t.is_empty());
-            if let Some(t) = move_to {
-                if t == id {
-                    bail!(
-                        "cannot move what “{}” holds into itself; name another workspace",
-                        gone.name
-                    );
-                }
-                find(&list, t)?;
+            find(&list, t)?;
+        }
+        // Task records are changed under the scheduler's lock, so none it
+        // saves meanwhile still names this workspace.
+        let _tasks = self.inner.scheduled_tasks.lock();
+        let sessions = self.sessions_in_locked(id);
+        let tasks: Vec<ScheduledTask> = self
+            .inner
+            .store
+            .scheduled_tasks()?
+            .into_iter()
+            .filter(|t| t.workspace == id)
+            .collect();
+        let target = match move_to {
+            Some(t) => t.to_string(),
+            None if sessions.is_empty() && tasks.is_empty() => String::new(),
+            None => bail!(
+                "“{}” holds {} and {}: name the workspace to move them to (`move_to`)",
+                gone.name,
+                plural(sessions.len(), "session"),
+                plural(tasks.len(), "scheduled task"),
+            ),
+        };
+        let moved = self
+            .move_sessions_locked(&sessions, &target)
+            .with_context(|| format!("move the sessions of “{}”", gone.name))?;
+        let undo_sessions = || {
+            let back: Vec<String> = moved.iter().map(|s| s.id.clone()).collect();
+            if let Err(e) = self.move_sessions_locked(&back, id) {
+                tracing::warn!("put the sessions back in workspace {id}: {e:#}");
             }
-            // Task records are changed under the scheduler's lock, so none it
-            // saves meanwhile still names this workspace.
-            let _tasks = self.inner.scheduled_tasks.lock();
-            let sessions: Vec<String> = self
-                .inner
-                .sessions
-                .lock()
-                .values()
-                .filter(|s| s.workspace == id)
-                .map(|s| s.id.clone())
-                .collect();
-            let tasks: Vec<ScheduledTask> = self
+        };
+        let mut moved_tasks: Vec<&ScheduledTask> = vec![];
+        for task in &tasks {
+            let saved = self.inner.store.save_scheduled_task(&ScheduledTask {
+                workspace: target.clone(),
+                ..task.clone()
+            });
+            if let Err(e) = saved {
+                for t in moved_tasks {
+                    match self.inner.store.save_scheduled_task(t) {
+                        Ok(()) => self.scheduled_task_changed(&t.id),
+                        Err(e) => {
+                            tracing::warn!(
+                                "put scheduled task {} back in workspace {id}: {e:#}",
+                                t.id
+                            )
+                        }
+                    }
+                }
+                undo_sessions();
+                return Err(e.context(format!("move the scheduled tasks of “{}”", gone.name)));
+            }
+            self.scheduled_task_changed(&task.id);
+            moved_tasks.push(task);
+        }
+        if let Err(e) = self.inner.store.delete_feature_record(WORKSPACES, id) {
+            for t in moved_tasks {
+                if self.inner.store.save_scheduled_task(t).is_ok() {
+                    self.scheduled_task_changed(&t.id);
+                }
+            }
+            undo_sessions();
+            return Err(e);
+        }
+        let left: Vec<Workspace> = list.into_iter().filter(|w| w.id != id).collect();
+        if self.stored_last_active().as_deref() == Some(id) {
+            let next = if target.is_empty() {
+                left[0].id.clone()
+            } else {
+                target
+            };
+            // The workspace is gone either way; a stale setting falls back.
+            if let Err(e) = self
                 .inner
                 .store
-                .scheduled_tasks()?
-                .into_iter()
-                .filter(|t| t.workspace == id)
-                .collect();
-            let target = match move_to {
-                Some(t) => t.to_string(),
-                None if sessions.is_empty() && tasks.is_empty() => String::new(),
-                None => bail!(
-                    "“{}” holds {} and {}: name the workspace to move them to (`move_to`)",
-                    gone.name,
-                    plural(sessions.len(), "session"),
-                    plural(tasks.len(), "scheduled task"),
-                ),
-            };
-            for mut task in tasks {
-                task.workspace = target.clone();
-                self.inner.store.save_scheduled_task(&task)?;
+                .set_setting(LAST_ACTIVE_WORKSPACE_KEY, &next)
+            {
+                tracing::warn!("remember the last active workspace: {e:#}");
             }
-            for s in sessions {
-                // Not activity: the session keeps its place in the list.
-                let moved = self.change_session(&s, false, |s| {
-                    if s.workspace != id {
-                        return false;
-                    }
-                    s.workspace = target.clone();
-                    true
-                });
-                // Deleted meanwhile is fine; anything else keeps the workspace.
-                if let Err(e) = moved {
-                    if self.get_session(&s).is_ok() {
-                        return Err(e);
-                    }
-                }
-            }
-            self.inner.store.delete_feature_record(WORKSPACES, id)?;
-            let left: Vec<Workspace> = list.into_iter().filter(|w| w.id != id).collect();
-            if self.stored_last_active().as_deref() == Some(id) {
-                let next = if target.is_empty() {
-                    left[0].id.clone()
-                } else {
-                    target
-                };
-                self.inner
-                    .store
-                    .set_setting(LAST_ACTIVE_WORKSPACE_KEY, &next)?;
-            }
-            left
-        };
+        }
         self.workspaces_changed();
         Ok(left)
     }
@@ -191,23 +210,8 @@ impl Manager {
         // Under the registry lock, which a new session holds while it takes
         // its orchestrator's workspace: a worker that starts meanwhile is
         // either in this tree or starts in the new workspace.
-        let mut moved = vec![];
-        for s in self.with_workers(id) {
-            // Not activity: the sessions keep their place in the list.
-            match self.change_session(&s.id, false, |s| {
-                if s.workspace == workspace {
-                    return false;
-                }
-                s.workspace = workspace.to_string();
-                true
-            }) {
-                Ok(s) => moved.push(s),
-                // Deleted meanwhile: nothing left to move.
-                Err(_) if self.get_session(&s.id).is_err() => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(moved)
+        let tree: Vec<String> = self.with_workers(id).into_iter().map(|s| s.id).collect();
+        self.move_sessions_locked(&tree, workspace)
     }
 
     /// The workspace the user was last active in, if it still exists.
@@ -243,23 +247,16 @@ impl Manager {
         self.fallback_workspace_locked()
     }
 
-    /// `id` when it exists, else the first workspace (the default one,
-    /// unless the user deleted it): where a scheduled task whose workspace
-    /// is gone starts its runs.
-    pub fn workspace_or_default(&self, id: &str) -> Result<String> {
-        let _guard = self.inner.workspaces.lock();
-        let list = self.ensure_workspaces_locked()?;
-        Ok(match list.iter().find(|w| w.id == id) {
-            Some(w) => w.id.clone(),
-            None => list[0].id.clone(),
-        })
-    }
-
     /// Fail unless a session asking for `workspace` could be created there.
     pub(super) fn check_requested_workspace(&self, opts: &CreateSessionOpts) -> Result<()> {
         match opts.workspace.as_deref().map(str::trim) {
-            // A worker goes where its orchestrator is, whatever it asked for.
-            Some(ws) if !ws.is_empty() && opts.orchestrator_id.is_none() => {
+            // A worker goes where its orchestrator is, and a scheduled run
+            // where its task is when it is placed, whatever they asked for.
+            Some(ws)
+                if !ws.is_empty()
+                    && opts.orchestrator_id.is_none()
+                    && opts.scheduled_task.is_none() =>
+            {
                 find(&self.list_workspaces()?, ws)?;
                 Ok(())
             }
@@ -268,9 +265,9 @@ impl Manager {
     }
 
     /// The workspace a new session goes into, decided with the registry
-    /// lock held while it is stored: a worker's orchestrator's, else the one
-    /// it asked for, else (none, or one deleted while it was made) the
-    /// fallback.
+    /// lock held while it is stored: a worker's orchestrator's; for a
+    /// scheduled run, its task's as the task is now; else the one it asked
+    /// for, else (none, or one deleted while it was made) the fallback.
     pub(super) fn place_new_session_locked(&self, s: &Session) -> Result<String> {
         let list = self.ensure_workspaces_locked()?;
         let known = |id: &str| list.iter().any(|w| w.id == id);
@@ -281,6 +278,27 @@ impl Manager {
                 }
             }
         }
+        // The scheduler read the task before it started the run; its
+        // workspace may have been deleted, and the task moved, since. Read
+        // under the registry lock and then the task lock, the order a
+        // workspace's deletion moves tasks in, so this is the task as it is.
+        if let Some(task) = s.scheduled_task_id.as_deref() {
+            let now = {
+                let _tasks = self.inner.scheduled_tasks.lock();
+                self.inner
+                    .store
+                    .scheduled_tasks()?
+                    .into_iter()
+                    .find(|t| t.id == task)
+                    .map(|t| t.workspace)
+            };
+            // A deleted task leaves what the run read; a workspace gone
+            // anyway, the default one.
+            return Ok(match now.as_deref().unwrap_or(&s.workspace) {
+                ws if known(ws) => ws.to_string(),
+                _ => list[0].id.clone(),
+            });
+        }
         if known(&s.workspace) {
             return Ok(s.workspace.clone());
         }
@@ -289,64 +307,142 @@ impl Manager {
 
     /// Give everything stored before workspaces a workspace: make the
     /// default one when there is none, and put each session and scheduled
-    /// task without a known workspace in it. A worker goes where its
-    /// orchestrator is. Changes nothing else; idempotent.
+    /// task without a known workspace in it. A worker goes where the top of
+    /// its orchestrator chain is, which also joins a tree a failed move left
+    /// split. Changes nothing else; idempotent.
     pub(super) fn backfill_workspaces(&self) -> Result<()> {
-        let created = {
-            let _guard = self.inner.workspaces.lock();
-            let had = !self.stored_workspaces()?.is_empty();
-            let list = self.ensure_workspaces_locked()?;
-            let default = list[0].id.clone();
-            let known = |id: &str| list.iter().any(|w| w.id == id);
-            let sessions: HashMap<String, Session> = self
-                .list_sessions()
-                .into_iter()
-                .map(|s| (s.id.clone(), s))
-                .collect();
-            // Where a session belongs: its own workspace if known, else its
-            // orchestrator's, up the tree, else the default one.
-            let belongs = |s: &Session| -> String {
-                let mut seen = HashSet::new();
-                let mut at = s;
-                loop {
-                    if known(&at.workspace) {
-                        return at.workspace.clone();
-                    }
-                    match at.orchestrator_id.as_ref().and_then(|o| sessions.get(o)) {
-                        Some(o) if seen.insert(o.id.clone()) => at = o,
-                        _ => return default.clone(),
-                    }
+        let _guard = self.inner.workspaces.lock();
+        let list = self.ensure_workspaces_locked()?;
+        let default = list[0].id.clone();
+        let known = |id: &str| list.iter().any(|w| w.id == id);
+        let sessions: HashMap<String, Session> = self
+            .list_sessions()
+            .into_iter()
+            .map(|s| (s.id.clone(), s))
+            .collect();
+        // Where a session belongs: its leader's workspace (the top of its
+        // orchestrator chain, itself when it has none), or the default one
+        // when that is not known.
+        let belongs = |s: &Session| -> String {
+            let mut seen = HashSet::from([s.id.clone()]);
+            let mut leader = s;
+            while let Some(o) = leader
+                .orchestrator_id
+                .as_ref()
+                .and_then(|o| sessions.get(o))
+            {
+                if !seen.insert(o.id.clone()) {
+                    break;
                 }
-            };
-            let mut fixed = 0;
-            for s in sessions.values().filter(|s| !known(&s.workspace)) {
-                let ws = belongs(s);
-                // Not activity: the sidebar looks exactly as before.
-                self.change_session(&s.id, false, |s| {
-                    s.workspace = ws;
-                    true
-                })?;
-                fixed += 1;
+                leader = o;
             }
-            if fixed > 0 {
-                tracing::info!("put {fixed} session(s) without a workspace in one");
+            if known(&leader.workspace) {
+                leader.workspace.clone()
+            } else {
+                default.clone()
             }
-            let _tasks = self.inner.scheduled_tasks.lock();
-            for mut task in self.inner.store.scheduled_tasks()? {
-                if !known(&task.workspace) {
-                    task.workspace = default.clone();
-                    self.inner.store.save_scheduled_task(&task)?;
-                }
-            }
-            !had
         };
-        if created {
-            self.workspaces_changed();
+        let mut fixed = 0;
+        for s in sessions.values() {
+            let ws = belongs(s);
+            if s.workspace == ws {
+                continue;
+            }
+            // Not activity: the sidebar looks exactly as before.
+            self.change_session(&s.id, false, |s| {
+                s.workspace = ws;
+                true
+            })?;
+            fixed += 1;
+        }
+        if fixed > 0 {
+            tracing::info!("put {fixed} session(s) in their leader's or the default workspace");
+        }
+        let _tasks = self.inner.scheduled_tasks.lock();
+        for mut task in self.inner.store.scheduled_tasks()? {
+            if !known(&task.workspace) {
+                task.workspace = default.clone();
+                self.inner.store.save_scheduled_task(&task)?;
+            }
         }
         Ok(())
     }
 
     // ------------------------------------------------------------ internals
+
+    /// The sessions in workspace `id`, each orchestrator before its workers.
+    fn sessions_in_locked(&self, id: &str) -> Vec<String> {
+        let sessions: HashMap<String, Session> = self
+            .list_sessions()
+            .into_iter()
+            .filter(|s| s.workspace == id)
+            .map(|s| (s.id.clone(), s))
+            .collect();
+        let depth = |s: &Session| {
+            let mut seen = HashSet::from([s.id.as_str()]);
+            let mut at = s;
+            let mut depth = 0;
+            while let Some(o) = at.orchestrator_id.as_deref().and_then(|o| sessions.get(o)) {
+                if !seen.insert(o.id.as_str()) {
+                    break;
+                }
+                at = o;
+                depth += 1;
+            }
+            depth
+        };
+        let mut ids: Vec<(usize, &String)> = sessions.values().map(|s| (depth(s), &s.id)).collect();
+        ids.sort();
+        ids.into_iter().map(|(_, id)| id.clone()).collect()
+    }
+
+    /// Move sessions `ids`, listed each orchestrator before its workers, to
+    /// workspace `to`. Each is stored before it changes, workers before
+    /// their orchestrator, and when one cannot be moved those already moved
+    /// are put back: a tree is never left split by a failure the store
+    /// reports. One it cannot put back either joins its leader again when
+    /// the daemon next starts. Returns the sessions, in the order given.
+    fn move_sessions_locked(&self, ids: &[String], to: &str) -> Result<Vec<Session>> {
+        let mut moved: Vec<(String, String)> = vec![];
+        let mut out = vec![];
+        for id in ids.iter().rev() {
+            let mut from = None;
+            // Not activity: the sessions keep their place in the list.
+            let result = self.change_session(id, false, |s| {
+                if s.workspace == to {
+                    return false;
+                }
+                from = Some(std::mem::replace(&mut s.workspace, to.to_string()));
+                true
+            });
+            match result {
+                Ok(s) => {
+                    if let Some(from) = from {
+                        moved.push((s.id.clone(), from));
+                    }
+                    out.push(s);
+                }
+                // Deleted meanwhile: nothing left to move.
+                Err(_) if self.get_session(id).is_err() => {}
+                Err(e) => {
+                    for (id, from) in moved.iter().rev() {
+                        let back = self.change_session(id, false, |s| {
+                            s.workspace = from.clone();
+                            true
+                        });
+                        if let Err(e) = back {
+                            tracing::warn!(
+                                "put session {id} back in workspace {from}: {e:#}; it joins its leader's when the daemon next starts"
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        out.reverse();
+        Ok(out)
+    }
 
     fn stored_workspaces(&self) -> Result<Vec<Workspace>> {
         let mut list: Vec<Workspace> = self
@@ -405,8 +501,10 @@ impl Manager {
             .save_feature_record(WORKSPACES, &w.id, &serde_json::to_string(w)?)
     }
 
-    /// Tell the app the workspaces changed. A failure to read them is
-    /// logged: the change itself was made.
+    /// Tell the app the workspaces changed. Called with the registry lock
+    /// held, so the announcements go out in the order of the changes and a
+    /// late one never brings back a deleted workspace. A failure to read
+    /// them is logged: the change itself was made.
     fn workspaces_changed(&self) {
         match self.stored_workspaces() {
             Ok(workspaces) => self.broadcast(Event::WorkspacesChanged { workspaces }),

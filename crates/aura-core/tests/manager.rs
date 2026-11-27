@@ -7617,3 +7617,310 @@ async fn deleting_many_sessions_says_what_happened_to_each() {
     // Nothing asked for, nothing done.
     assert_eq!(m.delete_many(&[], false).await, BulkDeleteResult::default());
 }
+
+/// A store that fails to save the sessions named in `sessions`, and the
+/// scheduled tasks while `tasks` is set, until told otherwise.
+#[derive(Default)]
+struct FailingSaves {
+    inner: MemoryStore,
+    sessions: Mutex<Vec<String>>,
+    tasks: Mutex<bool>,
+}
+
+impl Store for FailingSaves {
+    fn feature_records(&self, namespace: &str) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.feature_records(namespace)
+    }
+    fn save_feature_record(&self, namespace: &str, id: &str, value: &str) -> anyhow::Result<()> {
+        if namespace == "scheduled_tasks" && *self.tasks.lock() {
+            anyhow::bail!("disk full");
+        }
+        self.inner.save_feature_record(namespace, id, value)
+    }
+    fn delete_feature_record(&self, namespace: &str, id: &str) -> anyhow::Result<()> {
+        self.inner.delete_feature_record(namespace, id)
+    }
+    fn upsert_session(&self, s: &Session) -> anyhow::Result<()> {
+        if self.sessions.lock().contains(&s.id) {
+            anyhow::bail!("disk full");
+        }
+        self.inner.upsert_session(s)
+    }
+    fn delete_session(&self, id: &str) -> anyhow::Result<()> {
+        self.inner.delete_session(id)
+    }
+    fn list_sessions(&self) -> anyhow::Result<Vec<Session>> {
+        self.inner.list_sessions()
+    }
+    fn append_event(&self, id: &str, event: &Event) -> anyhow::Result<u64> {
+        self.inner.append_event(id, event)
+    }
+    fn events(&self, id: &str, after: u64, limit: usize) -> anyhow::Result<Vec<StoredEvent>> {
+        self.inner.events(id, after, limit)
+    }
+    fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.inner.search(query, limit)
+    }
+    fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {
+        self.inner.get_setting(key)
+    }
+    fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.inner.set_setting(key, value)
+    }
+    fn save_scrollback(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.inner.save_scrollback(id, data)
+    }
+    fn load_scrollback(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        self.inner.load_scrollback(id)
+    }
+}
+
+/// An orchestra (`lead` over `w1`, which orchestrates `w1a`, and `w2`)
+/// restored from `store`.
+fn orchestra_on(store: Arc<FailingSaves>) -> Manager {
+    for s in [
+        stored_session("lead", true, None),
+        stored_session("w1", true, Some("lead")),
+        stored_session("w1a", false, Some("w1")),
+        stored_session("w2", false, Some("lead")),
+    ] {
+        store.upsert_session(&s).unwrap();
+    }
+    let m = Manager::new(store, vec![], None);
+    m.restore().unwrap();
+    m
+}
+
+/// Each session's workspace, in memory and as stored.
+fn workspaces_of(m: &Manager, store: &FailingSaves, ids: &[&str]) -> Vec<(String, String)> {
+    let stored = store.list_sessions().unwrap();
+    ids.iter()
+        .map(|id| {
+            (
+                m.get_session(id).unwrap().workspace,
+                stored
+                    .iter()
+                    .find(|s| s.id == *id)
+                    .unwrap()
+                    .workspace
+                    .clone(),
+            )
+        })
+        .collect()
+}
+
+const ORCHESTRA: [&str; 4] = ["lead", "w1", "w1a", "w2"];
+
+#[tokio::test]
+async fn a_tree_move_that_cannot_be_stored_leaves_the_whole_tree_where_it_was() {
+    let store = Arc::new(FailingSaves::default());
+    let m = orchestra_on(store.clone());
+    let home = m.list_workspaces().unwrap()[0].id.clone();
+    let away = m.create_workspace("Away").unwrap().id;
+    let everywhere = |ws: &str| vec![(ws.to_string(), ws.to_string()); 4];
+
+    // The orchestrator, saved last, and a worker in the middle.
+    for failing in ["lead", "w1"] {
+        *store.sessions.lock() = vec![failing.into()];
+        let err = m.set_session_workspace("lead", &away).unwrap_err();
+        assert!(format!("{err:#}").contains("disk full"), "{err:#}");
+        assert_eq!(
+            workspaces_of(&m, &store, &ORCHESTRA),
+            everywhere(&home),
+            "{failing} failed: in memory and stored, nothing moved"
+        );
+    }
+    // A retry moves all of it, the orchestrator too.
+    store.sessions.lock().clear();
+    assert_eq!(m.set_session_workspace("lead", &away).unwrap().len(), 4);
+    assert_eq!(workspaces_of(&m, &store, &ORCHESTRA), everywhere(&away));
+}
+
+#[tokio::test]
+async fn a_workspace_delete_that_cannot_be_stored_moves_nothing() {
+    let store = Arc::new(FailingSaves::default());
+    let m = orchestra_on(store.clone());
+    let old = m.create_workspace("Old").unwrap().id;
+    let target = m.create_workspace("Target").unwrap().id;
+    m.set_session_workspace("lead", &old).unwrap();
+    let mut task: ScheduledTask = serde_json::from_value(serde_json::json!({
+        "id": "t1", "name": "Nightly", "prompt": "check", "agent": "claude",
+        "model": null, "effort": null, "permission_mode": null, "sandbox_mode": null,
+        "cwd": "/tmp", "enabled": true,
+        "schedule": { "unit": "hours", "every": 1 },
+        "created_at": "2026-11-01T08:00:00Z", "updated_at": "2026-11-01T08:00:00Z",
+        "anchor": "2026-11-01T08:00:00Z"
+    }))
+    .unwrap();
+    task.workspace = old.clone();
+    store.save_scheduled_task(&task).unwrap();
+    let unchanged = |m: &Manager| {
+        assert_eq!(
+            workspaces_of(m, &store, &ORCHESTRA),
+            vec![(old.clone(), old.clone()); 4]
+        );
+        assert_eq!(store.scheduled_tasks().unwrap()[0].workspace, old);
+        assert!(m.list_workspaces().unwrap().iter().any(|w| w.id == old));
+    };
+
+    // A session that cannot be moved.
+    *store.sessions.lock() = vec!["w1a".into()];
+    assert!(m.delete_workspace(&old, Some(&target)).is_err());
+    unchanged(&m);
+    // A task that cannot be moved, after every session was.
+    store.sessions.lock().clear();
+    *store.tasks.lock() = true;
+    assert!(m.delete_workspace(&old, Some(&target)).is_err());
+    unchanged(&m);
+
+    *store.tasks.lock() = false;
+    m.delete_workspace(&old, Some(&target)).unwrap();
+    assert_eq!(
+        workspaces_of(&m, &store, &ORCHESTRA),
+        vec![(target.clone(), target.clone()); 4]
+    );
+    assert_eq!(store.scheduled_tasks().unwrap()[0].workspace, target);
+}
+
+#[tokio::test]
+async fn a_tree_left_split_joins_its_leader_when_the_daemon_starts() {
+    let store = Arc::new(FailingSaves::default());
+    let (a, b) = {
+        let m = orchestra_on(store.clone());
+        (
+            m.create_workspace("A").unwrap().id,
+            m.create_workspace("B").unwrap().id,
+        )
+    };
+    // As a move that could not be undone left it: the workers moved, their
+    // orchestrators did not.
+    for (id, ws) in [("lead", &a), ("w1", &b), ("w1a", &b), ("w2", &a)] {
+        let mut s = store
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap();
+        s.workspace = ws.clone();
+        store.upsert_session(&s).unwrap();
+    }
+    let mut plain = stored_session("plain", false, None);
+    plain.workspace = b.clone();
+    store.upsert_session(&plain).unwrap();
+
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    assert_eq!(
+        workspaces_of(&m, &store, &ORCHESTRA),
+        vec![(a.clone(), a.clone()); 4]
+    );
+    assert_eq!(
+        m.get_session("plain").unwrap().workspace,
+        b,
+        "a leader stays"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workspace_announcements_arrive_in_the_order_of_the_changes() {
+    let (m, _calls, _starts, _store) = setup();
+    m.list_workspaces().unwrap();
+    for round in 0..5 {
+        let mut rx = m.subscribe();
+        let threads: Vec<_> = (0..4)
+            .map(|t| {
+                let m = m.clone();
+                std::thread::spawn(move || {
+                    for i in 0..20 {
+                        let w = m.create_workspace(&format!("r{round} t{t} {i}")).unwrap();
+                        m.rename_workspace(&w.id, &format!("r{round} t{t} {i}!"))
+                            .unwrap();
+                        m.delete_workspace(&w.id, None).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let announced: Vec<Vec<Workspace>> = drain(&mut rx)
+            .await
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::WorkspacesChanged { workspaces } => Some(workspaces),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(announced.len(), 4 * 20 * 3);
+        // The last word is the registry as it is: nothing deleted comes back.
+        assert_eq!(announced.last().unwrap(), &m.list_workspaces().unwrap());
+        // Each announcement differs from the one before by the one change made.
+        for pair in announced.windows(2) {
+            let diff = pair[0].len().abs_diff(pair[1].len());
+            assert!(diff <= 1, "{pair:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn deleting_many_sessions_keeps_their_worktrees_and_branches() {
+    let worktrees = Arc::new(Worktrees::default());
+    let provider = Arc::new(FakeProvider {
+        calls: Default::default(),
+        starts: Default::default(),
+        prompts: Default::default(),
+        mcp: Default::default(),
+        knobs: Default::default(),
+    });
+    let m = Manager::new(
+        Arc::new(MemoryStore::default()),
+        vec![provider],
+        Some(worktrees.clone()),
+    );
+    let repo = tempfile::tempdir().unwrap();
+    let repo = repo.path().to_string_lossy().to_string();
+    let on_branch = |branch: &str, orchestrator: bool| CreateSessionOpts {
+        provider: ProviderKind::Claude,
+        cwd: repo.clone(),
+        orchestrator,
+        worktree: Some(WorktreeOpts {
+            branch: branch.into(),
+            base: None,
+            path: None,
+        }),
+        ..Default::default()
+    };
+    let lead = m.create_session(on_branch("lead", true)).await.unwrap();
+    let worker = m
+        .start_worker(
+            &lead.id,
+            WorkerSpec {
+                agent: "claude".into(),
+                prompt: "work".into(),
+                cwd: Some(repo.clone()),
+                branch: Some("worker".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let plain = m.create_session(on_branch("plain", false)).await.unwrap();
+    let paths: Vec<String> = [&lead, &worker, &plain]
+        .iter()
+        .map(|s| s.worktree.as_ref().unwrap().path.clone())
+        .collect();
+
+    let result = m
+        .delete_many(&[lead.id.clone(), plain.id.clone()], false)
+        .await;
+    assert_eq!(result.deleted.len(), 3);
+    assert!(result.failed.is_empty());
+    assert!(m.list_sessions().is_empty());
+    assert!(
+        worktrees.removed.lock().is_empty(),
+        "no worktree (nor its branch) removed"
+    );
+    for p in paths {
+        assert!(std::path::Path::new(&p).is_dir(), "{p} kept");
+    }
+}
