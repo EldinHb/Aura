@@ -89,8 +89,11 @@ starts) or without a terminal on stdin.
    first. A new `remote.startPairing` replaces the previous code.
 
 Before `remote.pair` or `remote.auth` succeeds, every other method is answered
-with **-32010** and the connection is closed. A connection that does not
-authenticate within 30 seconds is closed. A failed pair/auth answers with the
+with **-32010** and the connection is closed. A connection must have
+authenticated 30 seconds after the TCP connect, TLS handshake and WebSocket
+upgrade included; otherwise it is closed at whatever stage it is. At most 32
+connections may be unauthenticated at once; more are closed right after
+connect (the TLS handshake fails), so retry a little later. A failed pair/auth answers with the
 error and closes the connection.
 
 ## 4. Transport details
@@ -198,8 +201,8 @@ snake_case field names unless noted.
 | `session.history` | `{id, after_seq?: number = 0, limit?: number = 5000}` | `StoredEvent[]` — `{seq, ts, event}`; page with the last `seq` |
 | `session.pending` | `{}` | `{approvals: Approval[], inputs: UserInputRequest[]}` |
 | `session.attachment` | `{id, attachment}` | `{data: base64, media_type}` — images referenced from a transcript |
-| `session.send` | `{id, input: {text, images?: ImageInput[], steer?: bool}}` | `true` (starts the agent if it is not running). Images must carry `data` (base64) + `media_type`; an image with a `path` is refused with -32003 |
-| `session.interrupt` | `{id}` | `true` |
+| `session.send` | `{id, input: {text, images?: ImageInput[], steer?: bool}}` | `true` (starts the agent if it is not running). Images must carry `data` (base64) + `media_type`; an image with a `path` is refused with -32003. Refused (-32003) for sessions with `mode: "terminal"` |
+| `session.interrupt` | `{id}` | `true`. Refused (-32003) for `mode: "terminal"` sessions |
 | `session.stop` | `{id}` | `true` |
 | `session.respond_approval` | `{id, approval_id, decision: {option, updated_input?, message?}}` | `true` — `option`: `accept`/`accept_for_session`/`decline`/`cancel`/`edit_input` |
 | `session.respond_input` | `{id, response: {request_id, answers: {[questionId]: string[]}, declined?: bool}}` | `true` |
@@ -217,8 +220,10 @@ Only these params are accepted (unknown ones: -32602):
   permission_mode?: string, initial_prompt?: string,
   worktree?: { branch: string, base?: string } }
 ```
-`cwd` must be the `path` of a project from `orchestrator.projects`, or a
-folder inside one; otherwise -32003. `worktree.branch` may not contain `..`
+`cwd` must be an existing folder that, with symlinks resolved, is the `path`
+of a project from `orchestrator.projects` (also resolved) or lies inside one;
+otherwise -32003. The session runs in the resolved folder, so its `cwd` may
+differ from what was sent. `worktree.branch` may not contain `..`
 or start with `/`, `\` or `-` (-32003). Terminal sessions, custom commands,
 resuming native sessions, orchestrators and custom worktree paths are not
 available remotely.
@@ -237,7 +242,8 @@ After authentication the connection receives, unasked:
   re-fetch `session.list` and the open session's `session.history`.
 
 A typical client: `remote.auth` → `session.list` + `session.pending` →
-keep the list fresh from `session_*` events; for an open session,
+keep the list fresh from `session_*` events (terminal-mode sessions are listed and can be stopped,
+but not typed into); for an open session,
 `session.history {id}` then apply that session's item/turn events; show
 `approval_requested` / `user_input_requested` (and `session_updated` with
 `attention: "waiting"`) as notifications.

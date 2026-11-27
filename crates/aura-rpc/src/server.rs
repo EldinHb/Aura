@@ -80,6 +80,8 @@ pub struct AppState {
 pub struct RpcServer {
     pub info: DaemonInfo,
     pub shutdown: broadcast::Sender<()>,
+    /// Remote access (see [`crate::remote`]).
+    pub remote: Arc<crate::remote::RemoteService>,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -138,6 +140,7 @@ impl RpcServer {
         };
         // Off unless the user turned it on; a failure shows in `remote.status`.
         state.remote.apply(&state).await;
+        let remote = state.remote.clone();
         let app = Router::new()
             .route("/ws", get(ws_handler))
             .route("/healthz", get(|| async { "ok" }))
@@ -153,6 +156,7 @@ impl RpcServer {
         Ok(RpcServer {
             info,
             shutdown,
+            remote,
             handle,
         })
     }
@@ -201,9 +205,18 @@ enum Caller {
     Remote(Arc<RemoteConn>),
 }
 
-/// The peer address of a connection to the remote listener.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RemotePeer(pub std::net::SocketAddr);
+/// A connection to the remote listener, as the listener hands it to the
+/// WebSocket handler.
+#[derive(Debug, Clone)]
+pub(crate) struct RemotePeer {
+    pub addr: std::net::SocketAddr,
+    /// When it must have authenticated, counted from the TCP accept: the TLS
+    /// handshake, the upgrade and `remote.pair`/`remote.auth` all fit in it.
+    pub deadline: tokio::time::Instant,
+    /// Its place among the unauthenticated connections, given up once it
+    /// authenticates (or when it closes).
+    pub slot: Arc<parking_lot::Mutex<Option<crate::remote::UnauthSlot>>>,
+}
 
 #[derive(Debug)]
 struct RemoteConn {
@@ -212,6 +225,8 @@ struct RemoteConn {
     device: parking_lot::Mutex<Option<String>>,
     /// Closed if not authenticated by then.
     deadline: tokio::time::Instant,
+    /// Held until it authenticates.
+    slot: parking_lot::Mutex<Option<crate::remote::UnauthSlot>>,
 }
 
 impl RemoteConn {
@@ -305,13 +320,14 @@ pub(crate) fn remote_router(state: AppState) -> Router {
 
 async fn remote_ws_handler(
     ws: WebSocketUpgrade,
-    axum::Extension(RemotePeer(peer)): axum::Extension<RemotePeer>,
+    axum::Extension(peer): axum::Extension<RemotePeer>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     let conn = Arc::new(RemoteConn {
-        peer,
+        peer: peer.addr,
         device: parking_lot::Mutex::new(None),
-        deadline: tokio::time::Instant::now() + crate::remote::AUTH_DEADLINE,
+        deadline: peer.deadline,
+        slot: parking_lot::Mutex::new(peer.slot.lock().take()),
     });
     // Images go as base64 in the message: 16 MB holds a few.
     ws.max_message_size(crate::remote::MAX_MESSAGE)
@@ -353,22 +369,27 @@ struct RemoteWorktree {
     base: Option<String>,
 }
 
-/// Whether `cwd` is one of `projects`' folders or inside one.
-fn in_known_project(cwd: &str, projects: &[Project]) -> bool {
+/// `cwd` with every symlink resolved, when that lies in one of `projects`'
+/// folders (resolved the same way) or is one; None otherwise, and for a
+/// folder that does not exist. Touches the file system: call it off the
+/// async runtime.
+fn in_known_project(cwd: &str, projects: &[Project]) -> Option<std::path::PathBuf> {
     let path = std::path::Path::new(cwd);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return false;
+    if !path.is_absolute() {
+        return None;
+    }
+    let real = std::fs::canonicalize(path).ok()?;
+    if !real.is_dir() {
+        return None;
     }
     projects
         .iter()
-        .any(|p| path.starts_with(std::path::Path::new(&p.path)))
+        .filter_map(|p| std::fs::canonicalize(&p.path).ok())
+        .any(|root| real.starts_with(&root))
+        .then_some(real)
 }
 
-/// A remote device's request, once [`authorize`] let it through: three
+/// A remote device's request, once [`authorize`] let it through: four
 /// methods are narrowed (see `REMOTE_ALLOWED_METHODS`), the rest is the
 /// user's [`dispatch`].
 async fn remote_dispatch(
@@ -391,7 +412,19 @@ async fn remote_dispatch(
         })),
         // Images by value only: a path would have the daemon read any file
         // on this machine for the device (and keep it as an attachment).
-        "session.send" => {
+        // A terminal-mode session's input is a shell (or a TUI) on this
+        // machine: typing into it is not something a device may do.
+        "session.send" | "session.interrupt" => {
+            let IdParams { id } = params(&req.params)?;
+            if state.manager.get_session(&id)?.mode == SessionMode::Terminal {
+                return Err(forbidden(format!(
+                    "{} is not available for terminal sessions from a remote device",
+                    req.method
+                )));
+            }
+            if req.method == "session.interrupt" {
+                return dispatch(state, attached, req, None, window).await;
+            }
             let by_path = req.params["input"]["images"]
                 .as_array()
                 .is_some_and(|images| images.iter().any(|i| !i["path"].is_null()));
@@ -411,9 +444,13 @@ async fn remote_dispatch(
                 ));
             }
             let m = state.manager.clone();
-            let projects = tokio::task::spawn_blocking(move || m.projects())
-                .await
-                .map_err(|e| anyhow!(e))??;
+            let cwd = o.cwd.clone();
+            let real = tokio::task::spawn_blocking(move || {
+                m.projects()
+                    .map(|projects| in_known_project(&cwd, &projects))
+            })
+            .await
+            .map_err(|e| anyhow!(e))??;
             // The worktree's folder is named after the branch.
             if let Some(w) = &o.worktree {
                 let b = w.branch.trim();
@@ -424,16 +461,17 @@ async fn remote_dispatch(
                     )));
                 }
             }
-            if !in_known_project(&o.cwd, &projects) {
+            let Some(real) = real else {
                 return Err(forbidden(format!(
-                    "`{}` is not in a known project: pick a path from orchestrator.projects",
+                    "`{}` is not a folder in a known project: pick a path from orchestrator.projects",
                     o.cwd
                 )));
-            }
+            };
             let opts = CreateSessionOpts {
                 provider: o.provider,
                 agent: o.agent,
-                cwd: o.cwd,
+                // Resolved: what was checked is where it runs.
+                cwd: real.to_string_lossy().into_owned(),
                 title: o.title,
                 workspace: o.workspace,
                 model: o.model,
@@ -570,6 +608,7 @@ fn remote_pre_auth(
                     .pair(ip, &code, &device_name)
                     .map_err(refused)?;
                 *conn.device.lock() = Some(r.device_id.clone());
+                conn.slot.lock().take();
                 ok(r)
             })
         }
@@ -583,6 +622,7 @@ fn remote_pre_auth(
             params::<P>(&req.params).and_then(|P { device_id, token }| {
                 let r = state.remote.auth(ip, &device_id, &token).map_err(refused)?;
                 *conn.device.lock() = Some(device_id);
+                conn.slot.lock().take();
                 ok(r)
             })
         }

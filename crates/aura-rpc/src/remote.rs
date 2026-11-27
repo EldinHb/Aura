@@ -16,17 +16,19 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, oneshot};
 use ts_rs::TS;
 
 /// The methods a paired remote device may call once authenticated. Every
-/// other method is refused with `ERR_FORBIDDEN`. Three of them are narrowed
+/// other method is refused with `ERR_FORBIDDEN`. Four of them are narrowed
 /// for remote callers (see `server::remote_dispatch`): `daemon.info` leaves
-/// out the local token, port and data directory, `session.send` takes images
-/// by value only, never a path, and `session.create` only takes a known
-/// project and a few options.
+/// out the local token, port and data directory; `session.send` and
+/// `session.interrupt` refuse terminal-mode sessions, and `session.send`
+/// takes images by value only, never a path; `session.create` only takes a
+/// folder in a known project (symlinks resolved) and a few options.
 pub const REMOTE_ALLOWED_METHODS: &[&str] = &[
     "daemon.ping",
     "daemon.info",
@@ -61,8 +63,11 @@ const CODE_LEN: usize = 8;
 /// Failed pair/auth attempts allowed per IP within [`FAILURE_WINDOW`].
 pub const MAX_FAILURES: usize = 5;
 pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
-/// A remote connection that has not paired or authenticated by then is closed.
+/// A remote connection that has not paired or authenticated this long after
+/// its TCP accept is closed, whatever stage it is at (TLS, upgrade, auth).
 pub const AUTH_DEADLINE: Duration = Duration::from_secs(30);
+/// Connections not yet authenticated at once; more are refused at accept.
+pub const MAX_UNAUTHENTICATED: usize = 32;
 /// Largest WebSocket message (and frame) the remote listener takes.
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 /// Largest message before authentication; a bigger one closes the connection.
@@ -267,6 +272,35 @@ struct Inner {
     failures: HashMap<IpAddr, VecDeque<Instant>>,
 }
 
+/// How long a connection may take to authenticate, and how many may be at
+/// it at once. Shared by the listener and its connections.
+#[derive(Debug)]
+struct Limits {
+    auth_deadline: parking_lot::Mutex<Duration>,
+    max_unauthenticated: AtomicUsize,
+    unauthenticated: Arc<AtomicUsize>,
+}
+
+/// One unauthenticated connection's place under [`MAX_UNAUTHENTICATED`];
+/// dropping it frees the place.
+#[derive(Debug)]
+pub(crate) struct UnauthSlot(Arc<AtomicUsize>);
+
+impl Drop for UnauthSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Limits {
+    fn take_slot(&self) -> Option<UnauthSlot> {
+        let max = self.max_unauthenticated.load(Ordering::SeqCst);
+        let before = self.unauthenticated.fetch_add(1, Ordering::SeqCst);
+        let slot = UnauthSlot(self.unauthenticated.clone());
+        (before < max).then_some(slot)
+    }
+}
+
 /// Remote access for one daemon: its config, certificate, paired devices,
 /// pairing code and listener.
 pub struct RemoteService {
@@ -275,6 +309,7 @@ pub struct RemoteService {
     /// Serializes [`RemoteService::apply`], which binds outside `inner`'s lock.
     applying: tokio::sync::Mutex<()>,
     kill: broadcast::Sender<Kill>,
+    limits: Arc<Limits>,
 }
 
 impl RemoteService {
@@ -327,6 +362,11 @@ impl RemoteService {
             }),
             applying: tokio::sync::Mutex::new(()),
             kill,
+            limits: Arc::new(Limits {
+                auth_deadline: parking_lot::Mutex::new(AUTH_DEADLINE),
+                max_unauthenticated: AtomicUsize::new(MAX_UNAUTHENTICATED),
+                unauthenticated: Arc::new(AtomicUsize::new(0)),
+            }),
         });
         if persist {
             if let Err(e) = service.save_config(&service.inner.lock().config) {
@@ -334,6 +374,15 @@ impl RemoteService {
             }
         }
         service
+    }
+
+    /// Change [`AUTH_DEADLINE`] and [`MAX_UNAUTHENTICATED`] for connections
+    /// accepted from now on. For tests and tuning.
+    pub fn set_connection_limits(&self, auth_deadline: Duration, max_unauthenticated: usize) {
+        *self.limits.auth_deadline.lock() = auth_deadline;
+        self.limits
+            .max_unauthenticated
+            .store(max_unauthenticated, Ordering::SeqCst);
     }
 
     pub(crate) fn subscribe_kill(&self) -> broadcast::Receiver<Kill> {
@@ -399,6 +448,7 @@ impl RemoteService {
             stopped,
             state.shutdown.subscribe(),
             self.kill.clone(),
+            self.limits.clone(),
         ));
         tracing::info!(%addr, "remote access listening");
         self.inner.lock().running = Some(Running { addr, stop });
@@ -752,6 +802,7 @@ async fn serve(
     mut stop: oneshot::Receiver<()>,
     mut shutdown: broadcast::Receiver<()>,
     kill: broadcast::Sender<Kill>,
+    limits: Arc<Limits>,
 ) {
     loop {
         tokio::select! {
@@ -762,7 +813,13 @@ async fn serve(
             }
             accepted = listener.accept() => match accepted {
                 Ok((tcp, peer)) => {
-                    tokio::spawn(serve_connection(tcp, peer, acceptor.clone(), router.clone(), kill.subscribe()));
+                    let Some(slot) = limits.take_slot() else {
+                        tracing::warn!(%peer, "remote access: too many connections still authenticating; refused");
+                        drop(tcp);
+                        continue;
+                    };
+                    let deadline = tokio::time::Instant::now() + *limits.auth_deadline.lock();
+                    tokio::spawn(serve_connection(tcp, peer, deadline, slot, acceptor.clone(), router.clone(), kill.subscribe()));
                 }
                 Err(e) => {
                     // Out of file descriptors and the like: do not spin.
@@ -774,35 +831,54 @@ async fn serve(
     }
 }
 
+/// One TCP connection: TLS, then HTTP until it upgrades to the WebSocket,
+/// all before `deadline`. The WebSocket handler keeps to the same deadline
+/// until the device authenticates, and takes over `slot` until then.
 async fn serve_connection(
     tcp: tokio::net::TcpStream,
     peer: SocketAddr,
+    deadline: tokio::time::Instant,
+    slot: UnauthSlot,
     acceptor: tokio_rustls::TlsAcceptor,
     router: axum::Router,
     mut kill: broadcast::Receiver<Kill>,
 ) {
     let _ = tcp.set_nodelay(true);
-    let tls = match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await {
+    let tls = match tokio::time::timeout_at(deadline, acceptor.accept(tcp)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             tracing::debug!(%peer, "remote access: TLS handshake failed: {e}");
             return;
         }
-        Err(_) => return,
+        Err(_) => {
+            tracing::debug!(%peer, "remote access: TLS handshake too slow");
+            return;
+        }
     };
-    let service = hyper_util::service::TowerToHyperService::new(
-        router.layer(axum::Extension(crate::server::RemotePeer(peer))),
-    );
+    let remote_peer = crate::server::RemotePeer {
+        addr: peer,
+        deadline,
+        slot: Arc::new(parking_lot::Mutex::new(Some(slot))),
+    };
+    let service =
+        hyper_util::service::TowerToHyperService::new(router.layer(axum::Extension(remote_peer)));
     let builder =
         hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
     let conn = builder.serve_connection_with_upgrades(hyper_util::rt::TokioIo::new(tls), service);
     tokio::pin!(conn);
+    let too_late = tokio::time::sleep_until(deadline);
+    tokio::pin!(too_late);
     loop {
         tokio::select! {
+            // Done, or upgraded: the WebSocket left this future with its socket.
             _ = &mut conn => break,
+            // Still plain HTTP at the deadline: not a client of ours.
+            _ = &mut too_late => {
+                tracing::debug!(%peer, "remote access: no WebSocket upgrade in time");
+                break;
+            }
             k = kill.recv() => match k {
-                // The listener went away: so does its HTTP traffic. Upgraded
-                // WebSockets left this future already and close themselves.
+                // The listener went away: so does its HTTP traffic.
                 Ok(Kill::All) | Err(broadcast::error::RecvError::Closed) => break,
                 _ => continue,
             }
