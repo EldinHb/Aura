@@ -67,6 +67,8 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   const closeDialog = useStore((s) => s.closeDialog);
   const toast = useStore((s) => s.toast);
   const select = useStore((s) => s.select);
+  // New sessions go into the workspace the sidebar shows.
+  const workspace = useStore((s) => (s.workspaces.length ? s.workspaces.find((w) => w.id === s.activeWorkspace) ?? null : null));
 
   const available = useMemo(() => providerChoices(providers), [providers]);
   // A choice key: a provider kind, or `acp:<agent>` for an ACP agent.
@@ -268,6 +270,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         feature_owner: owns,
         feature_goal: owns ? goal.trim() || null : null,
         autonomy: owns ? autonomy : null,
+        workspace: workspace?.id ?? null,
       });
       if (cwd) pushRecentDir(cwd);
       // Each key of a field's `data` becomes that mod's data on the new session.
@@ -287,7 +290,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast]);
+  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast, workspace]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -317,6 +320,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
       title={
         <>
           <span>New session</span>
+          {workspace && <span className="dim" style={{ fontWeight: 400 }} title={workspace.name}>in {workspace.name}</span>}
           <span className="dim" style={{ marginLeft: "auto", fontWeight: 400 }}>
             <kbd>⌘↩</kbd> create
           </span>

@@ -60,7 +60,7 @@ it("hands the repository to an agent session", async () => {
   render(<GitCleanupDialog cwd="/code/other" />);
   await waitFor(() => expect((screen.getByLabelText("Repository") as HTMLSelectElement).value).toBe("/code/other"));
   fireEvent.click(screen.getByRole("button", { name: "Let an agent clean up" }));
-  await waitFor(() => expect(client.createSession).toHaveBeenCalledWith({ provider: "claude", cwd: "/code/other", title: "Clean up other", initial_prompt: CLEANUP_PROMPT }));
+  await waitFor(() => expect(client.createSession).toHaveBeenCalledWith({ provider: "claude", cwd: "/code/other", title: "Clean up other", initial_prompt: CLEANUP_PROMPT, workspace: null }));
   expect(useStore.getState().selectedId).toBe("s-clean");
   expect(client.gitCleanup).not.toHaveBeenCalled();
 });

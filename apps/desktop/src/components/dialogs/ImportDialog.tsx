@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { physicalKey } from "../../lib/keymap";
 import { Modal, KeyList, useListNav } from "../Modal";
-import { useStore } from "../../state/store";
+import { activeWorkspaceId, useStore } from "../../state/store";
 import type { NativeSession, ProviderKind, SessionMode } from "../../gen";
 import { filterItems } from "../palette";
 import { relTime, basename } from "../../lib/platform";
@@ -55,7 +55,7 @@ export function ImportDialog() {
         return;
       }
       const home = (await client.home()) ?? "/";
-      const s = await client.createSession({ provider: tab, cwd: n.cwd ?? home, title: n.title ?? null, resume_native_id: n.native_id, mode });
+      const s = await client.createSession({ provider: tab, cwd: n.cwd ?? home, title: n.title ?? null, resume_native_id: n.native_id, mode, workspace: activeWorkspaceId(useStore.getState()) });
       select(s.id);
       closeDialog();
       setFocus("main");

@@ -64,26 +64,36 @@ export function WorkerThreads({ orchestratorId }: { orchestratorId: string }) {
   const workers = all.filter((w) => !w.archived || w.id === picked);
   return (
     <div className="worker-threads">
-      <div className="worker-list" role="list">
-        {workers.length === 0 && <div className="list-empty">{all.length === 0 ? "No workers yet. The orchestrator starts them as it plans the work." : "Every worker is archived."}</div>}
-        {workers.map((w) => (
-          <button
-            key={w.id}
-            type="button"
-            role="listitem"
-            className={clsx("list-item worker-row", w.id === picked && "active", w.archived && "archived")}
-            data-hint
-            data-command="orchestrator.thread"
-            onClick={() => openWorkerThread(orchestratorId, w.id)}
-          >
-            <span className={clsx("dot", statusClass(w))} />
-            <span className="grow">
-              <span className="worker-title">{w.title}</span>
-              <span className="dim">{w.specialist_name && w.specialist_name !== w.title ? `${w.specialist_name} · ` : ""}{agentLine(w, providers)}</span>
-            </span>
-            <span className="dim">{w.archived ? "archived" : w.status === "running" ? "working" : w.status.replace("_", " ")}</span>
-          </button>
-        ))}
+      <div className="worker-list">
+        {all.length > 0 && (
+          <div className="worker-list-head">
+            <span className="dim grow">{all.length} {all.length === 1 ? "worker" : "workers"}</span>
+            <button type="button" className="btn small" data-hint data-command="workers.cleanup-orchestrator" title="Delete workers of this orchestrator" onClick={() => useStore.getState().openDialog({ kind: "workers-cleanup", orchestratorId })}>
+              Clean up…
+            </button>
+          </div>
+        )}
+        <div role="list">
+          {workers.length === 0 && <div className="list-empty">{all.length === 0 ? "No workers yet. The orchestrator starts them as it plans the work." : "Every worker is archived."}</div>}
+          {workers.map((w) => (
+            <button
+              key={w.id}
+              type="button"
+              role="listitem"
+              className={clsx("list-item worker-row", w.id === picked && "active", w.archived && "archived")}
+              data-hint
+              data-command="orchestrator.thread"
+              onClick={() => openWorkerThread(orchestratorId, w.id)}
+            >
+              <span className={clsx("dot", statusClass(w))} />
+              <span className="grow">
+                <span className="worker-title">{w.title}</span>
+                <span className="dim">{w.specialist_name && w.specialist_name !== w.title ? `${w.specialist_name} · ` : ""}{agentLine(w, providers)}</span>
+              </span>
+              <span className="dim">{w.archived ? "archived" : w.status === "running" ? "working" : w.status.replace("_", " ")}</span>
+            </button>
+          ))}
+        </div>
       </div>
       {worker ? (
         <WorkerThread key={worker.id} orchestratorId={orchestratorId} worker={worker} />

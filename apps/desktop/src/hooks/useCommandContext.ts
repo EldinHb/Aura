@@ -58,6 +58,7 @@ export function currentCommandContext(): CommandContext {
     orchestrator: !!s?.orchestrator,
     featureOwner: !!s?.feature_owner,
     worker: !!s?.orchestrator_id,
+    hasWorkers: !!s && Object.values(st.sessions).some((w) => w.orchestrator_id === s.id),
     modeLocked: !!s?.orchestrator && s.mode === "structured",
     mode: s?.mode ?? null,
     provider: s?.provider ?? null,

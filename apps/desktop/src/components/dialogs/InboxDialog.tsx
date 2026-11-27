@@ -26,6 +26,9 @@ function rowTime(r: SessionRow): string {
 export function InboxDialog() {
   const client = useStore((s) => s.client);
   const sessions = useStore((s) => s.sessions);
+  // Each row says which workspace its session is in, once there is more than one.
+  const workspaces = useStore((s) => s.workspaces);
+  const workspaceNames = useMemo(() => new Map(workspaces.map((w) => [w.id, w.name])), [workspaces]);
   const transcripts = useStore((s) => s.transcripts);
   const select = useStore((s) => s.select);
   const closeDialog = useStore((s) => s.closeDialog);
@@ -173,7 +176,7 @@ export function InboxDialog() {
               <span className="grow">
                 <div className="inbox-title">{isApproval ? row.a.title : row.r.questions.map((q) => q.question).join(" · ")}</div>
                 <div className="dim mono inbox-sub">{isApproval ? payload?.command ?? row.a.description ?? "" : `${row.r.questions.length} question${row.r.questions.length === 1 ? "" : "s"}`}</div>
-                <div className="dim inbox-sub">{s?.title ?? rowSession(row)}</div>
+                <div className="dim inbox-sub">{s?.title ?? rowSession(row)}{s && workspaceNames.size > 1 && workspaceNames.has(s.workspace) ? ` · ${workspaceNames.get(s.workspace)}` : ""}</div>
               </span>
               <span className="dim">{relTime(rowTime(row))}</span>
             </button>

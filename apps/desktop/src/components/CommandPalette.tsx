@@ -1,6 +1,6 @@
 import { useShallow } from "zustand/react/shallow";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { useStore, selectListedSessions } from "../state/store";
+import { useStore, selectListedSessions, leaderOf } from "../state/store";
 import { allCommands, listCommands, onCommandsChanged, runCommand, type Command } from "../lib/commands";
 import { currentCommandContext } from "../hooks/useCommandContext";
 import { getKeymap } from "../hooks/useKeyboard";
@@ -22,6 +22,14 @@ export function CommandPalette() {
   const setPalette = useStore((s) => s.setPalette);
   // Both sidebar tabs, folded sections included: picking one shows it.
   const sessions = useStore(useShallow(selectListedSessions));
+  // A worker shows its leader; a session of another workspace, that workspace.
+  const all = useStore((s) => s.sessions);
+  const workspaces = useStore((s) => s.workspaces);
+  const activeWorkspace = useStore((s) => s.activeWorkspace);
+  const leaderTitle = (s: (typeof sessions)[number]) => {
+    const l = leaderOf(s, all);
+    return l === s ? null : l.title;
+  };
   const [query, setQuery] = useState(initialQuery);
   const [tick, setTick] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -46,6 +54,7 @@ export function CommandPalette() {
   }, [mode, body, tick]);
 
   const sessionRows = useMemo(() => (mode === "sessions" ? filterItems(sessions, body, (s) => `${s.title} ${folderOf(s) ?? "orchestrator"} ${s.group ?? ""} ${s.provider}`) : []), [mode, body, sessions]);
+  const workspaceName = (id: string) => (workspaces.length > 1 && id !== activeWorkspace ? workspaces.find((w) => w.id === id)?.name ?? null : null);
   const helpRows = useMemo(() => (mode === "help" ? filterItems(HELP_TOPICS, body, (t) => `${t.title} ${t.body}`) : []), [mode, body]);
 
   const count = mode === "commands" ? commandRows.length : mode === "sessions" ? sessionRows.length : helpRows.length;
@@ -109,7 +118,11 @@ export function CommandPalette() {
       render: (
         <>
           <span className={clsx("dot", s.status === "running" ? "info" : s.pending_count ? "warn" : s.status === "error" ? "err" : "ok")} />
-          <span className="grow">{s.title}</span>
+          <span className="grow">
+            {s.title}
+            {leaderTitle(s) && <span className="dim"> · ↳ {leaderTitle(s)}</span>}
+          </span>
+          {workspaceName(s.workspace) && <span className="dim">{workspaceName(s.workspace)}</span>}
           <span className={clsx("chip", s.provider)}>{s.provider}</span>
           <span className="dim">{folderOf(s) === null ? "orchestrator" : basename(s.cwd)}</span>
           <span className="dim">{relTime(s.last_activity)}</span>

@@ -14,7 +14,7 @@ const ctx: CommandContext = {
   hasFolder: true,
   orchestrator: false,
   featureOwner: false,
-  worker: false,
+  worker: false, hasWorkers: false,
   modeLocked: false,
   mode: "structured",
   provider: "claude",

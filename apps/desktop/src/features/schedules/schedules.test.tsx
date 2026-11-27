@@ -118,7 +118,7 @@ describe("schedules in words", () => {
     expect(inputOf(draftOfTask(t))).toEqual({
       name: "Nightly triage", prompt: "Triage new issues", agent: "claude", model: "opus", effort: "", permission_mode: "", sandbox_mode: "",
       cwd: "/repo", worktree: true, run_as: "session", feature_goal: "", autonomy: null,
-      branch_prefix: "chore/x", group: "Chores", enabled: true, schedule: t.schedule, missed: "run_once", allow_overlap: false,
+      branch_prefix: "chore/x", group: "Chores", enabled: true, schedule: t.schedule, missed: "run_once", allow_overlap: false, workspace: "default",
     });
   });
 
