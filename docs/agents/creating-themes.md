@@ -31,6 +31,11 @@ approved that exact CSS, in a prompt like the one for mods. Until then, and
 whenever the CSS changes afterwards, only its tokens apply. Changing only the
 tokens never asks again.
 
+Before Aura's daemon answers at start-up, a window shows the theme it showed
+last from its own cache: its base, and only plainly safe token values (no
+functions but colour and maths ones, no escapes, `url()` only as a whole
+quoted `data:` URL). Its CSS and anything else wait for the daemon's check.
+
 On a system whose web engine has no CSS cascade layers (macOS 12.0 to 12.2,
 with Safari before 15.4), Aura cannot keep its approval prompts out of a
 theme's CSS, so it never applies theme CSS there, approved or not: only the
@@ -112,10 +117,17 @@ Settings › General shows the reason under the picker:
 - `tokens` is not an object
 - a token value that is not one CSS value: a `;`, `{`, `}` or `!important`
   outside quotes and brackets (`"red;display:none"` is refused)
-- a resource that is not a `data:` URL: in `url()`, `src()`, `image()`,
-  `image-set()` or `cross-fade()`, in a token or in the CSS (also inside
-  `@font-face`). A theme never loads anything from the web or from disk;
-  embed images and fonts as `data:` URLs
+- a resource that is not a literal `data:` URL: in `url()`, `src()`,
+  `image()`, `image-set()`, `cross-fade()` (and their `-webkit-` forms), in a
+  token or in the CSS (also inside `@font-face`). Nothing inside those
+  functions may be `var()` or another function: a token holding a string,
+  used by another token's `image-set(var(--x) 1x)`, would be a URL. In a token
+  these functions may hold only literal `data:` URLs (and `image-set`
+  resolutions like `1x`). `element()` is refused. A theme never loads
+  anything from the web or from disk; embed images and fonts as `data:` URLs
+- in `@font-face`: `local()` fonts, and a `font-family` that is a generic
+  family (`system-ui`, `sans-serif`, `serif`, `monospace`, `ui-monospace`, …),
+  which Aura's approval prompts are drawn in
 - `@import`, and `@layer` (Aura uses cascade layers to keep its approval
   prompts out of every theme's reach)
 - `<id>.json` larger than 128 KB, or `<id>.css` larger than 256 KB (Aura

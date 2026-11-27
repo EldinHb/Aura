@@ -30,19 +30,24 @@
     document.head.appendChild(el);
     var rule = el.sheet && el.sheet.cssRules[0];
     var tokens = t.tokens || {};
+    // localStorage is not the daemon: anything that wrote it could have put a
+    // URL there. Only plainly safe values are shown before the daemon's
+    // validated list arrives (the same rule as bootSafeValue in state/themes.ts):
+    // no escapes, one value, functions from a short list, url() only as a
+    // whole quoted data: URL. A theme's CSS is never applied from the cache.
+    var SAFE = { rgb: 1, rgba: 1, hsl: 1, hsla: 1, hwb: 1, lab: 1, lch: 1, oklab: 1, oklch: 1, color: 1, "color-mix": 1, var: 1, calc: 1, min: 1, max: 1, clamp: 1 };
+    var safe = function (v) {
+      if (typeof v !== "string" || v.indexOf("\\") >= 0 || /[{};!]/.test(v.replace(/(["'])(?:(?!\1).)*\1/g, ""))) return false;
+      if (/^url\(\s*(?:'data:[^'\\]*'|"data:[^"\\]*")\s*\)$/i.test(v.trim())) return true;
+      var re = /([a-zA-Z_-][\w-]*)\s*\(/g;
+      var m;
+      while ((m = re.exec(v))) if (!SAFE[m[1].toLowerCase()]) return false;
+      return true;
+    };
     if (rule) {
       for (var name in tokens) {
-        // One value per property, set by the browser's parser: never a declaration of its own.
-        var v = tokens[name];
-        if (/^--[a-z0-9-]+$/.test(name) && typeof v === "string" && !/[{}]/.test(v)) rule.style.setProperty(name, v);
+        if (/^--[a-z0-9-]+$/.test(name) && safe(tokens[name])) rule.style.setProperty(name, tokens[name]);
       }
-    }
-    // Without cascade layers approval prompts cannot be protected from theme CSS: tokens only.
-    if (typeof t.css === "string" && t.css && t.approval !== "needs_approval" && typeof window.CSSLayerBlockRule === "function") {
-      var css = document.createElement("style");
-      css.id = "aura-user-theme-css";
-      css.textContent = t.css;
-      document.head.appendChild(css);
     }
   } catch (e) {
     /* no storage: the default dark theme */

@@ -459,7 +459,7 @@ pub fn validate(id: &str, json: &str, css: Option<&str>) -> Theme {
                     ));
                 } else if let Some(why) = crate::css::single_value_problem(v) {
                     errors.push(format!("{name}: {why}"));
-                } else if let Some(why) = remote_reference(v) {
+                } else if let Some(why) = crate::css::token_resource_problem(v) {
                     errors.push(format!("{name}: {why}"));
                 } else {
                     t.tokens.insert(name.clone(), v.to_string());
@@ -782,6 +782,46 @@ mod tests {
             "{:?}",
             css.error
         );
+    }
+
+    #[test]
+    fn a_tokens_only_theme_cannot_fetch_through_var() {
+        // The re-review's probe: needs no approval, and both engines fetched the URL.
+        let t = validate(
+            "x",
+            r#"{"name":"X","base":"dark","tokens":{"--mono":"\"https://evil.example/a.png\"","--chevron":"image-set(var(--mono) 1x)"}}"#,
+            None,
+        );
+        assert!(
+            t.error.as_deref().unwrap().contains("--chevron"),
+            "{:?}",
+            t.error
+        );
+        let css = validate(
+            "x",
+            r#"{"name":"X","base":"dark"}"#,
+            Some(".a { background-image: image-set(var(--mono) 1x) }"),
+        );
+        assert!(
+            css.error.as_deref().unwrap().contains("var()"),
+            "{:?}",
+            css.error
+        );
+        // Every built-in token value is still accepted.
+        for tok in tokens() {
+            assert_eq!(
+                crate::css::token_resource_problem(&tok.dark),
+                None,
+                "{}",
+                tok.name
+            );
+            assert_eq!(
+                crate::css::token_resource_problem(&tok.light),
+                None,
+                "{}",
+                tok.name
+            );
+        }
     }
 
     #[test]

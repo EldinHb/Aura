@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyTheme, cssLayersSupported, isSingleValue, resolveTheme, setTokens, type UserTheme } from "./themes";
+import { applyTheme, bootSafeValue, cachedTheme, cssLayersSupported, isSingleValue, resolveTheme, setTokens, type UserTheme } from "./themes";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -61,6 +61,15 @@ describe("resolveTheme", () => {
   });
 });
 
+describe("bootSafeValue (cached tokens before the daemon answers)", () => {
+  it("passes plain values and whole data: URLs only", () => {
+    for (const ok of ["#fff", "var(--a)", "color-mix(in srgb, var(--fg) 8%, transparent)", "0 1px 2px rgb(0 0 0 / 0.3)", "\"Google Sans\", system-ui", "url('data:image/svg+xml;utf8,<svg x=\"1\"/>')"])
+      expect(bootSafeValue(ok), ok).toBe(true);
+    for (const bad of ["image-set(var(--mono) 1x)", "url(https://e.x/a.png)", "u\\72l(x)", "cross-fade(a, b)", "url('data:x') , url(https://e.x)", "red;display:none", "attr(x)"])
+      expect(bootSafeValue(bad), bad).toBe(false);
+  });
+});
+
 describe("setTokens", () => {
   const sheet = () => {
     const el = document.createElement("style");
@@ -108,7 +117,7 @@ describe("theme-boot.js (before the first paint)", () => {
     delete document.documentElement.dataset.userTheme;
   });
 
-  it("shows the cached user theme, its tokens and its approved CSS", () => {
+  it("shows the cached user theme's base and safe tokens, never its CSS", () => {
     localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "ocean" }));
     localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme({ css: ".a{color:red}", approval: "approved" })));
     new Function(boot)();
@@ -116,7 +125,31 @@ describe("theme-boot.js (before the first paint)", () => {
     expect(document.documentElement.dataset.userTheme).toBe("ocean");
     const rule = (document.getElementById("aura-user-theme-tokens") as HTMLStyleElement).sheet!.cssRules[0] as CSSStyleRule;
     expect(rule.style.getPropertyValue("--md-primary").trim()).toBe("#0066cc");
-    expect(document.getElementById("aura-user-theme-css")?.textContent).toBe(".a{color:red}");
+    expect(document.getElementById("aura-user-theme-css")).toBeNull();
+  });
+
+  it("does not apply a poisoned cache (the re-review's var() indirection, escapes, CSS)", () => {
+    localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "ocean" }));
+    const tokens = {
+      "--mono": '"https://evil.example/a.png"',
+      "--chevron": "image-set(var(--mono) 1x)",
+      "--inbox-icon": "u\\72l(https://evil.example/b.png)",
+      "--fg": "#eee",
+      "--orchestrator-icon": "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\"/>')",
+    };
+    localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme({ tokens, css: "body{background:url(https://evil.example/c.png)}", approval: "approved" })));
+    new Function(boot)();
+    const rule = (document.getElementById("aura-user-theme-tokens") as HTMLStyleElement).sheet!.cssRules[0] as CSSStyleRule;
+    expect(rule.style.getPropertyValue("--chevron")).toBe("");
+    expect(rule.style.getPropertyValue("--inbox-icon")).toBe("");
+    expect(rule.style.getPropertyValue("--fg").trim()).toBe("#eee");
+    expect(rule.style.getPropertyValue("--orchestrator-icon")).toContain("data:image/svg+xml");
+    expect(document.getElementById("aura-user-theme-css")).toBeNull();
+    // The app's own early path (before the daemon's list) applies the same rule.
+    const cached = cachedTheme()!;
+    // A bare string loads nothing; the image-set() that would use it is what is dropped.
+    expect(Object.keys(cached.tokens).sort()).toEqual(["--fg", "--mono", "--orchestrator-icon"]);
+    expect(cached.css).toBeUndefined();
   });
 
   it("uses a built-in theme as is, and dark when the cache is for another theme", () => {
@@ -127,16 +160,6 @@ describe("theme-boot.js (before the first paint)", () => {
     localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme()));
     new Function(boot)();
     expect(document.documentElement.dataset.theme).toBe("dark");
-  });
-
-  it("applies only the tokens where cascade layers are missing", () => {
-    delete g.CSSLayerBlockRule;
-    localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: "ocean" }));
-    localStorage.setItem("aura.theme.cache.v1", JSON.stringify(theme({ css: ".a{}", approval: "approved" })));
-    new Function(boot)();
-    expect(document.documentElement.dataset.userTheme).toBe("ocean");
-    expect(document.getElementById("aura-user-theme-tokens")).not.toBeNull();
-    expect(document.getElementById("aura-user-theme-css")).toBeNull();
   });
 
   it("never applies CSS that waits for approval", () => {

@@ -348,8 +348,29 @@ pub fn tokenize(css: &str) -> Vec<Tok> {
     out
 }
 
-/// Functions whose string arguments are URLs (vendor prefixes stripped).
-const URL_FUNCTIONS: &[&str] = &["url", "src", "image", "image-set", "cross-fade"];
+/// Functions that take a URL or make an image (vendor prefixes stripped).
+/// Their arguments may load something, so only literal `data:` URLs are allowed in them.
+const URL_FUNCTIONS: &[&str] = &["url", "src", "image", "image-set", "cross-fade", "element"];
+
+/// Generic font families, and so the families Aura's approval prompts use: a
+/// theme's `@font-face` may not take any of these names.
+const GENERIC_FAMILIES: &[&str] = &[
+    "serif",
+    "sans-serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui",
+    "ui-serif",
+    "ui-sans-serif",
+    "ui-monospace",
+    "ui-rounded",
+    "emoji",
+    "math",
+    "fangsong",
+    "-apple-system",
+    "blinkmacsystemfont",
+];
 
 fn unprefixed(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
@@ -359,6 +380,10 @@ fn unprefixed(name: &str) -> String {
         }
     }
     lower
+}
+
+fn is_url_function(name: &str) -> bool {
+    URL_FUNCTIONS.contains(&unprefixed(name).as_str())
 }
 
 fn is_data_url(v: &str) -> bool {
@@ -374,37 +399,139 @@ fn short(v: &str) -> String {
     }
 }
 
-/// Why `css` would load something from outside, or use a construct a theme
-/// may not use. Only `data:` URLs are allowed; `@import` and `@layer` never.
+const NOT_LOADED: &str =
+    "only literal data: URLs are; Aura does not load files from the web or disk for a theme";
+
+/// Why `css` (a theme's CSS file) would load something from outside, or use
+/// a construct a theme may not use:
+/// - `url()` and the strings in `src()`, `image()`, `image-set()`,
+///   `cross-fade()` and `element()` (and vendor variants) must be literal
+///   `data:` URLs, and nothing inside those functions may be another
+///   function such as `var()` (whose value could be any URL);
+/// - no `@import` and no `@layer`;
+/// - no `local()` fonts, and no `@font-face` that takes a generic family
+///   name (the families Aura's approval prompts are drawn in).
 pub fn resource_problem(css: &str) -> Option<String> {
     let toks = tokenize(css);
     // The function each nesting level is inside (None for plain parentheses and blocks).
     let mut stack: Vec<Option<String>> = vec![];
-    for t in &toks {
+    // Depth of the open @font-face block, if inside one.
+    let mut font_face: Option<usize> = None;
+    let mut pending_font_face = false;
+    let mut i = 0;
+    while i < toks.len() {
+        let t = &toks[i];
+        let in_url_fn = stack.iter().flatten().find(|f| is_url_function(f)).cloned();
         match t {
             Tok::AtKeyword(name) => match name.to_ascii_lowercase().as_str() {
                 "import" => return Some("@import is not allowed; put everything in the theme's own files".into()),
                 "layer" => return Some("@layer is not allowed in a theme; Aura uses cascade layers to protect its approval prompts".into()),
+                "font-face" => pending_font_face = true,
                 _ => {}
             },
-            Tok::Url(v) if !is_data_url(v) => {
-                return Some(format!(
-                    "url({}) is not allowed: only data: URLs are; Aura does not load files from the web or disk for a theme",
-                    short(v)
-                ))
-            }
+            Tok::Url(v) if !is_data_url(v) => return Some(format!("url({}) is not allowed: {NOT_LOADED}", short(v))),
             Tok::BadUrl => return Some("a url(…) that does not parse is not allowed".into()),
-            Tok::Str(v) if stack.last().and_then(|f| f.as_deref()).is_some_and(|f| URL_FUNCTIONS.contains(&f)) && !is_data_url(v) => {
-                let f = stack.last().cloned().flatten().unwrap_or_default();
-                return Some(format!(
-                    "{f}(\"{}\") is not allowed: only data: URLs are; Aura does not load files from the web or disk for a theme",
-                    short(v)
-                ));
+            Tok::Str(v) if in_url_fn.is_some() && !is_data_url(v) => {
+                return Some(format!("{}(\"{}\") is not allowed: {NOT_LOADED}", in_url_fn.unwrap_or_default(), short(v)));
             }
-            Tok::Function(name) => stack.push(Some(unprefixed(name))),
+            Tok::Function(name) => {
+                let f = unprefixed(name);
+                if f == "local" {
+                    return Some("local() fonts are not allowed in a theme; embed the font as a data: URL".into());
+                }
+                if f == "element" {
+                    return Some("element() is not allowed in a theme: it paints another part of the page".into());
+                }
+                if let Some(outer) = &in_url_fn {
+                    if !is_url_function(&f) {
+                        return Some(format!("{f}() inside {outer}() is not allowed: {NOT_LOADED}"));
+                    }
+                }
+                stack.push(Some(f));
+            }
+            Tok::LBrace => {
+                if pending_font_face {
+                    font_face = Some(stack.len());
+                    pending_font_face = false;
+                }
+                stack.push(None);
+            }
+            Tok::LParen | Tok::LBracket => stack.push(None),
+            Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                stack.pop();
+                if matches!(t, Tok::RBrace) && font_face == Some(stack.len()) {
+                    font_face = None;
+                }
+            }
+            Tok::Ident(prop) if font_face.is_some() && prop.eq_ignore_ascii_case("font-family") => {
+                // font-family: <name> ;
+                let mut words: Vec<String> = vec![];
+                let mut j = i + 1;
+                while j < toks.len() && matches!(toks[j], Tok::Whitespace | Tok::Colon) {
+                    j += 1;
+                }
+                while j < toks.len() && !matches!(toks[j], Tok::Semicolon | Tok::RBrace) {
+                    match &toks[j] {
+                        Tok::Str(s) => words.push(s.clone()),
+                        Tok::Ident(s) => words.push(s.clone()),
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                let family = words.join(" ").trim().to_ascii_lowercase();
+                if GENERIC_FAMILIES.contains(&family.as_str()) {
+                    return Some(format!(
+                        "@font-face may not name the font family {family:?}: it is a generic family, which Aura's approval prompts use"
+                    ));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Why a token value (which needs no approval) could load something: on top
+/// of [`resource_problem`], a URL-bearing or image function in a token is
+/// allowed only when every argument is a literal `data:` URL (with image-set
+/// resolutions and commas), never `var()` or any other function.
+pub fn token_resource_problem(value: &str) -> Option<String> {
+    if let Some(p) = resource_problem(value) {
+        return Some(p);
+    }
+    let toks = tokenize(value);
+    let mut stack: Vec<Option<String>> = vec![];
+    for t in &toks {
+        let in_url_fn = stack.iter().flatten().find(|f| is_url_function(f)).cloned();
+        match t {
+            Tok::Function(name) => {
+                let f = unprefixed(name);
+                if let Some(outer) = &in_url_fn {
+                    if !(f == "url" || f == "src") {
+                        return Some(format!(
+                            "{f}() inside {outer}() is not allowed in a token: {NOT_LOADED}"
+                        ));
+                    }
+                }
+                stack.push(Some(f));
+            }
             Tok::LParen | Tok::LBracket | Tok::LBrace => stack.push(None),
             Tok::RParen | Tok::RBracket | Tok::RBrace => {
                 stack.pop();
+            }
+            Tok::Url(_) | Tok::Whitespace | Tok::Comma | Tok::Dimension | Tok::Number => {}
+            Tok::Str(v) if is_data_url(v) => {}
+            other if in_url_fn.is_some() => {
+                return Some(format!(
+                    "{}() in a token may hold only literal data: URLs, not {}",
+                    in_url_fn.unwrap_or_default(),
+                    match other {
+                        Tok::Ident(i) => format!("{i:?}"),
+                        Tok::Str(s) => format!("\"{}\"", short(s)),
+                        _ => "that".to_string(),
+                    }
+                ));
             }
             _ => {}
         }
@@ -620,6 +747,14 @@ mod tests {
             r#"body { background: src("https://evil.example/x.png") }"#,
             r#"body { background: image("x.png") }"#,
             r"@layer aura-protected { dialog { display: none !important } }",
+            // The re-review: var() indirection inside image functions, local() fonts, generic families.
+            r"body { background-image: image-set(var(--mono) 1x) }",
+            r"body { background-image: -webkit-image-set(var(--x) 1x) }",
+            r"body { background-image: cross-fade(var(--a), var(--b)) }",
+            r"body { background-image: element(#x) }",
+            r#"@font-face { font-family: x; src: local("Arial") }"#,
+            r#"@font-face { font-family: system-ui; src: url("data:font/woff2;base64,AA") }"#,
+            r#"@font-face { font-family: "Sans-Serif"; src: url("data:font/woff2;base64,AA") }"#,
         ] {
             assert!(resource_problem(css).is_some(), "not caught: {css}");
         }
@@ -630,13 +765,48 @@ mod tests {
         for css in [
             r#"body { background: url(data:image/png;base64,AAAA) }"#,
             r#"body { background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'/>") }"#,
-            r#"@font-face { font-family: x; src: url("data:font/woff2;base64,AAAA") format("woff2"), local("Arial") }"#,
+            r#"@font-face { font-family: x; src: url("data:font/woff2;base64,AAAA") format("woff2") }"#,
             r#".a::before { content: "see https://example.com" } /* https://example.com */"#,
             r#"@media (prefers-color-scheme: dark) { .a { color: red } }"#,
             r#"body { background: image-set("data:image/png;base64,AA" 1x) }"#,
         ] {
             assert_eq!(resource_problem(css), None, "{css}");
         }
+    }
+
+    #[test]
+    fn tokens_cannot_reach_a_url_through_var() {
+        // The re-review's case: a string token, used by another token's image-set().
+        assert!(token_resource_problem("image-set(var(--mono) 1x)").is_some());
+        assert!(token_resource_problem(r"image-\73 et(var(--mono) 1x)").is_some());
+        assert!(token_resource_problem("-webkit-image-set(var(--mono) 1x)").is_some());
+        assert!(
+            token_resource_problem("cross-fade(var(--a), url(data:image/png;base64,AA))").is_some()
+        );
+        assert!(token_resource_problem("image(var(--a))").is_some());
+        assert!(token_resource_problem("element(#x)").is_some());
+        assert!(token_resource_problem("image-set(\"https://evil.example/a.png\" 1x)").is_some());
+        assert!(token_resource_problem("image-set(attr(x) 1x)").is_some());
+        // Literal data: URLs stay allowed, as do plain values.
+        assert_eq!(
+            token_resource_problem("url('data:image/svg+xml;utf8,<svg/>')"),
+            None
+        );
+        assert_eq!(
+            token_resource_problem(
+                "image-set(url(data:image/png;base64,AA) 1x, \"data:image/png;base64,BB\" 2x)"
+            ),
+            None
+        );
+        assert_eq!(
+            token_resource_problem("\"https://evil.example/a.png\""),
+            None,
+            "a bare string loads nothing by itself"
+        );
+        assert_eq!(
+            token_resource_problem("color-mix(in srgb, var(--fg) 8%, transparent)"),
+            None
+        );
     }
 
     #[test]

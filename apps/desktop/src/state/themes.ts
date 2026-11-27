@@ -45,11 +45,35 @@ export const useThemes = create<{ loaded: boolean; dir: string | null; themes: U
 
 const CACHE_KEY = "aura.theme.cache.v1";
 
-/** The last user theme applied, so the next start shows it before the daemon answers. */
-function cachedTheme(): UserTheme | null {
+/** Functions a cached token may use before the daemon has validated the theme again. */
+const SAFE_FUNCTIONS = new Set(["rgb", "rgba", "hsl", "hsla", "hwb", "lab", "lch", "oklab", "oklch", "color", "color-mix", "var", "calc", "min", "max", "clamp"]);
+const DATA_URL = /^url\(\s*(?:'data:[^'\\]*'|"data:[^"\\]*")\s*\)$/i;
+
+/**
+ * Whether a cached token value is safe to show before the daemon's validated
+ * list arrives. localStorage is not the daemon: anything that wrote it could
+ * have put a URL there. So only plain values pass: no escapes, functions from
+ * a short list, and url() only as a whole quoted data: URL. Anything else
+ * waits for the daemon. public/theme-boot.js applies the same rule.
+ */
+export function bootSafeValue(v: string): boolean {
+  if (typeof v !== "string" || v.includes("\\") || !isSingleValue(v)) return false;
+  if (DATA_URL.test(v.trim())) return true;
+  for (const m of v.matchAll(/([a-zA-Z_-][\w-]*)\s*\(/g)) if (!SAFE_FUNCTIONS.has(m[1].toLowerCase())) return false;
+  return true;
+}
+
+/**
+ * The last user theme applied, so the next start shows it before the daemon
+ * answers: its base and its plainly safe tokens, never its CSS (the daemon
+ * hands that out again once connected).
+ */
+export function cachedTheme(): UserTheme | null {
   try {
     const t = JSON.parse(localStorage.getItem(CACHE_KEY) ?? "null") as UserTheme | null;
-    return t && typeof t.id === "string" && (t.base === "dark" || t.base === "light") ? t : null;
+    if (!t || typeof t.id !== "string" || (t.base !== "dark" && t.base !== "light")) return null;
+    const tokens = Object.fromEntries(Object.entries(t.tokens ?? {}).filter(([k, v]) => SAFE_NAME.test(k) && bootSafeValue(v)));
+    return { ...t, tokens, css: undefined, approval: undefined };
   } catch {
     return null;
   }
