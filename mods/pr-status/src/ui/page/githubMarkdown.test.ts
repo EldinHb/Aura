@@ -44,4 +44,12 @@ describe("githubMarkdown", () => {
     const code = "Use `<br>` here:\n\n```html\n<img src=x onerror=alert(1)>\n<!-- kept -->\n```\nthen <b>done</b>";
     expect(githubMarkdown(code)).toBe("Use `<br>` here:\n\n```html\n<img src=x onerror=alert(1)>\n<!-- kept -->\n```\nthen **done**");
   });
+
+  it("keeps alt and link text from ending the destination (review item 5)", () => {
+    expect(githubMarkdown('<img alt="x\\" src="https://ok.example/a.png">')).toBe("![x\\\\](https://ok.example/a.png)");
+    expect(githubMarkdown('<img alt="](data:image/png;base64,AAAA)" src="https://ok.example/a.png">')).toBe("![\\]\\(data:image/png;base64,AAAA\\)](https://ok.example/a.png)");
+    // A destination with a backslash, a bracket or a backtick is not taken.
+    expect(githubMarkdown('<img src="https://ok.example/a\\.png">')).toBe("");
+    expect(githubMarkdown('<a href="https://ok.example/x)y">t</a>')).toBe("t");
+  });
 });

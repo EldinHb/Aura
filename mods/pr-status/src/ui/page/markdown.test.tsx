@@ -89,4 +89,29 @@ describe("PR text through Aura's markdown renderer", () => {
     expect(box.textContent).toContain("Line one");
     expect(box.querySelector("br")).not.toBeNull();
   });
+
+  it("gives images and links only the destinations written, whatever their alt or text (review item 5)", async () => {
+    const { toStatus } = await import("../../daemon/status");
+    const { prNode } = await import("../../test/fixtures");
+    const status = toStatus({ url: "https://github.com/acme/api/pull/7", repo: "acme/api", number: 7 }, prNode({ number: 7 }));
+    const body = [
+      '<img alt="x\\" src="https://ok.example/a.png">',
+      '<img alt="](data:image/png;base64,AAAA)" src="https://ok.example/b.png">',
+      '<img alt="a\\](javascript:alert(1))" src="https://ok.example/c.png">',
+      '<a href="https://ok.example/d">x\\](data:text/html,hi)</a>',
+    ].join("\n\n");
+    const page = {
+      repo: "acme/api", number: 7, url: "https://github.com/acme/api/pull/7", title: "T", author: "sam", createdAt: "2026-11-27T08:00:00Z", body,
+      base: "main", head: "x", headRepo: "acme/api", baseSha: "0".repeat(40), headSha: status.merge.headSha, commitCount: 1, changedFiles: 1, additions: 1, deletions: 0,
+      assignees: [], labels: [], milestone: null, timeline: [], commits: [], checks: [], commentCount: 0, status, complete: true,
+      readAt: new Date().toISOString(), nextMs: 60_000,
+    };
+    setCtx({ rpc: async (name: string) => (name === "page.get" ? page : null), toast: () => {}, storage: { get: () => undefined, set: () => {}, delete: () => {} } } as unknown as UiApi);
+    render(<PrPageView props={{ key: page.url, title: "#7 T", repo: "acme/api", number: 7, url: page.url }} close={() => {}} active />);
+    await act(async () => {});
+    const box = screen.getByRole("article", { name: "sam commented" }).querySelector(".prs-box-body")!;
+    expect([...box.querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual(["https://ok.example/a.png", "https://ok.example/b.png", "https://ok.example/c.png"]);
+    expect([...box.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["https://ok.example/d"]);
+    expect([...box.querySelectorAll("img")].map((i) => i.getAttribute("alt"))).toEqual(["x\\", "](data:image/png;base64,AAAA)", "a\\](javascript:alert(1))"]);
+  });
 });

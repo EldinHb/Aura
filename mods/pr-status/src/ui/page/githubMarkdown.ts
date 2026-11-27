@@ -3,7 +3,8 @@
 // users write is turned into markdown, and every other tag is dropped, keeping its text. Code
 // (fenced blocks and inline code spans) is left exactly as written.
 
-const https = (url: string | undefined) => (url && /^https:\/\/[^\s"'<>()]+$/i.test(url) ? url : null);
+/** An https URL that can stand as a markdown destination as it is (no space, quote, bracket or backslash), else null. */
+const https = (url: string | undefined) => (url && /^https:\/\/[^\s"'<>()\[\]\\`]+$/i.test(url) ? url : null);
 
 /** The attributes of a tag's source, by lower-case name. */
 function attributes(tag: string): Record<string, string> {
@@ -12,7 +13,8 @@ function attributes(tag: string): Record<string, string> {
   return out;
 }
 
-const escapeText = (text: string) => text.replace(/([\[\]])/g, "\\$1");
+/** Text for an image's alt or a link's text: every backslash and markdown delimiter escaped, so it stays text. */
+const escapeText = (text: string) => text.replace(/[\\`*_{}\[\]()#+\-.!<>|~"]/g, "\\$&");
 
 /** One stretch of text outside code: its HTML as markdown, no tags left. */
 function convert(text: string): string {
