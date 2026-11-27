@@ -82,7 +82,8 @@ a.prs-check-name:hover { text-decoration: underline; }
 .prs-done-toggle { padding: 6px 4px; color: var(--fg-muted); font-size: var(--fs-label-m); font-weight: 500; }
 .prs-done-toggle:hover { background: var(--hover-layer); }
 .prs-done-list { list-style: none; min-width: 0; margin: 2px 0 0; padding: 0; }
-.prs-done-row { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px; border-radius: var(--shape-sm); font-size: var(--fs-label-m); color: var(--fg); text-decoration: none; }
+.prs-done-item { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.prs-done-row { flex: 1 1 auto; display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px; border: 0; border-radius: var(--shape-sm); background: none; font: inherit; font-size: var(--fs-label-m); color: var(--fg); text-align: left; cursor: pointer; }
 .prs-done-row:hover { background: var(--hover-layer); }
 .prs-done-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prs-number { flex: none; font-size: var(--fs-label-s); }

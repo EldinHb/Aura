@@ -222,7 +222,7 @@ function ReviewerGroup({ title, people }: { title: string; people: Reviewer[] })
   );
 }
 
-/** Merged and closed PRs: folded by default (remembered), one line each, linking to GitHub. */
+/** Merged and closed PRs: folded by default (remembered), one line each, opening the PR's page (↗: GitHub). */
 function DoneGroup({ pulls }: { pulls: PrEntry[] }) {
   const [open, setOpen] = useState(() => getCtx()?.storage.get<boolean>(DONE_OPEN_KEY) === true);
   const listId = useId();
@@ -241,12 +241,14 @@ function DoneGroup({ pulls }: { pulls: PrEntry[] }) {
           {pulls.map((e) => {
             const title = e.status?.title || `${e.ref.repo}#${e.ref.number}`;
             return (
-              <li key={e.ref.url}>
-                <ExternalLink href={e.ref.url} className="prs-done-row" title={`${e.ref.repo}#${e.ref.number}\n${title}`}>
+              <li key={e.ref.url} className="prs-done-item">
+                <button className="prs-done-row" title={`Open #${e.ref.number} in a tab\n${title}`}
+                  onClick={() => openPrPage({ repo: e.ref.repo, number: e.ref.number, url: e.ref.url, title })}>
                   {e.status && <StateChip state={e.status.state} />}
                   <span className="prs-done-title">{title}</span>
                   <span className="prs-muted prs-number">#{e.ref.number}</span>
-                </ExternalLink>
+                </button>
+                <ExternalLink href={e.ref.url} className="prs-github" aria-label={`Open #${e.ref.number} on GitHub`} title="Open on GitHub">↗</ExternalLink>
               </li>
             );
           })}

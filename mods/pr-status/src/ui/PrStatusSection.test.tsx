@@ -161,7 +161,7 @@ describe("PrStatusSection", () => {
   });
 
   it("folds merged and closed PRs into one remembered group of one-line links", async () => {
-    fakeCtx({ sessionId: "lead", pulls: [done("merged", 1, "Ship it"), done("closed", 2), entry({ number: 3 })], blocked: null });
+    const { openView } = fakeCtx({ sessionId: "lead", pulls: [done("merged", 1, "Ship it"), done("closed", 2), entry({ number: 3 })], blocked: null });
     const { unmount } = render(<PrStatusSection session={lead} />);
     expect(await screen.findAllByRole("article")).toHaveLength(1);
     const toggle = screen.getByRole("button", { name: "Merged & closed (2)" });
@@ -169,9 +169,12 @@ describe("PrStatusSection", () => {
     expect(screen.queryByRole("list", { name: "Merged and closed pull requests" })).toBeNull();
     fireEvent.click(toggle);
     const list = screen.getByRole("list", { name: "Merged and closed pull requests" });
-    const row = within(list).getByRole("link", { name: /Ship it/ });
-    expect(row.getAttribute("href")).toBe("https://github.com/acme/api/pull/1");
+    const row = within(list).getByRole("button", { name: /Ship it/ });
     expect(row.textContent).toBe("MergedShip it#1");
+    expect(within(list).getByRole("link", { name: "Open #1 on GitHub" }).getAttribute("href")).toBe("https://github.com/acme/api/pull/1");
+    // Like an open PR's title, the row opens the PR's page in a tab (QA).
+    fireEvent.click(row);
+    expect(openView).toHaveBeenCalledWith("pr", { key: "https://github.com/acme/api/pull/1", title: "#1 Ship it", repo: "acme/api", number: 1, url: "https://github.com/acme/api/pull/1" }, { preview: false });
     expect(within(list).queryByRole("group")).toBeNull();
     expect(stored.get(DONE_OPEN_KEY)).toBe(true);
     unmount();
