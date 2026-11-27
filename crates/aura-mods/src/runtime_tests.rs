@@ -15,9 +15,13 @@ struct Fake {
 impl Ops for Fake {
     fn sync_op(&self, op: &str, args: Value) -> OpResult {
         match op {
-            "info" => Ok(json!({"id":"t","version":"1.0.0","dataDir":"/tmp/t","platform":"linux","settings":{"x":1}})),
+            "info" => Ok(
+                json!({"id":"t","version":"1.0.0","dataDir":"/tmp/t","platform":"linux","settings":{"x":1}}),
+            ),
             "log" => {
-                self.logs.lock().push(args["message"].as_str().unwrap_or("").to_string());
+                self.logs
+                    .lock()
+                    .push(args["message"].as_str().unwrap_or("").to_string());
                 Ok(Value::Null)
             }
             "emit" => {
@@ -34,7 +38,8 @@ impl Ops for Fake {
         Box::pin(async move {
             match op.as_str() {
                 "sleep" => {
-                    tokio::time::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(0))).await;
+                    tokio::time::sleep(Duration::from_millis(args["ms"].as_u64().unwrap_or(0)))
+                        .await;
                     Ok(Value::Null)
                 }
                 "kv.get" => Ok(json!({"echo": args})),
@@ -51,7 +56,13 @@ impl Ops for Fake {
 
 async fn start(src: &str) -> (Arc<Fake>, Result<ModRuntime, ModError>) {
     let fake = Arc::new(Fake::default());
-    let r = ModRuntime::start("t", src.to_string(), fake.clone(), tokio::runtime::Handle::current()).await;
+    let r = ModRuntime::start(
+        "t",
+        src.to_string(),
+        fake.clone(),
+        tokio::runtime::Handle::current(),
+    )
+    .await;
     (fake, r)
 }
 
@@ -77,14 +88,24 @@ async fn activates_and_answers_calls() {
     )
     .await;
     let rt = rt.expect("activates");
-    assert_eq!(rt.call("add", json!({"a": 2, "b": 3}), json!({"kind":"user"})).await.unwrap(), json!(5));
-    assert_eq!(rt.call("later", json!(null), json!({})).await.unwrap(), json!("done"));
+    assert_eq!(
+        rt.call("add", json!({"a": 2, "b": 3}), json!({"kind":"user"}))
+            .await
+            .unwrap(),
+        json!(5)
+    );
+    assert_eq!(
+        rt.call("later", json!(null), json!({})).await.unwrap(),
+        json!("done")
+    );
     assert_eq!(
         rt.call("kv", json!({"key": "a"}), json!({})).await.unwrap(),
         json!({"echo": {"key": "a"}})
     );
     assert_eq!(
-        rt.call("caller", json!(null), json!({"kind":"mod","id":"x"})).await.unwrap(),
+        rt.call("caller", json!(null), json!({"kind":"mod","id":"x"}))
+            .await
+            .unwrap(),
         json!({"kind":"mod","id":"x"})
     );
     let err = rt.call("boom", json!(null), json!({})).await.unwrap_err();
@@ -97,14 +118,32 @@ async fn activates_and_answers_calls() {
     );
     assert_eq!(
         rt.call("web", json!(null), json!({})).await.unwrap(),
-        json!(["aGk=", "hi", "1", "é", "00000000-0000-4000-8000-000000000000"])
+        json!([
+            "aGk=",
+            "hi",
+            "1",
+            "é",
+            "00000000-0000-4000-8000-000000000000"
+        ])
     );
-    assert_eq!(rt.call("nope", json!(null), json!({})).await.unwrap_err().code, "not_found");
+    assert_eq!(
+        rt.call("nope", json!(null), json!({}))
+            .await
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
     assert!(fake.logs.lock().iter().any(|l| l == "hello t 1"));
-    assert_eq!(fake.emitted.lock()[0], json!({"name":"ready","payload":{"ok":true}}));
+    assert_eq!(
+        fake.emitted.lock()[0],
+        json!({"name":"ready","payload":{"ok":true}})
+    );
     rt.stop().await;
     assert_eq!(
-        rt.call("add", json!({"a": 1, "b": 1}), json!({})).await.unwrap_err().code,
+        rt.call("add", json!({"a": 1, "b": 1}), json!({}))
+            .await
+            .unwrap_err()
+            .code,
         "unavailable"
     );
 }
@@ -115,7 +154,10 @@ async fn a_failing_activate_is_reported() {
     let err = rt.err().expect("fails");
     assert!(err.message.contains("nope"), "{}", err.message);
 
-    let (_, rt) = start("export default async function () { await Promise.resolve(); throw new Error('later'); }").await;
+    let (_, rt) = start(
+        "export default async function () { await Promise.resolve(); throw new Error('later'); }",
+    )
+    .await;
     assert!(rt.err().unwrap().message.contains("later"));
 
     let (_, rt) = start("this is not javascript").await;
@@ -168,9 +210,12 @@ async fn a_busy_loop_is_interrupted() {
     tokio::spawn(async move { spinning.call("spin", json!(null), json!({})).await });
     tokio::time::sleep(Duration::from_millis(100)).await;
     // Queued behind the loop, this one is answered once the interrupt ends it.
-    let ok = tokio::time::timeout(Duration::from_secs(20), rt.call("ok", json!(null), json!({})))
-        .await
-        .expect("the interrupt ends the loop");
+    let ok = tokio::time::timeout(
+        Duration::from_secs(20),
+        rt.call("ok", json!(null), json!({})),
+    )
+    .await
+    .expect("the interrupt ends the loop");
     assert_eq!(ok.unwrap(), json!(1));
     assert!(started.elapsed() >= crate::runtime::BUSY_LIMIT);
 }

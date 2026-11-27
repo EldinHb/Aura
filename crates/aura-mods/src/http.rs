@@ -79,12 +79,18 @@ impl Http {
     }
 
     pub async fn fetch(&self, mod_id: &str, a: FetchArgs) -> Result<Value, ModError> {
-        let method = a.method.clone().unwrap_or_else(|| "GET".into()).to_uppercase();
+        let method = a
+            .method
+            .clone()
+            .unwrap_or_else(|| "GET".into())
+            .to_uppercase();
         let method = reqwest::Method::from_bytes(method.as_bytes())
             .map_err(|_| ModError::invalid(format!("bad HTTP method {method}")))?;
         let cacheable = a.cache.as_deref() == Some("etag") && method == reqwest::Method::GET;
         let key = cacheable.then(|| Self::cache_key(mod_id, &a));
-        let cached = key.as_ref().and_then(|k| self.cache.lock().0.get(k).cloned());
+        let cached = key
+            .as_ref()
+            .and_then(|k| self.cache.lock().0.get(k).cloned());
 
         let mut req = self
             .client()?
@@ -128,7 +134,9 @@ impl Http {
                         merged.insert(k.clone(), v.clone());
                     }
                 }
-                return Ok(json!({"status": c.status, "ok": true, "headers": merged, "text": c.text, "cached": true}));
+                return Ok(
+                    json!({"status": c.status, "ok": true, "headers": merged, "text": c.text, "cached": true}),
+                );
             }
         }
         let bytes = resp
@@ -174,7 +182,8 @@ impl Http {
 
 /// The host of `url`, for the permission check. Only http(s) is allowed.
 pub fn host_of(url: &str) -> Result<String, ModError> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| ModError::invalid(format!("bad URL {url}: {e}")))?;
+    let parsed =
+        reqwest::Url::parse(url).map_err(|e| ModError::invalid(format!("bad URL {url}: {e}")))?;
     if !matches!(parsed.scheme(), "https" | "http") {
         return Err(ModError::invalid(format!("{url}: only http(s) is allowed")));
     }

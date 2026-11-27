@@ -145,7 +145,10 @@ impl Manifest {
 
     pub fn validate(&self, dir: &Path) -> Result<()> {
         if !valid_id(&self.id) {
-            bail!("mod id {:?} must be lowercase letters, digits and dashes", self.id);
+            bail!(
+                "mod id {:?} must be lowercase letters, digits and dashes",
+                self.id
+            );
         }
         if self.api_version != API_VERSION {
             bail!(
@@ -160,10 +163,18 @@ impl Manifest {
             if !valid_id(dep) {
                 bail!("{}: dependency {dep:?} is not a mod id", self.id);
             }
-            semver::VersionReq::parse(req)
-                .with_context(|| format!("{}: dependency {dep} {req:?} is not a semver range", self.id))?;
+            semver::VersionReq::parse(req).with_context(|| {
+                format!(
+                    "{}: dependency {dep} {req:?} is not a semver range",
+                    self.id
+                )
+            })?;
         }
-        for (what, entry) in [("daemon", &self.daemon), ("ui", &self.ui), ("styles", &self.styles)] {
+        for (what, entry) in [
+            ("daemon", &self.daemon),
+            ("ui", &self.ui),
+            ("styles", &self.styles),
+        ] {
             if let Some(rel) = entry {
                 let p = entry_path(dir, rel)?;
                 if !p.is_file() {
@@ -178,7 +189,10 @@ impl Manifest {
     }
 
     /// The setting values with defaults filled in.
-    pub fn settings_with(&self, stored: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    pub fn settings_with(
+        &self,
+        stored: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         for s in &self.settings {
             let v = stored

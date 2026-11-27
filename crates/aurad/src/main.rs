@@ -320,7 +320,9 @@ async fn git_methods(method: &str, params: Value) -> Result<Option<Value>> {
     let res = tokio::task::spawn_blocking(move || -> Result<Option<Value>> {
         Ok(match m.as_str() {
             "git.repo_root" => Some(json!(ops::repo_root(&cwd)?)),
-            "git.remotes" => Some(json!(aura_mods::ops::remotes(&cwd).map_err(|e| anyhow::anyhow!(e))?)),
+            "git.remotes" => Some(json!(
+                aura_mods::ops::remotes(&cwd).map_err(|e| anyhow::anyhow!(e))?
+            )),
             "git.status" => Some(serde_json::to_value(ops::status(&cwd)?)?),
             "git.diff" => {
                 let opts = ops::DiffOpts {
