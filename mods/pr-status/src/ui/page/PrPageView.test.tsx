@@ -46,6 +46,7 @@ function fakeCtx(answer: (name: string, p: any) => unknown = () => undefined) {
     if (name === "page.get") return page();
     if (name === "page.files") return files;
     if (name === "page.notified") return null;
+    if (name === "pulls.sessions") return ["s1"];
     return null;
   });
   const call = vi.fn(async () => ["s1"]);

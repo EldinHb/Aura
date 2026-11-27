@@ -1,5 +1,6 @@
-// The pr-status mod's daemon half: finds the PRs of a session tree and keeps the ones on
-// screen up to date, through the github mod's shared transport. Its one write is "Squash and
+// The pr-status mod's daemon half: finds the PRs of a session tree by itself (PR URLs in the
+// conversations, the user's links, the PR of each session's branch) and keeps the ones on screen
+// up to date, through the GitHub CLI (`gh`, run with aura.process). Its one write is "Squash and
 // merge" (`merge`), asked for by the user.
 //
 // RPC (`mod.pr-status.*`), each answering a SessionView:
@@ -16,12 +17,17 @@
 //   page.get   {repo, number}              → PrPage: the PR page's conversation, commits, checks and status
 //   page.files {repo, number}              → PageFile[]: changed files with their patches
 //   page.notified {repo, number}           → the PR's latest notification time, or null
+//   links.add    {sessionId, url}          → the PR's URL: linked to the session
+//   links.remove {sessionId, url}          → true: unlinked, and hidden however it is found
+//   pulls.sessions {url}                   → ids of the sessions working on the PR
 // Notification `changed {sessionIds}`: ask `view` again for those sessions.
 import { defineDaemon, type DaemonApi } from "@aura/mod-sdk/daemon";
-import { errorData, messageOf, remoteGithub, type Github } from "@aura/github-client";
+import { errorData, messageOf, type Github } from "@aura/github-client";
+import { GhCli } from "./daemon/ghcli";
 import { Merger, mergeError, mergeRequest, readMergeDefaults } from "./daemon/merge";
 import { readFiles, readPage } from "./daemon/page";
 import { PrPoller } from "./daemon/poller";
+import { itemText, Sources } from "./daemon/sources";
 
 function number(params: any): number {
   const n = params?.number;
@@ -36,9 +42,12 @@ function text(params: any, key: string): string {
 }
 
 export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => number; loop?: boolean } = {}) {
-  const github = (name: string, params?: unknown) => aura.mods.call<any>("github", name, params);
-  const gh = opts.gh ?? remoteGithub(github);
-  const poller = new PrPoller({ aura, gh, github, now: opts.now });
+  const gh = opts.gh ?? new GhCli(aura, { now: opts.now });
+  const sources = new Sources(aura);
+  const poller = new PrPoller({ aura, gh, sources, now: opts.now });
+  const changed = (detected: boolean) => {
+    if (detected) poller.invalidate();
+  };
   const merger = new Merger(gh);
 
   const off = [
@@ -72,12 +81,27 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
     aura.rpc.handle("merge", (p) => {
       return merger.merge(mergeRequest(p));
     }),
-    // A new worker, a finished turn (it may have pushed or opened a PR) or changed links
-    // can change which PRs a tree has.
+    // PRs of a session and its links.
+    aura.rpc.handle("links.add", async (p) => {
+      const url = await sources.link(text(p, "sessionId"), text(p, "url"));
+      poller.invalidate();
+      return url;
+    }),
+    aura.rpc.handle("links.remove", async (p) => {
+      await sources.unlink(text(p, "sessionId"), text(p, "url"));
+      poller.invalidate();
+      return true;
+    }),
+    aura.rpc.handle("pulls.sessions", (p) => poller.sessionsOf(text(p, "url"))),
+    // PR URLs said in a conversation (an agent's message, a command's output) are the session's.
+    aura.events.on("item_completed", (e) => void sources.detect(e.session_id, itemText(e.item)).then(changed, () => {})),
+    // A new worker, or a finished turn (it may have pushed or opened a PR), can change a tree's PRs.
     aura.events.on("session_created", () => poller.invalidate()),
-    aura.events.on("session_removed", (e) => poller.forgetSession(e.session_id)),
     aura.events.on("turn_completed", () => poller.invalidate()),
-    aura.mods.on("github", "links.changed", () => poller.invalidate()),
+    aura.events.on("session_removed", (e) => {
+      poller.forgetSession(e.session_id);
+      void sources.forget(e.session_id);
+    }),
   ];
   if (opts.loop !== false) off.push(poller.launch());
   return { poller, dispose: () => off.forEach((d) => d()) };

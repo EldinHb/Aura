@@ -1,10 +1,12 @@
 // Keeps the PRs someone is looking at up to date. The UI half `watch`es the session its
 // Inspector shows; each tick reads only the watched PRs that are due, in one batched query,
 // then looks up a few branch PRs from its discovery queue.
-import type { BranchStatus, DaemonApi, Session } from "@aura/mod-sdk";
+import type { DaemonApi, Session } from "@aura/mod-sdk";
 import { messageOf, type Github, type Notified } from "@aura/github-client";
 import type { PrEntry, PrRef, PrStatus, SessionView } from "../shared/types";
+import { branchPull, branchQuestion, readBranch, readRemotes, type BranchQuestion } from "./branch";
 import { collectPulls, prKey, sessionTree, type SessionPrs } from "./collect";
+import type { Sources } from "./sources";
 import { readStatuses } from "./status";
 
 export const TICK_MS = 5_000;
@@ -65,8 +67,7 @@ interface Entry {
 /** Where to look for a session folder's branch PR. */
 interface BranchTarget {
   cwd: string;
-  branch: string;
-  headRepo: string | null;
+  question: BranchQuestion;
   /** Branch, upstream and head: a lookup for another stamp answers another question. */
   stamp: string;
   /** The folder's epoch when queued; a folder dropped from the queue meanwhile has a newer one. */
@@ -88,21 +89,34 @@ interface BranchFound {
   used: number;
 }
 
-export type GithubCall = (name: string, params?: unknown) => Promise<any>;
+/** PR statuses kept in storage for instant cards after a restart, at most this many (latest seen). */
+export const MAX_STORED = 300;
+
+/** A PR's last status as kept in storage. */
+interface StoredPull {
+  ref: PrRef;
+  status: PrStatus;
+  readAt: number;
+  seen: number;
+}
 
 export interface PollerDeps {
   aura: DaemonApi;
   gh: Github;
-  /** Calls the github mod. */
-  github: GithubCall;
+  /** The sessions' detected, linked and hidden PRs. */
+  sources: Sources;
   now?: () => number;
 }
 
 export class PrPoller {
   private readonly aura: DaemonApi;
   private readonly gh: Github;
-  private readonly github: GithubCall;
+  private readonly sources: Sources;
   private readonly now: () => number;
+  /** Branch PRs and PR statuses read back from storage: rounds and views wait for it. */
+  private readonly ready: Promise<void>;
+  private readonly storedBranches;
+  private readonly storedPulls;
   /**
    * Who looks at which session: the Inspector of a selected session (polled), or, in the
    * background, a session open in a tab (kept, not polled: read again when shown).
@@ -116,7 +130,8 @@ export class PrPoller {
   private generation = 0;
   private collecting = new Map<string, { generation: number; tree: Promise<Tree> }>();
   private branches = new Map<string, BranchFound>();
-  private repos = new Map<string, { repo: string | null; at: number; used: number }>();
+  /** `git remote -v` of each folder (its github.com repositories by remote name). */
+  private repos = new Map<string, { remotes: Record<string, string>; at: number; used: number }>();
   /** Branch lookups waiting, by folder; the latest target of a folder wins. */
   private discovery = new Map<string, BranchTarget>();
   private discoverAt = 0;
@@ -125,14 +140,21 @@ export class PrPoller {
   /** Folders of the sessions in watched trees, so a removed session's caches can go. */
   private folders = new Map<string, string>();
   private forced = new Set<string>();
+  /** Sessions whose last reply was scanned for PR URLs since the daemon started. */
+  private scanned = new Set<string>();
+  /** Stored statuses, by when they were last seen (for MAX_STORED). */
+  private storedSeen = new Map<string, number>();
   private blocked: string | null = null;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(deps: PollerDeps) {
     this.aura = deps.aura;
     this.gh = deps.gh;
-    this.github = deps.github;
+    this.sources = deps.sources;
     this.now = deps.now ?? Date.now;
+    this.storedBranches = this.aura.storage.collection<BranchFound>("branches");
+    this.storedPulls = this.aura.storage.collection<StoredPull>("pulls");
+    this.ready = this.restore().catch((e) => console.warn(`PR status: could not read what was kept: ${messageOf(e)}`));
   }
 
   /**
@@ -187,10 +209,45 @@ export class PrPoller {
       this.repos.delete(cwd);
       this.dropTarget(cwd);
     }
+    void this.cleanStored().catch((e) => console.warn(`PR status: ${messageOf(e)}`));
+  }
+
+  /** Read back the branch PRs and PR statuses kept from before a restart; forget folders no session uses. */
+  private async restore(): Promise<void> {
+    const now = this.now();
+    await this.sources.load(new Set((await this.aura.sessions.list()).map((x) => x.id)));
+    for (const [key, p] of await this.storedPulls.all()) {
+      this.entries.set(key, { ref: p.ref, status: p.status, readAt: p.readAt, error: null, failures: 0, nextAt: 0, final: p.status.state === "merged", noted: null, seen: now });
+      this.storedSeen.set(key, p.seen);
+    }
+    for (const [cwd, found] of await this.storedBranches.all()) this.branches.set(cwd, { ...found, used: now });
+    await this.cleanStored();
+    await this.trimStored();
+  }
+
+  /** Stored branch PRs of folders no session works in any more. */
+  private async cleanStored(): Promise<void> {
+    const cwds = new Set((await this.aura.sessions.list()).map((s) => s.cwd));
+    for (const [cwd] of await this.storedBranches.all()) {
+      if (cwds.has(cwd)) continue;
+      this.branches.delete(cwd);
+      await this.storedBranches.delete(cwd);
+    }
+  }
+
+  /** Keep the stored statuses within MAX_STORED, the least recently seen going first. */
+  private async trimStored(): Promise<void> {
+    const over = this.storedSeen.size - MAX_STORED;
+    if (over <= 0) return;
+    for (const [key] of [...this.storedSeen].sort(([, a], [, b]) => a - b).slice(0, over)) {
+      this.storedSeen.delete(key);
+      await this.storedPulls.delete(key);
+    }
   }
 
   /** What is known of the session's PRs, without reading GitHub. */
   async view(sessionId: string): Promise<SessionView> {
+    await this.ready;
     const refs = await this.refsOf(sessionId);
     const pulls = refs.map((ref): PrEntry => {
       const e = this.entries.get(prKey(ref.url));
@@ -231,6 +288,7 @@ export class PrPoller {
   }
 
   private async round(): Promise<void> {
+    await this.ready;
     const now = this.now();
     let watched: string[];
     let changed: Set<string>;
@@ -322,7 +380,12 @@ export class PrPoller {
         const base = baseDelay(entry.error ? null : entry.status);
         entry.nextAt = at + nextDelay(base, await pace(base), entry.failures);
         this.entries.set(key, entry);
+        if (entry.status && entry.readAt === at) {
+          this.storedSeen.set(key, at);
+          await this.storedPulls.put(key, { ref, status: entry.status, readAt: at, seen: at });
+        }
       }
+      await this.trimStored();
       const keys = new Set(due.map((r) => prKey(r.url)));
       for (const [id, refs] of trees) if (refs.some((r) => keys.has(prKey(r.url)))) changed.add(id);
     }
@@ -382,17 +445,19 @@ export class PrPoller {
   private async collect(sessionId: string): Promise<Tree> {
     const tree = sessionTree(await this.aura.sessions.list(), sessionId);
     if (tree.length === 0) return { refs: [], folders: [] };
-    const [linked, links] = await Promise.all([
-      this.github("sessions.prs", {}).catch((e) => warn("linked PRs", e, {})),
-      this.github("links.all", {}).catch((e) => warn("session links", e, {})),
-    ]);
+    // A session first seen since the daemon started: its last reply may name a PR from before.
+    for (const { session } of tree) {
+      if (this.scanned.has(session.id)) continue;
+      this.scanned.add(session.id);
+      const reply = await this.aura.sessions.lastReply(session.id).catch(() => null);
+      if (reply) await this.sources.detect(session.id, reply);
+    }
     const branch = new Map<string, string | null>();
-    for (const { session } of tree) branch.set(session.id, await this.knownBranchPull(session));
-    const prsOf = (id: string): SessionPrs => ({
-      linked: strings(linked?.[id]),
-      pulls: strings(links?.[id]?.pulls),
-      branch: branch.get(id) ?? null,
-    });
+    for (const { session } of tree) {
+      const url = await this.knownBranchPull(session);
+      branch.set(session.id, url && !this.sources.isHidden(session.id, url) ? url : null);
+    }
+    const prsOf = (id: string): SessionPrs => ({ linked: this.sources.linkedOf(id), pulls: [], branch: branch.get(id) ?? null });
     const folders = tree.flatMap(({ session }) => (session.folderless || !session.cwd ? [] : [session.cwd]));
     return { refs: collectPulls(tree, prsOf), folders };
   }
@@ -402,22 +467,22 @@ export class PrPoller {
     if (session.folderless || !session.cwd) return null;
     const cwd = session.cwd;
     this.folders.set(session.id, cwd);
-    let git: BranchStatus | null;
+    let question: BranchQuestion | null;
     try {
-      git = (await this.aura.git.branchStatus(cwd)) as BranchStatus | null;
+      const git = await readBranch(this.aura.process.run, cwd);
+      question = git ? branchQuestion(git, await this.remotesOf(cwd)) : null;
     } catch (e) {
       return warn(`the branch of ${cwd}`, e, null);
     }
-    const branch = git?.upstream_branch ?? git?.branch;
-    if (!branch) return null;
-    const stamp = `${branch}|${git?.upstream_repo ?? ""}|${git?.head ?? ""}|${git?.ahead ?? 0}`;
+    if (!question) return null;
+    const { branch, stamp } = question;
     const found = this.branches.get(cwd);
     const now = this.now();
     if (found) found.used = now;
     const fresh = found && found.stamp === stamp && now - found.at < (found.failed ? BRANCH_RETRY_MS : BRANCH_TTL_MS);
     // The same question already queued (or being looked up) stays as it is.
     if (!fresh && this.discovery.get(cwd)?.stamp !== stamp) {
-      this.discovery.set(cwd, { cwd, branch, headRepo: git?.upstream_repo ?? null, stamp, epoch: this.epochs.get(cwd) ?? 0 });
+      this.discovery.set(cwd, { cwd, question, stamp, epoch: this.epochs.get(cwd) ?? 0 });
     }
     // Until the lookup answers, the PR found for the same branch still stands.
     return found && found.branch === branch ? found.url : null;
@@ -431,12 +496,15 @@ export class PrPoller {
     for (const target of batch) {
       const before = this.branches.get(target.cwd);
       const answer = await this.lookUp(target);
+      const branch = target.question.branch;
       // The branch moved meanwhile (another stamp queued), or the folder left the queue: obsolete.
       const queued = this.discovery.get(target.cwd);
       if (!queued || queued.stamp !== target.stamp || (this.epochs.get(target.cwd) ?? 0) !== target.epoch) continue;
       this.discovery.delete(target.cwd);
-      this.branches.set(target.cwd, { ...answer, branch: target.branch, stamp: target.stamp, at: this.now(), used: this.now() });
-      if (answer.url !== (before?.branch === target.branch ? before.url : null)) found = true;
+      const result = { ...answer, branch, stamp: target.stamp, at: this.now(), used: this.now() };
+      this.branches.set(target.cwd, result);
+      await this.storedBranches.put(target.cwd, result);
+      if (answer.url !== (before?.branch === branch ? before.url : null)) found = true;
     }
     this.discoverAt = this.now() + (await this.gh.pace(DISCOVERY_GAP_MS).catch(() => DISCOVERY_GAP_MS));
     if (found) this.invalidate();
@@ -444,27 +512,36 @@ export class PrPoller {
 
   private async lookUp(target: BranchTarget): Promise<{ url: string | null; failed: boolean }> {
     const previous = this.branches.get(target.cwd);
-    const keep = previous && previous.branch === target.branch ? previous.url : null;
+    const keep = previous && previous.branch === target.question.branch ? previous.url : null;
     try {
-      const repo = await this.repoOf(target.cwd);
-      if (!repo) return { url: null, failed: false };
-      const pull = await this.github("branch_pull", { repo, head_repo: target.headRepo ?? repo, branch: target.branch });
-      return { url: typeof pull?.url === "string" ? pull.url : null, failed: false };
+      return { url: await branchPull(this.aura.process.run, target.question), failed: false };
     } catch (e) {
       return { url: warn(`the branch PR of ${target.cwd}`, e, keep), failed: true };
     }
   }
 
-  private async repoOf(cwd: string): Promise<string | null> {
+  /** The folder's github.com remotes, read again after BRANCH_TTL_MS. */
+  private async remotesOf(cwd: string): Promise<Record<string, string>> {
     const now = this.now();
     const saved = this.repos.get(cwd);
     if (saved && now - saved.at < BRANCH_TTL_MS) {
       saved.used = now;
-      return saved.repo;
+      return saved.remotes;
     }
-    const repo = ((await this.github("repo", { cwd })) as string | null) ?? null;
-    this.repos.set(cwd, { repo, at: now, used: now });
-    return repo;
+    const remotes = await readRemotes(this.aura.process.run, cwd);
+    this.repos.set(cwd, { remotes, at: now, used: now });
+    return remotes;
+  }
+
+  /** Sessions working on `url`: linking or mentioning it, or with it as their branch's PR. */
+  async sessionsOf(url: string): Promise<string[]> {
+    await this.ready;
+    const ids = new Set(this.sources.sessionsOf(url));
+    for (const s of await this.aura.sessions.list()) {
+      const found = s.cwd ? this.branches.get(s.cwd) : undefined;
+      if (found?.url && prKey(found.url) === prKey(url) && !this.sources.isHidden(s.id, url)) ids.add(s.id);
+    }
+    return [...ids];
   }
 
   /** Drop a folder's queued lookup; one running for it now is not kept. */
@@ -507,9 +584,6 @@ function warn<T>(what: string, e: unknown, fallback: T): T {
   return fallback;
 }
 
-function strings(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-}
 
 function sameRefs(a: PrRef[] | undefined, b: PrRef[]): boolean {
   return !!a && JSON.stringify(a) === JSON.stringify(b);

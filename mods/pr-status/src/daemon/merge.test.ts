@@ -203,8 +203,9 @@ describe("the merge RPC", () => {
     const reader = fakeGithub({ 7: approved() });
     t.gh.request = reader.gh.request;
     host.state.sessions = [session("lead")];
-    host.provideMod("github", (name) => (name === "sessions.prs" ? { lead: ["https://github.com/acme/api/pull/7"] } : name === "links.all" ? {} : null));
+    host.process.route((bin) => (bin === "git" ? { code: 128, stderr: "not a git repository" } : undefined));
     const { dispose } = activate(host.api, { gh: { ...t.gh, requestFor: pinned }, loop: false });
+    await host.call("links.add", { sessionId: "lead", url: "https://github.com/acme/api/pull/7" });
     const view = await host.call<SessionView>("watch", { viewer: "v", sessionId: "lead", refresh: true });
     expect(view.pulls[0].status?.merge).toMatchObject({ account: "github.com:me", headSha: SHA });
     // A head GitHub does not have now is refused by the fresh read, not by the card's copy.
@@ -228,8 +229,9 @@ describe("the merge RPC", () => {
     const reader = fakeGithub({ 7: approved() });
     const pinned = t.gh.requestFor;
     host.state.sessions = [session("lead")];
-    host.provideMod("github", (name) => (name === "sessions.prs" ? { lead: ["https://github.com/acme/api/pull/7"] } : name === "links.all" ? {} : null));
+    host.process.route((bin) => (bin === "git" ? { code: 128, stderr: "not a git repository" } : undefined));
     const { dispose } = activate(host.api, { gh: { ...reader.gh, account: async () => "github.com:me", requestFor: pinned }, loop: false });
+    await host.call("links.add", { sessionId: "lead", url: "https://github.com/acme/api/pull/7" });
     const view = await host.call<SessionView>("watch", { viewer: "v", sessionId: "lead", refresh: true });
     expect(view.pulls[0].status?.merge.headSha).toBe(SHA);
     const result = await host.call<MergeResult>("merge", { ...req(), account: "github.com:me", sha: NEW });

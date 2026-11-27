@@ -430,13 +430,13 @@ function SideBlock({ title, children }: { title: string; children: ReactNode }) 
   );
 }
 
-/** The Aura sessions that worked on the PR (as the github mod knows them); a click selects one. */
+/** The Aura sessions that worked on the PR (linking, mentioning or on its branch); a click selects one. */
 function LinkedSessions({ url }: { url: string }) {
   const [ids, setIds] = useState<string[] | null>(null);
   const sessions = useStore((st) => st.sessions);
   useEffect(() => {
     let current = true;
-    getCtx()?.call<string[]>("github", "pulls.sessions", { url }).then((x) => current && setIds(x), () => current && setIds([]));
+    getCtx()?.rpc<string[]>("pulls.sessions", { url }).then((x) => current && setIds(x), () => current && setIds([]));
     return () => {
       current = false;
     };

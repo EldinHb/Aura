@@ -8,37 +8,54 @@ import { baseDelay, BRANCH_RETRY_MS, DISCOVERY_GAP_MS, MAX_CACHED, CLOSED_POLL_M
 const URL1 = "https://github.com/acme/api/pull/1";
 const URL2 = "https://github.com/acme/api/pull/2";
 
-function setup(nodes: Record<number, any> = { 1: prNode({ number: 1 }) }) {
+/**
+ * A daemon half on a test host. GitHub's GraphQL comes from `fake` (as GhCli would answer it); git
+ * and `gh pr list` from canned output on the host's aura.process. Sessions: a lead in /code/lead
+ * on main, and its worker in /code/worker on `feature`; the lead links PR #1.
+ */
+async function setup(nodes: Record<number, any> = { 1: prNode({ number: 1 }) }) {
   const host = createTestHost({ id: "pr-status" });
   const fake = fakeGithub(nodes);
   let now = Date.parse("2026-11-27T10:00:00Z");
-  const links: Record<string, { pulls: string[] }> = {};
-  const linked: Record<string, string[]> = { lead: [URL1] };
+  /** `gh pr list --head <branch>`: its PR's URL, null for none; a branch not listed (but main) fails. */
   const branches: Record<string, string | null> = {};
+  /** "branch_pull" per `gh pr list` call, as the github mod's method was named. */
   const githubCalls: string[] = [];
-  /** Hold the next `sessions.prs` answers until released, to race collections. */
+  /** Hold `git status` answers until released, to race collections. */
   const held: Array<() => void> = [];
   let hold = false;
-  host.state.sessions = [session("lead", { title: "Lead" }), session("worker", { title: "Worker", orchestrator_id: "lead" })];
-  host.provideMod("github", (name, params) => {
-    githubCalls.push(name);
-    if (name === "sessions.prs") {
-      const answer = structuredClone(linked);
-      if (!hold) return answer;
-      return new Promise((resolve) => held.push(() => resolve(answer)));
+  let gitBranch: (cwd: string) => string = (cwd) => (cwd === "/code/worker" ? "feature" : "main");
+  /** Run before each `gh pr list` answers. */
+  const hooks: { beforeLookup?: () => Promise<void> } = {};
+  host.state.sessions = [session("lead", { title: "Lead", cwd: "/code/lead" }), session("worker", { title: "Worker", orchestrator_id: "lead", cwd: "/code/worker" })];
+  host.process.route(async (bin, args) => {
+    if (bin === "git" && args[2] === "status") {
+      const answer = { stdout: `# branch.oid h\n# branch.head ${gitBranch(args[1])}\n# branch.ab +0 -0\n` };
+      return hold ? new Promise((resolve) => held.push(() => resolve(answer))) : answer;
     }
-    if (name === "links.all") return links;
-    if (name === "repo") return "acme/api";
-    if (name === "branch_pull") {
-      if (branches[params.branch] === undefined && params.branch !== "main") throw new Error("GitHub is down");
-      return branches[params.branch] ? { url: branches[params.branch] } : null;
+    if (bin === "git" && args[2] === "remote") return { stdout: "origin\tgit@github.com:acme/api.git (fetch)\norigin\tgit@github.com:acme/api.git (push)\n" };
+    if (bin === "gh" && args[0] === "pr") {
+      githubCalls.push("branch_pull");
+      await hooks.beforeLookup?.();
+      const branch = args[args.indexOf("--head") + 1];
+      if (branches[branch] === undefined && branch !== "main") return { code: 1, stderr: "GitHub is down" };
+      const url = branches[branch];
+      return { stdout: JSON.stringify(url ? [{ url, state: "OPEN", headRepositoryOwner: { login: "acme" } }] : []) };
     }
-    throw new Error(`unexpected ${name}`);
+    return undefined;
   });
-  host.api.git.branchStatus = async (cwd: string) => ({ branch: cwd === "/code/worker" ? "feature" : "main", head: "h", upstream: null, upstream_branch: null, upstream_repo: null, ahead: 0, behind: 0, changed: 0 });
   const { poller, dispose } = activate(host.api, { gh: fake.gh, now: () => now, loop: false });
+  const linked: Record<string, string[]> = {};
+  /** The session's linked PRs become `urls` (through the links RPCs). */
+  const setLinked = async (id: string, urls: string[]) => {
+    for (const url of linked[id] ?? []) if (!urls.includes(url)) await host.call("links.remove", { sessionId: id, url });
+    for (const url of urls) await host.call("links.add", { sessionId: id, url });
+    linked[id] = urls;
+  };
+  await setLinked("lead", [URL1]);
   return {
-    host, fake, poller, dispose, links, linked, branches, githubCalls, held,
+    host, fake, poller, dispose, branches, githubCalls, held, setLinked, hooks,
+    setGitBranch: (fn: (cwd: string) => string) => { gitBranch = fn; },
     setHold: (on: boolean) => { hold = on; },
     advance: (ms: number) => { now += ms; },
     watch: (refresh = true) => host.call<SessionView>("watch", { viewer: "v1", sessionId: "lead", refresh }),
@@ -74,9 +91,9 @@ describe("delays", () => {
 });
 
 describe("PrPoller", () => {
-  let t: ReturnType<typeof setup>;
-  beforeEach(() => {
-    t = setup();
+  let t: Awaited<ReturnType<typeof setup>>;
+  beforeEach(async () => {
+    t = await setup();
   });
 
   it("reads the watched session's PRs at once and then once a minute", async () => {
@@ -204,9 +221,8 @@ describe("PrPoller", () => {
     expect(view.pulls.map((p) => [p.ref.url, p.ref.sources.map((s) => s.title)])).toEqual([[URL1, ["Lead"]], [URL2, ["Worker"]]]);
     expect(t.fake.queries).toEqual([[1], [2]]);
 
-    t.links.worker = { pulls: ["https://github.com/acme/api/pull/3"] };
     t.fake.state.nodes[3] = prNode({ number: 3 });
-    t.host.fireMod("github", "links.changed", { sessionId: "worker" });
+    await t.setLinked("worker", ["https://github.com/acme/api/pull/3"]);
     await t.poller.tick();
     expect((await t.host.call<SessionView>("view", { sessionId: "lead" })).pulls).toHaveLength(3);
     expect(t.fake.queries.at(-1)).toEqual([3]);
@@ -258,14 +274,16 @@ describe("PrPoller", () => {
 
   it("does not let an older collection overwrite newer links (review item 3)", async () => {
     await t.watch();
-    // A collection (the section shown again) starts and waits on the github mod with the old links …
+    // A collection (the section shown again) starts and waits on git with the old links …
     t.setHold(true);
     t.poller.invalidate();
     const shown = t.host.call<SessionView>("watch", { viewer: "v2", sessionId: "lead", refresh: true });
     await new Promise((r) => setTimeout(r, 0));
     expect(t.held).toHaveLength(1);
     // … the user switches the session to PR #2, and the newer collection answers first.
-    t.linked.lead = [URL2];
+    t.setHold(false);
+    await t.setLinked("lead", [URL2]);
+    t.setHold(true);
     t.fake.state.nodes[2] = prNode({ number: 2 });
     t.poller.invalidate();
     const tick = t.poller.view("lead");
@@ -313,7 +331,7 @@ describe("PrPoller", () => {
 
   it("discovers branch PRs a few per round, paced, and remembers failed lookups (review item 8)", async () => {
     t.host.state.sessions.push(...["w2", "w3", "w4"].map((id) => session(id, { title: id, orchestrator_id: "lead" })));
-    t.host.api.git.branchStatus = async (cwd: string) => ({ branch: `b-${cwd.slice(6)}`, head: "h", upstream: null, upstream_branch: null, upstream_repo: null, ahead: 0, behind: 0, changed: 0 });
+    t.setGitBranch((cwd) => `b-${cwd.slice(6)}`);
     const lookups = () => t.githubCalls.filter((c) => c === "branch_pull").length;
     // A low budget spaces the rounds with lookups out: 4 × TICK_MS.
     t.fake.state.pace = (base) => base * 4;
@@ -371,7 +389,7 @@ describe("PrPoller", () => {
     it("keeps every watched PR past MAX_CACHED and reads none of them again early (item 1)", async () => {
       const many = Array.from({ length: MAX_CACHED + 20 }, (_, i) => i + 1);
       many.forEach((n) => (t.fake.state.nodes[n] = prNode({ number: n })));
-      t.linked.lead = many.map((n) => `https://github.com/acme/api/pull/${n}`);
+      await t.setLinked("lead", many.map((n) => `https://github.com/acme/api/pull/${n}`));
       t.poller.invalidate();
       await t.watch();
       const first = t.reads().length;
@@ -391,9 +409,9 @@ describe("PrPoller", () => {
       const b = t.poller.view("lead");
       await new Promise((r) => setTimeout(r, 0));
       expect(t.held).toHaveLength(1);
-      t.linked.lead = [URL2];
-      t.poller.invalidate();
       t.setHold(false);
+      await t.setLinked("lead", [URL2]);
+      t.poller.invalidate();
       t.held.splice(0).forEach((release) => release());
       expect((await a).pulls.map((p) => p.ref.url)).toEqual([URL2]);
       expect((await b).pulls.map((p) => p.ref.url)).toEqual([URL2]);
@@ -404,16 +422,12 @@ describe("PrPoller", () => {
       t.fake.state.nodes[2] = prNode({ number: 2 });
       // Every lookup is answered only after the trees were collected again (a finished turn).
       const lookup = t.githubCalls.length;
-      t.host.provideMod("github", ((orig) => async (name: string, params: any) => {
-        if (name === "branch_pull") {
-          t.poller.invalidate();
-          await t.poller.view("lead");
-        }
-        return orig(name, params);
-      })((name: string, params: any) => (name === "branch_pull" ? (t.branches[params.branch] ? { url: t.branches[params.branch] } : null)
-        : name === "sessions.prs" ? structuredClone(t.linked) : name === "links.all" ? t.links : name === "repo" ? "acme/api" : null)));
+      t.hooks.beforeLookup = async () => {
+        t.poller.invalidate();
+        await t.poller.view("lead");
+      };
       await t.watch();
-      expect(t.githubCalls.length).toBe(lookup);
+      expect(t.githubCalls.length).toBe(lookup + 2);
       const view = await t.host.call<SessionView>("view", { sessionId: "lead" });
       expect(view.pulls.map((p) => p.ref.url)).toEqual([URL1, URL2]);
       expect(t.poller.cached().queued).toBe(0);
@@ -422,14 +436,9 @@ describe("PrPoller", () => {
     it("stops looking up a tree's branches once nobody watches it (item 4)", async () => {
       t.host.state.sessions.push(session("solo", { title: "Solo" }), ...["w2", "w3", "w4"].map((id) => session(id, { orchestrator_id: "lead" })));
       const lookups = () => t.githubCalls.filter((c) => c === "branch_pull").length;
-      t.host.provideMod("github", (name, params) => {
-        t.githubCalls.push(name);
-        if (name === "sessions.prs") return {};
-        if (name === "links.all") return {};
-        if (name === "repo") return "acme/api";
-        if (name === "branch_pull") return null;
-        throw new Error(`unexpected ${name} ${JSON.stringify(params)}`);
-      });
+      // No PR linked, and no branch has one.
+      await t.setLinked("lead", []);
+      t.setGitBranch(() => "main");
       await t.watch();
       expect(lookups()).toBe(DISCOVERY_PER_TICK);
       expect(t.poller.cached()).toMatchObject({ queued: 5 - DISCOVERY_PER_TICK, folders: 5 });
@@ -450,7 +459,7 @@ describe("PrPoller", () => {
       t.host.state.sessions.push(...["w2", "w3", "w4"].map((id) => session(id, { orchestrator_id: "lead" })));
       const lookups = () => t.githubCalls.filter((c) => c === "branch_pull").length;
       t.branches.feature = null;
-      t.host.api.git.branchStatus = async () => ({ branch: "main", head: "h", upstream: null, upstream_branch: null, upstream_repo: null, ahead: 0, behind: 0, changed: 0 });
+      t.setGitBranch(() => "main");
       await t.watch();
       expect(lookups()).toBe(DISCOVERY_PER_TICK);
       // RPC-driven rounds back to back (renewals, refreshes) do not look up more.
@@ -470,7 +479,7 @@ describe("PrPoller", () => {
   describe("third review", () => {
     it("does not prune the lookup of a session selected while the previous round was collecting", async () => {
       t.host.state.sessions.push(session("solo", { title: "Solo" }));
-      t.host.api.git.branchStatus = async (cwd: string) => ({ branch: cwd === "/code/solo" ? "solo-branch" : "main", head: "h", upstream: null, upstream_branch: null, upstream_repo: null, ahead: 0, behind: 0, changed: 0 });
+      t.setGitBranch((cwd) => (cwd === "/code/solo" ? "solo-branch" : "main"));
       t.branches["solo-branch"] = URL2;
       t.fake.state.nodes[2] = prNode({ number: 2 });
       await t.watch();
@@ -539,7 +548,7 @@ describe("PrPoller", () => {
 
   describe("QA", () => {
     it("asks GitHub for notifications only while a PR is on screen", async () => {
-      t.linked.lead = [];
+      await t.setLinked("lead", []);
       t.poller.invalidate();
       await t.watch();
       for (let i = 0; i < 5; i++) {
@@ -547,7 +556,7 @@ describe("PrPoller", () => {
         await t.renew();
       }
       expect(t.fake.notifiedCalls).toHaveLength(0);
-      t.linked.lead = [URL1];
+      await t.setLinked("lead", [URL1]);
       t.poller.invalidate();
       await t.renew();
       expect(t.fake.notifiedCalls.length).toBeGreaterThan(0);
