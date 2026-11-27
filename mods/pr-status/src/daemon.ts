@@ -18,7 +18,7 @@
 //   page.notified {repo, number}           → the PR's latest notification time, or null
 // Notification `changed {sessionIds}`: ask `view` again for those sessions.
 import { defineDaemon, type DaemonApi } from "@aura/mod-sdk/daemon";
-import { messageOf, remoteGithub, type Github } from "@aura/github-client";
+import { errorData, messageOf, remoteGithub, type Github } from "@aura/github-client";
 import { Merger, mergeError, mergeRequest, readMergeDefaults } from "./daemon/merge";
 import { readFiles, readPage } from "./daemon/page";
 import { PrPoller } from "./daemon/poller";
@@ -50,9 +50,15 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
     aura.rpc.handle("view", (p) => poller.view(text(p, "sessionId"))),
     aura.rpc.handle("refresh", (p) => poller.refresh(text(p, "sessionId"))),
     // The PR page (`pr` view).
-    aura.rpc.handle("page.get", (p) => readPage(gh, text(p, "repo"), number(p)).catch((e) => {
-      throw mergeError("failed", messageOf(e));
-    })),
+    aura.rpc.handle("page.get", async (p) => {
+      // Blocked or rate-limited is said as such, so the page waits instead of retrying.
+      const blocked = await gh.blocked().catch(() => null);
+      if (blocked) throw Object.assign(new Error(blocked), { code: "blocked" });
+      return readPage(gh, text(p, "repo"), number(p)).catch((e) => {
+        const data = errorData(e);
+        throw Object.assign(new Error(messageOf(e)), data ? { code: data.kind, data } : { code: "failed" });
+      });
+    }),
     aura.rpc.handle("page.files", (p) => readFiles(gh, text(p, "repo"), number(p))),
     aura.rpc.handle("page.notified", async (p) => {
       const repo = text(p, "repo");
@@ -64,8 +70,7 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
       return readMergeDefaults(gh, text(p, "repo"), p.number);
     }),
     aura.rpc.handle("merge", (p) => {
-      const req = mergeRequest(p);
-      return merger.merge(req, poller.statusOf(req.repo, req.number)?.merge.headSha ?? null);
+      return merger.merge(mergeRequest(p));
     }),
     // A new worker, a finished turn (it may have pushed or opened a PR) or changed links
     // can change which PRs a tree has.

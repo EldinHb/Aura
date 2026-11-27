@@ -189,11 +189,6 @@ export class PrPoller {
     }
   }
 
-  /** The last status read of a PR, if any. */
-  statusOf(repo: string, number: number): PrStatus | null {
-    return this.entries.get(prKey(`https://github.com/${repo}/pull/${number}`))?.status ?? null;
-  }
-
   /** What is known of the session's PRs, without reading GitHub. */
   async view(sessionId: string): Promise<SessionView> {
     const refs = await this.refsOf(sessionId);

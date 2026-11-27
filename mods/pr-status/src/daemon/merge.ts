@@ -98,13 +98,15 @@ export class Merger {
 
   constructor(private readonly gh: Github) {}
 
-  /** Merge as `req.account`, at `req.sha`; `lastSha` is the head this daemon last read (null: not read). */
-  async merge(req: MergeRequest, lastSha: string | null): Promise<MergeResult> {
+  /**
+   * Merge as `req.account`, at `req.sha`. Whether that head is current is decided by a fresh read
+   * as that account right before the write, never by what a card read earlier.
+   */
+  async merge(req: MergeRequest): Promise<MergeResult> {
     const key = `${req.repo}#${req.number}`.toLowerCase();
     if (this.running.has(key)) throw mergeError("busy", "This pull request is being merged already");
     this.running.add(key);
     try {
-      if (lastSha !== null && lastSha !== req.sha) throw mergeError("head_moved", REVIEW_AGAIN);
       const gh = as(this.gh, req.account);
       const now = await this.check(gh, req);
       let reply: any;

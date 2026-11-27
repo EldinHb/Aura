@@ -40,7 +40,7 @@ function transport(node = approved(), write: (method: string, path: string, body
 describe("Merger", () => {
   it("re-reads the PR and squash-merges as the account shown, at the head commit shown", async () => {
     const t = transport();
-    const result = await new Merger(t.gh).merge(req(), SHA);
+    const result = await new Merger(t.gh).merge(req());
     expect(t.calls.map((c) => [c.account, c.method])).toEqual([[ME, "POST"], [ME, "PUT"]]);
     expect(t.calls[1]).toEqual({
       account: ME, method: "PUT", path: "repos/acme/api/pulls/7/merge",
@@ -49,17 +49,11 @@ describe("Merger", () => {
     expect(result).toEqual({ merged: true, sha: "b".repeat(40), branchDeleted: false, branchError: null });
   });
 
-  it("refuses when the head this daemon last read is not the one confirmed (review 4, item 1)", async () => {
-    const t = transport();
-    await expect(new Merger(t.gh).merge(req(), "e".repeat(40))).rejects.toMatchObject({ code: "head_moved", message: "New commits were pushed — review again" });
-    expect(t.calls).toEqual([]);
-  });
-
   it("refuses when GitHub's head moved since, read right before the write (review 4, item 1)", async () => {
     const node = approved();
     node.headRefOid = "e".repeat(40);
     const t = transport(node);
-    await expect(new Merger(t.gh).merge(req(), SHA)).rejects.toMatchObject({ code: "head_moved" });
+    await expect(new Merger(t.gh).merge(req())).rejects.toMatchObject({ code: "head_moved" });
     expect(t.writes()).toEqual([]);
   });
 
@@ -71,7 +65,7 @@ describe("Merger", () => {
     ["closed", approved({ state: "CLOSED" }), "no longer open and approved"],
   ])("refuses a PR that is %s when re-read (review 4, item 2)", async (_what, node, why) => {
     const t = transport(node);
-    const error = await new Merger(t.gh).merge(req(), SHA).catch((e) => e);
+    const error = await new Merger(t.gh).merge(req()).catch((e) => e);
     expect(error).toMatchObject({ code: "not_eligible" });
     expect(error.message).toContain(why);
     expect(t.writes()).toEqual([]);
@@ -80,21 +74,21 @@ describe("Merger", () => {
   it("has no admin bypass: without write access it does not merge (review 4, item 2)", async () => {
     const t = transport();
     t.fake.state.repo = { squashMergeAllowed: true, viewerPermission: "READ" };
-    await expect(new Merger(t.gh).merge(req(), SHA)).rejects.toMatchObject({ code: "not_eligible", message: expect.stringContaining("permission") });
+    await expect(new Merger(t.gh).merge(req())).rejects.toMatchObject({ code: "not_eligible", message: expect.stringContaining("permission") });
     expect(t.writes()).toEqual([]);
   });
 
   it("does not merge or delete as another account than the one shown (review 4, item 3)", async () => {
     let t = transport();
     t.state.signedIn = "github.com:someone-else";
-    await expect(new Merger(t.gh).merge(req({ deleteBranch: true }), SHA)).rejects.toMatchObject({ code: "account" });
+    await expect(new Merger(t.gh).merge(req({ deleteBranch: true }))).rejects.toMatchObject({ code: "account" });
     expect(t.writes()).toEqual([]);
     // The account changes between the merge and the deletion: the branch stays.
     t = transport(approved(), () => {
       t.state.signedIn = "github.com:someone-else";
       return { merged: true, sha: "b" };
     });
-    const result = await new Merger(t.gh).merge(req({ deleteBranch: true }), SHA);
+    const result = await new Merger(t.gh).merge(req({ deleteBranch: true }));
     expect(result).toMatchObject({ merged: true, branchDeleted: false });
     expect(t.calls.filter((c) => c.method === "DELETE").map((c) => c.account)).toEqual([ME]);
   });
@@ -108,7 +102,7 @@ describe("Merger", () => {
     [502, "Bad gateway", "failed", "The merge failed: Bad gateway"],
   ])("maps HTTP %i (%s) to %s, keeping GitHub's message", async (status, said, code, text) => {
     const t = transport(approved(), () => new Error(`${said} (HTTP ${status})`));
-    const error = await new Merger(t.gh).merge(req(), SHA).catch((e) => e);
+    const error = await new Merger(t.gh).merge(req()).catch((e) => e);
     expect(error).toMatchObject({ code });
     expect(error.message).toContain(text);
     expect(error.message).toContain(said);
@@ -116,32 +110,32 @@ describe("Merger", () => {
 
   it("tells a rate limit from a missing permission, with when to retry (review 4, item 4)", async () => {
     let t = transport(approved(), () => new RateLimited("API rate limit exceeded for user (HTTP 403)", 150_000, true));
-    let error = await new Merger(t.gh).merge(req(), SHA).catch((e) => e);
+    let error = await new Merger(t.gh).merge(req()).catch((e) => e);
     expect(error).toMatchObject({ code: "rate_limited" });
     expect(error.message).toContain("try again in about 3 min");
     expect(error.message).not.toContain("permission");
     // As it arrives over RPC from the github mod: a plain error with data.kind.
     t = transport(approved(), () => Object.assign(new Error("You have exceeded a secondary rate limit (HTTP 403)"), { data: { kind: "rate_limited", waitMs: null } }));
-    error = await new Merger(t.gh).merge(req(), SHA).catch((e) => e);
+    error = await new Merger(t.gh).merge(req()).catch((e) => e);
     expect(error).toMatchObject({ code: "rate_limited", message: expect.stringContaining("try again later") });
   });
 
   it("does not take an answer without `merged: true` as a merge", async () => {
     const t = transport(approved(), () => ({ merged: false, message: "Base branch was modified" }));
-    await expect(new Merger(t.gh).merge(req(), SHA)).rejects.toMatchObject({ code: "not_mergeable", message: "GitHub did not merge: Base branch was modified" });
+    await expect(new Merger(t.gh).merge(req())).rejects.toMatchObject({ code: "not_mergeable", message: "GitHub did not merge: Base branch was modified" });
   });
 
   it("refuses a second merge of the same PR while one runs, and allows it after", async () => {
     const pending: Array<() => void> = [];
     const t = transport(approved(), () => new Promise((r) => pending.push(() => r({ merged: true, sha: "c" }))));
     const merger = new Merger(t.gh);
-    const first = merger.merge(req(), SHA);
-    await expect(merger.merge(req(), SHA)).rejects.toMatchObject({ code: "busy" });
+    const first = merger.merge(req());
+    await expect(merger.merge(req())).rejects.toMatchObject({ code: "busy" });
     await new Promise((r) => setTimeout(r, 0));
     expect(t.writes()).toEqual(["PUT repos/acme/api/pulls/7/merge"]);
     pending.splice(0).forEach((release) => release());
     await first;
-    const again = merger.merge(req(), SHA);
+    const again = merger.merge(req());
     await new Promise((r) => setTimeout(r, 0));
     pending.splice(0).forEach((release) => release());
     await again;
@@ -150,27 +144,27 @@ describe("Merger", () => {
 
   it("deletes the head branch only when asked, after a merge, and only in the same repository", async () => {
     let t = transport();
-    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }), SHA)).toMatchObject({ branchDeleted: true, branchError: null });
+    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }))).toMatchObject({ branchDeleted: true, branchError: null });
     expect(t.writes()).toEqual(["PUT repos/acme/api/pulls/7/merge", "DELETE repos/acme/api/git/refs/heads/feature/news"]);
 
     t = transport();
-    await new Merger(t.gh).merge(req({ deleteBranch: false }), SHA);
+    await new Merger(t.gh).merge(req({ deleteBranch: false }));
     expect(t.writes()).toEqual(["PUT repos/acme/api/pulls/7/merge"]);
 
     t = transport(approved({ fork: true }));
-    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }), SHA)).toMatchObject({ branchDeleted: false, branchError: "The branch is in a fork; it was left alone" });
+    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }))).toMatchObject({ branchDeleted: false, branchError: "The branch is in a fork; it was left alone" });
     expect(t.writes()).toEqual(["PUT repos/acme/api/pulls/7/merge"]);
 
     t = transport(approved(), () => new Error("Pull Request is not mergeable (HTTP 405)"));
-    await new Merger(t.gh).merge(req({ deleteBranch: true }), SHA).catch(() => {});
+    await new Merger(t.gh).merge(req({ deleteBranch: true })).catch(() => {});
     expect(t.writes()).toEqual(["PUT repos/acme/api/pulls/7/merge"]);
   });
 
   it("counts a branch GitHub already deleted as deleted, and reports one it could not delete", async () => {
     let t = transport(approved(), (m) => (m === "DELETE" ? new Error("Reference does not exist (HTTP 422)") : { merged: true, sha: "d" }));
-    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }), SHA)).toMatchObject({ branchDeleted: true });
+    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }))).toMatchObject({ branchDeleted: true });
     t = transport(approved(), (m) => (m === "DELETE" ? new Error("Protected branch (HTTP 422)") : { merged: true, sha: "d" }));
-    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }), SHA)).toMatchObject({ merged: true, branchDeleted: false, branchError: "Protected branch" });
+    expect(await new Merger(t.gh).merge(req({ deleteBranch: true }))).toMatchObject({ merged: true, branchDeleted: false, branchError: "Protected branch" });
   });
 });
 
@@ -213,11 +207,34 @@ describe("the merge RPC", () => {
     const { dispose } = activate(host.api, { gh: { ...t.gh, requestFor: pinned }, loop: false });
     const view = await host.call<SessionView>("watch", { viewer: "v", sessionId: "lead", refresh: true });
     expect(view.pulls[0].status?.merge).toMatchObject({ account: "github.com:me", headSha: SHA });
+    // A head GitHub does not have now is refused by the fresh read, not by the card's copy.
     await expect(host.call("merge", { ...req(), account: "github.com:me", sha: "e".repeat(40) })).rejects.toMatchObject({ code: "head_moved" });
+    expect(t.writes()).toEqual([]);
     const result = await host.call<MergeResult>("merge", { ...req(), account: "github.com:me", deleteBranch: true });
     expect(result).toMatchObject({ merged: true, branchDeleted: true });
     expect(t.writes()).toEqual(["PUT repos/acme/api/pulls/7/merge", "DELETE repos/acme/api/git/refs/heads/feature/news"]);
     expect(new Set(t.calls.map((c) => c.account))).toEqual(new Set(["github.com:me"]));
+    dispose();
+  });
+
+  it("lets the fresh read decide: an older card copy of the head does not refuse a confirmed merge (review 5, item 2)", async () => {
+    const host = createTestHost({ id: "pr-status" });
+    const NEW = "b".repeat(40);
+    const fresh = approved();
+    fresh.headRefOid = NEW;
+    const t = transport(fresh);
+    t.state.signedIn = "github.com:me";
+    // The cards read head f… earlier; GitHub has b… now, and the user confirmed b… on the page.
+    const reader = fakeGithub({ 7: approved() });
+    const pinned = t.gh.requestFor;
+    host.state.sessions = [session("lead")];
+    host.provideMod("github", (name) => (name === "sessions.prs" ? { lead: ["https://github.com/acme/api/pull/7"] } : name === "links.all" ? {} : null));
+    const { dispose } = activate(host.api, { gh: { ...reader.gh, account: async () => "github.com:me", requestFor: pinned }, loop: false });
+    const view = await host.call<SessionView>("watch", { viewer: "v", sessionId: "lead", refresh: true });
+    expect(view.pulls[0].status?.merge.headSha).toBe(SHA);
+    const result = await host.call<MergeResult>("merge", { ...req(), account: "github.com:me", sha: NEW });
+    expect(result).toMatchObject({ merged: true });
+    expect(t.calls.find((c) => c.method === "PUT")?.body).toMatchObject({ sha: NEW });
     dispose();
   });
 });

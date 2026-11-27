@@ -13,7 +13,7 @@ const TIMELINE_TYPES = [
 const TIMELINE_NODE =
   "__typename " +
   "... on IssueComment{author{login} body createdAt url} " +
-  "... on PullRequestReview{author{login} state body submittedAt url comments(first:50){nodes{author{login} body createdAt url path line originalLine diffHunk}}} " +
+  "... on PullRequestReview{author{login} state body submittedAt url comments(first:50){totalCount nodes{author{login} body createdAt url path line originalLine diffHunk}}} " +
   "... on PullRequestCommit{commit{oid abbreviatedOid messageHeadline committedDate url author{name user{login}}}} " +
   "... on HeadRefForcePushedEvent{actor{login} createdAt beforeCommit{abbreviatedOid} afterCommit{abbreviatedOid}} " +
   "... on ReviewRequestedEvent{actor{login} createdAt requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login}}} " +
@@ -30,7 +30,7 @@ const CHECK_NODE =
 
 export const PAGE_QUERY =
   "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){" +
-  "number title url body createdAt author{login} baseRefName headRefName headRepository{nameWithOwner} additions deletions changedFiles " +
+  "number title url body createdAt author{login} baseRefName headRefName baseRefOid headRefOid headRepository{nameWithOwner} additions deletions changedFiles " +
   "assignees(first:20){nodes{login}} labels(first:50){nodes{name color}} milestone{title url} comments{totalCount} " +
   `commits(first:100){totalCount ${PAGE} nodes{${COMMIT_NODE}}} ` +
   `checks:commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){${PAGE} nodes{${CHECK_NODE}}}}}}} ` +
@@ -65,7 +65,8 @@ export function timelineItem(n: any): TimelineItem | null {
       }));
       // A reply in a thread is a comment-only review with nothing of its own to show besides the reply.
       if (state === "COMMENTED" && !s(n, "body") && comments.length === 0) return null;
-      return { kind: "review", state, author: login(n.author), body: s(n, "body"), at: s(n, "submittedAt"), url: s(n, "url"), comments };
+      const total = u64(n?.comments?.totalCount) ?? comments.length;
+      return { kind: "review", state, author: login(n.author), body: s(n, "body"), at: s(n, "submittedAt"), url: s(n, "url"), comments, moreComments: Math.max(0, total - comments.length) };
     }
     case "PullRequestCommit": {
       const c = n.commit;
@@ -134,6 +135,7 @@ export function toPage(repo: string, pr: any, status: PrPage["status"], complete
   return {
     repo, number: u64(pr?.number) ?? 0, url: s(pr, "url"), title: s(pr, "title"), author: login(pr?.author), createdAt: s(pr, "createdAt"), body: s(pr, "body"),
     base: s(pr, "baseRefName"), head: s(pr, "headRefName"), headRepo: s(pr?.headRepository, "nameWithOwner") || repo,
+    baseSha: s(pr, "baseRefOid"), headSha: s(pr, "headRefOid"),
     commitCount: u64(pr?.commits?.totalCount) ?? 0, changedFiles: u64(pr?.changedFiles) ?? 0, additions: u64(pr?.additions) ?? 0, deletions: u64(pr?.deletions) ?? 0,
     assignees: list(pr?.assignees?.nodes).map((a) => s(a, "login")).filter(Boolean),
     labels: list(pr?.labels?.nodes).map(label),
@@ -142,12 +144,30 @@ export function toPage(repo: string, pr: any, status: PrPage["status"], complete
     commits: list(pr?.commits?.nodes).map(pageCommit),
     checks,
     commentCount: (u64(pr?.comments?.totalCount) ?? 0) + reviewComments,
-    status, complete, readAt: now, nextMs,
+    status,
+    complete: complete && !timeline.some((t) => t.kind === "review" && t.moreComments > 0),
+    readAt: now, nextMs,
   };
 }
 
-/** Read the page of `repo#number`: the page query and its remaining pages, and the cards' status read. */
+/** Times the page is read again when a push lands between its two queries. */
+export const SNAPSHOT_TRIES = 3;
+
+/**
+ * Read the page of `repo#number`: the page query and its remaining pages, then the cards'
+ * status read. Both must show the same head commit (a push can land between them); they are
+ * read again until they do, and it fails rather than offer a merge of a head the page does
+ * not show.
+ */
 export async function readPage(gh: Github, repo: string, number: number): Promise<PrPage> {
+  for (let tries = 1; ; tries++) {
+    const page = await readOnce(gh, repo, number);
+    if (page.headSha && page.headSha === page.status.merge.headSha) return page;
+    if (tries >= SNAPSHOT_TRIES) throw new Error(`${repo}#${number} changed while it was read (new commits); refresh to see them`);
+  }
+}
+
+async function readOnce(gh: Github, repo: string, number: number): Promise<PrPage> {
   validateRepo(repo);
   const [owner, name] = repo.split("/");
   const reply = await gh.request("POST", "graphql", { query: PAGE_QUERY, variables: { owner, name, number } });

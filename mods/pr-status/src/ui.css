@@ -169,6 +169,8 @@ a.prs-check-name:hover { text-decoration: underline; }
 .prs-check-label { flex: none; width: 92px; }
 
 .prs-files-summary { margin: 0 0 8px; }
+.prs-files-note { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--shape-sm); background: var(--md-tertiary-container); color: var(--md-on-tertiary-container); }
+.prs-files-note > a { color: inherit; text-decoration: underline; }
 .prs-file-list { list-style: none; margin: 0 0 16px; padding: 8px 14px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); font-size: 13px; }
 .prs-file-list li { overflow-wrap: anywhere; }
 .prs-file { margin-bottom: 16px; border: 1px solid var(--md-outline-variant); border-radius: var(--shape-sm); overflow: hidden; }

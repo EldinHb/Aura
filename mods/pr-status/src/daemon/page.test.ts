@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Github } from "@aura/github-client";
 import { fakeGithub, prNode } from "../test/fixtures";
-import { PAGE_QUERY, pageCheck, pageFile, readFiles, readPage, snippet, timelineItem, toPage } from "./page";
+import { PAGE_QUERY, pageCheck, pageFile, readFiles, readPage, SNAPSHOT_TRIES, snippet, timelineItem, toPage } from "./page";
 
 const actor = (login: string) => ({ login });
 
@@ -15,7 +15,7 @@ describe("timelineItem", () => {
         diffHunk: "@@ -1,5 +1,6 @@\n a\n b\n-c\n+d\n e" }] },
     });
     expect(review).toEqual({ kind: "review", state: "CHANGES_REQUESTED", author: "bob", body: "A few things", at: "t", url: "u2",
-      comments: [{ author: "bob", body: "Off by one", at: "t", url: "u3", path: "src/limit.ts", line: 12, snippet: [" b", "-c", "+d", " e"] }] });
+      comments: [{ author: "bob", body: "Off by one", at: "t", url: "u3", path: "src/limit.ts", line: 12, snippet: [" b", "-c", "+d", " e"] }], moreComments: 0 });
     expect(timelineItem({ __typename: "PullRequestCommit", commit: { abbreviatedOid: "abc1234", messageHeadline: "Add limiter", committedDate: "t", url: "u", author: { name: "Sam", user: null } } }))
       .toEqual({ kind: "commit", at: "t", author: "Sam", sha: "abc1234", message: "Add limiter", url: "u" });
     expect(timelineItem({ __typename: "HeadRefForcePushedEvent", actor: actor("sam"), createdAt: "t", beforeCommit: { abbreviatedOid: "1111111" }, afterCommit: { abbreviatedOid: "2222222" } }))
@@ -65,7 +65,7 @@ describe("pageCheck and pageFile", () => {
 function pagePr(over: Record<string, unknown> = {}) {
   return {
     number: 7, title: "Add limits", url: "https://github.com/acme/api/pull/7", body: "Adds **limits**.", createdAt: "2026-11-26T08:00:00Z",
-    author: actor("sam"), baseRefName: "main", headRefName: "feature/limits", headRepository: { nameWithOwner: "acme/api" },
+    author: actor("sam"), baseRefName: "main", headRefName: "feature/limits", baseRefOid: "0".repeat(40), headRefOid: "f".repeat(40), headRepository: { nameWithOwner: "acme/api" },
     additions: 120, deletions: 8, changedFiles: 3, assignees: { nodes: [actor("sam")] }, labels: { nodes: [{ name: "feature", color: "a2eeef" }] },
     milestone: { title: "v2", url: "m" }, comments: { totalCount: 2 },
     commits: { totalCount: 1, pageInfo: { hasNextPage: false }, nodes: [{ commit: { oid: "f".repeat(40), abbreviatedOid: "fffffff", messageHeadline: "Add limiter", committedDate: "t", url: "c", author: { name: "Sam", user: actor("sam") } } }] },
@@ -119,6 +119,52 @@ describe("readPage", () => {
 
   it("marks the page incomplete when a page cannot be read", () => {
     const page = toPage("acme/api", pagePr(), {} as never, false, "now", 60_000);
+    expect(page.complete).toBe(false);
+  });
+});
+
+describe("one snapshot (review 5, items 1 and 5)", () => {
+  /** A transport where the page query shows head `pageHeads[i]` on its i-th read and the status read whatever `node` has. */
+  function snapshot(pageHeads: string[], statusHead: string) {
+    const node = prNode({ number: 7, reviewDecision: "APPROVED" });
+    node.headRefOid = statusHead;
+    const fake = fakeGithub({ 7: node });
+    const status = fake.gh.request.bind(fake.gh);
+    let reads = 0;
+    const gh: Github = {
+      ...fake.gh,
+      account: async () => "github.com:sam",
+      request: async (method, path, body: any) => {
+        if (body?.query === PAGE_QUERY) {
+          const head = pageHeads[Math.min(reads++, pageHeads.length - 1)];
+          return { data: { repository: { pullRequest: pagePr({ headRefOid: head, timelineItems: { pageInfo: { hasNextPage: false }, nodes: [] } }) } } };
+        }
+        return status(method, path, body);
+      },
+    };
+    return { gh, reads: () => reads };
+  }
+
+  it("reads again when a push lands between the page and the status, and shows one head", async () => {
+    const t = snapshot(["a".repeat(40), "b".repeat(40)], "b".repeat(40));
+    const page = await readPage(t.gh, "acme/api", 7);
+    expect(t.reads()).toBe(2);
+    expect(page.headSha).toBe("b".repeat(40));
+    expect(page.status.merge.headSha).toBe("b".repeat(40));
+  });
+
+  it("fails rather than offer a merge of a head the page does not show", async () => {
+    const t = snapshot(["a".repeat(40)], "b".repeat(40));
+    await expect(readPage(t.gh, "acme/api", 7)).rejects.toThrow(/changed while it was read/);
+    expect(t.reads()).toBe(SNAPSHOT_TRIES);
+  });
+
+  it("says how many line comments of a review were not read, and marks the page incomplete", () => {
+    const review = timelineItem({ __typename: "PullRequestReview", author: actor("bob"), state: "COMMENTED", body: "Many notes", submittedAt: "t", url: "r",
+      comments: { totalCount: 73, nodes: Array.from({ length: 50 }, () => ({ author: actor("bob"), body: "x", path: "a.ts", line: 1, diffHunk: "@@\n+x" })) } });
+    expect(review).toMatchObject({ kind: "review", moreComments: 23 });
+    const page = toPage("acme/api", pagePr({ timelineItems: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "PullRequestReview", author: actor("bob"), state: "COMMENTED", body: "b", submittedAt: "t", url: "r",
+      comments: { totalCount: 51, nodes: [{ author: actor("bob"), body: "x", path: "a.ts", line: 1, diffHunk: "" }] } }] } }), {} as never, true, "now", 60_000);
     expect(page.complete).toBe(false);
   });
 });

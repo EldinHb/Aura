@@ -12,7 +12,7 @@ import { getCtx } from "../ctx";
 import { ago, BLOCKER_LABEL, CHECKS_LABEL, checkCounts, checksTone, readinessTone, REVIEW_LABEL, reviewTone, STATE_LABEL } from "../labels";
 import { SquashMerge } from "../SquashMerge";
 import { useNow } from "../usePullStatus";
-import { usePrFiles, usePrPage } from "./usePrPage";
+import { filesKey, usePrFiles, usePrPage, useWindowVisible } from "./usePrPage";
 
 export const PAGE_VIEW = "pr";
 
@@ -34,6 +34,8 @@ export function openPrPage(pr: { repo: string; number: number; url: string; titl
 
 /** Changed files with more lines than this start folded, behind "Load diff". */
 export const LARGE_DIFF = 400;
+/** Diff lines shown at once on the Files tab; further files wait behind "Load diff". */
+export const DIFF_BUDGET = 3_000;
 
 type Tab = "conversation" | "commits" | "checks" | "files";
 const TABS: Tab[] = ["conversation", "commits", "checks", "files"];
@@ -42,7 +44,15 @@ const TAB_LABEL: Record<Tab, string> = { conversation: "Conversation", commits: 
 export function PrPageView({ props, active = true }: ViewProps<PageProps>) {
   const { page, error, loading, reload } = usePrPage(props.repo, props.number, active);
   const [tab, setTab] = useState<Tab>("conversation");
-  const { files, error: filesError } = usePrFiles(props.repo, props.number, page?.status.merge.headSha, tab === "files");
+  // Refresh and Retry read the files again; a new base or head is another comparison.
+  const [filesVersion, setFilesVersion] = useState(0);
+  const visible = useWindowVisible();
+  const key = page ? filesKey(page.repo, page.number, page.baseSha, page.headSha, filesVersion) : null;
+  const { files, error: filesError } = usePrFiles(props.repo, props.number, key, tab === "files" && active && visible);
+  const refresh = async () => {
+    setFilesVersion((v) => v + 1);
+    await reload();
+  };
   const now = useNow(5_000);
   const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({ conversation: null, commits: null, checks: null, files: null });
 
@@ -70,7 +80,7 @@ export function PrPageView({ props, active = true }: ViewProps<PageProps>) {
 
   return (
     <div className="prs-page">
-      <Header page={page} now={now} loading={loading} reload={reload} />
+      <Header page={page} now={now} loading={loading} reload={refresh} />
       {error && <p className="err-text prs-wrap" role="alert">Could not update: {error}</p>}
       <div className="prs-page-tabs" role="tablist" aria-label="Pull request">
         {TABS.map((t) => (
@@ -91,7 +101,11 @@ export function PrPageView({ props, active = true }: ViewProps<PageProps>) {
         )}
         {tab === "commits" && <div className="prs-page-main"><Commits page={page} /></div>}
         {tab === "checks" && <div className="prs-page-main"><Checks checks={page.checks} /></div>}
-        {tab === "files" && <div className="prs-page-main"><Files page={page} files={files} error={filesError} /></div>}
+        {tab === "files" && (
+          <div className="prs-page-main">
+            <Files page={page} files={files} error={filesError} comparison={key!} retry={() => setFilesVersion((v) => v + 1)} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -152,7 +166,8 @@ function Conversation({ page, reload }: { page: PrPage; reload: () => Promise<vo
         {page.timeline.map((item, i) => <li key={i}><Event item={item} /></li>)}
       </ol>
       {!page.complete && <p className="prs-muted">Some of the history is not shown here; see it on GitHub.</p>}
-      <MergeBox status={page.status} onMerged={() => void reload()} />
+      {/* Merges are offered only for the head this page shows (readPage reads both as one snapshot). */}
+      <MergeBox status={page.status} offer={page.headSha === page.status.merge.headSha} onMerged={() => void reload()} />
     </>
   );
 }
@@ -183,6 +198,9 @@ function Event({ item }: { item: TimelineItem }) {
       return (
         <Box author={item.author} at={item.at} url={item.url} verb={REVIEW_VERB[item.state] ?? "reviewed"} badge={badge}>
           {item.body.trim() && <Markdown text={item.body} />}
+          {item.moreComments > 0 && (
+            <p className="prs-muted">{item.moreComments} more comment{item.moreComments === 1 ? "" : "s"} in this review: <ExternalLink href={item.url} className="prs-link-inline">see them on GitHub</ExternalLink></p>
+          )}
           {item.comments.map((c, i) => (
             <div key={i} className="prs-thread">
               <div className="prs-thread-file mono">{c.path}{c.line !== null && <span className="prs-muted">:{c.line}</span>}</div>
@@ -220,7 +238,7 @@ function Event({ item }: { item: TimelineItem }) {
 }
 
 /** GitHub's merge box: reviews, checks and readiness, and the cards' Squash and merge. */
-function MergeBox({ status, onMerged }: { status: PrStatus; onMerged: () => void }) {
+function MergeBox({ status, offer, onMerged }: { status: PrStatus; offer: boolean; onMerged: () => void }) {
   if (status.state === "merged" || status.state === "closed") {
     return (
       <section className="prs-mergebox" aria-label="Merge">
@@ -247,7 +265,7 @@ function MergeBox({ status, onMerged }: { status: PrStatus; onMerged: () => void
         <p className="prs-mergebox-row"><span className={clsx("dot prs-dot", readinessTone(status.readiness))} aria-hidden />
           <span className="prs-wrap"><strong>{status.readiness.ready ? "Ready to merge" : "Not ready:"}</strong> {status.readiness.reasons.map((x) => BLOCKER_LABEL[x]).join(" · ")}</span></p>
       )}
-      <SquashMerge status={status} onMerged={onMerged} />
+      {offer ? <SquashMerge status={status} onMerged={onMerged} /> : <p className="prs-muted">New commits were pushed — refresh to review them</p>}
     </section>
   );
 }
@@ -286,11 +304,31 @@ function Checks({ checks }: { checks: PageCheck[] }) {
   );
 }
 
-function Files({ page, files, error }: { page: PrPage; files: PageFile[] | null; error: string | null }) {
-  if (error) return <p className="err-text" role="alert">Could not read the files: {error}</p>;
+function Files({ page, files, error, comparison, retry }: { page: PrPage; files: PageFile[] | null; error: string | null; comparison: string; retry: () => void }) {
+  if (error) {
+    return (
+      <p className="prs-file-note">
+        <span className="err-text" role="alert">Could not read the files: {error}</span> <button className="btn small" onClick={retry}>Retry</button>
+      </p>
+    );
+  }
   if (!files) return <p className="prs-muted" role="status">Loading files…</p>;
+  // Shown at once: files up to LARGE_DIFF lines each, while the total stays within DIFF_BUDGET.
+  let budget = DIFF_BUDGET;
+  const shown = files.map((f) => {
+    const lines = f.additions + f.deletions;
+    const now = lines <= LARGE_DIFF && lines <= budget;
+    if (now) budget -= lines;
+    return now;
+  });
   return (
     <>
+      {files.length < page.changedFiles && (
+        <p className="prs-files-note" role="note">
+          Showing {files.length} of {page.changedFiles} changed files; GitHub lists no more here.{" "}
+          <ExternalLink href={`${page.url}/files`} className="prs-link-inline">See all files on GitHub</ExternalLink>
+        </p>
+      )}
       <p className="prs-files-summary">
         {files.length} file{files.length === 1 ? "" : "s"} changed <span className="prs-ok">+{page.additions}</span> <span className="prs-err">−{page.deletions}</span>
       </p>
@@ -300,15 +338,16 @@ function Files({ page, files, error }: { page: PrPage; files: PageFile[] | null;
             <span className="prs-ok"> +{f.additions}</span><span className="prs-err"> −{f.deletions}</span></li>
         ))}
       </ul>
-      {files.map((f) => <FileDiff key={f.path} file={f} filesUrl={`${page.url}/files`} />)}
+      {/* Keyed by the comparison: a new base or head (a refresh) starts each file folded or open anew. */}
+      {files.map((f, i) => <FileDiff key={`${comparison}\n${f.path}`} file={f} show={shown[i]} filesUrl={`${page.url}/files`} />)}
     </>
   );
 }
 
-function FileDiff({ file, filesUrl }: { file: PageFile; filesUrl: string }) {
+function FileDiff({ file, show, filesUrl }: { file: PageFile; show: boolean; filesUrl: string }) {
   const large = file.additions + file.deletions > LARGE_DIFF;
   const [open, setOpen] = useState(!large);
-  const [load, setLoad] = useState(!large);
+  const [load, setLoad] = useState(show);
   return (
     <section className="prs-file" id={`prs-file-${encodeURIComponent(file.path)}`} aria-label={file.path}>
       <button className="prs-file-head" aria-expanded={open} onClick={() => setOpen(!open)}>

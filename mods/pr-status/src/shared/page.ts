@@ -24,7 +24,8 @@ export interface LineComment extends CommentNote {
 
 export type TimelineItem =
   | ({ kind: "comment" } & CommentNote)
-  | ({ kind: "review"; state: string; comments: LineComment[] } & CommentNote)
+  /** `moreComments`: line comments GitHub has beyond the ones read (shown as a link to GitHub). */
+  | ({ kind: "review"; state: string; comments: LineComment[]; moreComments: number } & CommentNote)
   | { kind: "commit"; at: string; author: string; sha: string; message: string; url: string }
   | { kind: "force_push"; at: string; actor: string; before: string; after: string }
   | { kind: "review_requested"; at: string; actor: string; reviewer: string }
@@ -63,6 +64,9 @@ export interface PrPage {
   body: string;
   base: string;
   head: string;
+  /** The commits compared: the files and the merge box are for exactly these. */
+  baseSha: string;
+  headSha: string;
   /** `owner/repo` of the head branch; differs from `repo` for a fork. */
   headRepo: string;
   commitCount: number;
@@ -79,7 +83,7 @@ export interface PrPage {
   commentCount: number;
   /** State, reviewers, checks, readiness and merge facts: the same read the cards use. */
   status: PrStatus;
-  /** False when a list had more than was read. */
+  /** False when a list had more than was read (timeline, commits, checks, a review's comments). */
   complete: boolean;
   readAt: string;
   /** When to read again, paced by the rate-limit budget. */

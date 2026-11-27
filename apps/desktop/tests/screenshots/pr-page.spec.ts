@@ -70,6 +70,7 @@ const timeline = [
 const check = (name: string, workflow: string, state: string, label: string, seconds: number | null) => ({ name, workflow, state, label, seconds, url });
 const page = {
   repo, number: 1290, url, title, author: "eldin", createdAt: at(310), body, base: "main", head: "feature/news-rate-limits", headRepo: repo,
+  baseSha: "0".repeat(40), headSha: status.merge.headSha,
   commitCount: 3, changedFiles: 4, additions: 186, deletions: 12,
   assignees: ["eldin"], labels: [{ name: "enhancement", color: "a2eeef" }, { name: "api", color: "1d76db" }], milestone: { title: "Portal 2.4", url },
   timeline,
