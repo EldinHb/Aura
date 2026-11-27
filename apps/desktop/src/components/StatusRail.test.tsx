@@ -61,7 +61,10 @@ it("shows what needs the user elsewhere, leaders only, most urgent first, and fo
   // Pending first, then the leader whose worker waits on the user; never a worker, a scheduled run or a working leader.
   expect(railRows("Other workspaces")).toEqual(["needs", "lead"]);
   const lead = rail()!.querySelector<HTMLElement>('[data-session-id-rail="lead"]')!;
-  expect(lead.textContent).toContain("Tester needs you");
+  // The title first; workspace and reason in one suffix that gives way before it, all of it in the tooltip.
+  expect(lead.querySelector(".title")?.textContent).toBe("Login revamp");
+  expect(lead.querySelector(".rail-suffix")?.textContent).toBe(" · Infra · Tester needs you");
+  expect(lead.title).toBe("Login revamp · in Infra · Tester needs you");
   expect(lead.getAttribute("aria-label")).toBe("Login revamp, Infra, Tester needs you");
   // Idle is folded with its count; unfolding it is remembered.
   const idle = screen.getByRole("button", { name: /^Idle elsewhere, 1 session/ });

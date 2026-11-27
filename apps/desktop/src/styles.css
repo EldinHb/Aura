@@ -1046,12 +1046,9 @@ input[type=checkbox], input[type=radio] { accent-color: var(--md-primary); }
 .session-row.rail-row { width: 100%; margin: 0; padding: 4px 12px; text-align: left; align-items: center; cursor: pointer; color: inherit; }
 .session-row.rail-row > .dot { margin-top: 0; }
 .session-row.rail-row .title-line { min-width: 0; }
-/* The title keeps its room; the workspace and the reason give way first. */
-.session-row.rail-row .title { flex: 0 1 auto; min-width: 4ch; }
-.session-row.rail-row .rail-ws, .session-row.rail-row .rail-why { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-label-s); }
-.session-row.rail-row .rail-ws + .attention, .session-row.rail-row .rail-why + .attention, .session-row.rail-row .title + .attention { margin-left: auto; }
-.session-row.rail-row .age { margin-left: auto; }
-.session-row.rail-row .attention ~ .age, .session-row.rail-row .badge ~ .age { margin-left: 0; }
+/* The title keeps its room; the workspace and the reason give way first, down to nothing (the tooltip has them). */
+.session-row.rail-row .title { flex: 0 1 auto; min-width: 0; }
+.session-row.rail-row .rail-suffix { flex: 1 1000 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-label-s); }
 .session-row.rail-row .badge { height: 16px; min-width: 16px; padding: 0 5px; font-size: 10px; }
 .session-row.rail-row:focus-visible { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--md-primary) 75%, transparent); }
 .rail-more { display: block; width: 100%; padding: 2px 12px 2px 30px; text-align: left; font-size: var(--fs-label-s); border-radius: var(--shape-sm); cursor: pointer; }

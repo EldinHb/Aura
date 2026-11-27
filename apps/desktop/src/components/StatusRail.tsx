@@ -66,8 +66,8 @@ function RailItem({ row, label, time, showWorkspace, onOpen }: { row: RailRow; l
       <span className={clsx("dot", statusClass(row.leader))} />
       <span className="title-line">
         <span className="title">{label}</span>
-        {showWorkspace && ws && <span className="dim rail-ws" title={ws}>· {shortName(ws)}</span>}
-        {suffix && <span className="dim rail-why">· {suffix}</span>}
+        {/* One suffix, which gives way before the title; the tooltip keeps all of it. */}
+        {(showWorkspace && ws) || suffix ? <span className="dim rail-suffix">{[showWorkspace && ws ? shortName(ws) : null, suffix].filter(Boolean).map((t) => ` · ${t}`).join("")}</span> : null}
         {row.attention && <span className={clsx("attention", ATTENTION[row.attention].className)} role="img" aria-label={ATTENTION[row.attention].label} />}
         {row.pending > 0 && <span className="badge">{row.pending}</span>}
         <span className="age">{time}</span>

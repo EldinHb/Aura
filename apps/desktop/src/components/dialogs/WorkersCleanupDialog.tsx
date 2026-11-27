@@ -259,7 +259,8 @@ export function WorkersCleanupDialog({ orchestratorId, scope: initialScope = "wo
                       {under > 0 && <span className="dim"> (+{plural(under, "worker")})</span>}
                     </span>
                     {waitsOnUser(s) && <span className="chip warn">waiting on you</span>}
-                    <span className="dim cleanup-state">{stateWord(s)} · {relTime(s.last_activity)}</span>
+                    {/* A waiting row says so in its chip; the others in words here. */}
+                    <span className="dim cleanup-state">{waitsOnUser(s) ? relTime(s.last_activity) : `${stateWord(s)} · ${relTime(s.last_activity)}`}</span>
                     {why && <span className="err-text cleanup-error">{why}</span>}
                   </label>
                 );

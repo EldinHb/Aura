@@ -76,7 +76,9 @@ it("deletes the selection after one confirmation that says what is still working
   expect(screen.getByRole("button", { name: /Delete 0 sessions/ }).hasAttribute("disabled")).toBe(true);
   for (const id of ["idle", "busy", "asks"]) fireEvent.click(screen.getByRole("checkbox", { name: new RegExp(`^${id}`) }));
   // A waiting row says so in words.
-  expect(screen.getByRole("checkbox", { name: /^asks/ }).closest("label")!.textContent).toContain("waiting on you");
+  // A waiting row says so once, in its chip.
+  expect(screen.getByRole("checkbox", { name: /^asks/ }).closest("label")!.textContent!.match(/waiting on you/g)).toHaveLength(1);
+  expect(screen.getByRole("checkbox", { name: /^busy/ }).closest("label")!.querySelector(".cleanup-state")!.textContent).toMatch(/^working · /);
   fireEvent.click(screen.getByRole("button", { name: /Delete 3 sessions/ }));
   expect(screen.getByText(/Delete 3 sessions and their history from Aura\?/).textContent).toContain("1 of them is still working and will be stopped. 1 waits on you; its question will be discarded.");
   // Cancel has the focus.
