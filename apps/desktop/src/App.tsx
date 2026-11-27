@@ -13,7 +13,7 @@ import { useEffect } from "react";
 import { useStore, selectSelected, selectVisibleSessions } from "./state/store";
 import { inboxCount, quietReportTurn, useInboxCount, useMarkViewedSeen } from "./state/attention";
 import { discoverDaemon, isTauri, type ConnInfo } from "./lib/connection";
-import { DaemonLink } from "./lib/daemonLink";
+import { DaemonLink, connectWindow } from "./lib/daemonLink";
 import { RpcClient } from "./lib/rpc";
 import { useKeyboard } from "./hooks/useKeyboard";
 import { registerCoreCommands, setFocus } from "./commands/core";
@@ -98,9 +98,9 @@ export default function App() {
     const st = useStore.getState;
     const link = new DaemonLink<RpcClient>({
       makeClient: (info) => new RpcClient(info.port, info.token),
+      // Subscribes and loads on the new client; it becomes the window's in
+      // `commit`, once this succeeded.
       attach: async (client) => {
-        st().setClient(client);
-        st().setConnection("open");
         const refresh = async () => {
           const [providers, sessions, info] = await Promise.all([client.providers(), client.sessions(), client.daemonInfo()]);
           st().setProviders(providers);
@@ -138,26 +138,23 @@ export default function App() {
           window.removeEventListener("focus", onWindowFocus);
         };
       },
+      commit: (client) => {
+        st().setClient(client);
+        st().setConnection("open");
+      },
     });
-    const failed = (e: unknown) => st().setConnection("closed", e instanceof Error ? e.message : String(e));
-    (async () => {
-      try {
-        st().setConnection("connecting");
-        const info = await discoverDaemon();
-        if (cancelled) return;
-        await link.switchTo(info);
-        if (cancelled) link.close();
-      } catch (e) {
-        if (!cancelled) failed(e);
-      }
-    })();
-    if (isTauri()) {
-      void import("@tauri-apps/api/event").then(({ listen }) =>
-        listen<ConnInfo>("aura://daemon-changed", (e) => {
-          if (!cancelled) link.switchTo(e.payload).catch(failed);
-        }).then((u) => (cancelled ? u() : (unlisten = u))),
-      );
-    }
+    const failed = (e: unknown) => {
+      if (!cancelled) st().setConnection("closed", e instanceof Error ? e.message : String(e));
+    };
+    st().setConnection("connecting");
+    // Listen for the shell's announcements before looking for the daemon, so
+    // a restart while this window opens is not missed (see connectWindow).
+    const listen = async (onChange: (info: ConnInfo) => void) => {
+      if (!isTauri()) return () => {};
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<ConnInfo>("aura://daemon-changed", (e) => onChange(e.payload));
+    };
+    void connectWindow({ link, listen, discover: discoverDaemon, onError: failed }).then((u) => (cancelled ? u() : (unlisten = u)));
     return () => {
       cancelled = true;
       link.close();
