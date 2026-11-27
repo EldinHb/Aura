@@ -3,6 +3,7 @@ package dev.aura.android.net
 import dev.aura.android.data.SavedServer
 import dev.aura.android.protocol.AuthResult
 import dev.aura.android.protocol.Event
+import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Session
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -62,6 +63,11 @@ class ServerConnection(
     /** The server's sessions; null until first loaded. */
     val sessions: StateFlow<List<Session>?> = _sessions
 
+    private val _features = MutableStateFlow<List<Feature>?>(null)
+
+    /** The server's features, with their owners' questions to the user; null until first loaded. */
+    val features: StateFlow<List<Feature>?> = _features
+
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 4096)
 
     /** The server's events, live. */
@@ -111,6 +117,22 @@ class ServerConnection(
     /** Reloads the session list. */
     suspend fun refreshSessions() {
         _sessions.value = call("session.list", JsonObject(emptyMap()), ListSerializer(Session.serializer()))
+    }
+
+    /** Reloads the features. */
+    suspend fun refreshFeatures() {
+        _features.value = call("feature.list", JsonObject(emptyMap()), ListSerializer(Feature.serializer()))
+    }
+
+    /** Answers a feature owner's [question] with an [option], [text], or both. */
+    suspend fun answerFeatureQuestion(ownerId: String, question: String, option: String?, text: String) {
+        val feature = call("feature.answer", buildJsonObject {
+            put("id", JsonPrimitive(ownerId))
+            put("question", JsonPrimitive(question))
+            option?.let { put("option", JsonPrimitive(it)) }
+            put("text", JsonPrimitive(text))
+        }, Feature.serializer())
+        upsertFeature(feature)
     }
 
     private suspend fun run() {
@@ -186,13 +208,18 @@ class ServerConnection(
     private fun resync() {
         _resyncs.tryEmit(Unit)
         scope.launch { runCatching { refreshSessions() } }
+        scope.launch { runCatching { refreshFeatures() } }
     }
 
     private fun onEvent(event: Event) {
         when (event) {
             is Event.SessionCreated -> upsert(event.session)
             is Event.SessionUpdated -> upsert(event.session)
-            is Event.SessionRemoved -> _sessions.value = _sessions.value?.filterNot { it.id == event.sessionId }
+            is Event.SessionRemoved -> {
+                _sessions.value = _sessions.value?.filterNot { it.id == event.sessionId }
+                _features.value = _features.value?.filterNot { it.ownerId == event.sessionId }
+            }
+            is Event.FeatureUpdated -> upsertFeature(event.feature)
             else -> {}
         }
         _events.tryEmit(event)
@@ -202,6 +229,12 @@ class ServerConnection(
         val list = _sessions.value ?: return
         val i = list.indexOfFirst { it.id == session.id }
         _sessions.value = if (i >= 0) list.toMutableList().also { it[i] = session } else list + session
+    }
+
+    private fun upsertFeature(feature: Feature) {
+        val list = _features.value ?: return
+        val i = list.indexOfFirst { it.ownerId == feature.ownerId }
+        _features.value = if (i >= 0) list.toMutableList().also { it[i] = feature } else list + feature
     }
 
     private class AuthRejected(message: String?) : Exception(message)

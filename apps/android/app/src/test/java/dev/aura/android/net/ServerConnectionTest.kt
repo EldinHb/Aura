@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -33,6 +34,25 @@ class ServerConnectionTest {
         put("title", JsonPrimitive("Fix the build"))
         put("status", JsonPrimitive("running"))
     }
+
+    private fun feature(answered: Boolean) = buildJsonObject {
+        put("owner_id", JsonPrimitive("s1"))
+        put("goal", JsonPrimitive("Ship the Android app"))
+        put("status", JsonPrimitive("waiting_on_user"))
+        put("questions", JsonArray(listOf(buildJsonObject {
+            put("id", JsonPrimitive("q1"))
+            put("question", JsonPrimitive("Which SDK?"))
+            put("context", JsonPrimitive("37 is installed"))
+            put("options", JsonArray(listOf(buildJsonObject { put("label", JsonPrimitive("37")) })))
+            put("recommended", JsonPrimitive("37"))
+            put("kind", JsonPrimitive("decision"))
+            put("asked_at", JsonPrimitive("2026-11-28T00:00:00Z"))
+            put("answer", if (answered) buildJsonObject { put("option", JsonPrimitive("37")) } else JsonNull)
+            put("withdrawn", JsonPrimitive(false))
+        })))
+    }
+
+    private val answers = java.util.concurrent.CopyOnWriteArrayList<JsonObject>()
 
     private val aurad = FakeAurad { method, params ->
         when (method) {
@@ -65,6 +85,11 @@ class ServerConnectionTest {
                 FakeAurad.error(RemoteErrors.AUTH_FAILED, "unknown device")
             }
             "session.list" -> JsonArray(listOf(session))
+            "feature.list" -> JsonArray(listOf(feature(answered = answers.isNotEmpty())))
+            "feature.answer" -> {
+                answers += params
+                feature(answered = true)
+            }
             else -> FakeAurad.error(-32601, "unknown method $method")
         }
     }
@@ -157,6 +182,24 @@ class ServerConnectionTest {
         assertEquals("Renamed", c.sessions.value!!.single().title)
         c.stop()
         assertEquals(ConnectionState.Offline, c.state.value)
+    }
+
+    @Test
+    fun `feature owners' questions load with the sessions and are answered`() = runBlocking {
+        aurad.accept()
+        val c = ServerConnection(saved(), "good", http, scope)
+        c.start()
+        c.reach { it is ConnectionState.Online }
+        val features = withTimeout(10_000) { c.features.filterNotNull().first() }
+        assertTrue(features.single().questions.single().open)
+
+        c.answerFeatureQuestion("s1", "q1", "37", "go")
+        val sent = answers.single()
+        assertEquals("s1", sent["id"]!!.jsonPrimitive.content)
+        assertEquals("q1", sent["question"]!!.jsonPrimitive.content)
+        assertEquals("37", sent["option"]!!.jsonPrimitive.content)
+        assertEquals("go", sent["text"]!!.jsonPrimitive.content)
+        assertTrue("the answered feature replaces the open one", !c.features.value!!.single().questions.single().open)
     }
 
     @Test

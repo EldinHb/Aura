@@ -42,7 +42,7 @@ import androidx.navigation.toRoute
 import dev.aura.android.AuraApplication
 import dev.aura.android.R
 import dev.aura.android.ui.inbox.InboxScreen
-import dev.aura.android.ui.inbox.waitingSessions
+import dev.aura.android.ui.inbox.inbox
 import dev.aura.android.ui.newsession.NewSessionScreen
 import dev.aura.android.ui.pairing.AddServerScreen
 import dev.aura.android.ui.servers.ServersScreen
@@ -71,8 +71,9 @@ fun AuraApp(pairingLinks: Flow<String>) {
     val entry by nav.currentBackStackEntryAsState()
     val destination = entry?.destination
     val container = (LocalContext.current.applicationContext as AuraApplication).container
-    val waitingFlow = remember(container) { container.waitingSessions() }
-    val waiting by waitingFlow.collectAsStateWithLifecycle(emptyList())
+    val inboxFlow = remember(container) { container.inbox() }
+    val inbox by inboxFlow.collectAsStateWithLifecycle(null)
+    val waiting = inbox?.size ?: 0
 
     LaunchedEffect(pairingLinks) {
         pairingLinks.collect { nav.navigate(AddServerRoute(it)) { launchSingleTop = true } }
@@ -99,7 +100,7 @@ fun AuraApp(pairingLinks: Flow<String>) {
                 selected = destination?.hasRoute(InboxRoute::class) == true,
                 onClick = { nav.switchTo(InboxRoute) },
                 icon = {
-                    BadgedBox(badge = { if (waiting.isNotEmpty()) Badge { Text("${waiting.size}") } }) {
+                    BadgedBox(badge = { if (waiting > 0) Badge { Text("$waiting") } }) {
                         Icon(if (destination?.hasRoute(InboxRoute::class) == true) Icons.Filled.Inbox else Icons.Outlined.Inbox, contentDescription = null)
                     }
                 },

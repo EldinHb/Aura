@@ -2,8 +2,9 @@
 
 A native Android client for Aura. It connects to `aurad`'s remote listener on
 your computer, shows your sessions and their transcripts, and lets you answer
-what waits on you: send messages, approve or decline, answer questions,
-interrupt or stop an agent, and start new sessions.
+what waits on you: send messages, approve or decline, answer agents' and
+feature owners' questions, interrupt or stop an agent, and start new
+sessions. The "Waiting on you" inbox gathers all of it across your servers.
 
 Kotlin, Jetpack Compose and Material 3 (Material You: dynamic color on
 Android 12+, light and dark following the system). Android 8.0 (API 26) and

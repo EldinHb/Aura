@@ -3,6 +3,7 @@ package dev.aura.android.protocol
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 
 // The daemon's types (crates/aura-core/src/types.rs), as far as this app uses
@@ -172,4 +173,30 @@ data class AuthResult(
     val serverId: String,
     val serverName: String,
     val version: String = "",
+)
+
+/** A question a feature owner put to the user (`ask_user` or a checkpoint). */
+@Serializable
+data class UserQuestion(
+    val id: String,
+    val question: String,
+    val context: String = "",
+    val options: List<QuestionOption> = emptyList(),
+    val recommended: String? = null,
+    val kind: String = "decision",
+    @SerialName("asked_at") val askedAt: String = "",
+    val answer: JsonElement? = null,
+    val withdrawn: Boolean = false,
+) {
+    /** Still waiting for the user's answer. */
+    val open: Boolean get() = (answer == null || answer is JsonNull) && !withdrawn
+}
+
+/** A feature a feature owner session runs, as far as the app shows it. */
+@Serializable
+data class Feature(
+    @SerialName("owner_id") val ownerId: String,
+    val goal: String = "",
+    val status: String = "",
+    val questions: List<UserQuestion> = emptyList(),
 )

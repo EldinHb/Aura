@@ -24,6 +24,7 @@ sealed interface Event {
     data class InputRequested(override val sessionId: String, val request: UserInputRequest) : Event
     data class InputResolved(override val sessionId: String, val requestId: String) : Event
     data class Notice(override val sessionId: String, val level: String, val message: String) : Event
+    data class FeatureUpdated(override val sessionId: String, val feature: Feature) : Event
 
     /** A change to an item: text appended to it, command output appended, or data fields set. */
     sealed interface Delta {
@@ -60,6 +61,7 @@ sealed interface Event {
                 "approval_resolved" -> ApprovalResolved(sid(), o.string("approval_id")!!)
                 "user_input_requested" -> InputRequested(sid(), o.decode("request", UserInputRequest.serializer()))
                 "user_input_resolved" -> InputResolved(sid(), o.string("request_id")!!)
+                "feature_updated" -> FeatureUpdated(sid(), o.decode("feature", Feature.serializer()))
                 "notice" -> Notice(sid(), o.string("level") ?: "info", o.string("message").orEmpty())
                 else -> null
             }

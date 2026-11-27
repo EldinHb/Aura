@@ -125,5 +125,13 @@
     <string name="inbox_label">Inbox</string>
     <string name="inbox_title">Waiting on you</string>
     <string name="inbox_empty_title">Nothing waits on you</string>
-    <string name="inbox_empty_body">Sessions that need an answer or an approval, on any connected server, show up here.</string>
+    <string name="inbox_empty_body">Sessions that need an answer or an approval, and feature owners\' questions, on any connected server, show up here.</string>
+    <string name="inbox_questions">Questions from feature owners</string>
+    <string name="inbox_sessions">Sessions</string>
+    <string name="feature">Feature</string>
+    <string name="feature_question">Decision needed</string>
+    <string name="feature_question_irreversible">Decision needed: cannot be undone</string>
+    <string name="recommended_option">%1$s (recommended)</string>
+    <string name="add_a_note">Add a note (optional)</string>
+    <string name="open_feature_owner">Open</string>
 </resources>
