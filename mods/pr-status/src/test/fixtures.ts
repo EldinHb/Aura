@@ -20,7 +20,7 @@ const review = (login: string, state: string, typename = "User") => ({ state, su
 export function prNode(over: {
   number?: number; title?: string; state?: string; isDraft?: boolean; mergeable?: string; mergeStateStatus?: string; reviewDecision?: string | null;
   author?: string; requested?: Array<[string, string]>; reviews?: Array<[string, string] | [string, string, string]>; opinions?: Array<[string, string]>;
-  checks?: any[]; rollup?: string | null; checksTotal?: number; morePages?: Array<"checks" | "reviews" | "opinions" | "requests">;
+  checks?: any[]; rollup?: string | null; fork?: boolean; checksTotal?: number; morePages?: Array<"checks" | "reviews" | "opinions" | "requests">;
 } = {}) {
   const page = (kind: "checks" | "reviews" | "opinions" | "requests") =>
     ({ pageInfo: { hasNextPage: (over.morePages ?? []).includes(kind), endCursor: `${kind}-1` } });
@@ -32,6 +32,10 @@ export function prNode(over: {
     isDraft: over.isDraft ?? false,
     mergeable: over.mergeable ?? "MERGEABLE",
     mergeStateStatus: over.mergeStateStatus ?? "CLEAN",
+    headRefOid: "f".repeat(40),
+    headRefName: "feature/news",
+    isCrossRepository: over.fork ?? false,
+    viewerCanMergeAsAdmin: false,
     reviewDecision: over.reviewDecision ?? null,
     author: { login: over.author ?? "me" },
     reviewRequests: {
@@ -65,6 +69,8 @@ export function fakeGithub(nodes: Record<number, any> = {}) {
     notified: null as Notified | null,
     pace: (base: number) => base,
     fail: null as Error | null,
+    /** The repository fields of every batched read (REPO_FIELDS). */
+    repo: { squashMergeAllowed: true, viewerPermission: "WRITE" } as Record<string, unknown>,
     /** Answers a follow-up page query (one with `$after`): its `data`. */
     page: ((query: string, variables: any): any => {
       throw new Error(`no page for ${query.slice(0, 60)} ${JSON.stringify(variables)}`);
@@ -80,8 +86,8 @@ export function fakeGithub(nodes: Record<number, any> = {}) {
       const query: string = body.query;
       const data: Record<string, any> = {};
       const asked: number[] = [];
-      for (const m of query.matchAll(/(r\d+):repository\(owner:"[^"]+",name:"[^"]+"\)\{((?: pr\d+:pullRequest\(number:\d+\)\{\.\.\.pull\})*)\}/g)) {
-        data[m[1]] = {};
+      for (const m of query.matchAll(/(r\d+):repository\(owner:"[^"]+",name:"[^"]+"\)\{[A-Za-z ]*?((?: pr\d+:pullRequest\(number:\d+\)\{\.\.\.pull\})*)\}/g)) {
+        data[m[1]] = { ...state.repo };
         for (const pr of m[2].matchAll(/(pr\d+):pullRequest\(number:(\d+)\)/g)) {
           const n = Number(pr[2]);
           asked.push(n);

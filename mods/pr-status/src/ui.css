@@ -76,3 +76,15 @@ a.prs-check-name:hover { text-decoration: underline; }
 .prs-number { flex: none; font-size: var(--fs-label-s); }
 
 .prs-section a:focus-visible, .prs-section button:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 1px; border-radius: var(--shape-xs); }
+
+/* Squash and merge: the button with why it can't be used, and the inline confirmation. */
+.prs-merge { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; margin-top: 8px; }
+.prs-merge > button { flex: none; }
+.prs-merge-reason { flex: 1 1 120px; font-size: var(--fs-label-s); }
+.prs-confirm { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin-top: 8px; padding: 10px; border-radius: var(--shape-sm); background: var(--md-surface-container-high); }
+.prs-confirm label { font-size: var(--fs-label-s); font-weight: 500; color: var(--fg-muted); }
+.prs-confirm input:not([type=checkbox]), .prs-confirm textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; font-size: var(--fs-label-m); }
+.prs-confirm textarea { resize: vertical; min-height: 64px; }
+.prs-confirm .prs-check { margin: 4px 0 0; font-weight: 400; color: var(--fg); }
+.prs-confirm .err-text { margin: 4px 0 0; font-size: var(--fs-label-m); }
+.prs-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }

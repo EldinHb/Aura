@@ -1,14 +1,20 @@
 // The pr-status mod's daemon half: finds the PRs of a session tree and keeps the ones on
-// screen up to date. Read-only on GitHub, through the github mod's shared transport.
+// screen up to date, through the github mod's shared transport. Its one write is "Squash and
+// merge" (`merge`), asked for by the user.
 //
 // RPC (`mod.pr-status.*`), each answering a SessionView:
 //   watch   {viewer, sessionId, refresh?}  the viewer shows the session (a lease of LEASE_MS)
 //   unwatch {viewer}                       → true
 //   view    {sessionId}                    what is known, without reading GitHub
 //   refresh {sessionId}                    collect and read every PR of the session now
+//   merge.defaults {repo, number}          → MergeDefaults: the squash commit GitHub would suggest
+//   merge {repo, number, sha, title, message, deleteBranch}
+//                                          → MergeResult; squash-merges at head `sha`, then deletes
+//                                            a same-repository head branch when asked
 // Notification `changed {sessionIds}`: ask `view` again for those sessions.
 import { defineDaemon, type DaemonApi } from "@aura/mod-sdk/daemon";
 import { remoteGithub, type Github } from "@aura/github-client";
+import { Merger, mergeError, mergeRequest, readMergeDefaults } from "./daemon/merge";
 import { PrPoller } from "./daemon/poller";
 
 function text(params: any, key: string): string {
@@ -19,7 +25,9 @@ function text(params: any, key: string): string {
 
 export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => number; loop?: boolean } = {}) {
   const github = (name: string, params?: unknown) => aura.mods.call<any>("github", name, params);
-  const poller = new PrPoller({ aura, gh: opts.gh ?? remoteGithub(github), github, now: opts.now });
+  const gh = opts.gh ?? remoteGithub(github);
+  const poller = new PrPoller({ aura, gh, github, now: opts.now });
+  const merger = new Merger(gh);
 
   const off = [
     aura.rpc.handle("watch", (p) => poller.watch(text(p, "viewer"), text(p, "sessionId"), p?.refresh === true)),
@@ -29,6 +37,15 @@ export function activate(aura: DaemonApi, opts: { gh?: Github; now?: () => numbe
     }),
     aura.rpc.handle("view", (p) => poller.view(text(p, "sessionId"))),
     aura.rpc.handle("refresh", (p) => poller.refresh(text(p, "sessionId"))),
+    aura.rpc.handle("merge.defaults", (p) => {
+      if (!Number.isSafeInteger(p?.number)) throw mergeError("invalid", "number is required");
+      return readMergeDefaults(gh, text(p, "repo"), p.number);
+    }),
+    aura.rpc.handle("merge", (p) => {
+      const req = mergeRequest(p);
+      const status = poller.statusOf(req.repo, req.number);
+      return merger.merge(req, status ? { headRef: status.merge.headRef, sameRepo: status.merge.sameRepo } : null);
+    }),
     // A new worker, a finished turn (it may have pushed or opened a PR) or changed links
     // can change which PRs a tree has.
     aura.events.on("session_created", () => poller.invalidate()),

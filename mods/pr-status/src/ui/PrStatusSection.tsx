@@ -9,6 +9,7 @@ import type { PrEntry, PrSource, PrState, PrStatus, Reviewer } from "../shared/t
 import { getCtx } from "./ctx";
 import { ago, BLOCKER_LABEL, CHECKS_LABEL, checkCounts, checksTone, readinessTone, REVIEW_LABEL, reviewTone, STATE_LABEL } from "./labels";
 import { splitPulls, updatedAt } from "./order";
+import { SquashMerge } from "./SquashMerge";
 import { useNow, usePullStatus } from "./usePullStatus";
 
 /** `ctx.storage` key: whether "Merged & closed" is unfolded. */
@@ -37,7 +38,7 @@ export function PrStatusSection({ session }: InspectorSectionProps) {
       {error && <p className="err-text prs-note" role="alert">Could not update: {error}</p>}
       {active.length > 0 && (
         <div className="prs-cards">
-          {active.map((entry) => <PrCard key={entry.ref.url} entry={entry} rootId={session.id} now={now} />)}
+          {active.map((entry) => <PrCard key={entry.ref.url} entry={entry} rootId={session.id} now={now} onMerged={() => void refresh()} />)}
         </div>
       )}
       {done.length > 0 && <DoneGroup pulls={done} />}
@@ -49,7 +50,7 @@ function StateChip({ state }: { state: PrState }) {
   return <span className={clsx("prs-chip", `prs-chip-${state}`)}>{STATE_LABEL[state]}</span>;
 }
 
-function PrCard({ entry, rootId, now }: { entry: PrEntry; rootId: string; now: number }) {
+function PrCard({ entry, rootId, now, onMerged }: { entry: PrEntry; rootId: string; now: number; onMerged: () => void }) {
   const { ref, status } = entry;
   const title = status?.title || `${ref.repo}#${ref.number}`;
   return (
@@ -66,7 +67,7 @@ function PrCard({ entry, rootId, now }: { entry: PrEntry; rootId: string; now: n
           Could not read{entry.readAt ? `; showing ${ago(entry.readAt, now)}` : ""}: {entry.error}
         </p>
       )}
-      {status && <PrBody status={status} />}
+      {status && <PrBody status={status} onMerged={onMerged} />}
     </article>
   );
 }
@@ -118,7 +119,7 @@ function Sources({ sources, rootId }: { sources: PrSource[]; rootId: string }) {
   );
 }
 
-function PrBody({ status }: { status: PrStatus }) {
+function PrBody({ status, onMerged }: { status: PrStatus; onMerged: () => void }) {
   return (
     <>
       {status.readiness && (
@@ -134,6 +135,7 @@ function PrBody({ status }: { status: PrStatus }) {
           )}
         </p>
       )}
+      <SquashMerge status={status} onMerged={onMerged} />
       <ChecksLine status={status} />
       <ReviewerGroup title="Reviewed" people={status.reviewers.reviewed} />
       {/* GitHub keeps requests open after a merge or close; nobody is still to review then. */}

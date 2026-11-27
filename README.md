@@ -634,7 +634,8 @@ commands, keys, settings. Aura ships three, which are on unless you turn them of
 - **Pull requests** (`mods/pull-requests`): everything in the next section.
 - **PR status** (`mods/pr-status`): a card in the Inspector for each pull request
   the selected session and its workers work on: its state, who reviewed and who
-  is still to review, its checks, and whether it is ready to merge, kept up to date.
+  is still to review, its checks, and whether it is ready to merge, kept up to date;
+  approved ones can be squash-merged from the card.
 
 Settings → Mods lists them with what each may do, their settings and their log,
 and lets you disable, reload or approve them. Your own mods go in

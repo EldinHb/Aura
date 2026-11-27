@@ -36,12 +36,17 @@ const person = (name: string, state: string, previous: string | null = null) => 
 const check = (name: string, state: string) => ({ name, url: `https://github.com/wortell/wortell.clientapps/actions/runs/1/${name}`, state });
 const passing = (n: number) => ({ state: "passing", passing: n, failing: 0, pending: 0, total: n, open: [], complete: true });
 
+const mergeInfo = (over: Record<string, unknown> = {}) => ({
+  reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headSha: "f".repeat(40), headRef: "feature/news-translator",
+  sameRepo: true, squashAllowed: true, canMerge: true, ...over,
+});
+
 let n = 0;
 function pr(repo: string, number: number, title: string, sources: unknown[], status: Record<string, unknown>) {
   n++;
   return {
     ref: { url: `https://github.com/${repo}/pull/${number}`, repo, number, sources },
-    status: { url: `https://github.com/${repo}/pull/${number}`, repo, number, title, author: "eldin", reviewers: { reviewed: [], pending: [], complete: true }, checks: passing(12), readiness: null, ...status },
+    status: { url: `https://github.com/${repo}/pull/${number}`, repo, number, title, author: "eldin", reviewers: { reviewed: [], pending: [], complete: true }, checks: passing(12), readiness: null, merge: mergeInfo(), ...status },
     readAt: at(10 + n),
     error: null,
   };
@@ -73,10 +78,32 @@ const pulls = [
     reviewers: { reviewed: [person("Renevdo", "APPROVED"), person("martijntakken-wortell-long-login", "APPROVED")], pending: [], complete: true },
     checks: passing(4),
     readiness: { ready: true, reasons: [] },
+    merge: mergeInfo({ reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" }),
   }),
   merged("wortell/customer-portal-backend", 1255, ":sparkles: News page templates and the article RSS feed", from(1)),
 ];
 const view = { sessionId: lead, pulls, blocked: null };
+
+// "Squash and merge": an approved, clean PR, and an approved one behind its base.
+const mergeLead = id(9);
+sessions.push(session(mergeLead, { title: "Rate limits" }));
+const mergePulls = [
+  pr("wortell/customer-portal-backend", 1290, ":sparkles: Rate limit the news API per tenant and per key", [{ sessionId: mergeLead, title: "Rate limits", worker: false }], {
+    state: "open",
+    reviewers: { reviewed: [person("Renevdo", "APPROVED")], pending: [], complete: true },
+    checks: passing(12),
+    readiness: { ready: true, reasons: [] },
+    merge: mergeInfo({ reviewDecision: "APPROVED", mergeStateStatus: "CLEAN" }),
+  }),
+  pr("wortell/customer-portal-backend", 1291, ":bug: Return Retry-After on 429 responses", [{ sessionId: mergeLead, title: "Rate limits", worker: false }], {
+    state: "open",
+    reviewers: { reviewed: [person("martijntakken-wortell-long-login", "APPROVED")], pending: [], complete: true },
+    checks: passing(12),
+    readiness: { ready: false, reasons: ["behind"] },
+    merge: mergeInfo({ reviewDecision: "APPROVED", mergeStateStatus: "BEHIND" }),
+  }),
+];
+const views: Record<string, unknown> = { [lead]: view, [mergeLead]: { sessionId: mergeLead, pulls: mergePulls, blocked: null } };
 
 const modInfo = { id: "pr-status", name: "PR status", version: "1.0.0", source: "bundled", dir: "/bundled/pr-status", status: { state: "running" }, enabled: true, approved: true, hasUi: true, hasDaemon: true, permissions: {}, dependsOn: {}, settings: [], settingValues: {} };
 
@@ -96,7 +123,12 @@ async function mockDaemon(page: Page) {
         case "session.pending": result = { approvals: [], inputs: [] }; break;
         case "mods.list": result = [modInfo]; break;
         case "mods.ui_source": result = { js, css, version: "1.0.0" }; break;
-        case "mod.pr-status.watch": case "mod.pr-status.view": case "mod.pr-status.refresh": result = { ...view, sessionId: params.sessionId }; break;
+        case "mod.pr-status.watch": case "mod.pr-status.view": case "mod.pr-status.refresh": result = views[params.sessionId]; break;
+        case "mod.pr-status.merge.defaults": result = { title: ":sparkles: Rate limit the news API per tenant and per key (#1290)", message: "* Add a limiter per tenant\n\n* Read the limits from the tenant settings\n\n* Return Retry-After" }; break;
+        case "mod.pr-status.merge":
+          // Never a real merge: the fake daemon refuses as GitHub does when the head moved.
+          socket.send(JSON.stringify({ id: rid, error: { code: -32000, message: "New commits arrived since this card was read; refresh and look at them first. GitHub said: Head branch was modified. Review and try the merge again.", data: { code: "head_moved" } } }));
+          return;
         case "mod.pr-status.unwatch": result = true; break;
         case "git.branch_status": result = null; break;
         default:
@@ -173,4 +205,35 @@ for (const theme of ["dark", "light"] as const) {
       if (width === 340) writeFileSync(`${OUT}/contrast-${theme}.json`, JSON.stringify(await page.evaluate(measure), null, 2));
     });
   }
+}
+
+for (const theme of ["dark", "light"] as const) {
+  test(`squash and merge ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1600 });
+    await page.addInitScript((t) => localStorage.setItem("aura.settings.v1", JSON.stringify({ theme: t })), theme);
+    await mockDaemon(page);
+    await page.clock.setFixedTime(now);
+    await page.goto(`/?port=19998&token=shots&session=${mergeLead}`);
+    await page.addStyleTag({ content: read("pull-requests/dist/ui.css") });
+    await page.addStyleTag({ content: ":root { --inspector-w: 340px; }" });
+    const ready = page.getByRole("article", { name: /#1290/ });
+    const behind = page.getByRole("article", { name: /#1291/ });
+    await expect(ready.getByRole("button", { name: "Squash and merge" })).toBeEnabled();
+    await expect(behind.getByRole("button", { name: "Squash and merge" })).toBeDisabled();
+    await page.waitForTimeout(250);
+    await ready.screenshot({ path: `${OUT}/merge-button-${theme}.png` });
+    await behind.screenshot({ path: `${OUT}/merge-disabled-${theme}.png` });
+    await ready.getByRole("button", { name: "Squash and merge" }).click();
+    await expect(ready.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await expect(ready.getByLabel("Commit message")).toHaveValue(/Return Retry-After/);
+    await ready.getByLabel("Delete branch after merge").check();
+    await page.waitForTimeout(250);
+    expect(await page.evaluate(overflow)).toEqual([]);
+    await ready.screenshot({ path: `${OUT}/merge-confirm-${theme}.png` });
+    await ready.getByRole("button", { name: "Merge", exact: true }).click();
+    await expect(ready.getByRole("alert")).toContainText("Head branch was modified");
+    await expect(ready.getByRole("button", { name: "Merge", exact: true })).toBeEnabled();
+    await page.waitForTimeout(250);
+    await ready.screenshot({ path: `${OUT}/merge-error-${theme}.png` });
+  });
 }

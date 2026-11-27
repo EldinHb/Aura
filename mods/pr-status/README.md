@@ -2,7 +2,9 @@
 
 A card per pull request in the Inspector: the PRs the selected session and all its
 workers work on, with their state, reviewers, checks and whether they can be merged.
-Read-only on GitHub. Depends on the `github` mod (token, rate limits, session links).
+Its one write: "Squash and merge" on approved PRs (`merge` RPC: `PUT …/merge` with the shown
+head `sha`; then the head branch is deleted if asked and in the same repository). Depends
+on the `github` mod (token, rate limits, session links); writes go through its transport.
 
 ## Layout (Inspector section `status`, order -10: above "Issues & PRs")
 ```
@@ -18,9 +20,8 @@ Pull requests                     updated 12s ago  [↻]
 └───────────────────────────────────────────────────┘
 ▸ Merged & closed (6)                                  folded; a row each: chip, title, #n
 ```
-Hidden without PRs. Open PRs first: not ready, ready, drafts. Chips use Material 3
-containers; status words --md-success/-tertiary/-error. Classes are `prs-` (unshared).
-GitHub blocked (`api.blocked`): one inline reason, the cards stay, dated.
+Hidden without PRs. Open PRs first: not ready, ready, drafts. Chips: Material 3 containers;
+status words --md-success/-tertiary/-error; classes `prs-`. Blocked: a reason, cards dated.
 
 ## Data
 - PRs: the session plus every session whose `orchestrator_id` chain leads to it. Per

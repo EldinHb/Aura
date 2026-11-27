@@ -80,6 +80,41 @@ export interface Readiness {
   reasons: Blocker[];
 }
 
+/** What "Squash and merge" needs to know, as GitHub reported it with the status. */
+export interface MergeInfo {
+  /** APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | "" */
+  reviewDecision: string;
+  /** MERGEABLE | CONFLICTING | UNKNOWN */
+  mergeable: string;
+  /** CLEAN, HAS_HOOKS, UNSTABLE, BLOCKED, BEHIND, DIRTY, DRAFT, UNKNOWN */
+  mergeStateStatus: string;
+  /** The head commit shown; the merge is refused when the head moved past it. */
+  headSha: string;
+  headRef: string;
+  /** The head branch is in the PR's own repository (not a fork's), so it may be deleted. */
+  sameRepo: boolean;
+  /** The repository allows squash merges. */
+  squashAllowed: boolean;
+  /** The signed-in account may merge (write access, or an admin's bypass). */
+  canMerge: boolean;
+}
+
+/** The squash commit GitHub would suggest. */
+export interface MergeDefaults {
+  title: string;
+  message: string;
+}
+
+/** What `merge` did. */
+export interface MergeResult {
+  merged: true;
+  /** The squash commit. */
+  sha: string;
+  branchDeleted: boolean;
+  /** Why the branch was not deleted although asked, if it was not. */
+  branchError: string | null;
+}
+
 export interface PrStatus {
   url: string;
   repo: string;
@@ -91,6 +126,7 @@ export interface PrStatus {
   checks: Checks;
   /** Null for a merged or closed PR. */
   readiness: Readiness | null;
+  merge: MergeInfo;
 }
 
 export interface PrEntry {

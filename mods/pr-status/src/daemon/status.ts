@@ -11,11 +11,16 @@ const OPINION = "state author{login}";
 
 export const STATUS_FRAGMENT =
   "fragment pull on PullRequest{number title url state isDraft mergeable mergeStateStatus reviewDecision author{login} " +
+  "headRefOid headRefName isCrossRepository viewerCanMergeAsAdmin " +
   `reviewRequests(first:100){${PAGE} nodes{requestedReviewer{__typename ... on User{login} ... on Team{combinedSlug} ... on Bot{login} ... on Mannequin{login}}}} ` +
   `commits(last:1){nodes{commit{oid statusCheckRollup{state contexts(first:100){totalCount ${PAGE} nodes{${CONTEXT}}}}}}} ` +
   `latestReviews(first:100){${PAGE} nodes{${REVIEW}}} ` +
   `latestOpinionatedReviews(first:100){${PAGE} nodes{${OPINION}}}` +
   "}";
+
+/** What the batch reads of each repository: whether it squashes, and what the viewer may do. */
+export const REPO_FIELDS = "squashMergeAllowed viewerPermission";
+const WRITERS = ["ADMIN", "MAINTAIN", "WRITE"];
 
 /** Pages read of one list, the first included; past this the list is marked incomplete. */
 export const MAX_PAGES = 10;
@@ -153,7 +158,7 @@ export interface Truncated {
 }
 
 /** A PR node read with `STATUS_FRAGMENT` (and its lists completed by `completeLists`). */
-export function toStatus(ref: Pick<PrRef, "url" | "repo" | "number">, node: any, truncated: Truncated = {}): PrStatus {
+export function toStatus(ref: Pick<PrRef, "url" | "repo" | "number">, node: any, truncated: Truncated = {}, repo: any = null): PrStatus {
   const state = stateOf(node);
   const checks = checksRollup(node?.commits?.nodes?.[0]?.commit?.statusCheckRollup, !truncated.checks);
   return {
@@ -172,6 +177,17 @@ export function toStatus(ref: Pick<PrRef, "url" | "repo" | "number">, node: any,
       reviewDecision: s(node, "reviewDecision"),
       checks: checks.state,
     }),
+    merge: {
+      reviewDecision: s(node, "reviewDecision"),
+      mergeable: s(node, "mergeable"),
+      mergeStateStatus: s(node, "mergeStateStatus"),
+      headSha: s(node, "headRefOid"),
+      headRef: s(node, "headRefName"),
+      sameRepo: node?.isCrossRepository === false,
+      // Unknown (an older answer) is not "not allowed": GitHub decides when asked.
+      squashAllowed: repo?.squashMergeAllowed !== false,
+      canMerge: WRITERS.includes(s(repo, "viewerPermission")) || node?.viewerCanMergeAsAdmin === true,
+    },
   };
 }
 
@@ -219,10 +235,10 @@ export async function readStatuses(gh: Github, refs: Array<Pick<PrRef, "url" | "
   const out: Array<PrStatus | Error> = [];
   for (const part of chunks(refs, BATCH)) {
     try {
-      const nodes = await batchNodes(gh, part.map((r) => [r.repo, r.number]), "", {}, "", STATUS_FRAGMENT);
+      const nodes = await batchNodes(gh, part.map((r) => [r.repo, r.number]), "", {}, REPO_FIELDS, STATUS_FRAGMENT);
       for (const [i, n] of nodes.entries()) {
         if (n instanceof Error) out.push(n);
-        else out.push(toStatus(part[i], n[1], await completeLists(gh, part[i], n[1])));
+        else out.push(toStatus(part[i], n[1], await completeLists(gh, part[i], n[1]), n[0]));
       }
     } catch (e) {
       const error = e instanceof Error ? e : new Error(messageOf(e));

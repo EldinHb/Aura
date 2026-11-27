@@ -10,6 +10,8 @@ import { DONE_OPEN_KEY, PrStatusSection } from "./PrStatusSection";
 import { RENEW_MS } from "./usePullStatus";
 
 const NOW = Date.parse("2026-11-27T10:00:30Z");
+/** Merge facts of a PR that does not offer "Squash and merge" (not approved). */
+const noMerge = { reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headSha: "a".repeat(40), headRef: "feature", sameRepo: true, squashAllowed: true, canMerge: true };
 
 function entry(over: Partial<PrEntry["ref"]> & { status?: any; error?: string | null } = {}): PrEntry {
   const number = over.number ?? 1;
@@ -26,6 +28,7 @@ function entry(over: Partial<PrEntry["ref"]> & { status?: any; error?: string | 
         { name: "test", url: "https://ci.example/test", state: "failing" }, { name: "e2e", url: null, state: "pending" },
       ], complete: true },
       readiness: { ready: false, reasons: ["review_required", "checks_failing"] },
+      merge: noMerge,
     } : over.status,
     readAt: "2026-11-27T10:00:00Z",
     error: over.error ?? null,

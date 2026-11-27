@@ -18,6 +18,7 @@ function entry(number: number, state: "open" | "merged", readAt: string): PrEntr
       reviewers: { reviewed: [], pending: [], complete: true },
       checks: { state: "passing", passing: 1, failing: 0, pending: 0, total: 1, open: [], complete: true },
       readiness: state === "open" ? { ready: true, reasons: [] } : null,
+      merge: { reviewDecision: "", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headSha: "", headRef: "", sameRepo: true, squashAllowed: true, canMerge: true },
     } as PrEntry["status"],
     readAt,
     error: null,
