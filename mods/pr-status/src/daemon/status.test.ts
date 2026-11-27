@@ -54,6 +54,19 @@ describe("reviewerGroups: dismissed reviews (review item 7)", () => {
   });
 });
 
+describe("reviewerGroups: a re-requested reviewer's verdict (cli#13899)", () => {
+  it("keeps a change request GitHub only lists in latestOpinionatedReviews", () => {
+    // As GitHub answers for cli#13899: BagToad re-requested, his change request gone from latestReviews.
+    const node = prNode({ reviewDecision: "CHANGES_REQUESTED", requested: [["User", "BagToad"]], reviews: [["copilot-pull-request-reviewer", "COMMENTED", "Bot"]], opinions: [["BagToad", "CHANGES_REQUESTED"]] });
+    const groups = reviewerGroups(node);
+    expect(groups.pending).toEqual([{ name: "BagToad", kind: "user", state: "PENDING", previous: "CHANGES_REQUESTED" }]);
+    expect(groups.reviewed.map((r) => r.name)).toEqual(["copilot-pull-request-reviewer"]);
+    // Not re-requested: shown with the verdict.
+    const plain = reviewerGroups(prNode({ opinions: [["carol", "APPROVED"]] }));
+    expect(plain.reviewed).toEqual([{ name: "carol", kind: "user", state: "APPROVED", previous: null }]);
+  });
+});
+
 describe("checksRollup", () => {
   it("counts check runs and statuses and lists failing then pending ones", () => {
     const checks = checksRollup(prNode({ checks: [

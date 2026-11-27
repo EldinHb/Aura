@@ -321,6 +321,15 @@ describe("PrPageView", () => {
       expect(big().querySelector("table")).toBeNull();
     });
 
+    it("names who requested changes in the merge box, and who it waits on (QA, cli#13899)", async () => {
+      const node = prNode({ number: 7, reviewDecision: "CHANGES_REQUESTED", requested: [["User", "BagToad"]], reviews: [["copilot-pull-request-reviewer", "COMMENTED", "Bot"]], opinions: [["BagToad", "CHANGES_REQUESTED"]] });
+      const status = toStatus({ url: props.url, repo: "acme/api", number: 7 }, node, {}, { squashMergeAllowed: true, viewerPermission: "WRITE" });
+      fakeCtx((name) => (name === "page.get" ? page({ status, headSha: status.merge.headSha }) : undefined));
+      render(<PrPageView props={props} close={() => {}} active />);
+      await act(async () => {});
+      expect(screen.getByRole("region", { name: "Merge" }).textContent).toContain("Changes requested by BagToad · waiting on BagToad");
+    });
+
     it("offers no merge for a head the page does not show (item 1)", async () => {
       fakeCtx((name) => (name === "page.get" ? page({ headSha: "e".repeat(40) }) : undefined));
       render(<PrPageView props={props} close={() => {}} active />);

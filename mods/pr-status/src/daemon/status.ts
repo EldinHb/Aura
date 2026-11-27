@@ -43,13 +43,22 @@ function verdicts(node: any): Array<{ name: string; bot: boolean; state: ReviewS
     const state = s(n, "state") as ReviewState;
     return OPINIONS.includes(state) ? state : null;
   };
-  return list(node?.latestReviews?.nodes).flatMap((n) => {
+  const latest = list(node?.latestReviews?.nodes).flatMap((n) => {
     const name = s(n?.author, "login");
     if (!name || (author && sameText(name, author))) return [];
     const latest = s(n, "state") as ReviewState;
     const state = opinion(name) ?? (SHOWN.includes(latest) ? latest : null);
     return state ? [{ name, bot: n?.author?.__typename === "Bot" || name.endsWith("[bot]"), state }] : [];
   });
+  // A re-requested reviewer drops out of latestReviews (cli#13899), but their approval or change
+  // request stays in latestOpinionatedReviews, and still decides the PR.
+  const opinionOnly = list(node?.latestOpinionatedReviews?.nodes).flatMap((n) => {
+    const name = s(n?.author, "login");
+    const state = s(n, "state") as ReviewState;
+    if (!name || !OPINIONS.includes(state) || (author && sameText(name, author)) || latest.some((v) => sameText(v.name, name))) return [];
+    return [{ name, bot: name.endsWith("[bot]"), state }];
+  });
+  return [...latest, ...opinionOnly];
 }
 
 /**
