@@ -86,4 +86,13 @@ scheduled_task_id: string | null,
 /**
  * That task's name when it started the session, for labels.
  */
-scheduled_task_name: string | null, };
+scheduled_task_name: string | null, 
+/**
+ * The scheduled task whose run this session is part of: set on the run
+ * itself (with `scheduled_task_id`) and on every worker under it, at any
+ * depth, when they start. Kept when the run's orchestrator is deleted,
+ * so a surviving worker is still known as part of a scheduled run.
+ * Unlike `scheduled_task_id`, it does not make the session one of the
+ * task's runs (its history, its overlap check).
+ */
+scheduled_run?: string, };

@@ -193,6 +193,15 @@ pub struct Session {
     /// That task's name when it started the session, for labels.
     #[serde(default)]
     pub scheduled_task_name: Option<String>,
+    /// The scheduled task whose run this session is part of: set on the run
+    /// itself (with `scheduled_task_id`) and on every worker under it, at any
+    /// depth, when they start. Kept when the run's orchestrator is deleted,
+    /// so a surviving worker is still known as part of a scheduled run.
+    /// Unlike `scheduled_task_id`, it does not make the session one of the
+    /// task's runs (its history, its overlap check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scheduled_run: Option<String>,
     /// The complete system prompt Aura hands the agent when it starts: global,
     /// per-agent and per-session prompts with their placeholders filled in.
     /// Set by the manager just before `Provider::start`; never stored or sent.
@@ -736,6 +745,7 @@ impl Session {
             attention: None,
             scheduled_task_id: opts.scheduled_task.as_ref().map(|(id, _)| id.clone()),
             scheduled_task_name: opts.scheduled_task.as_ref().map(|(_, name)| name.clone()),
+            scheduled_run: opts.scheduled_task.as_ref().map(|(id, _)| id.clone()),
             instructions: None,
             mcp_servers: vec![],
         }

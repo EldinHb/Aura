@@ -8025,3 +8025,74 @@ async fn a_stop_the_store_cannot_take_still_stops_the_session() {
     m.rename(&id, "renamed").unwrap();
     assert_eq!(stored(&store, &id).status, SessionStatus::Idle);
 }
+
+#[tokio::test]
+async fn workers_of_scheduled_runs_from_before_are_marked_at_load() {
+    let store = Arc::new(MemoryStore::default());
+    let mut run = stored_session("run", true, None);
+    run.scheduled_task_id = Some("t1".into());
+    run.scheduled_task_name = Some("Nightly".into());
+    let before: Vec<Session> = vec![
+        run,
+        stored_session("sub", true, Some("run")),
+        stored_session("deep", false, Some("sub")),
+        stored_session("lead", true, None),
+        stored_session("worker", false, Some("lead")),
+        stored_session("orphan", false, Some("deleted-long-ago")),
+    ];
+    for s in &before {
+        // As stored before the field existed.
+        let mut json = serde_json::to_value(s).unwrap();
+        json.as_object_mut().unwrap().remove("scheduled_run");
+        store
+            .upsert_session(&serde_json::from_value(json).unwrap())
+            .unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let stored = |id: &str| {
+        store
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+    };
+    for id in ["run", "sub", "deep"] {
+        assert_eq!(
+            m.get_session(id).unwrap().scheduled_run.as_deref(),
+            Some("t1"),
+            "{id}"
+        );
+        assert_eq!(
+            stored(id).scheduled_run.as_deref(),
+            Some("t1"),
+            "{id} stored"
+        );
+    }
+    for id in ["sub", "deep"] {
+        assert_eq!(m.get_session(id).unwrap().scheduled_task_id, None, "{id}");
+    }
+    for id in ["lead", "worker", "orphan"] {
+        assert_eq!(m.get_session(id).unwrap().scheduled_run, None, "{id}");
+    }
+    for s in &before {
+        assert_eq!(stored(&s.id).last_activity, s.last_activity, "not activity");
+    }
+
+    // Only the run deleted since (a delete that failed under it): the
+    // workers that stay keep it at the next start, with no run to walk to.
+    store.delete_session("run").unwrap();
+    let mut sub = stored("sub");
+    sub.orchestrator_id = None;
+    store.upsert_session(&sub).unwrap();
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    for id in ["sub", "deep"] {
+        assert_eq!(
+            m.get_session(id).unwrap().scheduled_run.as_deref(),
+            Some("t1"),
+            "{id}"
+        );
+    }
+}

@@ -562,6 +562,8 @@ impl Manager {
                 self.remember_group(&s);
             }
         }
+        // Workers of scheduled runs from before they carried it.
+        self.backfill_scheduled_runs();
         // Sessions and scheduled tasks from before workspaces go in the default one.
         self.backfill_workspaces()
             .context("put sessions and scheduled tasks in a workspace")?;
@@ -623,6 +625,14 @@ impl Manager {
             bail!("ACP sessions need an agent (e.g. `gemini`)");
         }
         let mut session = Session::new(&opts);
+        // A worker of a scheduled run is part of that run, however deep.
+        if let Some(o) = opts
+            .orchestrator_id
+            .as_deref()
+            .and_then(|o| self.get_session(o).ok())
+        {
+            session.scheduled_run = o.scheduled_run.or(o.scheduled_task_id);
+        }
         if session.orchestrator && session.mode == SessionMode::Terminal {
             bail!(
                 "an orchestrator runs in the structured view, where its workers' reports reach it"
@@ -1160,8 +1170,42 @@ impl Manager {
             }
             s.scheduled_task_id = Some(task_id.to_string());
             s.scheduled_task_name = Some(task_name.to_string());
+            s.scheduled_run = Some(task_id.to_string());
             true
         })
+    }
+
+    /// Mark every session whose orchestrator chain reaches a scheduled run
+    /// (the run itself included) as part of it: [`Session::scheduled_run`],
+    /// for sessions from before it was set when they started. One whose
+    /// chain was already broken (its run deleted) cannot be told. Not
+    /// activity; a failure to store is logged and the next change stores it.
+    fn backfill_scheduled_runs(&self) {
+        let sessions = self.list_sessions();
+        let by_id: HashMap<&str, &Session> = sessions.iter().map(|s| (s.id.as_str(), s)).collect();
+        for s in sessions.iter().filter(|s| s.scheduled_run.is_none()) {
+            let mut seen = HashSet::new();
+            let mut at = Some(s);
+            let mut run = None;
+            while let Some(c) = at.filter(|c| seen.insert(c.id.as_str())) {
+                if let Some(t) = c.scheduled_run.as_ref().or(c.scheduled_task_id.as_ref()) {
+                    run = Some(t.clone());
+                    break;
+                }
+                at = c
+                    .orchestrator_id
+                    .as_deref()
+                    .and_then(|o| by_id.get(o).copied());
+            }
+            if let Some(run) = run {
+                if let Err(e) = self.change_session(&s.id, false, |s| {
+                    s.scheduled_run = Some(run);
+                    true
+                }) {
+                    tracing::warn!("mark session {} as part of a scheduled run: {e:#}", s.id);
+                }
+            }
+        }
     }
 
     /// Stop the process(es) behind a session but keep it (resumable).

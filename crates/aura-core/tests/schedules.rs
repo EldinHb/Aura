@@ -2377,3 +2377,54 @@ async fn a_task_moved_while_its_run_is_placed_waits_until_the_run_is_stored() {
     assert_eq!(s.workspace, a);
     assert_eq!(svc.get(&t.id).unwrap().workspace, b, "then it moved");
 }
+
+#[tokio::test]
+async fn workers_of_a_scheduled_run_carry_it_at_any_depth() {
+    let w = World::new();
+    let t = w
+        .svc
+        .create(
+            ScheduledTaskInput {
+                run_as: Some(RunAs::Orchestrator),
+                ..w.input("quick: lead", every_hour())
+            },
+            &Editor::User,
+        )
+        .unwrap();
+    let run = w.svc.run_now(&t.id).await.unwrap();
+    let lead = w.m.get_session(run.session_id.as_deref().unwrap()).unwrap();
+    assert_eq!(lead.scheduled_run.as_deref(), Some(t.id.as_str()));
+    let under = |o: &str, orchestrator: bool| {
+        let m = w.m.clone();
+        let opts = CreateSessionOpts {
+            provider: ProviderKind::Claude,
+            cwd: w.cwd(),
+            orchestrator,
+            orchestrator_id: Some(o.to_string()),
+            ..Default::default()
+        };
+        async move { m.create_session(opts).await.unwrap() }
+    };
+    let sub = under(&lead.id, true).await;
+    let deep = under(&sub.id, false).await;
+    for s in [&sub, &deep] {
+        assert_eq!(s.scheduled_run.as_deref(), Some(t.id.as_str()), "{}", s.id);
+        // Part of the run, not runs of the task themselves.
+        assert_eq!(s.scheduled_task_id, None);
+    }
+    assert_eq!(w.svc.runs(&t.id, 10).unwrap().len(), 1);
+
+    // Only the run's orchestrator goes (a delete that failed under it): the
+    // workers that stay still carry the run, also after a restart.
+    w.store.delete_session(&lead.id).unwrap();
+    let mut detached = w.m.get_session(&sub.id).unwrap();
+    detached.orchestrator_id = None;
+    w.store.upsert_session(&detached).unwrap();
+    let w2 = World::on(w.store.clone());
+    for id in [&sub.id, &deep.id] {
+        assert_eq!(
+            w2.m.get_session(id).unwrap().scheduled_run.as_deref(),
+            Some(t.id.as_str())
+        );
+    }
+}
