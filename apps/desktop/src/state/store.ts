@@ -79,7 +79,10 @@ export type Dialog =
   | { kind: "image"; caption: string; preview: string | null; load?: () => Promise<Blob> }
   | { kind: "help" };
 
-export type Toast = { id: number; level: "info" | "warn" | "error"; message: string };
+/** A button on a toast; clicking it runs `run` and dismisses the toast. */
+export type ToastAction = { label: string; run: () => void };
+export type Toast = { id: number; level: "info" | "warn" | "error"; message: string; actions?: ToastAction[] };
+export type ToastOptions = { actions?: ToastAction[] };
 
 export type WhichKeyState = { prefix: string[]; candidates: { key: string; label: string }[] } | null;
 
@@ -175,7 +178,7 @@ export type AppState = {
   closeDialog: () => void;
   openModView: (v: ModView) => void;
   closeModView: () => void;
-  toast: (message: string, level?: Toast["level"]) => void;
+  toast: (message: string, level?: Toast["level"], opts?: ToastOptions) => void;
   dismissToast: (id: number) => void;
   setInspectorOpen: (open: boolean) => void;
   setSidebarCollapsed: (c: boolean) => void;
@@ -213,6 +216,8 @@ export type UiSettings = {
   waitingSoundFile: string | null;
   /** Also while Aura is in front and the session is the one on screen. */
   waitingSoundWhenViewing: boolean;
+  /** Check for a new version at startup and every 6 hours (release builds). */
+  autoCheckUpdates: boolean;
 };
 
 export const defaultSettings: UiSettings = {
@@ -232,6 +237,7 @@ export const defaultSettings: UiSettings = {
   waitingSoundVolume: 0.6,
   waitingSoundFile: null,
   waitingSoundWhenViewing: false,
+  autoCheckUpdates: true,
 };
 
 export function emptyTranscript(): Transcript {
@@ -614,10 +620,12 @@ export const useStore = create<AppState>((set, get) => ({
     if (active?.kind === "mod") set(tabsPatch(st, T.closeTab(tabsOf(st), active.key)));
     else set({ modView: null });
   },
-  toast: (message, level = "info") => {
+  toast: (message, level = "info", opts) => {
     const id = toastId++;
-    set({ toasts: [...get().toasts, { id, level, message }] });
-    setTimeout(() => get().dismissToast(id), level === "error" ? 8000 : 4000);
+    const actions = opts?.actions?.length ? opts.actions : undefined;
+    set({ toasts: [...get().toasts, { id, level, message, ...(actions ? { actions } : {}) }] });
+    // One with a button stays long enough to reach it.
+    setTimeout(() => get().dismissToast(id), actions ? 15000 : level === "error" ? 8000 : 4000);
   },
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),

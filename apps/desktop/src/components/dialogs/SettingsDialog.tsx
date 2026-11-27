@@ -14,6 +14,7 @@ import { ModSettingsTab, ModsSettings, useModSettingsTabs } from "../../mods/Mod
 import { MAX_SOUND_FILE, SOUND_CHOICES, playSound } from "../../lib/sound";
 import { SpecialistsTab } from "./SpecialistsTab";
 import { AutonomyPicker } from "../AutonomyPicker";
+import { checkForUpdates, useUpdates } from "../../features/updates/updates";
 
 type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "mods";
 const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "mods"];
@@ -183,6 +184,36 @@ function WaitingSoundField() {
   );
 }
 
+/** Updates: the toggle for automatic checks, this version and when Aura last checked. */
+function UpdatesField() {
+  const auto = useStore((s) => s.settings.autoCheckUpdates);
+  const setSettings = useStore((s) => s.setSettings);
+  const config = useUpdates((s) => s.config);
+  const lastCheck = useUpdates((s) => s.state.lastCheck);
+  const checking = useUpdates((s) => s.state.phase.kind === "checking");
+  const devBuild = config !== null && !config.autoCheck;
+  return (
+    <div className="field wide updates-field">
+      <label className="check-row">
+        <input type="checkbox" checked={auto} onChange={(e) => setSettings({ autoCheckUpdates: e.target.checked })} /> Automatically check for updates
+      </label>
+      <div className="row-controls">
+        <span>Aura {config?.currentVersion ?? "(version unknown outside the app)"}</span>
+        <span className="dim">Last checked: {lastCheck ? new Date(lastCheck).toLocaleString() : "never"}</span>
+        <button type="button" className="btn small" data-command="updates.check" disabled={checking} onClick={() => void checkForUpdates(true)}>
+          {checking ? "Checking…" : "Check now"}
+        </button>
+      </div>
+      <span className="dim" style={{ fontSize: 11 }}>
+        {devBuild
+          ? "This is a development build: it only checks when you ask."
+          : "Aura checks shortly after it starts and every 6 hours, downloads a new version in the background and asks you to restart. Sessions resume after the restart."}
+        {config?.support.kind === "manual" && ` ${config.support.reason}`}
+      </span>
+    </div>
+  );
+}
+
 function GeneralTab() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
@@ -247,6 +278,7 @@ function GeneralTab() {
         <label>Summon shortcut (global, restart required)</label>
         <input type="text" value={settings.summonShortcut} onChange={(e) => set("summonShortcut", e.target.value)} />
       </div>
+      <UpdatesField />
       <div>
         <button type="button" className="btn" data-hint onClick={() => setSettings(defaultSettings)}>
           Reset to defaults

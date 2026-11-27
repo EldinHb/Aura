@@ -13,12 +13,13 @@
     "e2e": "playwright test"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-clipboard-manager": "^2",
     "@tauri-apps/plugin-global-shortcut": "^2",
     "@tauri-apps/plugin-notification": "^2",
     "@tauri-apps/plugin-opener": "~2.5.5",
     "@tauri-apps/plugin-os": "^2",
+    "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-shell": "^2",
     "@tiptap/core": "3.32.0",
     "@tiptap/extension-bold": "3.32.0",
@@ -50,7 +51,7 @@
   "devDependencies": {
     "@eslint/js": "^9",
     "@playwright/test": "^1.50",
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.12.6",
     "@testing-library/dom": "^10",
     "@testing-library/react": "^16",
     "@types/hast": "^3.0.5",

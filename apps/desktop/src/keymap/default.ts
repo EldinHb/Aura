@@ -94,6 +94,7 @@ export const defaultBindings: Binding[] = [
   { keys: "leader slash", command: "search.open", label: "Search" },
   { keys: "leader comma", command: "settings.open", label: "Settings" },
   { keys: "leader question", command: "help.open", label: "Keyboard help" },
+  { keys: "leader u", command: "updates.check", label: "Check for updates" },
   { keys: "leader t", command: "focus.main", label: "Focus terminal / transcript" },
   { keys: "leader i", command: "focus.composer", label: "Focus composer" },
   { keys: "leader l", command: "focus.sidebar", label: "Focus sidebar" },

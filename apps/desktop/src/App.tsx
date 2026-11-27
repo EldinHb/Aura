@@ -1,4 +1,5 @@
 import { registerScheduleCommands, useScheduleSync } from "./features/schedules/state";
+import { useUpdateChecks } from "./features/updates/updates";
 import "./features/schedules/schedules.css";
 import { useModLoader } from "./mods/loader";
 import { useWaitingSound } from "./state/waitingSound";
@@ -44,6 +45,8 @@ export default function App() {
   // A sound when a session goes from working to waiting for you; the main window plays it.
   useWaitingSound(windowMode !== "session");
   useScheduleSync();
+  // Self-update: the main window checks, downloads and offers the restart.
+  useUpdateChecks(windowMode !== "session");
   useMarkViewedSeen();
   const inbox = useInboxCount();
   const connection = useStore((s) => s.connection);
