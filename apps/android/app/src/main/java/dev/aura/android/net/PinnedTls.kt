@@ -1,5 +1,6 @@
 package dev.aura.android.net
 
+import android.annotation.SuppressLint
 import okhttp3.OkHttpClient
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -17,8 +18,10 @@ class FingerprintMismatchException(
 /**
  * Trusts exactly one certificate: the one whose SHA-256 is [fingerprint].
  * Aura servers use self-signed certificates, so no CA is consulted; the
- * fingerprint, which the user confirmed when pairing, is the trust.
+ * fingerprint, which the user confirmed when pairing, is the trust. It
+ * accepts no other certificate whatever signed it.
  */
+@SuppressLint("CustomX509TrustManager")
 class PinnedTrustManager(fingerprint: String) : X509TrustManager {
     private val pinned: String = requireNotNull(Fingerprint.normalize(fingerprint)) { "not a SHA-256 fingerprint" }
 

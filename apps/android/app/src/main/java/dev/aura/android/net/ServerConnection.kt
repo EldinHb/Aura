@@ -13,8 +13,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.selects.onTimeout
-import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonElement
@@ -140,10 +139,7 @@ class ServerConnection(
             attempt = if (outcome is WasOnline) 1 else attempt + 1
             val wait = backoffMillis(attempt)
             _state.value = ConnectionState.Retrying(describe(outcome.cause ?: outcome), clock() + wait)
-            select {
-                wake.onReceive { }
-                onTimeout(wait) { }
-            }
+            withTimeoutOrNull(wait) { wake.receive() }
         }
     }
 

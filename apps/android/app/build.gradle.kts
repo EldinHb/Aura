@@ -65,8 +65,9 @@ android {
         warningsAsErrors = false
         abortOnError = true
         checkDependencies = false
-        // Newer library versions are chosen deliberately in the version catalog.
-        disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
+        // Versions are chosen in the version catalog: SDK 36, and the newest
+        // libraries that still compile against it (newer ones need SDK 37).
+        disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion", "OldTargetApi")
     }
 }
 

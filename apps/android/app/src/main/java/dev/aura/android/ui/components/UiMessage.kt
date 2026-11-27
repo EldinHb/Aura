@@ -4,7 +4,7 @@ import androidx.annotation.StringRes
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import kotlinx.coroutines.flow.Flow
 
 /** Something to tell the user in a snackbar: a string resource, or text from the server. */
@@ -16,11 +16,11 @@ sealed interface UiMessage {
 /** Shows each of [messages] in [host] as it comes. */
 @Composable
 fun SnackbarMessages(messages: Flow<UiMessage>, host: SnackbarHostState) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     LaunchedEffect(messages, host) {
         messages.collect { message ->
             val text = when (message) {
-                is UiMessage.Res -> context.getString(message.id, *message.args.toTypedArray())
+                is UiMessage.Res -> resources.getString(message.id, *message.args.toTypedArray())
                 is UiMessage.Text -> message.text
             }
             host.showSnackbar(text)

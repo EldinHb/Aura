@@ -35,6 +35,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -62,7 +63,7 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
     LaunchedEffect(vm) { vm.created.collect(onCreated) }
 
     var project by rememberSaveable { mutableStateOf("") }
-    var agentIndex by rememberSaveable { mutableStateOf(0) }
+    var agentIndex by rememberSaveable { mutableIntStateOf(0) }
     var prompt by rememberSaveable { mutableStateOf("") }
 
     Scaffold(
