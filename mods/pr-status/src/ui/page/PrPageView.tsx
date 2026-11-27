@@ -9,7 +9,7 @@ import { diff, ExternalLink, exactTime, Markdown, timeAgo, useStore } from "@aur
 import type { Label, PageCheck, PageFile, PrPage, TimelineItem } from "../../shared/page";
 import type { PrState, PrStatus, Reviewer } from "../../shared/types";
 import { getCtx } from "../ctx";
-import { ago, BLOCKER_LABEL, CHECKS_LABEL, checkCounts, checksTone, readinessTone, REVIEW_LABEL, reviewTone, STATE_LABEL } from "../labels";
+import { ago, reviewSummary, BLOCKER_LABEL, CHECKS_LABEL, checkCounts, checksTone, readinessTone, REVIEW_LABEL, reviewTone, STATE_LABEL } from "../labels";
 import { SquashMerge } from "../SquashMerge";
 import { useNow } from "../usePullStatus";
 import { githubMarkdown } from "./githubMarkdown";
@@ -249,12 +249,7 @@ function MergeBox({ status, offer, onMerged }: { status: PrStatus; offer: boolea
     );
   }
   const r = status.reviewers;
-  const changes = r.reviewed.filter((x) => x.state === "CHANGES_REQUESTED");
-  const approvals = r.reviewed.filter((x) => x.state === "APPROVED");
-  const review = changes.length ? { tone: "err", text: `Changes requested by ${changes.map((x) => x.name).join(", ")}` }
-    : status.merge.reviewDecision === "REVIEW_REQUIRED" ? { tone: "warn", text: "Review required" }
-    : approvals.length ? { tone: "ok", text: `Approved by ${approvals.map((x) => x.name).join(", ")}` }
-    : { tone: "", text: "No reviews yet" };
+  const review = reviewSummary(status);
   const counts = checkCounts(status.checks);
   return (
     <section className="prs-mergebox" aria-label="Merge">

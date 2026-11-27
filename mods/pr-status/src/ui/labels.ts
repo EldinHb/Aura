@@ -1,5 +1,5 @@
 // Readable text for every state the cards show; colour always comes with one of these.
-import type { Blocker, Checks, ChecksState, PrState, Readiness, ReviewState } from "../shared/types";
+import type { Blocker, Checks, ChecksState, PrState, PrStatus, Readiness, ReviewState } from "../shared/types";
 
 export const STATE_LABEL: Record<PrState, string> = { draft: "Draft", open: "Open", merged: "Merged", closed: "Closed" };
 
@@ -62,4 +62,31 @@ export function ago(iso: string, now: number): string {
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+}
+
+/**
+ * Where reviews stand, for the merge box: GitHub's own `reviewDecision` first (it is what blocks
+ * a merge), naming who gave that verdict. A re-requested reviewer still counts with the review
+ * they gave before the new request.
+ */
+export function reviewSummary(status: Pick<PrStatus, "reviewers" | "merge">): { tone: string; text: string } {
+  const r = status.reviewers;
+  const gave = (state: ReviewState) => [...r.reviewed.filter((x) => x.state === state), ...r.pending.filter((x) => x.previous === state)].map((x) => x.name);
+  const by = (names: string[]) => (names.length ? ` by ${names.join(", ")}` : "");
+  switch (status.merge.reviewDecision) {
+    case "CHANGES_REQUESTED":
+      return { tone: "err", text: `Changes requested${by(gave("CHANGES_REQUESTED"))}` };
+    case "APPROVED":
+      return { tone: "ok", text: `Approved${by(gave("APPROVED"))}` };
+    case "REVIEW_REQUIRED": {
+      const approved = gave("APPROVED");
+      return { tone: "warn", text: approved.length ? `Review required · approved by ${approved.join(", ")}` : "Review required" };
+    }
+  }
+  // The base branch requires no review: what reviewers said, if anything.
+  const changes = gave("CHANGES_REQUESTED");
+  if (changes.length) return { tone: "err", text: `Changes requested by ${changes.join(", ")}` };
+  const approved = gave("APPROVED");
+  if (approved.length) return { tone: "ok", text: `Approved by ${approved.join(", ")}` };
+  return { tone: "", text: r.reviewed.length || r.pending.some((x) => x.previous) ? "Reviewed" : "No reviews yet" };
 }
