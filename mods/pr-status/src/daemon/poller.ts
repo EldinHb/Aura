@@ -338,6 +338,15 @@ export class PrPoller {
     const visible = new Map<string, PrRef>();
     for (const refs of trees.values()) for (const ref of refs) visible.set(prKey(ref.url), ref);
     if (visible.size === 0) {
+      // A branch lookup is waiting: whether gh works is asked again first, so an earlier block
+      // that has passed does not keep discovery off for good.
+      if (this.discovery.size > 0) {
+        const blocked = await this.gh.blocked().catch((e) => messageOf(e));
+        if (blocked !== this.blocked) {
+          this.blocked = blocked;
+          watched.forEach((id) => changed.add(id));
+        }
+      }
       this.announce(changed);
       return this.discover();
     }

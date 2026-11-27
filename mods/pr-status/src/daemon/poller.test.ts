@@ -570,4 +570,26 @@ describe("PrPoller", () => {
       expect(t.fake.notifiedCalls.length).toBeGreaterThan(0);
     });
   });
+
+  describe("final review", () => {
+    it("looks a branch's PR up again once an earlier block has passed (item 1)", async () => {
+      // GitHub is blocked while the lead's PR is shown: the block is noted.
+      t.fake.state.blocked = "GitHub login expired.";
+      expect((await t.watch()).blocked).toBe("GitHub login expired.");
+      // The block passes; now only the worker's branch has a PR, nothing else is shown.
+      t.fake.state.blocked = null;
+      await t.setLinked("lead", []);
+      t.branches.feature = URL2;
+      t.fake.state.nodes[2] = prNode({ number: 2 });
+      t.advance(DISCOVERY_GAP_MS);
+      const lookups = () => t.githubCalls.filter((c) => c === "branch_pull").length;
+      const before = lookups();
+      await t.renew();
+      expect(lookups()).toBeGreaterThan(before);
+      await t.renew();
+      const view = await t.renew();
+      expect(view.blocked).toBeNull();
+      expect(view.pulls.map((p) => p.ref.url)).toEqual([URL2]);
+    });
+  });
 });
