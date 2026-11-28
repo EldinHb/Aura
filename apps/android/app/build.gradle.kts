@@ -89,6 +89,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.zxing.embedded)
     implementation(libs.zxing.core)
+    implementation(libs.markdown.m3)
+    implementation(libs.markdown.code)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)

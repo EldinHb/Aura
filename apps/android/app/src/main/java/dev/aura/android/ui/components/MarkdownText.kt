@@ -1,81 +1,54 @@
 package dev.aura.android.ui.components
 
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.LinkAnnotation
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withLink
-import androidx.compose.ui.text.withStyle
+import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.highlightedCodeBlock
+import com.mikepenz.markdown.compose.elements.highlightedCodeFence
+import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
 import dev.aura.android.ui.theme.Spacing
 import dev.aura.android.ui.theme.codeSmall
 
-/** [markdown] rendered with the theme's type scale; the text can be selected and copied. */
+/**
+ * [markdown] rendered as the desktop renders it (GitHub flavour: headings,
+ * emphasis and strike-through, code with syntax highlighting, nested and task
+ * lists, quotes, tables, rules, links), in the theme's type scale and colors.
+ * Text takes the color around it, so it reads on any container. Links open
+ * only on the web or in mail; the text can be selected and copied.
+ */
 @Composable
 fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
-    val blocks = remember(markdown) { Markdown.parse(markdown) }
-    val type = MaterialTheme.typography
-    val colors = MaterialTheme.colorScheme
-    // Inline code sits on its own surface, so it gets that surface's text color;
-    // links take the text color around them, underlined, so they read on any
-    // container the text is on (a tinted bubble, a card), not only on surface.
-    val code = SpanStyle(fontFamily = FontFamily.Monospace, color = colors.onSurface, background = colors.surfaceContainerHighest)
-    val link = LocalContentColor.current
-    SelectionContainer(modifier) {
-        Column(verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
-            for (block in blocks) {
-                when (block) {
-                    is MdBlock.Paragraph -> Text(inline(block.text, code, link), style = type.bodyLarge)
-                    is MdBlock.Heading -> Text(
-                        inline(block.text, code, link),
-                        style = when (block.level) {
-                            1 -> type.titleLarge
-                            2 -> type.titleMedium
-                            else -> type.titleSmall
-                        },
-                    )
-                    is MdBlock.ListItem -> Row(Modifier.padding(start = Spacing.m * block.depth)) {
-                        Text(block.marker, style = type.bodyLarge, modifier = Modifier.padding(end = Spacing.s))
-                        Text(inline(block.text, code, link), style = type.bodyLarge)
-                    }
-                    is MdBlock.Quote -> Surface(
-                        color = colors.surfaceContainerHigh,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            inline(block.text, code, colors.onSurfaceVariant),
-                            style = type.bodyLarge.copy(fontStyle = FontStyle.Italic),
-                            color = colors.onSurfaceVariant,
-                            modifier = Modifier.padding(Spacing.s),
-                        )
-                    }
-                    is MdBlock.Code -> CodeBlock(block.code)
-                    MdBlock.Rule -> HorizontalDivider()
-                }
+    val outer = LocalUriHandler.current
+    val safe = remember(outer) {
+        object : UriHandler {
+            override fun openUri(uri: String) {
+                if (uri.isSafeLink()) outer.openUri(uri)
             }
+        }
+    }
+    val text = LocalContentColor.current
+    CompositionLocalProvider(LocalUriHandler provides safe) {
+        SelectionContainer(modifier) {
+            Markdown(
+                content = markdown,
+                colors = markdownColor(text = text),
+                components = remember { markdownComponents(codeBlock = highlightedCodeBlock, codeFence = highlightedCodeFence) },
+            )
         }
     }
 }
@@ -97,25 +70,5 @@ fun CodeBlock(code: String, modifier: Modifier = Modifier, style: TextStyle = Ma
     }
 }
 
-private fun inline(text: String, code: SpanStyle, link: Color): AnnotatedString = buildAnnotatedString {
-    fun append(spans: List<MdSpan>) {
-        for (span in spans) {
-            when (span) {
-                is MdSpan.Plain -> append(span.text)
-                is MdSpan.Bold -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(span.spans) }
-                is MdSpan.Italic -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(span.spans) }
-                is MdSpan.Code -> withStyle(code) { append(span.text) }
-                // Only web and mail links open; an agent's text decides nothing else on the phone.
-                is MdSpan.Link -> if (!span.url.isSafeLink()) append(span.text) else withLink(
-                    LinkAnnotation.Url(
-                        span.url,
-                        TextLinkStyles(SpanStyle(color = link, textDecoration = TextDecoration.Underline)),
-                    ),
-                ) { append(span.text) }
-            }
-        }
-    }
-    append(Markdown.inline(text))
-}
-
+/** Only web and mail links open; an agent's text decides nothing else on the phone. */
 private fun String.isSafeLink() = listOf("https://", "http://", "mailto:").any { startsWith(it, ignoreCase = true) }

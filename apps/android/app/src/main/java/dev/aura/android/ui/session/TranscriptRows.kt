@@ -74,7 +74,7 @@ private fun UserMessage(text: String, modifier: Modifier) {
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 shape = MaterialTheme.shapes.large,
             ) {
-                Text(text, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.s))
+                MarkdownText(text, Modifier.padding(horizontal = Spacing.m, vertical = Spacing.s))
             }
         }
     }
