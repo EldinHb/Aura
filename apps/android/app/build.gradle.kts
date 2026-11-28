@@ -93,10 +93,38 @@ dependencies {
     implementation(libs.markdown.code)
     implementation(libs.glance.appwidget)
     implementation(libs.glance.material3)
+    implementation(libs.work.runtime)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.tls)
     testImplementation(libs.okhttp.mockwebserver)
+}
+
+// Classes the libraries create by reflection through their no-argument constructor. When R8 drops
+// that constructor the release app crashes at start (0.6.4: WorkManager 2.7.1, which Glance asked
+// for, kept WorkDatabase_Impl but not its constructor), and only the minified build shows it.
+val checkReleaseKeeps = tasks.register("checkReleaseKeeps") {
+    description = "Fails when R8 dropped a constructor that a library calls by reflection."
+    val mapping = layout.buildDirectory.file("outputs/mapping/release/mapping.txt")
+    val reflected = listOf("androidx.work.impl.WorkDatabase_Impl")
+    inputs.file(mapping)
+    dependsOn("minifyReleaseWithR8")
+    doLast {
+        val members = HashMap<String, MutableList<String>>()
+        var current: MutableList<String>? = null
+        mapping.get().asFile.forEachLine { line ->
+            when {
+                line.startsWith("#") -> {}
+                !line.startsWith(" ") -> current = line.substringBefore(" -> ").takeIf { it in reflected }?.let { members.getOrPut(it) { mutableListOf() } }
+                else -> current?.add(line.trim())
+            }
+        }
+        val broken = reflected.filter { cls -> members[cls]?.any { it.contains("void <init>()") } != true }
+        check(broken.isEmpty()) { "R8 dropped the constructor of ${broken.joinToString()}; keep it in proguard-rules.pro or update the library." }
+    }
+}
+tasks.configureEach {
+    if (name == "assembleRelease") finalizedBy(checkReleaseKeeps)
 }
