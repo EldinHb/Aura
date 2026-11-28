@@ -28,10 +28,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.Chat
+import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.Difference
-import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.QueryStats
@@ -132,7 +132,7 @@ fun SessionScreen(
     // A leader (an orchestrator, a feature owner, or one with workers) has a Team tab.
     val hasTeam = leader != null && (tree.size > 1 || leader.orchestrator || leader.featureOwner)
     val showTeam = hasTeam && selectedId == TEAM_TAB
-    val shownId = if (showTeam) leader!!.id else selectedId.takeIf { id -> tree.isEmpty() || tree.any { it.id == id } } ?: tree.first().id
+    val shownId = if (showTeam) leader.id else selectedId.takeIf { id -> tree.isEmpty() || tree.any { it.id == id } } ?: tree.first().id
     val teamFeature by treeVm.feature.collectAsStateWithLifecycle()
     val replies by treeVm.replies.collectAsStateWithLifecycle()
     LaunchedEffect(showTeam, tree.size) {
@@ -338,7 +338,7 @@ fun SessionScreen(
             SheetAction(Icons.Outlined.Cancel, stringResource(R.string.stop_session)) { actions = false; confirmStop = true }
             SheetAction(Icons.Outlined.QueryStats, stringResource(R.string.usage_title)) { actions = false; onUsage(leader?.id ?: shownId) }
             if (workspaces.isNotEmpty() && leader != null) {
-                SheetAction(Icons.Outlined.DriveFileMove, stringResource(R.string.move_to_workspace)) { actions = false; moving = true }
+                SheetAction(Icons.AutoMirrored.Outlined.DriveFileMove, stringResource(R.string.move_to_workspace)) { actions = false; moving = true }
             }
             Box(Modifier.navigationBarsPadding())
         }

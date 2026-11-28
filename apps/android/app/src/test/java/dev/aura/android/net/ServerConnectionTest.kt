@@ -6,7 +6,6 @@ import dev.aura.android.protocol.Event
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -207,15 +206,19 @@ class ServerConnectionTest {
     @Test
     fun `stopping leaves nothing of the connection running`() = runBlocking {
         aurad.accept(2)
-        val c = ServerConnection(saved(), "good", http, scope)
+        // A parent of its own: once completed, it finishes only when everything the
+        // connection started has ended. (Reading a job's children while they end races.)
+        val parent = Job(scope.coroutineContext[Job])
+        val c = ServerConnection(saved(), "good", http, CoroutineScope(Dispatchers.IO + parent))
         repeat(2) {
             c.start()
             c.reach { it is ConnectionState.Online }
             withTimeout(10_000) { c.sessions.filterNotNull().first() }
             c.stop()
         }
-        val children = scope.coroutineContext[Job]!!.children
-        withTimeout(5_000) { while (children.any()) delay(20) }
+        parent.complete()
+        withTimeout(5_000) { parent.join() }
+        assertTrue("everything ended normally or by cancellation", parent.isCompleted && !parent.isCancelled)
     }
 
     @Test
