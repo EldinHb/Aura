@@ -76,7 +76,14 @@ pub enum SessionMode {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Cached input: cache reads plus, where the agent reports them
+    /// (Claude), cache writes.
     pub cached_input_tokens: u64,
+    /// The part of `cached_input_tokens` that was written to the cache. Zero
+    /// when the agent does not report it, and in usage stored before Aura
+    /// kept it.
+    #[serde(default)]
+    pub cache_write_tokens: u64,
     pub total_cost_usd: Option<f64>,
     pub context_window: Option<u64>,
     pub context_used: Option<u64>,
@@ -97,6 +104,9 @@ impl Usage {
             cached_input_tokens: self
                 .cached_input_tokens
                 .saturating_sub(before.cached_input_tokens),
+            cache_write_tokens: self
+                .cache_write_tokens
+                .saturating_sub(before.cache_write_tokens),
             total_cost_usd: self
                 .total_cost_usd
                 .map(|c| (c - before.total_cost_usd.unwrap_or(0.0)).max(0.0)),
@@ -784,6 +794,7 @@ mod tests {
             input_tokens: 10,
             output_tokens: 5,
             cached_input_tokens: 100,
+            cache_write_tokens: 40,
             total_cost_usd: Some(0.25),
             context_window: Some(200_000),
             context_used: Some(1_000),
@@ -793,6 +804,7 @@ mod tests {
             input_tokens: 14,
             output_tokens: 9,
             cached_input_tokens: 300,
+            cache_write_tokens: 90,
             total_cost_usd: Some(0.5),
             context_window: Some(200_000),
             context_used: Some(1_500),
@@ -807,6 +819,7 @@ mod tests {
             ),
             (4, 4, 200)
         );
+        assert_eq!(turn.cache_write_tokens, 50);
         assert_eq!(turn.total_cost_usd, Some(0.25));
         assert_eq!(turn.context_used, Some(1_500));
         // A total that went down (a cleared conversation) never spends a negative amount.

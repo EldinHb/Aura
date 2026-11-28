@@ -785,6 +785,7 @@ mod tests {
             input_tokens: 8,
             output_tokens: 4,
             cached_input_tokens: 90,
+            cache_write_tokens: 0,
             total_cost_usd: Some(0.015),
             context_window: Some(200000),
             context_used: Some(20000),
@@ -921,6 +922,7 @@ mod tests {
             input_tokens: 2,
             output_tokens: 5,
             cached_input_tokens: 29293,
+            cache_write_tokens: 0,
             total_cost_usd: Some(0.015),
             context_window: Some(200000),
             context_used: Some(20000),
@@ -933,6 +935,10 @@ mod tests {
         let usage = usage_of(&ev).unwrap();
         assert!(usage.running_totals);
         assert_eq!(usage.input_tokens, 40);
+        assert_eq!(
+            usage.cache_write_tokens, 30000,
+            "cache writes are kept apart"
+        );
         // The turn's own tokens, not the totals less an unrelated number.
         let turn = turn_of(&ev).usage.unwrap();
         assert_eq!(

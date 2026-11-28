@@ -462,6 +462,7 @@ impl ThreadMapper {
                         input_tokens: total.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
                         output_tokens: total.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
                         cached_input_tokens: total.get("cachedInputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                        cache_write_tokens: 0,
                         total_cost_usd: None,
                         context_window: tu.get("modelContextWindow").and_then(|v| v.as_u64()),
                         context_used: tu.get("last").and_then(|l| l.get("totalTokens")).and_then(|v| v.as_u64()),

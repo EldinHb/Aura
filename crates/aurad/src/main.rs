@@ -159,6 +159,8 @@ async fn main() -> Result<()> {
     // Restored sessions start no agent; agents started from now on that are
     // no longer needed (finished scheduled runs, sessions idle for hours) are stopped.
     manager.launch_idle_sweep();
+    // The daily usage summary, when the user turned it on.
+    manager.launch_daily_usage();
     tracing::info!(restored, "sessions restored");
 
     // Notifications for the app that are not core events: schedules, mods.

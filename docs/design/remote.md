@@ -214,6 +214,14 @@ snake_case field names unless noted.
 | `feature.list` | `{}` | `Feature[]` — a feature owner's questions to the user are in `questions` |
 | `feature.get` | `{id}` | `Feature` |
 | `feature.answer` | `{id, question, option?, text?}` | `Feature` — answer a feature owner's question (`id` is the owner session) |
+| `usage.summary` | `{from?, to?, groupBy?: "day"\|"session"\|"feature"\|"project"\|"agent"\|"model" = "day", splitBy?, tzOffsetMinutes?: number = 0, limit?: number = 50}` | `UsageSummary` (camelCase) — turns that ended in `[from, to)` (RFC 3339), summed: `totals` and `groups` (days in order with empty days filled in; else largest cost first, `more` = groups cut by `limit`). `splitBy` splits each group into `parts` (stacked bars) |
+| `usage.session` | `{id, includeWorkers?: bool}` | `SessionUsage` (camelCase) — the session's `turns` (per turn: tokens, cache read/write, context after it, cost and whether `estimated`), `totals`, `allTotals` with its workers, `models`, `workers` |
+| `usage.report` | `{from, to, title?, tzOffsetMinutes?}` | `UsageReport` (camelCase) — a summary of the period in Markdown, against the period of the same length before; made from the data, no model call |
+| `usage.reports` | `{}` | `UsageReport[]` — the daily summaries Aura wrote (latest first, at most 30) |
+| `template.list` | `{}` | `SessionTemplate[]` by name |
+| `template.create` | `TemplateInput` | `SessionTemplate` — a preset of `session.create`'s options; `name` 1–60 characters, unique ignoring case. A session started from it is still a remote `session.create`, with every check below (a template's folder outside the known projects is refused then) |
+| `template.update` | `{id, ...TemplateInput}` | `SessionTemplate` |
+| `template.delete` | `{id}` | `true` |
 
 ### `session.create` for remote clients
 What the desktop's new-session dialog offers. Only these params are accepted
@@ -243,13 +251,16 @@ paths are not available remotely (-32602).
 ### Notifications
 After authentication the connection receives, unasked:
 
-- `event` — `params` is an `Event` (tagged by `type`, all but `workspaces_changed` and `specialist_suggestions_updated` with a
+- `event` — `params` is an `Event` (tagged by `type`, all but `workspaces_changed`, `templates_changed`, `usage_report` and `specialist_suggestions_updated` with a
   `session_id`): `session_created`, `session_updated` (status, pending count,
   attention changes), `session_removed`, `turn_started`, `turn_completed`,
   `item_started`, `item_delta`, `item_completed`, `approval_requested`,
   `approval_resolved`, `user_input_requested`, `user_input_resolved`,
   `notice`, `usage`, `process_exited`, `feature_updated`, `workspaces_changed`,
-  and a few more a client may ignore.
+  `templates_changed` (`{templates}`, all of them), `usage_report`
+  (`{report}`, the daily usage summary when the user turned it on: worth a
+  notification), and a few more a client may ignore. `turn_completed`'s
+  `turn.usage` is what that turn spent; `usage.session` has it with costs.
 - `lagged` — `{count}`: the client fell behind and events were dropped;
   re-fetch `session.list` and the open session's `session.history`.
 
@@ -262,7 +273,7 @@ but not typed into); for an open session,
 
 ## 9. Not allowed remotely (examples)
 
-`daemon.shutdown`, `daemon.window_hello`, `settings.*`, `fs.*`, `pty.*`,
+`daemon.shutdown`, `daemon.window_hello`, `usage.daily`, `usage.set_daily`, `settings.*`, `fs.*`, `pty.*`,
 `mods.*`, `git.*`, `session.delete`, `session.delete_many`, `workspace.delete`, `workspace.touch`, `session.set`,
 `session.set_system_prompt`, `prompts.*`, `specialists.*`, `schedules.*`,
 `autonomy.set`, `remote.configure` and the other `remote.*` management

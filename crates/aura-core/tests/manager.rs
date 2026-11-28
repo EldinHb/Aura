@@ -8096,3 +8096,273 @@ async fn workers_of_scheduled_runs_from_before_are_marked_at_load() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Usage history and session templates
+
+#[tokio::test]
+async fn a_completed_turn_is_kept_as_usage_history_once_and_outlives_its_session() {
+    let (m, knobs) = setup_with_knobs();
+    let (id, send) = session_with_sink(&m, &knobs).await;
+    let t = |turn_id: &str, usage: Option<Usage>| Event::TurnCompleted {
+        session_id: id.clone(),
+        turn: Turn {
+            usage,
+            ..turn(&id, turn_id, TurnStatus::Completed)
+        },
+    };
+    send(t(
+        "t1",
+        Some(Usage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cached_input_tokens: 40,
+            cache_write_tokens: 15,
+            total_cost_usd: Some(0.5),
+            context_window: Some(200_000),
+            context_used: Some(50_000),
+            ..Default::default()
+        }),
+    ));
+    // Nothing spent, or no usage at all: nothing kept.
+    send(t("t2", Some(Usage::default())));
+    send(t("t3", None));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let u = m
+        .usage_session(&usage::SessionUsageQuery {
+            id: id.clone(),
+            include_workers: false,
+        })
+        .unwrap();
+    assert_eq!(u.turns.len(), 1, "{:?}", u.turns);
+    let turn = &u.turns[0];
+    assert_eq!((turn.cache_read_tokens, turn.cache_write_tokens), (25, 15));
+    assert_eq!(
+        (turn.context_used, turn.cost_usd, turn.estimated),
+        (Some(50_000), Some(0.5), false)
+    );
+    // Deleted, it still counts.
+    m.delete(&id, false).await.unwrap();
+    let s = m.usage_summary(&UsageQuery::default()).unwrap();
+    assert_eq!(s.totals.turns, 1);
+    assert_eq!(s.groups[0].totals.cost_usd, 0.5);
+}
+
+fn usage_record(
+    session: &str,
+    turn: &str,
+    orchestrator: Option<&str>,
+    feature: Option<&str>,
+    cost: f64,
+) -> UsageRecord {
+    UsageRecord {
+        session_id: session.into(),
+        turn_id: turn.into(),
+        at: "2026-11-01T10:00:00Z".parse().unwrap(),
+        provider: ProviderKind::Claude,
+        agent: None,
+        model: Some("claude-opus-5-5".into()),
+        project: Some("/tmp".into()),
+        feature_id: feature.map(Into::into),
+        orchestrator_id: orchestrator.map(Into::into),
+        session_title: format!("{session} then"),
+        input_tokens: 10,
+        output_tokens: 10,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        context_used: Some(100),
+        context_window: Some(1_000),
+        cost_usd: Some(cost),
+    }
+}
+
+#[tokio::test]
+async fn an_orchestrators_usage_rolls_its_workers_up_deleted_ones_included() {
+    let store = Arc::new(MemoryStore::default());
+    let mut lead = stored_session("lead", true, None);
+    lead.feature_owner = true;
+    lead.title = "Checkout".into();
+    store.upsert_session(&lead).unwrap();
+    store
+        .upsert_session(&stored_session("w1", false, Some("lead")))
+        .unwrap();
+    // w2 was deleted; its worker w3 too. Only their records know them.
+    for r in [
+        usage_record("lead", "a", None, Some("lead"), 1.0),
+        usage_record("w1", "b", Some("lead"), Some("lead"), 2.0),
+        usage_record("w2", "c", Some("lead"), Some("lead"), 3.0),
+        usage_record("w3", "d", Some("w2"), Some("lead"), 4.0),
+        usage_record("other", "e", None, None, 8.0),
+    ] {
+        store.add_usage_record(&r).unwrap();
+    }
+    let m = Manager::new(store.clone(), vec![], None);
+    m.restore().unwrap();
+    let u = m
+        .usage_session(&usage::SessionUsageQuery {
+            id: "lead".into(),
+            include_workers: true,
+        })
+        .unwrap();
+    assert_eq!(u.totals.cost_usd, 1.0);
+    assert_eq!(u.all_totals.cost_usd, 10.0);
+    let workers: Vec<_> = u
+        .workers
+        .iter()
+        .map(|w| (w.key.as_str(), w.label.as_str(), w.totals.cost_usd))
+        .collect();
+    assert_eq!(
+        workers,
+        [("w2", "w2 then", 7.0), ("w1", "claude · tmp", 2.0)],
+        "live titles first"
+    );
+    let by_feature = m
+        .usage_summary(&UsageQuery {
+            group_by: UsageGroupBy::Feature,
+            ..Default::default()
+        })
+        .unwrap();
+    let got: Vec<_> = by_feature
+        .groups
+        .iter()
+        .map(|g| (g.label.as_str(), g.totals.cost_usd))
+        .collect();
+    assert_eq!(got, [("Checkout", 10.0), ("no feature", 8.0)]);
+    assert!(m
+        .usage_session(&usage::SessionUsageQuery {
+            id: "nobody".into(),
+            include_workers: false
+        })
+        .is_err());
+}
+
+#[tokio::test]
+async fn the_daily_usage_summary_is_written_once_a_day_after_its_time() {
+    use chrono::TimeZone;
+    let (m, _calls, _starts, store) = setup();
+    let mut rx = m.subscribe();
+    let mut r = usage_record("s", "t", None, None, 2.0);
+    r.at = chrono::Utc::now() - chrono::Duration::hours(1);
+    store.add_usage_record(&r).unwrap();
+    let at = |h: u32, mi: u32| {
+        chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(h, mi, 0)
+            .and_then(|d| chrono::Local.from_local_datetime(&d).single())
+            .unwrap()
+    };
+    // Off by default.
+    assert!(m.daily_usage_due(at(23, 59)).unwrap().is_none());
+    assert!(m
+        .set_daily_usage(usage::DailyUsageSettings {
+            enabled: true,
+            time: "25:00".into()
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("HH:MM"));
+    let set = usage::DailyUsageSettings {
+        enabled: true,
+        time: "23:59".into(),
+    };
+    m.set_daily_usage(set.clone()).unwrap();
+    assert_eq!(m.daily_usage(), set);
+    if chrono::Local::now().time() >= chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap() {
+        return; // A time already past today waits for tomorrow.
+    }
+    assert!(m.daily_usage_due(at(23, 58)).unwrap().is_none(), "not yet");
+    let report = m.daily_usage_due(at(23, 59)).unwrap().expect("due");
+    assert!(
+        report.markdown.contains("Usage summary"),
+        "{}",
+        report.markdown
+    );
+    assert!(
+        m.daily_usage_due(at(23, 59)).unwrap().is_none(),
+        "once a day"
+    );
+    assert_eq!(m.usage_reports().unwrap(), vec![report.clone()]);
+    let posted = drain(&mut rx)
+        .await
+        .into_iter()
+        .any(|e| matches!(e, Event::UsageReport { report: r } if r.id == report.id));
+    assert!(posted);
+}
+
+#[tokio::test]
+async fn usage_reports_compare_with_the_period_before() {
+    let (m, _calls, _starts, store) = setup();
+    let mut now = usage_record("s", "now", None, None, 3.0);
+    now.at = "2026-11-02T10:00:00Z".parse().unwrap();
+    let mut before = usage_record("s", "before", None, None, 1.0);
+    before.at = "2026-11-01T10:00:00Z".parse().unwrap();
+    store.add_usage_record(&now).unwrap();
+    store.add_usage_record(&before).unwrap();
+    let q = usage::UsageReportQuery {
+        from: "2026-11-02T00:00:00Z".parse().unwrap(),
+        to: "2026-11-03T00:00:00Z".parse().unwrap(),
+        title: Some("Today".into()),
+        tz_offset_minutes: 0,
+    };
+    let r = m.usage_report(&q).unwrap();
+    assert_eq!((r.totals.cost_usd, r.previous.cost_usd), (3.0, 1.0));
+    assert!(r.markdown.contains("+200%"), "{}", r.markdown);
+    assert!(r.markdown.contains("Biggest sessions"), "{}", r.markdown);
+    assert_eq!(
+        m.usage_report(&q).unwrap().markdown,
+        r.markdown,
+        "deterministic"
+    );
+    let bad = usage::UsageReportQuery { to: q.from, ..q };
+    assert!(m
+        .usage_report(&bad)
+        .unwrap_err()
+        .to_string()
+        .contains("after"));
+}
+
+#[tokio::test]
+async fn session_templates_are_kept_listed_by_name_and_announced() {
+    let (m, _calls, _starts, _store) = setup();
+    let mut rx = m.subscribe();
+    let input = |name: &str| TemplateInput {
+        name: name.into(),
+        provider: ProviderKind::Claude,
+        model: Some("opus".into()),
+        prompt: Some("Review the open PRs".into()),
+        ..Default::default()
+    };
+    let review = m.create_template(input("Review")).unwrap();
+    let bugs = m.create_template(input("bugfix")).unwrap();
+    let names = |m: &Manager| {
+        m.list_templates()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.input.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&m), ["bugfix", "Review"]);
+    let err = m.create_template(input("REVIEW")).unwrap_err().to_string();
+    assert!(err.contains("already"), "{err}");
+    // Renaming to its own name is fine; to another's is not.
+    let renamed = m.update_template(&review.id, input("Review PRs")).unwrap();
+    assert_eq!(
+        (renamed.id.as_str(), renamed.created_at),
+        (review.id.as_str(), review.created_at)
+    );
+    assert!(m.update_template(&bugs.id, input("review prs")).is_err());
+    assert!(m.update_template("nope", input("x")).is_err());
+    m.delete_template(&bugs.id).unwrap();
+    assert!(m.delete_template(&bugs.id).is_err());
+    assert_eq!(names(&m), ["Review PRs"]);
+    let announced: Vec<Vec<SessionTemplate>> = drain(&mut rx)
+        .await
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::TemplatesChanged { templates } => Some(templates),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced.len(), 4);
+    assert_eq!(announced.last().unwrap(), &m.list_templates().unwrap());
+}
