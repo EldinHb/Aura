@@ -12,6 +12,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+# The filter that keeps WebSocket frames (tokens, pair codes) out of every log.
+tracing-subscriber = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }

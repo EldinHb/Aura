@@ -477,3 +477,72 @@ async fn other_addresses_are_tried_when_the_first_does_not_answer() {
         json!("pong")
     );
 }
+
+/// A TCP forwarder to `to` on 127.0.0.1 that holds connection number
+/// `slow` (1-based) for `delay` before passing it on.
+async fn forwarder(to: u16, slow: usize, delay: Duration) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut n = 0;
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            n += 1;
+            let hold = n == slow;
+            tokio::spawn(async move {
+                if hold {
+                    tokio::time::sleep(delay).await;
+                }
+                if let Ok(mut out) = tokio::net::TcpStream::connect(("127.0.0.1", to)).await {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut out).await;
+                }
+            });
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn an_attempt_under_way_when_paired_again_is_called_off() {
+    let remote_dir = tempfile::tempdir().unwrap();
+    let desk_dir = tempfile::tempdir().unwrap();
+    let d = daemon(remote_dir.path()).await;
+    let (port, _) = enable(&d, free_port()).await;
+    // Connection 1 pairs; connection 2 (the webview's) hangs a while; 3 pairs again.
+    let via = forwarder(port, 2, Duration::from_secs(2)).await;
+    let hub = hub(desk_dir.path(), Arc::new(MemorySecrets::default())).await;
+    let mut req = pair_request(&d).await;
+    req.port = via;
+    let id = hub.pair(req).await.unwrap().entry.id;
+
+    let pending = {
+        let hub = hub.clone();
+        let id = id.clone();
+        tokio::spawn(async move { open(&hub, &id).await.map(|_| ()) })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(state(&hub, &id), LinkState::Connecting);
+    let mut again = pair_request(&d).await;
+    again.port = via;
+    again.replaces = Some(id.clone());
+    hub.pair(again).await.unwrap();
+
+    // The attempt made with the old token is dropped at once, not made usable,
+    // and leaves the state as pairing set it.
+    let r = tokio::time::timeout(Duration::from_millis(1000), pending)
+        .await
+        .expect("called off without waiting for the old connection")
+        .unwrap();
+    assert!(
+        r.is_err(),
+        "an attempt from before pairing again must not connect"
+    );
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(state(&hub, &id), LinkState::Idle);
+
+    // The next one uses the new pairing.
+    let mut ws = open(&hub, &id).await.unwrap();
+    assert_eq!(
+        call(&mut ws, 1, "daemon.ping", json!({})).await["result"],
+        json!("pong")
+    );
+}

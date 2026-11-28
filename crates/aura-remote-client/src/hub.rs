@@ -497,26 +497,39 @@ impl Inner {
     }
 
     fn set_state(&self, id: &str, f: impl FnOnce(&mut Link)) {
+        self.set_state_if(id, None, f);
+    }
+
+    /// `set_state` for an attempt started at generation `gen` (the link's
+    /// `kill` value then): nothing happens if the remote was paired again or
+    /// removed since, so an obsolete attempt never touches the state. Returns
+    /// whether `f` ran.
+    fn set_state_if(&self, id: &str, gen: Option<u64>, f: impl FnOnce(&mut Link)) -> bool {
+        let mut ran = false;
         let changed = {
             let mut links = self.links.lock();
             match links.get_mut(id) {
-                Some(link) => {
+                Some(link) if gen.is_none_or(|g| *link.kill.borrow() == g) => {
+                    ran = true;
                     let before = link.state.clone();
                     f(link);
                     link.state != before
                 }
-                None => false,
+                _ => false,
             }
         };
         if changed {
             self.notify();
         }
+        ran
     }
 
     /// Open an authenticated connection to remote `id` for the bridge, or say
-    /// why not. Moves the remote's state either way.
+    /// why not. Moves the remote's state either way. Pairing the remote again
+    /// or removing it while this runs calls it off: what it found is for the
+    /// old certificate and token, and is dropped.
     async fn open(self: &Arc<Self>, id: &str) -> Result<(RemoteWs, LiveGuard), Refused> {
-        let (entry, preferred, connecting) = {
+        let (entry, preferred, connecting, gen, mut cancelled) = {
             let registry = self.registry.lock();
             let entry = registry.get(id).cloned().ok_or(Refused::Unknown)?;
             let mut links = self.links.lock();
@@ -532,18 +545,41 @@ impl Inner {
             if connecting {
                 link.state = LinkState::Connecting;
             }
-            (entry, link.preferred, connecting)
+            let gen = *link.kill.borrow();
+            (
+                entry,
+                link.preferred,
+                connecting,
+                gen,
+                link.kill.subscribe(),
+            )
         };
         if connecting {
             self.notify();
         }
+        tokio::select! {
+            r = self.attempt(id, entry, preferred, gen) => r,
+            // Paired again or removed (the sender is gone): called off.
+            _ = cancelled.changed() => Err(Refused::Obsolete),
+        }
+    }
+
+    /// One attempt for `open`, made at generation `gen`.
+    async fn attempt(
+        self: &Arc<Self>,
+        id: &str,
+        entry: RemoteEntry,
+        preferred: usize,
+        gen: u64,
+    ) -> Result<(RemoteWs, LiveGuard), Refused> {
+        let g = Some(gen);
 
         let secrets = self.secrets.clone();
         let key = id.to_string();
         let token = match tokio::task::spawn_blocking(move || secrets.get(&key)).await {
             Ok(Ok(Some(t))) => t,
             Ok(Ok(None)) => {
-                self.set_state(id, |l| {
+                self.set_state_if(id, g, |l| {
                     l.state = LinkState::Revoked {
                         reason: "This computer's key for it is gone from the keychain. Pair again."
                             .into(),
@@ -551,8 +587,8 @@ impl Inner {
                 });
                 return Err(Refused::Final);
             }
-            Ok(Err(e)) => return Err(self.failed(id, format!("{e:#}"), None)),
-            Err(e) => return Err(self.failed(id, e.to_string(), None)),
+            Ok(Err(e)) => return Err(self.failed(id, g, format!("{e:#}"), None)),
+            Err(e) => return Err(self.failed(id, g, e.to_string(), None)),
         };
 
         let addresses = entry.addresses();
@@ -585,7 +621,7 @@ impl Inner {
                 Ok(auth) => {
                     if auth.get("serverId").and_then(Value::as_str) != Some(entry.id.as_str()) {
                         let _ = ws.close(None).await;
-                        self.set_state(id, |l| {
+                        self.set_state_if(id, g, |l| {
                             l.state = LinkState::Revoked {
                                 reason: format!(
                                     "The computer at {addr} is not the one this computer paired with. Pair again."
@@ -607,7 +643,8 @@ impl Inner {
                             .to_string(),
                     };
                     let mut kill = None;
-                    self.set_state(id, |l| {
+                    // Only if this attempt is still current: checked and counted under one lock.
+                    self.set_state_if(id, g, |l| {
                         l.state = online;
                         l.attempt = 0;
                         l.retry_at = None;
@@ -616,9 +653,9 @@ impl Inner {
                         kill = Some(l.kill.subscribe());
                     });
                     let Some(kill) = kill else {
-                        // Removed while connecting.
+                        // Paired again or removed while connecting.
                         let _ = ws.close(None).await;
-                        return Err(Refused::Unknown);
+                        return Err(Refused::Obsolete);
                     };
                     return Ok((
                         ws,
@@ -636,7 +673,7 @@ impl Inner {
                     ..
                 }) => {
                     tracing::warn!("remote {id} refused this device: {message}");
-                    self.set_state(id, |l| {
+                    self.set_state_if(id, g, |l| {
                         l.state = LinkState::Revoked {
                             reason: format!(
                                 "{} no longer accepts this computer; it was removed there. Pair again.",
@@ -655,7 +692,7 @@ impl Inner {
                         .get("retryAfterSecs")
                         .and_then(Value::as_u64)
                         .unwrap_or(60);
-                    return Err(self.failed(id, message, Some(Duration::from_secs(secs))));
+                    return Err(self.failed(id, g, message, Some(Duration::from_secs(secs))));
                 }
                 Err(CallError::Rpc { message, .. }) => failures.push(message),
                 Err(CallError::Transport(m)) => failures.push(m),
@@ -663,17 +700,23 @@ impl Inner {
         }
         if let Some((expected, actual)) = mismatch {
             tracing::warn!("remote {id} showed certificate {actual}, pinned {expected}");
-            self.set_state(id, |l| {
+            self.set_state_if(id, g, |l| {
                 l.state = LinkState::CertMismatch { expected, actual }
             });
             return Err(Refused::Final);
         }
-        Err(self.failed(id, failures.join("; "), None))
+        Err(self.failed(id, g, failures.join("; "), None))
     }
 
     /// An attempt failed for a reason worth retrying: back off.
-    fn failed(&self, id: &str, reason: String, wait: Option<Duration>) -> Refused {
-        self.set_state(id, |l| {
+    fn failed(
+        &self,
+        id: &str,
+        gen: Option<u64>,
+        reason: String,
+        wait: Option<Duration>,
+    ) -> Refused {
+        self.set_state_if(id, gen, |l| {
             l.attempt += 1;
             let wait = wait.unwrap_or_else(|| backoff(l.attempt));
             if l.live == 0 && !l.state.is_final() {
@@ -732,6 +775,8 @@ enum Refused {
     Backoff,
     /// This attempt failed; backing off from now.
     Failed,
+    /// The remote was paired again or removed while this attempt ran.
+    Obsolete,
 }
 
 #[derive(Deserialize)]
@@ -756,7 +801,7 @@ async fn bridge_handler(
         // event says why.
         Err(Refused::Unknown) => (StatusCode::NOT_FOUND, "no such remote").into_response(),
         Err(Refused::Final) => (StatusCode::FORBIDDEN, "pair again").into_response(),
-        Err(Refused::Backoff | Refused::Failed) => {
+        Err(Refused::Backoff | Refused::Failed | Refused::Obsolete) => {
             (StatusCode::SERVICE_UNAVAILABLE, "remote not reachable").into_response()
         }
     }

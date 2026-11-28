@@ -412,6 +412,8 @@ fn init_logging() {
     };
     tracing_subscriber::registry()
         .with(filter)
+        // WebSocket frames carry device tokens (remote computers): never logged.
+        .with(aura_rpc::quiet_wire_logs())
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .with(file)
         .init();

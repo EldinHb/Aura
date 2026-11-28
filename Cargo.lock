@@ -588,6 +588,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "uuid",
 ]
