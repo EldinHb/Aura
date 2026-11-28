@@ -21,8 +21,8 @@ ts-rs = { workspace = true }
 base64 = "0.22"
 parking_lot = { workspace = true }
 bytes = { workspace = true }
+chrono-tz = "0.10"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-chrono-tz = "0.10"
 tokio = { workspace = true, features = ["test-util"] }

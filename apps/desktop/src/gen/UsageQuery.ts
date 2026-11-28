@@ -24,6 +24,12 @@ splitBy: UsageGroupBy | null,
  */
 tzOffsetMinutes: number, 
 /**
+ * The caller's IANA time zone (`Europe/Amsterdam`). With it, each turn's
+ * day follows that zone's rules at the turn's time, so a range across a
+ * daylight-saving change is right; `tzOffsetMinutes` is then ignored.
+ */
+timeZone?: string, 
+/**
  * At most this many groups, the largest first (days are never cut).
  * Default 50, at most 500.
  */

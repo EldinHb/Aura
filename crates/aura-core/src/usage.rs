@@ -9,7 +9,8 @@
 
 use crate::pricing::{self, CachedTokens};
 use crate::types::{ProviderKind, SessionId};
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
@@ -36,6 +37,7 @@ pub struct UsageRecord {
     pub orchestrator_id: Option<SessionId>,
     #[serde(default)]
     pub session_title: String,
+    /// Uncached input, whatever the provider (see [`UsageRecord::new_input`]).
     pub input_tokens: u64,
     pub output_tokens: u64,
     /// Cache reads and writes (see [`crate::Usage::cached_input_tokens`]).
@@ -54,15 +56,24 @@ pub struct UsageRecord {
 }
 
 impl UsageRecord {
+    /// A turn's input tokens without its cached ones. Codex counts cached
+    /// input inside its input tokens; Claude and ACP agents do not. Records
+    /// keep the uncached count, so sums and cache hit rates add up the same
+    /// for every provider.
+    pub fn new_input(provider: ProviderKind, input: u64, cached: u64) -> u64 {
+        match provider {
+            ProviderKind::Codex => input.saturating_sub(cached),
+            _ => input,
+        }
+    }
+
     /// The reported cost, else an estimate, and whether it is an estimate.
     pub fn cost(&self) -> Option<(f64, bool)> {
         if let Some(c) = self.cost_usd {
             return Some((c, false));
         }
-        let counting = match self.provider {
-            ProviderKind::Codex => CachedTokens::Included,
-            _ => CachedTokens::Separate,
-        };
+        // `input_tokens` is uncached input for every provider (see [`UsageRecord::new_input`]).
+        let counting = CachedTokens::Separate;
         pricing::estimate(
             self.model.as_deref()?,
             self.input_tokens,
@@ -109,6 +120,12 @@ pub struct UsageQuery {
     /// CET), for which day a turn falls on. Default 0.
     #[serde(default, alias = "tz_offset_minutes")]
     pub tz_offset_minutes: i32,
+    /// The caller's IANA time zone (`Europe/Amsterdam`). With it, each turn's
+    /// day follows that zone's rules at the turn's time, so a range across a
+    /// daylight-saving change is right; `tzOffsetMinutes` is then ignored.
+    #[serde(default, alias = "time_zone")]
+    #[ts(optional)]
+    pub time_zone: Option<String>,
     /// At most this many groups, the largest first (days are never cut).
     /// Default 50, at most 500.
     #[serde(default)]
@@ -227,21 +244,55 @@ pub fn validate(q: &UsageQuery) -> anyhow::Result<()> {
     if q.split_by == Some(UsageGroupBy::Day) {
         anyhow::bail!("splitBy cannot be day: group by day and split by something else");
     }
-    if q.tz_offset_minutes.abs() > 18 * 60 {
-        anyhow::bail!(
-            "tzOffsetMinutes must be between -1080 and 1080, not {}",
-            q.tz_offset_minutes
-        );
-    }
+    zone(q.time_zone.as_deref(), q.tz_offset_minutes)?;
     Ok(())
 }
 
-pub fn offset(q: &UsageQuery) -> FixedOffset {
-    FixedOffset::east_opt(q.tz_offset_minutes * 60).unwrap_or(FixedOffset::east_opt(0).unwrap())
+/// Where days begin: a named zone with its daylight-saving rules, the
+/// daemon's own local zone, or a fixed offset.
+#[derive(Debug, Clone, Copy)]
+pub enum Zone {
+    Named(Tz),
+    Local,
+    Fixed(FixedOffset),
 }
 
-fn day(at: DateTime<Utc>, tz: FixedOffset) -> NaiveDate {
-    at.with_timezone(&tz).date_naive()
+impl Zone {
+    pub fn date(&self, at: DateTime<Utc>) -> NaiveDate {
+        match self {
+            Zone::Named(tz) => at.with_timezone(tz).date_naive(),
+            Zone::Local => at.with_timezone(&chrono::Local).date_naive(),
+            Zone::Fixed(o) => at.with_timezone(o).date_naive(),
+        }
+    }
+    pub fn format(&self, at: DateTime<Utc>, fmt: &str) -> String {
+        match self {
+            Zone::Named(tz) => at.with_timezone(tz).format(fmt).to_string(),
+            Zone::Local => at.with_timezone(&chrono::Local).format(fmt).to_string(),
+            Zone::Fixed(o) => at.with_timezone(o).format(fmt).to_string(),
+        }
+    }
+}
+
+/// The zone a query names, or its fixed offset; an error says what to fix.
+pub fn zone(time_zone: Option<&str>, offset_minutes: i32) -> anyhow::Result<Zone> {
+    if let Some(name) = time_zone.map(str::trim).filter(|n| !n.is_empty()) {
+        return name.parse::<Tz>().map(Zone::Named).map_err(|_| {
+            anyhow::anyhow!(
+                "timeZone must be an IANA time zone like Europe/Amsterdam, not `{name}`"
+            )
+        });
+    }
+    if offset_minutes.abs() > 18 * 60 {
+        anyhow::bail!("tzOffsetMinutes must be between -1080 and 1080, not {offset_minutes}");
+    }
+    Ok(Zone::Fixed(
+        FixedOffset::east_opt(offset_minutes * 60).unwrap(),
+    ))
+}
+
+fn day(at: DateTime<Utc>, tz: Zone) -> NaiveDate {
+    tz.date(at)
 }
 
 fn base_name(path: &str) -> String {
@@ -251,12 +302,7 @@ fn base_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-fn key_label(
-    r: &UsageRecord,
-    by: UsageGroupBy,
-    tz: FixedOffset,
-    labels: &Labels,
-) -> (String, String) {
+fn key_label(r: &UsageRecord, by: UsageGroupBy, tz: Zone, labels: &Labels) -> (String, String) {
     match by {
         UsageGroupBy::Day => {
             let d = day(r.at, tz).to_string();
@@ -315,7 +361,7 @@ pub fn group(
     records: &[&UsageRecord],
     by: UsageGroupBy,
     split_by: Option<UsageGroupBy>,
-    tz: FixedOffset,
+    tz: Zone,
     labels: &Labels,
 ) -> Vec<UsageGroup> {
     let mut groups: HashMap<String, (UsageGroup, Vec<&UsageRecord>)> = HashMap::new();
@@ -349,7 +395,8 @@ pub fn group(
 
 /// Sum `records` (already limited to the range) as `q` asks.
 pub fn summarize(records: &[UsageRecord], q: &UsageQuery, labels: &Labels) -> UsageSummary {
-    let tz = offset(q);
+    let tz = zone(q.time_zone.as_deref(), q.tz_offset_minutes)
+        .unwrap_or(Zone::Fixed(FixedOffset::east_opt(0).unwrap()));
     let mut totals = UsageTotals::default();
     for r in records {
         totals.add(r);
@@ -398,14 +445,6 @@ pub fn summarize(records: &[UsageRecord], q: &UsageQuery, labels: &Labels) -> Us
         groups,
         more,
     }
-}
-
-/// Midnight of `date` at `tz`, as UTC.
-pub fn start_of_day(date: NaiveDate, tz: FixedOffset) -> DateTime<Utc> {
-    tz.from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
-        .single()
-        .map(|d| d.with_timezone(&Utc))
-        .unwrap_or_else(|| Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap()))
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +550,7 @@ pub fn session_usage(
     parents: &[(String, Option<String>)],
     labels: &Labels,
 ) -> SessionUsage {
-    let utc = FixedOffset::east_opt(0).unwrap();
+    let utc = Zone::Fixed(FixedOffset::east_opt(0).unwrap());
     let own: Vec<&UsageRecord> = records.iter().filter(|r| r.session_id == root).collect();
     let mut totals = UsageTotals::default();
     for r in &own {
@@ -582,6 +621,10 @@ pub struct UsageReportQuery {
     pub title: Option<String>,
     #[serde(default, alias = "tz_offset_minutes")]
     pub tz_offset_minutes: i32,
+    /// As in [`UsageQuery::time_zone`].
+    #[serde(default, alias = "time_zone")]
+    #[ts(optional)]
+    pub time_zone: Option<String>,
 }
 
 /// A usage summary for a period, made from the records alone (no model
@@ -670,13 +713,12 @@ fn totals_line(t: &UsageTotals) -> String {
 /// period of the same length before it).
 pub fn report(
     q: &UsageReportQuery,
+    tz: Zone,
     records: &[UsageRecord],
     previous: &[UsageRecord],
     labels: &Labels,
     now: DateTime<Utc>,
 ) -> UsageReport {
-    let tz = FixedOffset::east_opt(q.tz_offset_minutes * 60)
-        .unwrap_or(FixedOffset::east_opt(0).unwrap());
     let sum = |rs: &[UsageRecord]| {
         let mut t = UsageTotals::default();
         for r in rs {
@@ -690,8 +732,8 @@ pub fn report(
     let fmt = "%a %-d %b %H:%M";
     let mut md = format!(
         "## Usage summary: {title}\n\n_{} \u{2013} {}_\n\n",
-        q.from.with_timezone(&tz).format(fmt),
-        q.to.with_timezone(&tz).format(fmt)
+        tz.format(q.from, fmt),
+        tz.format(q.to, fmt)
     );
     if totals.turns == 0 {
         md += "No agent turns in this period.\n";
@@ -889,6 +931,57 @@ mod tests {
         );
         assert!((s.totals.estimated_cost_usd - 2.25).abs() < 1e-9);
         assert_eq!(s.totals.unpriced_turns, 1);
+    }
+
+    #[test]
+    fn codex_cached_input_counts_once() {
+        // Codex: 100 input of which 80 cached, and 20 output.
+        let mut r = rec("a", "2026-11-01T10:00:00Z", Some("gpt-5"), None);
+        r.input_tokens = UsageRecord::new_input(ProviderKind::Codex, 100, 80);
+        r.cached_input_tokens = 80;
+        r.output_tokens = 20;
+        let t = summarize(&[r.clone()], &UsageQuery::default(), &Labels::default()).totals;
+        assert_eq!(t.tokens(), 120);
+        let hit = (t.cached_input_tokens - t.cache_write_tokens) as f64
+            / (t.input_tokens + t.cached_input_tokens) as f64;
+        assert!((hit - 0.8).abs() < 1e-9);
+        // Priced the same as before: 20 uncached + 80 cached at gpt-5's prices.
+        let want = (20.0 * 1.25 + 80.0 * 0.125 + 20.0 * 10.0) / 1e6;
+        assert!((r.cost().unwrap().0 - want).abs() < 1e-12);
+        assert_eq!(UsageRecord::new_input(ProviderKind::Claude, 100, 80), 100);
+    }
+
+    #[test]
+    fn a_named_zone_puts_each_turn_on_its_own_day_across_a_dst_change() {
+        // Amsterdam left summer time on Sun 25 Oct 2026 (UTC+2 to UTC+1).
+        let records = vec![
+            rec("a", "2026-10-24T22:30:00Z", None, Some(1.0)), // 00:30 on the 25th (+2)
+            rec("a", "2026-10-25T23:30:00Z", None, Some(1.0)), // 00:30 on the 26th (+1)
+        ];
+        let q = UsageQuery {
+            from: Some("2026-10-23T22:00:00Z".parse().unwrap()),
+            to: Some("2026-10-26T23:00:00Z".parse().unwrap()),
+            time_zone: Some("Europe/Amsterdam".into()),
+            tz_offset_minutes: 120, // ignored with a zone
+            ..Default::default()
+        };
+        let s = summarize(&records, &q, &Labels::default());
+        let days: Vec<_> = s
+            .groups
+            .iter()
+            .map(|g| (g.key.as_str(), g.totals.turns))
+            .collect();
+        assert_eq!(
+            days,
+            [("2026-10-24", 0), ("2026-10-25", 1), ("2026-10-26", 1)]
+        );
+        assert!(validate(&UsageQuery {
+            time_zone: Some("Mars/Base".into()),
+            ..Default::default()
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("IANA"));
     }
 
     #[test]

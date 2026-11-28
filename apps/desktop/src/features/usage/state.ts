@@ -13,18 +13,18 @@ import { registerCommands } from "../../lib/commands";
 import { rpc } from "../../lib/call";
 import { desktopNotify } from "../../lib/notify";
 import { useStore } from "../../state/store";
-import { fmtCost, fmtTokens, totalTokens, tzOffsetMinutes } from "./format";
+import { fmtCost, fmtTokens, timeZone, totalTokens, tzOffsetMinutes } from "./format";
 
 export const usage = {
   summary: (q: { from?: Date; to?: Date; groupBy?: UsageGroupBy; splitBy?: UsageGroupBy; limit?: number }) =>
     rpc<UsageSummary>("usage.summary", {
       from: q.from?.toISOString(), to: q.to?.toISOString(), groupBy: q.groupBy ?? "day",
       ...(q.splitBy ? { splitBy: q.splitBy } : {}), ...(q.limit ? { limit: q.limit } : {}),
-      tzOffsetMinutes: tzOffsetMinutes(q.from),
+      tzOffsetMinutes: tzOffsetMinutes(q.from), timeZone: timeZone(),
     }),
   session: (id: string, includeWorkers = false) => rpc<SessionUsage>("usage.session", { id, includeWorkers }),
   report: (from: Date, to: Date, title: string) =>
-    rpc<UsageReport>("usage.report", { from: from.toISOString(), to: to.toISOString(), title, tzOffsetMinutes: tzOffsetMinutes(from) }),
+    rpc<UsageReport>("usage.report", { from: from.toISOString(), to: to.toISOString(), title, tzOffsetMinutes: tzOffsetMinutes(from), timeZone: timeZone() }),
   reports: () => rpc<UsageReport[]>("usage.reports"),
   daily: () => rpc<DailyUsageSettings>("usage.daily"),
   setDaily: (s: DailyUsageSettings) => rpc<DailyUsageSettings>("usage.set_daily", s),

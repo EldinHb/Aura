@@ -130,6 +130,16 @@ pub trait Store: Send + Sync {
         out.sort_by(|a, b| a.at.cmp(&b.at).then(a.turn_id.cmp(&b.turn_id)));
         Ok(out)
     }
+    /// Every session with usage kept, and the orchestrator that started it.
+    fn usage_parents(&self) -> Result<Vec<(String, Option<String>)>> {
+        let mut seen = std::collections::HashSet::new();
+        Ok(self
+            .usage_records(None, None, None)?
+            .into_iter()
+            .filter(|r| seen.insert(r.session_id.clone()))
+            .map(|r| (r.session_id, r.orchestrator_id))
+            .collect())
+    }
     fn upsert_session(&self, session: &Session) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;
     fn list_sessions(&self) -> Result<Vec<Session>>;

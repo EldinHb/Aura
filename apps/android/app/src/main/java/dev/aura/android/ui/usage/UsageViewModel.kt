@@ -36,6 +36,12 @@ fun usageRange(period: UsagePeriod, today: LocalDate, zone: ZoneId): Pair<Instan
 /** The phone's offset from UTC in minutes, for which day a turn falls on. */
 fun tzOffsetMinutes(zone: ZoneId, at: Instant = Instant.now()): Int = zone.rules.getOffset(at).totalSeconds / 60
 
+/**
+ * The zone's IANA name, so the server puts each turn on its local day with the zone's
+ * daylight-saving rules; null for a plain offset, where `tzOffsetMinutes` is used instead.
+ */
+fun ianaZone(zone: ZoneId): String? = zone.takeIf { it.normalized() !is java.time.ZoneOffset }?.id
+
 /** What the usage screen shows for a period. */
 data class UsageDashboard(
     val period: UsagePeriod,
@@ -52,6 +58,7 @@ suspend fun ServerConnection.usageSummary(from: Instant, to: Instant, groupBy: S
         put("to", JsonPrimitive(to.toString()))
         put("groupBy", JsonPrimitive(groupBy))
         put("tzOffsetMinutes", JsonPrimitive(tzOffsetMinutes(zone, from)))
+        ianaZone(zone)?.let { put("timeZone", JsonPrimitive(it)) }
         limit?.let { put("limit", JsonPrimitive(it)) }
     }, UsageSummary.serializer())
 

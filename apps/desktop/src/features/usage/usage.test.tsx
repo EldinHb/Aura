@@ -35,6 +35,11 @@ describe("usage in numbers", () => {
     })!;
     expect(compactLine(own)).toBe("10 in · 5 out · ctx 4.0k · $0.500");
     expect(turnLine(undefined, null)).toBeNull();
+    // Codex's input includes its cached input: counted once.
+    const codex = turnLine(undefined, {
+      input_tokens: 100, output_tokens: 20, cached_input_tokens: 80, cache_write_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false,
+    }, "codex")!;
+    expect([codex.input, codex.cacheRead]).toEqual([20, 80]);
   });
 
   it("compares with the period before and counts cache reads of all input", () => {
@@ -132,7 +137,7 @@ describe("the dashboard", () => {
     await waitFor(() => expect(screen.getByText("Summary")).toBeTruthy());
     const panel = screen.getByText("Summary").closest("section")!;
     await act(async () => { fireEvent.click(within(panel as HTMLElement).getByRole("button", { name: "Today" })); });
-    expect(call).toHaveBeenCalledWith("usage.report", expect.objectContaining({ title: "Today" }));
+    expect(call).toHaveBeenCalledWith("usage.report", expect.objectContaining({ title: "Today", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Copy Markdown" })); });
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("## Usage summary: Today"));
   });

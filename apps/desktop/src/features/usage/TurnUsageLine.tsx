@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Turn } from "../../gen";
 import { compactLine, fmtCost, fmtPct, fmtTokens, turnLine } from "./format";
 import { useTurnUsage } from "./state";
+import { useStore } from "../../state/store";
 
 /** Load a session's turn usage once its transcript shows; later turns refresh it (see `useUsageSync`). */
 export function useSessionTurnUsage(sessionId: string) {
@@ -14,8 +15,9 @@ export function useSessionTurnUsage(sessionId: string) {
 /** What a turn spent, under its reply: one dim line, a click away from the detail. */
 export function TurnUsageLine({ sessionId, turn }: { sessionId: string; turn: Turn }) {
   const record = useTurnUsage((s) => s.bySession[sessionId]?.turns.find((t) => t.turnId === turn.id));
+  const provider = useStore((s) => s.sessions[sessionId]?.provider);
   const [open, setOpen] = useState(false);
-  const line = turnLine(record, turn.usage);
+  const line = turnLine(record, turn.usage, provider);
   if (!line) return null;
   return (
     <span className="turn-usage">

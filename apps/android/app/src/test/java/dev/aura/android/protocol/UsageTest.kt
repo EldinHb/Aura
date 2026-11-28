@@ -6,6 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import dev.aura.android.ui.usage.ianaZone
+import java.time.ZoneId
 
 class UsageTest {
     private fun event(json: String): Event? = Event.parse(ProtocolJson.parseToJsonElement(json).jsonObject)
@@ -89,5 +91,12 @@ class UsageTest {
     fun `a terminal template cannot be started from the phone`() {
         assertTrue(!SessionTemplate(id = "a", name = "Shell", provider = "terminal").startableHere)
         assertTrue(!SessionTemplate(id = "a", name = "TUI", provider = "claude", mode = "terminal").startableHere)
+    }
+
+    @Test
+    fun theServerGetsTheZonesNameNotJustItsOffset() {
+        assertEquals("Europe/Amsterdam", ianaZone(ZoneId.of("Europe/Amsterdam")))
+        assertNull(ianaZone(ZoneId.of("+02:00")))
+        assertNull(ianaZone(ZoneId.of("UTC")))
     }
 }

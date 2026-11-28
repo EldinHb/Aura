@@ -7,4 +7,8 @@ export type UsageReportQuery = { from: string, to: string,
 /**
  * What the period is called in the summary's title ("Today", "This week").
  */
-title: string | null, tzOffsetMinutes: number, };
+title: string | null, tzOffsetMinutes: number, 
+/**
+ * As in [`UsageQuery::time_zone`].
+ */
+timeZone?: string, };

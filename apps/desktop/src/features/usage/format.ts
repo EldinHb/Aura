@@ -47,7 +47,7 @@ export type TurnLine = {
   cost: number | null; estimated: boolean;
 };
 
-export function turnLine(record: TurnUsage | undefined, usage: Usage | null): TurnLine | null {
+export function turnLine(record: TurnUsage | undefined, usage: Usage | null, provider?: string): TurnLine | null {
   if (record) {
     return {
       input: record.inputTokens, output: record.outputTokens, cacheRead: record.cacheReadTokens, cacheWrite: record.cacheWriteTokens,
@@ -56,8 +56,10 @@ export function turnLine(record: TurnUsage | undefined, usage: Usage | null): Tu
   }
   if (!usage) return null;
   const write = usage.cache_write_tokens ?? 0;
+  // Codex counts cached input inside its input tokens; the daemon's records do not.
+  const input = provider === "codex" ? Math.max(0, usage.input_tokens - usage.cached_input_tokens) : usage.input_tokens;
   return {
-    input: usage.input_tokens, output: usage.output_tokens, cacheRead: Math.max(0, usage.cached_input_tokens - write), cacheWrite: write,
+    input, output: usage.output_tokens, cacheRead: Math.max(0, usage.cached_input_tokens - write), cacheWrite: write,
     contextUsed: usage.context_used, contextWindow: usage.context_window, cost: usage.total_cost_usd, estimated: false,
   };
 }
@@ -118,6 +120,18 @@ export function period(key: PeriodKey, now = new Date(), custom?: { from: string
 export function previous(p: Period): { from: Date; to: Date } {
   const len = p.to.getTime() - p.from.getTime();
   return { from: new Date(p.from.getTime() - len), to: p.from };
+}
+
+/**
+ * This computer's IANA time zone, so the daemon puts each turn on its local day with the zone's
+ * daylight-saving rules; the offset below is only the fallback for a runtime without one.
+ */
+export function timeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The caller's offset from UTC in minutes, east positive, as the daemon wants it. */

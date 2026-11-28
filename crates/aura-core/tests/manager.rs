@@ -8236,23 +8236,78 @@ async fn an_orchestrators_usage_rolls_its_workers_up_deleted_ones_included() {
         .is_err());
 }
 
+/// A store whose writes of one namespace fail while `fail` is set.
+#[derive(Default)]
+struct Flaky {
+    inner: MemoryStore,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl Store for Flaky {
+    fn feature_records(&self, ns: &str) -> anyhow::Result<Vec<(String, String)>> {
+        self.inner.feature_records(ns)
+    }
+    fn save_feature_record(&self, ns: &str, id: &str, v: &str) -> anyhow::Result<()> {
+        if ns == "usage_reports" && self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("disk full");
+        }
+        self.inner.save_feature_record(ns, id, v)
+    }
+    fn delete_feature_record(&self, ns: &str, id: &str) -> anyhow::Result<()> {
+        self.inner.delete_feature_record(ns, id)
+    }
+    fn upsert_session(&self, s: &Session) -> anyhow::Result<()> {
+        self.inner.upsert_session(s)
+    }
+    fn delete_session(&self, id: &str) -> anyhow::Result<()> {
+        self.inner.delete_session(id)
+    }
+    fn list_sessions(&self) -> anyhow::Result<Vec<Session>> {
+        self.inner.list_sessions()
+    }
+    fn append_event(&self, id: &str, e: &Event) -> anyhow::Result<u64> {
+        self.inner.append_event(id, e)
+    }
+    fn events(&self, id: &str, after: u64, limit: usize) -> anyhow::Result<Vec<StoredEvent>> {
+        self.inner.events(id, after, limit)
+    }
+    fn search(&self, q: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.inner.search(q, limit)
+    }
+    fn get_setting(&self, k: &str) -> anyhow::Result<Option<String>> {
+        self.inner.get_setting(k)
+    }
+    fn set_setting(&self, k: &str, v: &str) -> anyhow::Result<()> {
+        self.inner.set_setting(k, v)
+    }
+    fn save_scrollback(&self, id: &str, d: &[u8]) -> anyhow::Result<()> {
+        self.inner.save_scrollback(id, d)
+    }
+    fn load_scrollback(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        self.inner.load_scrollback(id)
+    }
+}
+
 #[tokio::test]
-async fn the_daily_usage_summary_is_written_once_a_day_after_its_time() {
+async fn the_daily_usage_summary_is_written_once_a_day_retried_after_a_failure_and_chained() {
     use chrono::TimeZone;
-    let (m, _calls, _starts, store) = setup();
+    let store = Arc::new(Flaky::default());
+    let m = Manager::new(store.clone(), vec![], None);
     let mut rx = m.subscribe();
-    let mut r = usage_record("s", "t", None, None, 2.0);
-    r.at = chrono::Utc::now() - chrono::Duration::hours(1);
-    store.add_usage_record(&r).unwrap();
-    let at = |h: u32, mi: u32| {
-        chrono::Local::now()
-            .date_naive()
-            .and_hms_opt(h, mi, 0)
-            .and_then(|d| chrono::Local.from_local_datetime(&d).single())
+    let local = |d: chrono::NaiveDate, h: u32, mi: u32| {
+        chrono::Local
+            .from_local_datetime(&d.and_hms_opt(h, mi, 0).unwrap())
+            .earliest()
             .unwrap()
     };
+    // Days far from today, so the setting's "already past today" does not apply.
+    let day1 = chrono::Local::now().date_naive() + chrono::Duration::days(30);
+    let day2 = day1.succ_opt().unwrap();
+    let mut r = usage_record("s", "t", None, None, 2.0);
+    r.at = (local(day1, 12, 0)).with_timezone(&chrono::Utc);
+    store.add_usage_record(&r).unwrap();
     // Off by default.
-    assert!(m.daily_usage_due(at(23, 59)).unwrap().is_none());
+    assert!(m.daily_usage_due(local(day1, 23, 59)).unwrap().is_none());
     assert!(m
         .set_daily_usage(usage::DailyUsageSettings {
             enabled: true,
@@ -8263,30 +8318,64 @@ async fn the_daily_usage_summary_is_written_once_a_day_after_its_time() {
         .contains("HH:MM"));
     let set = usage::DailyUsageSettings {
         enabled: true,
-        time: "23:59".into(),
+        time: "18:00".into(),
     };
     m.set_daily_usage(set.clone()).unwrap();
     assert_eq!(m.daily_usage(), set);
-    if chrono::Local::now().time() >= chrono::NaiveTime::from_hms_opt(23, 59, 0).unwrap() {
-        return; // A time already past today waits for tomorrow.
-    }
-    assert!(m.daily_usage_due(at(23, 58)).unwrap().is_none(), "not yet");
-    let report = m.daily_usage_due(at(23, 59)).unwrap().expect("due");
     assert!(
-        report.markdown.contains("Usage summary"),
-        "{}",
-        report.markdown
+        m.daily_usage_due(local(day1, 17, 59)).unwrap().is_none(),
+        "not yet"
     );
+    // Keeping it fails: nothing marks the day done, so the next look tries again.
+    store.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(m.daily_usage_due(local(day1, 18, 0)).is_err());
+    store.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    // A late run still ends at the day's time.
+    let first = m
+        .daily_usage_due(local(day1, 18, 45))
+        .unwrap()
+        .expect("retried");
+    assert_eq!(first.id, format!("daily-{day1}"));
+    assert_eq!(first.to, local(day1, 18, 0).with_timezone(&chrono::Utc));
+    assert_eq!(first.totals.turns, 1);
     assert!(
-        m.daily_usage_due(at(23, 59)).unwrap().is_none(),
+        m.daily_usage_due(local(day1, 23, 0)).unwrap().is_none(),
         "once a day"
     );
-    assert_eq!(m.usage_reports().unwrap(), vec![report.clone()]);
+    // The next one starts where this one ended.
+    let second = m
+        .daily_usage_due(local(day2, 18, 5))
+        .unwrap()
+        .expect("next day");
+    assert_eq!(second.from, first.to);
+    assert_eq!(
+        m.usage_reports().unwrap(),
+        vec![second.clone(), first.clone()]
+    );
     let posted = drain(&mut rx)
         .await
         .into_iter()
-        .any(|e| matches!(e, Event::UsageReport { report: r } if r.id == report.id));
-    assert!(posted);
+        .filter(|e| matches!(e, Event::UsageReport { .. }))
+        .count();
+    assert_eq!(posted, 2);
+}
+
+#[tokio::test]
+async fn a_deleted_leader_without_turns_of_its_own_still_shows_its_workers() {
+    let store = Arc::new(MemoryStore::default());
+    store
+        .add_usage_record(&usage_record("w1", "a", Some("gone-lead"), None, 2.0))
+        .unwrap();
+    let m = Manager::new(store.clone(), vec![], None);
+    let u = m
+        .usage_session(&usage::SessionUsageQuery {
+            id: "gone-lead".into(),
+            include_workers: true,
+        })
+        .unwrap();
+    assert_eq!(u.title, "deleted session");
+    assert_eq!(u.all_totals.cost_usd, 2.0);
+    assert_eq!(u.workers[0].key, "w1");
 }
 
 #[tokio::test]
@@ -8303,6 +8392,7 @@ async fn usage_reports_compare_with_the_period_before() {
         to: "2026-11-03T00:00:00Z".parse().unwrap(),
         title: Some("Today".into()),
         tz_offset_minutes: 0,
+        time_zone: None,
     };
     let r = m.usage_report(&q).unwrap();
     assert_eq!((r.totals.cost_usd, r.previous.cost_usd), (3.0, 1.0));
