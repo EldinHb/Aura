@@ -5,6 +5,7 @@ import dev.aura.android.protocol.AuthResult
 import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Session
+import dev.aura.android.protocol.Workspace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelChildren
@@ -74,6 +75,11 @@ class ServerConnection(
     /** The server's features, with their owners' questions to the user; null until first loaded. */
     val features: StateFlow<List<Feature>?> = featureList.items
 
+    private val _workspaces = MutableStateFlow<List<Workspace>>(emptyList())
+
+    /** The server's workspaces, in the user's order; empty against a daemon without them. */
+    val workspaces: StateFlow<List<Workspace>> = _workspaces
+
     private val _events = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 4096)
 
     /** The server's events, live, each with the JSON it came as. */
@@ -122,6 +128,11 @@ class ServerConnection(
 
     /** Reloads the session list. */
     suspend fun refreshSessions() = reload(sessionList, "session.list", Session.serializer())
+
+    /** Reloads the workspaces. */
+    suspend fun refreshWorkspaces() {
+        _workspaces.value = call("workspace.list", JsonObject(emptyMap()), ListSerializer(Workspace.serializer())).sortedBy { it.position }
+    }
 
     /** Reloads the features. */
     suspend fun refreshFeatures() = reload(featureList, "feature.list", Feature.serializer())
@@ -229,6 +240,7 @@ class ServerConnection(
         _resyncs.tryEmit(Unit)
         online.launch { runCatching { refreshSessions() }.onFailure { if (it is CancellationException) throw it } }
         online.launch { runCatching { refreshFeatures() }.onFailure { if (it is CancellationException) throw it } }
+        online.launch { runCatching { refreshWorkspaces() }.onFailure { if (it is CancellationException) throw it } }
     }
 
     private fun onEvent(live: LiveEvent, online: CoroutineScope) {
@@ -240,6 +252,7 @@ class ServerConnection(
                 featureList.remove(event.sessionId)
             }
             is Event.FeatureUpdated -> featureList.upsert(event.feature)
+            is Event.WorkspacesChanged -> _workspaces.value = event.workspaces.sortedBy { it.position }
             else -> {}
         }
         if (!_events.tryEmit(live)) resync(online)

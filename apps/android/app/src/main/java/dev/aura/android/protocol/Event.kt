@@ -2,6 +2,7 @@ package dev.aura.android.protocol
 
 import dev.aura.android.net.ProtocolJson
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -25,6 +26,7 @@ sealed interface Event {
     data class InputResolved(override val sessionId: String, val requestId: String) : Event
     data class Notice(override val sessionId: String, val level: String, val message: String) : Event
     data class FeatureUpdated(override val sessionId: String, val feature: Feature) : Event
+    data class WorkspacesChanged(val workspaces: List<Workspace>) : Event { override val sessionId: String? get() = null }
 
     /** A change to an item: text appended to it, command output appended, or data fields set. */
     sealed interface Delta {
@@ -61,6 +63,7 @@ sealed interface Event {
                 "approval_resolved" -> ApprovalResolved(sid(), o.string("approval_id")!!)
                 "user_input_requested" -> InputRequested(sid(), o.decode("request", UserInputRequest.serializer()))
                 "user_input_resolved" -> InputResolved(sid(), o.string("request_id")!!)
+                "workspaces_changed" -> WorkspacesChanged(o.decode("workspaces", ListSerializer(Workspace.serializer())))
                 "feature_updated" -> FeatureUpdated(sid(), o.decode("feature", Feature.serializer()))
                 "notice" -> Notice(sid(), o.string("level") ?: "info", o.string("message").orEmpty())
                 else -> null

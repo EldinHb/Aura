@@ -1,5 +1,13 @@
 package dev.aura.android.ui.sessions
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +54,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.R
+import dev.aura.android.ui.components.color
+import dev.aura.android.ui.components.icon
+import dev.aura.android.protocol.LeaderRow
+import androidx.compose.ui.res.pluralStringResource
 import dev.aura.android.net.ConnectionState
 import dev.aura.android.net.Fingerprint
 import dev.aura.android.protocol.Session
@@ -71,7 +83,9 @@ fun SessionsScreen(
     val vm = appViewModel(key = "sessions:$serverId") { SessionsViewModel(it, serverId) }
     val name by vm.serverName.collectAsStateWithLifecycle()
     val state by vm.state.collectAsStateWithLifecycle()
-    val groups by vm.groups.collectAsStateWithLifecycle()
+    val list by vm.list.collectAsStateWithLifecycle()
+    val folded by vm.folded.collectAsStateWithLifecycle()
+    var tab by rememberSaveable { mutableStateOf(SessionsTab.Sessions) }
     val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     SnackbarMessages(vm.messages, snackbar)
@@ -112,33 +126,24 @@ fun SessionsScreen(
             onRefresh = vm::refresh,
             modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding()),
         ) {
-            val list = groups
+            val current = list
             val problem = state.takeUnless { it is ConnectionState.Online }
             when {
-                problem != null && list == null -> ConnectionProblem(problem, onRetry = vm::retry, onPairAgain = onPairAgain)
-                list == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                list.isEmpty() -> EmptyState(
-                    icon = Icons.Outlined.Inbox,
-                    title = stringResource(R.string.sessions_empty_title),
-                    body = stringResource(R.string.sessions_empty_body),
-                )
-                else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = padding.calculateBottomPadding() + Spacing.xl * 3),
-                ) {
-                    if (problem != null) {
-                        item(key = "problem") { ConnectionBanner(problem, onRetry = vm::retry, onPairAgain = onPairAgain) }
-                    }
-                    for (group in list) {
-                        stickyHeader(key = "project:${group.path}") {
-                            ListItem(
-                                leadingContent = { Icon(Icons.Outlined.Folder, contentDescription = null) },
-                                headlineContent = { Text(group.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary) },
-                                supportingContent = { Text(group.path, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall) },
-                            )
-                        }
-                        items(group.sessions, key = { it.id }) { session ->
-                            SessionRow(session, onClick = { onOpen(session.id) }, modifier = Modifier.animateItem())
+                problem != null && current == null -> ConnectionProblem(problem, onRetry = vm::retry, onPairAgain = onPairAgain)
+                current == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                else -> Column(Modifier.fillMaxSize()) {
+                    SessionsTabs(tab, current, onSelect = { tab = it })
+                    if (problem != null) ConnectionBanner(problem, onRetry = vm::retry, onPairAgain = onPairAgain)
+                    AnimatedContent(
+                        targetState = tab,
+                        transitionSpec = { fadeIn(tween(TAB_FADE_MS)) togetherWith fadeOut(tween(TAB_FADE_MS)) },
+                        modifier = Modifier.fillMaxSize(),
+                        label = "sessions-tab",
+                    ) { shown ->
+                        val bottom = PaddingValues(bottom = padding.calculateBottomPadding() + Spacing.xl * 3)
+                        when (shown) {
+                            SessionsTab.Sessions -> SessionsTabContent(current, folded, vm::toggle, { onOpen(it.id) }, bottom)
+                            SessionsTab.Scheduled -> ScheduledTabContent(current, folded, vm::toggle, { onOpen(it.id) }, bottom)
                         }
                     }
                 }
@@ -146,6 +151,8 @@ fun SessionsScreen(
         }
     }
 }
+
+private const val TAB_FADE_MS = 150
 
 @Composable
 fun SessionRow(session: Session, onClick: () -> Unit, modifier: Modifier = Modifier, overline: String? = null) {
@@ -168,6 +175,52 @@ fun SessionRow(session: Session, onClick: () -> Unit, modifier: Modifier = Modif
                         "${session.pendingCount}",
                         modifier = Modifier.padding(horizontal = Spacing.xs),
                     )
+                }
+            }
+        } else {
+            null
+        },
+    )
+}
+
+/**
+ * A leader's row: its state for its whole tree, its title, where it works and
+ * who works under it. Its workers have no rows of their own; they are tabs in
+ * the session.
+ */
+@Composable
+fun LeaderRowItem(row: LeaderRow, context: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val session = row.session
+    val pending = session.pendingCount + row.workers.sumOf { it.pendingCount }
+    ListItem(
+        modifier = modifier.clickable(onClick = onClick),
+        overlineContent = when {
+            session.featureOwner -> ({ Text(stringResource(R.string.feature_owner)) })
+            session.orchestrator -> ({ Text(stringResource(R.string.orchestrator)) })
+            else -> null
+        },
+        leadingContent = {
+            Icon(row.rollup.icon, contentDescription = stringResource(row.rollup.label), tint = row.rollup.color())
+        },
+        headlineContent = {
+            Text(session.title.ifBlank { stringResource(R.string.untitled_session) }, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        },
+        supportingContent = {
+            val who = session.agent ?: session.provider.replaceFirstChar { it.uppercase() }
+            val parts = listOfNotNull(
+                context.takeIf { it.isNotBlank() },
+                who,
+                row.workers.size.takeIf { it > 0 }?.let { n ->
+                    val workers = pluralStringResource(if (session.featureOwner) R.plurals.team_count else R.plurals.worker_count, n, n)
+                    if (row.workersWaiting > 0) stringResource(R.string.workers_need_you, workers, row.workersWaiting) else workers
+                },
+            )
+            Text(parts.joinToString(" · "), maxLines = 2, overflow = TextOverflow.Ellipsis)
+        },
+        trailingContent = if (pending > 0) {
+            {
+                Badge(containerColor = MaterialTheme.colorScheme.tertiary, contentColor = MaterialTheme.colorScheme.onTertiary) {
+                    Text("$pending", modifier = Modifier.padding(horizontal = Spacing.xs))
                 }
             }
         } else {

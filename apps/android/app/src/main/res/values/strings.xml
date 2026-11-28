@@ -83,6 +83,36 @@
     <string name="revoked_title">This phone is no longer paired</string>
     <string name="revoked_body">%1$s\n\nThe device may have been removed in Aura on your computer. Pair again to reconnect.</string>
 
+    <string name="tab_sessions">Sessions</string>
+    <string name="tab_chat">Chat</string>
+    <string name="jump_to_latest">Jump to the latest messages</string>
+    <string name="tab_scheduled">Scheduled</string>
+    <string name="category_needs_you">Needs you</string>
+    <string name="category_working">Working</string>
+    <string name="category_idle">Idle</string>
+    <string name="feature_owner">Feature owner</string>
+    <string name="orchestrator">Orchestrator</string>
+    <string name="workspace_summary_needs_you">%1$s · needs you: %2$d</string>
+    <string name="workers_need_you">%1$s (needs you: %2$d)</string>
+    <string name="scheduled_empty_title">No scheduled runs</string>
+    <string name="scheduled_empty_body">Sessions that scheduled tasks start show up here, a section per task.</string>
+    <plurals name="session_count">
+        <item quantity="one">%d session</item>
+        <item quantity="other">%d sessions</item>
+    </plurals>
+    <plurals name="run_count">
+        <item quantity="one">%d run</item>
+        <item quantity="other">%d runs</item>
+    </plurals>
+    <plurals name="worker_count">
+        <item quantity="one">%d worker</item>
+        <item quantity="other">%d workers</item>
+    </plurals>
+    <plurals name="team_count">
+        <item quantity="one">%d team member</item>
+        <item quantity="other">%d team members</item>
+    </plurals>
+
     <!-- Session -->
     <string name="interrupt">Interrupt</string>
     <string name="stop">Stop</string>

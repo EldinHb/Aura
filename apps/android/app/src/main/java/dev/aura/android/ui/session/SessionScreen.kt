@@ -1,5 +1,11 @@
 package dev.aura.android.ui.session
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,19 +18,24 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -34,29 +45,36 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.R
 import dev.aura.android.net.ConnectionState
+import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.SessionState
 import dev.aura.android.protocol.folderName
 import dev.aura.android.protocol.isStructured
@@ -68,6 +86,7 @@ import dev.aura.android.ui.appViewModel
 import dev.aura.android.ui.components.EmptyState
 import dev.aura.android.ui.components.SheetAction
 import dev.aura.android.ui.components.SnackbarMessages
+import dev.aura.android.ui.components.color
 import dev.aura.android.ui.components.describe
 import dev.aura.android.ui.components.label
 import dev.aura.android.ui.theme.Spacing
@@ -78,7 +97,14 @@ private const val COMPOSER_MAX_LINES = 6
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
-    val vm = appViewModel(key = "session:$serverId:$sessionId") { SessionViewModel(it, serverId, sessionId) }
+    val treeVm = appViewModel(key = "tree:$serverId:$sessionId") { SessionTreeViewModel(it, serverId, sessionId) }
+    val tree by treeVm.tree.collectAsStateWithLifecycle()
+    // The leader's chat or one of its workers'; opening a worker (from the inbox) selects it.
+    var selectedId by rememberSaveable(sessionId) { mutableStateOf(sessionId) }
+    val shownId = selectedId.takeIf { id -> tree.isEmpty() || tree.any { it.id == id } } ?: tree.first().id
+    val leader = tree.firstOrNull()
+
+    val vm = appViewModel(key = "session:$serverId:$shownId") { SessionViewModel(it, serverId, shownId) }
     val session by vm.session.collectAsStateWithLifecycle()
     val transcript by vm.transcript.collectAsStateWithLifecycle()
     val connection by vm.connectionState.collectAsStateWithLifecycle()
@@ -90,50 +116,61 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     val running = session?.status == "running" || transcript?.turnRunning == true
     var actions by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
+    val list = remember(shownId) { LazyListState() }
+    val follow = rememberFollowLatest(list)
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            session?.title?.ifBlank { null } ?: stringResource(R.string.untitled_session),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        session?.let { s ->
+            Column {
+                TopAppBar(
+                    title = {
+                        val head = leader ?: session
+                        Column {
                             Text(
-                                "${folderName(s.projectPath)} · ${stringResource(s.state.label)}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                head?.title?.ifBlank { null } ?: stringResource(R.string.untitled_session),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            session?.let { s ->
+                                Text(
+                                    "${folderName(s.projectPath)} · ${stringResource(s.state.label)}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
-                    }
-                },
-                actions = {
-                    if (running) {
-                        IconButton(onClick = vm::interrupt, enabled = online) {
-                            Icon(Icons.Outlined.StopCircle, contentDescription = stringResource(R.string.interrupt))
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
                         }
-                    }
-                    IconButton(onClick = { actions = true }) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.session_actions))
-                    }
-                },
-                scrollBehavior = scrollBehavior,
-            )
+                    },
+                    actions = {
+                        if (running) {
+                            IconButton(onClick = vm::interrupt, enabled = online) {
+                                Icon(Icons.Outlined.StopCircle, contentDescription = stringResource(R.string.interrupt))
+                            }
+                        }
+                        IconButton(onClick = { actions = true }) {
+                            Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.session_actions))
+                        }
+                    },
+                    scrollBehavior = scrollBehavior,
+                )
+                if (tree.size > 1) WorkerTabs(tree, shownId, onSelect = { selectedId = it })
+            }
         },
         bottomBar = {
             if (session?.isStructured != false) {
-                Composer(enabled = online && !sending, sending = sending, onSend = vm::send)
+                key(shownId) { Composer(enabled = online && !sending, sending = sending, onSend = vm::send) }
+            }
+        },
+        floatingActionButton = {
+            AnimatedVisibility(visible = transcript != null && !follow.atLatest, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
+                JumpToLatest(follow.unread, onClick = follow::jump)
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -156,44 +193,26 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
             t == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             else -> {
                 val rows = remember(t) { rows(t.visibleItems) }
-                val list = rememberLazyListState()
-                val total = rows.size + t.approvals.size + t.inputs.size
-                val lastLength = rows.lastOrNull()?.let { r -> (r as? TranscriptRow.Agent)?.item?.text?.length } ?: 0
-                // Follow the conversation while the user is at its end.
-                LaunchedEffect(total, lastLength) {
-                    val atEnd = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index?.let { it >= list.layoutInfo.totalItemsCount - 3 } ?: true
-                    if (atEnd && total > 0) list.animateScrollToItem(list.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1)
-                }
+                val newest = rows.lastOrNull()
+                follow.Track(
+                    count = rows.size + t.approvals.size + t.inputs.size,
+                    newestKey = newest?.key,
+                    newestLength = (newest as? TranscriptRow.Agent)?.item?.text?.length ?: 0,
+                )
+                // Laid out from the bottom: it opens at the latest messages, and older ones are above.
                 LazyColumn(
                     state = list,
+                    reverseLayout = true,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(top = padding.calculateTopPadding() + Spacing.s, bottom = padding.calculateBottomPadding() + Spacing.m),
-                    verticalArrangement = Arrangement.spacedBy(Spacing.m),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.m, Alignment.Bottom),
                 ) {
-                    if (rows.isEmpty()) {
-                        item(key = "empty") {
-                            Text(
-                                stringResource(R.string.transcript_empty),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = Spacing.m),
-                            )
+                    if (s?.state == SessionState.Failed && s.lastError != null && t.lastError == null) {
+                        item(key = "session-error") {
+                            Text(s.lastError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
                         }
                     }
-                    items(rows, key = { it.key }) { row -> TranscriptRowView(row, Modifier.animateItem()) }
-                    t.lastError?.let { error ->
-                        item(key = "turn-error") {
-                            Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
-                        }
-                    }
-                    if (running) {
-                        item(key = "working") {
-                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Spacing.m))
-                        }
-                    }
-                    items(t.approvals, key = { "approval:" + it.id }) { approval ->
-                        ApprovalCard(approval, enabled = online, onRespond = { vm.respond(approval, it) }, modifier = Modifier.animateItem())
-                    }
-                    items(t.inputs, key = { "input:" + it.id }) { request ->
+                    items(t.inputs.asReversed(), key = { "input:" + it.id }) { request ->
                         QuestionsCard(
                             request,
                             enabled = online,
@@ -202,9 +221,27 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                             modifier = Modifier.animateItem(),
                         )
                     }
-                    if (s?.state == SessionState.Failed && s.lastError != null && t.lastError == null) {
-                        item(key = "session-error") {
-                            Text(s.lastError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
+                    items(t.approvals.asReversed(), key = { "approval:" + it.id }) { approval ->
+                        ApprovalCard(approval, enabled = online, onRespond = { vm.respond(approval, it) }, modifier = Modifier.animateItem())
+                    }
+                    if (running) {
+                        item(key = "working") {
+                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Spacing.m))
+                        }
+                    }
+                    t.lastError?.let { error ->
+                        item(key = "turn-error") {
+                            Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
+                        }
+                    }
+                    items(rows.asReversed(), key = { it.key }) { row -> TranscriptRowView(row, Modifier.animateItem()) }
+                    if (rows.isEmpty()) {
+                        item(key = "empty") {
+                            Text(
+                                stringResource(R.string.transcript_empty),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = Spacing.m),
+                            )
                         }
                     }
                 }
@@ -227,6 +264,40 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
             confirmButton = { TextButton(onClick = { confirmStop = false; vm.stop() }) { Text(stringResource(R.string.stop)) } },
             dismissButton = { TextButton(onClick = { confirmStop = false }) { Text(stringResource(R.string.cancel)) } },
         )
+    }
+}
+
+/** The leader's chat and a tab per worker or team member, each with its state. */
+@Composable
+private fun WorkerTabs(tree: List<Session>, selectedId: String, onSelect: (String) -> Unit) {
+    PrimaryScrollableTabRow(selectedTabIndex = tree.indexOfFirst { it.id == selectedId }.coerceAtLeast(0), edgePadding = Spacing.m) {
+        tree.forEachIndexed { i, s ->
+            val stateLabel = stringResource(s.state.label)
+            Tab(
+                selected = s.id == selectedId,
+                onClick = { onSelect(s.id) },
+                modifier = Modifier.semantics { stateDescription = stateLabel },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                        Box(Modifier.size(Spacing.statusDot).clip(CircleShape).background(s.state.color()))
+                        Text(
+                            if (i == 0) stringResource(R.string.tab_chat) else s.specialistName ?: s.title.ifBlank { stringResource(R.string.untitled_session) },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun JumpToLatest(unread: Int, onClick: () -> Unit) {
+    SmallFloatingActionButton(onClick = onClick) {
+        BadgedBox(badge = { if (unread > 0) Badge { Text("$unread") } }) {
+            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = stringResource(R.string.jump_to_latest))
+        }
     }
 }
 

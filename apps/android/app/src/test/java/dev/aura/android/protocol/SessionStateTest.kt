@@ -20,26 +20,6 @@ class SessionStateTest {
     }
 
     @Test
-    fun `waiting sessions come first, then running ones, then the latest`() {
-        val list = listOf(
-            session("old", activity = "2026-01-01"),
-            session("new", activity = "2026-03-01"),
-            session("run", status = "running", activity = "2025-01-01"),
-            session("wait", pending = 2, activity = "2024-01-01"),
-        )
-        assertEquals(listOf("wait", "run", "new", "old"), list.ordered().map { it.id })
-    }
-
-    @Test
-    fun `sessions are grouped by project, a worktree counting as its repository`() {
-        val wt = session("w", cwd = "/wt/feature").copy(worktree = WorktreeInfo("/p/a", "/wt/feature", "feature"))
-        val groups = groupByProject(listOf(session("a"), wt, session("b", cwd = "/p/b/"), session("gone").copy(archived = true)))
-        assertEquals(listOf("/p/a", "/p/b/"), groups.map { it.path })
-        assertEquals(listOf("a", "b"), groups.map { it.name })
-        assertEquals(setOf("a", "w"), groups[0].sessions.map { it.id }.toSet())
-    }
-
-    @Test
     fun `folder names handle both separators`() {
         assertEquals("repo", folderName("C:\\src\\repo"))
         assertEquals("repo", folderName("/home/me/repo/"))

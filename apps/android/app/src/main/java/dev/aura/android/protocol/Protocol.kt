@@ -36,6 +36,24 @@ data class Session(
     val attention: String? = null,
     @SerialName("orchestrator_id") val orchestratorId: String? = null,
     @SerialName("specialist_name") val specialistName: String? = null,
+    @SerialName("created_at") val createdAt: String = "",
+    /** The workspace it is in; empty against a daemon from before workspaces. */
+    val workspace: String = "",
+    val orchestrator: Boolean = false,
+    @SerialName("feature_owner") val featureOwner: Boolean = false,
+    /** The scheduled task that started it, when one did. */
+    @SerialName("scheduled_task_id") val scheduledTaskId: String? = null,
+    @SerialName("scheduled_task_name") val scheduledTaskName: String? = null,
+    /** The scheduled task whose run it is part of, set on the run and every worker under it. */
+    @SerialName("scheduled_run") val scheduledRun: String? = null,
+)
+
+/** A named container the user works in; every session is in one. */
+@Serializable
+data class Workspace(
+    val id: String,
+    val name: String,
+    val position: Int = 0,
 )
 
 @Serializable

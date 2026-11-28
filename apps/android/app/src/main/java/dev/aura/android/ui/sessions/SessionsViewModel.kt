@@ -5,14 +5,15 @@ import androidx.lifecycle.viewModelScope
 import dev.aura.android.AppContainer
 import dev.aura.android.R
 import dev.aura.android.net.ConnectionState
-import dev.aura.android.protocol.ProjectGroup
-import dev.aura.android.protocol.groupByProject
+import dev.aura.android.protocol.SessionList
+import dev.aura.android.protocol.sessionList
 import dev.aura.android.ui.components.UiMessage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -33,11 +34,18 @@ class SessionsViewModel(private val container: AppContainer, val serverId: Strin
         .flatMapLatest { it?.state ?: flowOf(ConnectionState.Offline) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ConnectionState.Offline)
 
-    /** Sessions grouped by project; null until loaded. */
-    val groups: StateFlow<List<ProjectGroup>?> = connection
-        .flatMapLatest { it?.sessions ?: flowOf(null) }
-        .map { it?.let(::groupByProject) }
+    /** The sessions as the desktop sidebar lays them out; null until loaded. */
+    val list: StateFlow<SessionList?> = connection
+        .flatMapLatest { c -> c?.let { combine(it.sessions, it.workspaces) { s, w -> s?.let { sessionList(it, w) } } } ?: flowOf(null) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** The keys of the groups the user folded. */
+    val folded: StateFlow<Set<String>> = container.folded.of(serverId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    fun toggle(group: String) {
+        viewModelScope.launch { container.folded.toggle(serverId, group) }
+    }
 
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing

@@ -13,6 +13,9 @@ object Spacing {
     /** Widest a column of text or form fields grows on large screens. */
     val contentMaxWidth = 720.dp
 
+    /** A status dot beside a label. */
+    val statusDot = 8.dp
+
     /** The size of an illustration icon in an empty state. */
     val emptyIcon = 48.dp
 }

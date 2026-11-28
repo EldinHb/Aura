@@ -9,6 +9,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import dev.aura.android.data.FoldedGroups
 import dev.aura.android.data.KeystoreCipher
 import dev.aura.android.data.SavedServer
 import dev.aura.android.data.ServerStore
@@ -32,6 +33,7 @@ class AppContainer(private val context: Context) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val http = OkHttpClient()
     val store = ServerStore(context.dataStore, KeystoreCipher())
+    val folded = FoldedGroups(context.dataStore)
 
     private val _connections = MutableStateFlow<Map<String, ServerConnection>>(emptyMap())
 

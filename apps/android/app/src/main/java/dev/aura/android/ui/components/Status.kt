@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import dev.aura.android.R
+import dev.aura.android.protocol.Category
 import dev.aura.android.protocol.SessionState
 
 val SessionState.icon: ImageVector
@@ -40,6 +41,27 @@ fun SessionState.color(): Color = when (this) {
     SessionState.Running -> MaterialTheme.colorScheme.primary
     SessionState.Failed -> MaterialTheme.colorScheme.error
     SessionState.Done, SessionState.Idle -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+val Category.icon: ImageVector
+    get() = when (this) {
+        Category.NeedsYou -> Icons.Outlined.PanTool
+        Category.Working -> Icons.Outlined.Sync
+        Category.Idle -> Icons.Outlined.PauseCircle
+    }
+
+val Category.label: Int
+    get() = when (this) {
+        Category.NeedsYou -> R.string.category_needs_you
+        Category.Working -> R.string.category_working
+        Category.Idle -> R.string.category_idle
+    }
+
+@Composable
+fun Category.color(): Color = when (this) {
+    Category.NeedsYou -> MaterialTheme.colorScheme.tertiary
+    Category.Working -> MaterialTheme.colorScheme.primary
+    Category.Idle -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 /** The state's icon, in its color; the label is said to screen readers. */

@@ -29,19 +29,3 @@ fun folderName(path: String): String =
 /** Whether this app can show the session's transcript: terminal sessions are bytes on a screen. */
 val Session.isStructured: Boolean
     get() = mode != "terminal" && provider != "terminal"
-
-/** Sessions to show, waiting ones first, then running, then by latest activity. */
-fun List<Session>.ordered(): List<Session> =
-    filterNot { it.archived }.sortedWith(
-        compareBy<Session> { it.state.ordinal.coerceAtMost(SessionState.Failed.ordinal) }
-            .thenByDescending { it.lastActivity },
-    )
-
-/** A project's sessions, for the list grouped by project. */
-data class ProjectGroup(val path: String, val name: String, val sessions: List<Session>)
-
-/** [sessions] grouped by project; the group with the most urgent session comes first. */
-fun groupByProject(sessions: List<Session>): List<ProjectGroup> =
-    sessions.ordered()
-        .groupBy { it.projectPath }
-        .map { (path, list) -> ProjectGroup(path, folderName(path), list) }
