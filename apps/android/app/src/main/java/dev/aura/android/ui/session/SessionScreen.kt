@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.DriveFileMove
@@ -374,7 +375,12 @@ private fun FeatureCardRow(
 private fun WorkerTabs(tree: List<Session>, selectedId: String, onSelect: (String) -> Unit) {
     val ids = listOf(tree.first().id, TEAM_TAB) + tree.drop(1).map { it.id }
     PrimaryScrollableTabRow(selectedTabIndex = ids.indexOf(selectedId).coerceAtLeast(0), edgePadding = Spacing.m) {
-        Tab(selected = selectedId == tree.first().id, onClick = { onSelect(tree.first().id) }, text = { Text(stringResource(R.string.tab_chat)) })
+        Tab(
+            selected = selectedId == tree.first().id,
+            onClick = { onSelect(tree.first().id) },
+            icon = { Icon(Icons.AutoMirrored.Outlined.Chat, contentDescription = null) },
+            text = { Text(stringResource(R.string.tab_chat)) },
+        )
         Tab(
             selected = selectedId == TEAM_TAB,
             onClick = { onSelect(TEAM_TAB) },

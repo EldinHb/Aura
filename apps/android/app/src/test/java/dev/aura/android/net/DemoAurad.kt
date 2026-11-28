@@ -53,7 +53,7 @@ private class DemoData {
     private var secondQuestion = false
     private val sessions = mutableListOf(
         session("f1", "Ship the Android app", status = "running", featureOwner = true, created = "2026-11-28T08:00:00Z"),
-        session("m1", "Session list like the desktop", status = "running", parent = "f1", specialist = "Frontend engineer"),
+        JsonObject(session("m1", "Session list like the desktop", status = "running", parent = "f1", specialist = "Frontend engineer") + ("model" to str("opus")) + ("effort" to str("high"))),
         session("m2", "Review the pinning", status = "waiting_approval", pending = 1, parent = "f1", specialist = "Security reviewer"),
         session("m3", "Write the README", parent = "f1", specialist = "Technical writer"),
         session("o1", "Release 0.6.0", orchestrator = true, created = "2026-11-27T10:00:00Z"),
@@ -80,6 +80,7 @@ private class DemoData {
         }
         history.getValue("f1") += listOf(
             event("item_completed", "f1", "item" to item("f1-report", "f1", "user_message", AURA_REPORT, "completed")),
+            event("item_completed", "f1", "item" to item("f1-md", "f1", "agent_message", MARKDOWN_REPLY, "completed")),
             event("item_completed", "f1", "item" to item("f1-ask", "f1", "agent_message", "Before I hire a release engineer, one decision for you.", "completed")),
             event("item_completed", "f1", "item" to item("f1-card", "f1", "system", "Decision for you: which SDK?", "completed", obj("feature_card" to obj("kind" to str("decision"), "id" to str("q1"))))),
             event("item_completed", "f1", "item" to item("f1-team", "f1", "user_message", AURA_TEAM, "completed")),
@@ -89,6 +90,16 @@ private class DemoData {
     private fun feature() = obj(
         "owner_id" to str("f1"), "goal" to str("Ship the Android app"), "status" to str("waiting_on_user"),
         "updated_at" to str("2026-11-28T09:00:00Z"),
+        "team" to JsonArray(listOf(
+            obj("worker_id" to str("m1"), "name" to str("Ada"), "role" to str("Frontend engineer")),
+            obj("worker_id" to str("m2"), "name" to str("Sam"), "role" to str("Security reviewer")),
+            obj("worker_id" to str("m3"), "name" to str("Kim"), "role" to str("Technical writer")),
+        )),
+        "decisions" to JsonArray(listOf(
+            obj("id" to str("d1"), "decision" to str("Use Material 3 with dynamic color"), "rationale" to str("Matches the platform; the user asked for Material You."), "decided_by" to str("user"), "at" to str("2026-11-28T08:10:00Z")),
+            obj("id" to str("d2"), "decision" to str("Pin the server certificate by SHA-256"), "rationale" to str("Self-signed certificates; no CA to trust."), "decided_by" to str("owner"), "at" to str("2026-11-28T08:20:00Z")),
+        )),
+        "checkpoints" to JsonArray(listOf(obj("checkpoint" to str("after_design"), "summary" to str("Screens and flows"), "at" to str("2026-11-28T08:30:00Z"), "approved" to JsonPrimitive(true)))),
         "questions" to JsonArray(listOfNotNull(obj(
             "id" to str("q1"), "question" to str("Target SDK 37 now, or stay on 36 until the BOM catches up?"),
             "context" to str("Compose BOM 2026.11.01 needs **android-37.1**; 37.0 is installed."),
@@ -284,3 +295,27 @@ private const val AURA_REPORT = "[Aura] Worker report. This message comes from A
     "**Frontend engineer** finished: the session list groups by workspace and status, and workers are tabs."
 private const val AURA_TEAM = "[Aura] Question from a teammate. This message comes from Aura, not the user.\n\n" +
     "Security reviewer asks: may I run `openssl s_client` against the demo server?"
+
+private const val MARKDOWN_REPLY = """## Status
+
+The **session list** now mirrors the desktop, ~~flat list~~ no more. Run `./gradlew lint` to check.
+
+- [x] Grouped by workspace
+- [ ] Notifications
+  - decisions
+  - replies
+
+| Screen | State |
+|---|---|
+| Sessions | done |
+| Team | in progress |
+
+```kotlin
+fun greet(name: String) = "Hello, ${'$'}name"
+```
+
+> Quoted from the spec.
+
+---
+
+See [the design doc](https://example.com/design)."""

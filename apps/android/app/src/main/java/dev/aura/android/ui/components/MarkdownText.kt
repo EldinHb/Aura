@@ -16,11 +16,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.highlightedCodeBlock
 import com.mikepenz.markdown.compose.elements.highlightedCodeFence
 import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.elements.MarkdownCheckBox
 import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.m3.markdownTypography
 import dev.aura.android.ui.theme.Spacing
 import dev.aura.android.ui.theme.codeSmall
 
@@ -42,12 +45,35 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
         }
     }
     val text = LocalContentColor.current
+    val type = MaterialTheme.typography
     CompositionLocalProvider(LocalUriHandler provides safe) {
         SelectionContainer(modifier) {
             Markdown(
                 content = markdown,
                 colors = markdownColor(text = text),
-                components = remember { markdownComponents(codeBlock = highlightedCodeBlock, codeFence = highlightedCodeFence) },
+                // Headings at title sizes, as the desktop sizes them in a chat; body at the app's body size.
+                typography = markdownTypography(
+                    h1 = type.titleLarge,
+                    h2 = type.titleMedium,
+                    h3 = type.titleSmall,
+                    h4 = type.titleSmall,
+                    h5 = type.titleSmall,
+                    h6 = type.titleSmall,
+                    text = type.bodyLarge,
+                    paragraph = type.bodyLarge,
+                    ordered = type.bodyLarge,
+                    bullet = type.bodyLarge,
+                    list = type.bodyLarge,
+                    quote = type.bodyLarge.copy(fontStyle = FontStyle.Italic),
+                    code = type.codeSmall,
+                ),
+                components = remember {
+                    markdownComponents(
+                        codeBlock = highlightedCodeBlock,
+                        codeFence = highlightedCodeFence,
+                        checkbox = { MarkdownCheckBox(it.content, it.node, it.typography.text) },
+                    )
+                },
             )
         }
     }

@@ -26,3 +26,13 @@ class TeamStatusTest {
         assertEquals(emptyList<Pair<TeamStatus, Int>>(), teamCounts(emptyList()))
     }
 }
+
+class FirstLineTest {
+    @Test
+    fun `a reply's preview is its first line as plain text`() {
+        assertEquals("Step 3 is done. Run ./gradlew lint.", dev.aura.android.ui.session.firstLine("**Step 3** is done. Run `./gradlew lint`."))
+        assertEquals("Status", dev.aura.android.ui.session.firstLine("\n## Status\n\nMore"))
+        assertEquals("See the docs now", dev.aura.android.ui.session.firstLine("See [the docs](https://x.y) ~~later~~ now".replace("~~later~~ ", "")))
+        assertEquals(null, dev.aura.android.ui.session.firstLine("  \n---\n"))
+    }
+}
