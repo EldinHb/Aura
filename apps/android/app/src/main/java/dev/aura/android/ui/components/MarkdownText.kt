@@ -135,10 +135,12 @@ private fun throttled(value: String, periodMs: Long): String {
 }
 
 /**
- * [markdown] with a code fence that is still open closed, so a half-streamed
+ * [streamed] with a code fence that is still open closed, so a half-streamed
  * code block renders as code now rather than turning into one later.
  */
-internal fun closeOpenFence(markdown: String): String {
+internal fun closeOpenFence(streamed: String): String {
+    // A fence still arriving ("`" or "``" on the last line) would show as stray text for a frame.
+    val markdown = if (PARTIAL_FENCE.matches(streamed.substringAfterLast('\n'))) streamed.substringBeforeLast('\n', "") else streamed
     var open: String? = null
     for (line in markdown.lineSequence()) {
         val t = line.trimStart()
@@ -151,3 +153,5 @@ internal fun closeOpenFence(markdown: String): String {
     }
     return if (open == null) markdown else markdown.trimEnd('\n') + "\n" + open
 }
+
+private val PARTIAL_FENCE = Regex("""\s*(`{1,2}|~{1,2})""")

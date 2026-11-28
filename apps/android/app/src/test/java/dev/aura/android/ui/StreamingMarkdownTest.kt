@@ -13,6 +13,13 @@ class StreamingMarkdownTest {
     }
 
     @Test
+    fun `a fence still arriving is not shown as text`() {
+        assertEquals("Text", closeOpenFence("Text\n`"))
+        assertEquals("```\ncode\n```", closeOpenFence("```\ncode\n``"))
+        assertEquals("Use `x` here", closeOpenFence("Use `x` here"))
+    }
+
+    @Test
     fun `closed fences and plain text are left as they are`() {
         val closed = "```\ncode\n```\nafter"
         assertEquals(closed, closeOpenFence(closed))
