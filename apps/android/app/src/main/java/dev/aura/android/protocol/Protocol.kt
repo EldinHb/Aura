@@ -147,7 +147,42 @@ data class AgentInfo(
 )
 
 @Serializable
-data class Capabilities(val structured: Boolean = true)
+data class Capabilities(
+    val structured: Boolean = true,
+    val models: Boolean = false,
+    val effort: Boolean = false,
+    @SerialName("permission_modes") val permissionModes: List<String> = emptyList(),
+    @SerialName("sandbox_modes") val sandboxModes: List<String> = emptyList(),
+)
+
+/** A model a provider offers (`provider.models`). */
+@Serializable
+data class ModelInfo(
+    val id: String,
+    @SerialName("display_name") val displayName: String = id,
+    val description: String? = null,
+    val efforts: List<String> = emptyList(),
+    @SerialName("default_effort") val defaultEffort: String? = null,
+    @SerialName("is_default") val isDefault: Boolean = false,
+)
+
+/** How much a feature owner decides on its own; checkpoints apply at `checkpoints`. */
+@Serializable
+data class Autonomy(val level: String, val checkpoints: List<String> = emptyList()) {
+    companion object {
+        const val AUTONOMOUS = "autonomous"
+        const val BLOCKING = "blocking_decisions"
+        const val CHECKPOINTS = "checkpoints"
+        val ALL_CHECKPOINTS = listOf("after_design", "before_implementation", "before_delivery")
+
+        /** What the desktop starts a feature's own autonomy at. */
+        val DEFAULT = Autonomy(BLOCKING, ALL_CHECKPOINTS)
+    }
+}
+
+/** A worktree for a new session: a branch, made under the repository's `.aura-worktrees/`. */
+@Serializable
+data class WorktreeOpts(val branch: String, val base: String? = null)
 
 @Serializable
 data class ProviderInfo(
@@ -174,6 +209,18 @@ data class CreateSessionOpts(
     @SerialName("initial_prompt") val initialPrompt: String? = null,
     /** The workspace to start it in; null leaves it to the server (the one last active). */
     val workspace: String? = null,
+    val title: String? = null,
+    val group: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
+    @SerialName("permission_mode") val permissionMode: String? = null,
+    @SerialName("sandbox_mode") val sandboxMode: String? = null,
+    @SerialName("system_prompt") val systemPrompt: String? = null,
+    val worktree: WorktreeOpts? = null,
+    val orchestrator: Boolean = false,
+    @SerialName("feature_owner") val featureOwner: Boolean = false,
+    @SerialName("feature_goal") val featureGoal: String? = null,
+    val autonomy: Autonomy? = null,
 )
 
 /** `remote.pair`'s answer. */

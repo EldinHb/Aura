@@ -143,6 +143,40 @@
     </plurals>
 
     <!-- New session -->
+    <string name="kind_agent">Agent</string>
+    <string name="kind_orchestrator">Orchestrator</string>
+    <string name="kind_owner">Feature owner</string>
+    <string name="kind_agent_desc">One agent working in one folder.</string>
+    <string name="kind_orchestrator_desc">You talk to this agent like in a chat; it hands work to worker sessions of any agent, in any folder or repository, which show up under it.</string>
+    <string name="kind_owner_desc">An orchestrator that owns one feature end to end: it decides, staffs specialists and comes back to you only for decisions that are yours, and ends with a delivery report.</string>
+    <string name="feature_goal">Goal</string>
+    <string name="feature_goal_hint">What should the feature do, for whom, and why?</string>
+    <string name="own_autonomy">Own autonomy for this feature</string>
+    <string name="own_autonomy_desc">Otherwise it follows the server\'s setting for every feature owner.</string>
+    <string name="autonomy_autonomous">Autonomous: decides everything itself</string>
+    <string name="autonomy_blocking">Blocking decisions: asks you what it cannot undo</string>
+    <string name="autonomy_checkpoints">Checkpoints: stops for your review at</string>
+    <string name="checkpoint_after_design">After design</string>
+    <string name="checkpoint_before_implementation">Before implementation</string>
+    <string name="checkpoint_before_delivery">Before delivery</string>
+    <string name="section_where">Where</string>
+    <string name="section_agent">Agent</string>
+    <string name="section_details">Details</string>
+    <string name="use_a_folder">Use a folder</string>
+    <string name="no_folder_orchestrator">Without one, the orchestrator names a folder for each worker.</string>
+    <string name="no_folder_owner">Without one, the feature owner names a folder for each worker.</string>
+    <string name="worktree">Create a git worktree</string>
+    <string name="worktree_desc">The session works on its own branch, under the repository\'s .aura-worktrees.</string>
+    <string name="branch">Branch</string>
+    <string name="model">Model</string>
+    <string name="effort">Effort</string>
+    <string name="permission_mode">Permission mode</string>
+    <string name="sandbox_mode">Sandbox</string>
+    <string name="agent_default">Default</string>
+    <string name="title_optional">Title (optional)</string>
+    <string name="group_optional">Group (optional)</string>
+    <string name="system_prompt_optional">System prompt (optional)</string>
+    <string name="system_prompt_desc">Added after the global and per-agent prompts.</string>
     <string name="project">Project folder</string>
     <string name="project_help">A folder on the server\'s computer</string>
     <string name="agent">Agent</string>
