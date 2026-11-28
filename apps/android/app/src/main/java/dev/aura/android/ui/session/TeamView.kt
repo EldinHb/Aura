@@ -28,6 +28,7 @@ import dev.aura.android.R
 import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.teamStatus
+import dev.aura.android.transcript.firstPlainLine
 import dev.aura.android.ui.components.EmptyState
 import dev.aura.android.ui.components.MarkdownText
 import dev.aura.android.ui.components.StatusChip
@@ -69,7 +70,7 @@ fun TeamView(
             val member = roles[w.id]
             val role = member?.role?.ifBlank { null } ?: w.specialistName
             val runs = listOfNotNull(w.agent ?: w.provider.replaceFirstChar { it.uppercase() }, w.model, w.effort).joinToString(" · ")
-            val reply = replies[w.id]?.let(::firstLine)
+            val reply = replies[w.id]?.let(::firstPlainLine)
             ListItem(
                 modifier = Modifier.animateItem().clickable { onOpen(w.id) },
                 overlineContent = role?.let { { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
@@ -147,17 +148,6 @@ private fun FeatureSummary(f: Feature, modifier: Modifier = Modifier) {
         }
     }
 }
-
-/** The first line of [markdown] as plain text, for a one-line preview: no markers, links as their text. */
-internal fun firstLine(markdown: String): String? = markdown.lineSequence()
-    .map { line ->
-        line.trim()
-            .trimStart('#', '>', '-', '*', '+', ' ')
-            .replace(Regex("\\[([^]]*)]\\([^)]*\\)"), "$1")
-            .replace(Regex("[*_`~]+"), "")
-            .trim()
-    }
-    .firstOrNull { it.isNotBlank() && !it.all { c -> c == '-' || c == '|' || c == ':' } }
 
 /** The latest decisions the summary shows; the rest are in the owner's chat. */
 private const val DECISIONS_SHOWN = 8

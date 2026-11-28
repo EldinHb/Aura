@@ -18,6 +18,7 @@ import dev.aura.android.R
 import dev.aura.android.data.AppPrefs
 import dev.aura.android.data.SavedServer
 import dev.aura.android.net.ServerConnection
+import dev.aura.android.transcript.plainText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
@@ -137,7 +138,7 @@ class Notifier(
 
     private fun contentText(notice: Notice): String = when (notice.kind) {
         NoticeKind.Decision -> context.getString(R.string.notice_decision, notice.text)
-        NoticeKind.Message -> notice.text.ifBlank {
+        NoticeKind.Message -> plainText(notice.text).ifBlank {
             context.getString(if (notice.failed) R.string.notice_failed else R.string.notice_finished)
         }
         NoticeKind.Approval -> context.getString(R.string.notice_approval, notice.text)
