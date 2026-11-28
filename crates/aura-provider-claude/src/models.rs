@@ -144,24 +144,16 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn reads_models_from_a_cli() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let cli = dir.path().join("claude");
-        let mut f = std::fs::File::create(&cli).unwrap();
         // Noise first, like the hook events the real CLI emits before answering.
-        writeln!(
-            f,
-            "#!/bin/sh\nread line\necho '{{\"type\":\"system\",\"subtype\":\"hook_started\"}}'"
-        )
-        .unwrap();
-        writeln!(
-            f,
-            "echo '{{\"type\":\"control_response\",\"response\":{{\"subtype\":\"success\",\"request_id\":\"{REQUEST_ID}\",\"response\":{{\"models\":[{{\"value\":\"claude-mythos-5-1\",\"displayName\":\"Mythos 5.1\"}}]}}}}}}'\nsleep 30"
-        )
-        .unwrap();
-        drop(f);
-        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        aura_core::test_support::write_script(
+            &cli,
+            &format!(
+                "#!/bin/sh\nread line\necho '{{\"type\":\"system\",\"subtype\":\"hook_started\"}}'\n\
+                 echo '{{\"type\":\"control_response\",\"response\":{{\"subtype\":\"success\",\"request_id\":\"{REQUEST_ID}\",\"response\":{{\"models\":[{{\"value\":\"claude-mythos-5-1\",\"displayName\":\"Mythos 5.1\"}}]}}}}}}'\nsleep 30\n"
+            ),
+        );
         let models = fetch(cli.to_str().unwrap()).await.unwrap();
         assert_eq!(models[0].id, "claude-mythos-5-1");
     }

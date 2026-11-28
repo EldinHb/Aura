@@ -95,12 +95,7 @@ fn hostile(format: &str) -> Hostile {
         "fsmonitor-watchman",
     ] {
         let f = hooks.join(hook);
-        std::fs::write(&f, format!("#!/bin/sh\ntouch {m}/hook-{hook}\n")).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        aura_core::test_support::write_script(&f, &format!("#!/bin/sh\ntouch {m}/hook-{hook}\n"));
     }
     set("core.hooksPath", &hooks.to_string_lossy());
     std::fs::write(repo.join(".gitattributes"), "* filter=evil diff=evil\n").unwrap();

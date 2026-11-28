@@ -248,8 +248,6 @@ fn fallback_models() -> Vec<ModelInfo> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
 
     /// A stand-in `claude` that reports `version` and answers initialize with
     /// `model`, or exits without answering when `model` is `None`.
@@ -260,10 +258,10 @@ mod tests {
             ),
             None => "exit 1".into(),
         };
-        let mut f = std::fs::File::create(path).unwrap();
-        writeln!(f, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '{version} (Claude Code)'; exit 0; fi\n{answer}").unwrap();
-        drop(f);
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        aura_core::test_support::write_script(
+            path,
+            &format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo '{version} (Claude Code)'; exit 0; fi\n{answer}\n"),
+        );
     }
 
     fn ids(models: &[ModelInfo]) -> Vec<&str> {

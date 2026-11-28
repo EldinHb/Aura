@@ -427,12 +427,10 @@ mod tests {
         )) {
             return;
         }
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("claude");
         // Says something on both pipes, then ends like a crashed or finished agent.
-        std::fs::write(&bin, "#!/bin/sh\necho '{}'\necho bye >&2\nexit 0\n").unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        aura_core::test_support::write_script(&bin, "#!/bin/sh\necho '{}'\necho bye >&2\nexit 0\n");
         let bin = bin.to_string_lossy().into_owned();
         let session = Session::new(&CreateSessionOpts {
             provider: ProviderKind::Claude,

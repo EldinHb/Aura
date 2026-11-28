@@ -4,7 +4,6 @@
 #![cfg(unix)]
 
 use aura_core::suggestions::{ClaudeCli, SuggestionModel, SuggestionSettings};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use std::time::Duration;
@@ -13,8 +12,7 @@ static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 
 fn fake_claude(dir: &Path, script: &str) {
     let bin = dir.join("claude");
-    std::fs::write(&bin, format!("#!/usr/bin/python3\n{script}")).unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+    aura_core::test_support::write_script(&bin, &format!("#!/usr/bin/python3\n{script}"));
     std::env::set_var("AURA_CLAUDE_BIN", &bin);
 }
 

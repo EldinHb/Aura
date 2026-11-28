@@ -697,7 +697,6 @@ pub fn clean_up(temp: &Path) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     /// Run as the helper when the test binary is started by `helper_command`.
     #[test]
@@ -744,8 +743,7 @@ mod tests {
     }
 
     fn script(path: &Path, body: &str) {
-        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        aura_core::test_support::write_script(path, &format!("#!/bin/sh\n{body}\n"));
     }
 
     /// Put the app (answering `--aura-version`, noting a start otherwise),

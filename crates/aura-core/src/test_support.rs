@@ -33,6 +33,35 @@ pub fn in_own_process(name: &str) -> bool {
     false
 }
 
+/// Write an executable script (a fake CLI) at `path` for a test to run.
+///
+/// The file is written by a short-lived `sh`, not by this process. A file
+/// this process held open for writing would be inherited by any child another
+/// test thread forks meanwhile, until that child execs; running the script
+/// then fails on Linux with ETXTBSY ("Text file busy"), whether or not this
+/// thread has closed its own descriptor.
+#[cfg(unix)]
+pub fn write_script(path: &std::path::Path, content: &str) {
+    use std::io::Write;
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("start sh to write the script");
+    let mut stdin = child.stdin.take().expect("sh's stdin");
+    stdin
+        .write_all(content.as_bytes())
+        .expect("write the script");
+    drop(stdin);
+    let status = child.wait().expect("wait for sh");
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

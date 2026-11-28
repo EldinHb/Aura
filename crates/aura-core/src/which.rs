@@ -243,13 +243,9 @@ fn read_version(binary: &str, parse_version: fn(&str) -> Option<String>) -> Opti
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
 
     fn write_cli(path: &std::path::Path, version: &str) {
-        let mut f = std::fs::File::create(path).unwrap();
-        writeln!(f, "#!/bin/sh\necho \"tool {version}\"").unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_script(path, &format!("#!/bin/sh\necho \"tool {version}\"\n"));
     }
 
     fn parse(stdout: &str) -> Option<String> {
@@ -414,21 +410,16 @@ pub fn adopt_login_path() -> String {
 #[cfg(all(test, unix))]
 mod path_tests {
     use super::*;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
 
     /// A stand-in shell that prints noise before the answer, like a real rc file.
     fn fake_shell(dir: &std::path::Path, path_value: &str) -> std::path::PathBuf {
         let p = dir.join("fakeshell");
-        let mut f = std::fs::File::create(&p).unwrap();
-        writeln!(f, "#!/bin/sh").unwrap();
-        writeln!(f, "echo 'welcome to your shell'").unwrap();
-        writeln!(
-            f,
-            "printf '{PATH_SENTINEL_START}{path_value}{PATH_SENTINEL_END}'"
-        )
-        .unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_script(
+            &p,
+            &format!(
+                "#!/bin/sh\necho 'welcome to your shell'\nprintf '{PATH_SENTINEL_START}{path_value}{PATH_SENTINEL_END}'\n"
+            ),
+        );
         p
     }
 
@@ -446,8 +437,7 @@ mod path_tests {
     fn missing_sentinel_yields_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("quiet");
-        std::fs::write(&p, "#!/bin/sh\necho nothing useful\n").unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_script(&p, "#!/bin/sh\necho nothing useful\n");
         assert_eq!(probe_login_path(p.to_str().unwrap()), None);
     }
 
