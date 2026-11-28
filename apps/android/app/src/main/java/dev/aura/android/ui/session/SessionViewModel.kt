@@ -224,6 +224,15 @@ class SessionViewModel(
         })
     }
 
+    /** Text for the composer from elsewhere ("Ask for changes"), until it takes it. */
+    val prefill: StateFlow<String?> = container.composerPrefill
+        .map { it["$serverId/$sessionId"] }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun takePrefill() {
+        container.composerPrefill.update { it - "$serverId/$sessionId" }
+    }
+
     /** Reads [uris] and shrinks them to what this session's agent takes, off the main thread. */
     fun addImages(uris: List<Uri>) {
         val limits = ImageLimits.forProvider(session.value?.provider)

@@ -212,6 +212,8 @@ private class DemoData {
             val img = attachmentData[params["attachment"]!!.jsonPrimitive.content] ?: return@synchronized FakeAurad.error(-32000, "no such attachment")
             obj("data" to img["data"]!!, "media_type" to img["media_type"]!!)
         }
+        "session.git_diff" -> str(DEMO_DIFF)
+        "session.git_status", "session.git_diff_stat" -> JsonArray(emptyList())
         "session.mark_seen", "session.interrupt", "session.respond_input" -> JsonPrimitive(true)
         else -> FakeAurad.error(-32601, "unknown method $method")
     }
@@ -346,3 +348,32 @@ fun greet(name: String) = "Hello, ${'$'}name"
 ---
 
 See [the design doc](https://example.com/design)."""
+
+private const val DEMO_DIFF = """diff --git a/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt b/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt
+index 1111111..2222222 100644
+--- a/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt
++++ b/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt
+@@ -40,9 +40,11 @@ class FollowLatest internal constructor(
+     /** Called with the transcript's size on every change. */
+     @Composable
+-    fun Track(count: Int, newestKey: Any?, newestLength: Int) {
++    fun Track(count: Int) {
+         this.count = count
+-        LaunchedEffect(count, newestKey, newestLength) {
+-            if (pinned && !list.isScrollInProgress) list.scrollToItem(0)
++        LaunchedEffect(count) { if (pinned) seen = count }
++    }
++
++    internal suspend fun follow() {
++        snapshotFlow { pinned && !list.isScrollInProgress && list.canScrollForward }
+         }
+     }
+diff --git a/README.md b/README.md
+new file mode 100644
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,3 @@
++# Aura for Android
++
++Streaming replies no longer make the transcript jump.
+"""

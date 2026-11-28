@@ -142,6 +142,20 @@
     <string name="message_placeholder">Message the agent</string>
     <string name="send">Send</string>
     <string name="attach_images">Attach images</string>
+    <string name="changes">Changes</string>
+    <string name="refresh">Refresh</string>
+    <string name="ask_for_changes">Ask for changes</string>
+    <string name="ask_about_file">Ask for changes to %1$s</string>
+    <string name="changes_failed">Could not load the changes</string>
+    <string name="changes_none_title">No changes</string>
+    <string name="changes_none_body">The session\'s folder has nothing changed since its last commit, or is no git repository.</string>
+    <string name="change_new">New</string>
+    <string name="change_deleted">Deleted</string>
+    <string name="change_renamed">From %1$s</string>
+    <string name="change_binary">Binary file</string>
+    <string name="change_counts">+%1$d −%2$d</string>
+    <string name="line_added">Line %1$d added: %2$s</string>
+    <string name="line_removed">Line %1$d removed: %2$s</string>
     <string name="share_to_aura">Share to Aura</string>
     <plurals name="share_title"><item quantity="one">Send %d image to…</item><item quantity="other">Send %d images to…</item></plurals>
     <string name="share_empty">No connected server has a session to send to.</string>

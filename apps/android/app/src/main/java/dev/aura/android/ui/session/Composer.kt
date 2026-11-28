@@ -34,6 +34,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,8 +71,17 @@ fun Composer(
     onAttach: (List<Uri>) -> Unit,
     onRemove: (String) -> Unit,
     onSend: (String, () -> Unit) -> Unit,
+    prefill: String? = null,
+    onPrefillTaken: () -> Unit = {},
 ) {
     var text by rememberSaveable { mutableStateOf("") }
+    // "Ask for changes" in the Changes view: its file:line reference, after what is written already.
+    LaunchedEffect(prefill) {
+        prefill?.let {
+            text = if (text.isBlank()) it else text.trimEnd() + "\n" + it
+            onPrefillTaken()
+        }
+    }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_PICKED)) { uris ->
         if (uris.isNotEmpty()) onAttach(uris)
     }

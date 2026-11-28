@@ -56,6 +56,9 @@ class AppContainer(private val context: Context) {
     /** Images shared to Aura from another app, waiting for the session they were shared into: by "server/session". */
     val sharedImages = MutableStateFlow<Map<String, List<android.net.Uri>>>(emptyMap())
 
+    /** Text waiting to go into a session's composer ("Ask for changes"), by "server/session". */
+    val composerPrefill = MutableStateFlow<Map<String, String>>(emptyMap())
+
     /** Reads and shrinks images to send. */
     val images = dev.aura.android.images.ImageEncoder(context.contentResolver)
 

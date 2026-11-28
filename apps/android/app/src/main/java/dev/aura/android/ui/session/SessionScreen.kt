@@ -30,6 +30,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.Difference
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
@@ -112,7 +113,7 @@ import dev.aura.android.ui.theme.Spacing
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
+fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit, onChanges: (sessionId: String, title: String) -> Unit = { _, _ -> }) {
     val treeVm = appViewModel(key = "tree:$serverId:$sessionId") { SessionTreeViewModel(it, serverId, sessionId) }
     val tree by treeVm.tree.collectAsStateWithLifecycle()
     // The leader's chat or one of its workers'; opening a worker (from the inbox) selects it.
@@ -186,6 +187,11 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                         }
                     },
                     actions = {
+                        if (!showTeam && session?.isStructured != false) {
+                            IconButton(onClick = { onChanges(shownId, session?.title.orEmpty()) }) {
+                                Icon(Icons.Outlined.Difference, contentDescription = stringResource(R.string.changes))
+                            }
+                        }
                         if (running) {
                             IconButton(onClick = vm::interrupt, enabled = online) {
                                 Icon(Icons.Outlined.StopCircle, contentDescription = stringResource(R.string.interrupt))
@@ -205,6 +211,7 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                 key(shownId) {
                     val drafts by vm.drafts.collectAsStateWithLifecycle()
                     val preparing by vm.preparing.collectAsStateWithLifecycle()
+                    val prefill by vm.prefill.collectAsStateWithLifecycle()
                     Composer(
                         enabled = online && !sending,
                         sending = sending,
@@ -212,6 +219,8 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                         preparing = preparing,
                         onAttach = vm::addImages,
                         onRemove = vm::removeImage,
+                        prefill = prefill,
+                        onPrefillTaken = vm::takePrefill,
                         onSend = vm::send,
                     )
                 }

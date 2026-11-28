@@ -50,6 +50,7 @@ import androidx.navigation.toRoute
 import dev.aura.android.AppLink
 import dev.aura.android.AuraApplication
 import dev.aura.android.R
+import dev.aura.android.ui.changes.ChangesScreen
 import dev.aura.android.ui.inbox.InboxScreen
 import dev.aura.android.ui.inbox.inbox
 import dev.aura.android.ui.newsession.NewSessionScreen
@@ -73,6 +74,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class NewSessionRoute(val serverId: String)
 @Serializable data object SettingsRoute
 @Serializable data object ShareRoute
+@Serializable data class ChangesRoute(val serverId: String, val sessionId: String, val title: String)
 
 private fun NavDestination?.isTopLevel() = this != null && (hasRoute(ServersRoute::class) || hasRoute(InboxRoute::class))
 
@@ -155,6 +157,10 @@ fun AuraApp(appLinks: Flow<AppLink>) {
                     onSettings = { nav.navigate(SettingsRoute) },
                 )
             }
+            composable<ChangesRoute> { back ->
+                val route = back.toRoute<ChangesRoute>()
+                ChangesScreen(route.serverId, route.sessionId, route.title, onBack = { nav.popBackStack() })
+            }
             composable<ShareRoute> {
                 ShareScreen(
                     count = pendingShare.size,
@@ -204,7 +210,12 @@ fun AuraApp(appLinks: Flow<AppLink>) {
             }
             composable<SessionRoute> { back ->
                 val route = back.toRoute<SessionRoute>()
-                SessionScreen(route.serverId, route.sessionId, onBack = { nav.popBackStack() })
+                SessionScreen(
+                    route.serverId,
+                    route.sessionId,
+                    onBack = { nav.popBackStack() },
+                    onChanges = { id, title -> nav.navigate(ChangesRoute(route.serverId, id, title)) },
+                )
             }
             composable<NewSessionRoute> { back ->
                 val route = back.toRoute<NewSessionRoute>()

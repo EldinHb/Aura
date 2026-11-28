@@ -514,6 +514,7 @@ dependencies = [
  "async-trait",
  "aura-contain",
  "aura-core",
+ "aura-git",
  "aura-pty",
  "axum",
  "base64 0.22.1",
