@@ -523,6 +523,8 @@ async fn forbidden_methods_on_the_remote_listener() {
         "session.delete",
         "session.delete_many",
         "session.set_system_prompt",
+        "workspace.delete",
+        "workspace.touch",
         "mods.list",
         "git.status",
         "remote.status",
@@ -843,6 +845,100 @@ async fn terminal_sessions_cannot_be_typed_into_remotely() {
         serde_json::from_value(r.ok("session.list", json!({})).await).unwrap();
     assert!(sessions.iter().any(|s| s.id == term.id));
     r.ok("session.stop", json!({"id": term.id})).await;
+}
+
+#[tokio::test]
+async fn workspaces_are_made_renamed_and_filled_remotely_but_not_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let project = tempfile::tempdir().unwrap();
+    let lead = d
+        .local
+        .call(
+            "session.create",
+            json!({"provider": "claude", "cwd": project.path().to_string_lossy(), "orchestrator": true}),
+        )
+        .await
+        .unwrap();
+    let worker = d
+        .local
+        .call(
+            "session.create",
+            json!({"provider": "claude", "cwd": project.path().to_string_lossy(), "orchestrator_id": lead["id"]}),
+        )
+        .await
+        .unwrap();
+    let (port, fp) = enable(&d).await;
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+
+    let made = r.ok("workspace.create", json!({"name": "Phone"})).await;
+    let id = made["id"].as_str().unwrap().to_string();
+    assert_eq!(made["name"], json!("Phone"));
+    // Names are checked as on the desktop: a duplicate is refused.
+    assert_ne!(
+        r.err("workspace.create", json!({"name": "phone"})).await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    let renamed = r
+        .ok("workspace.rename", json!({"id": id, "name": "On the go"}))
+        .await;
+    assert_eq!(renamed["name"], json!("On the go"));
+
+    // A session moves with its workers; a worker alone stays with its orchestrator.
+    let moved = r
+        .ok(
+            "session.set_workspace",
+            json!({"id": lead["id"], "workspace": id}),
+        )
+        .await;
+    let moved_ids: Vec<&str> = moved
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(moved_ids.contains(&lead["id"].as_str().unwrap()), "{moved}");
+    assert!(
+        moved_ids.contains(&worker["id"].as_str().unwrap()),
+        "{moved}"
+    );
+    assert_eq!(
+        d.manager
+            .get_session(worker["id"].as_str().unwrap())
+            .unwrap()
+            .workspace,
+        id
+    );
+    let other = r.ok("workspace.create", json!({"name": "Elsewhere"})).await;
+    assert_ne!(
+        r.err(
+            "session.set_workspace",
+            json!({"id": worker["id"], "workspace": other["id"]})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN,
+        "refused by the manager, not the allowlist"
+    );
+    assert_eq!(
+        d.manager
+            .get_session(worker["id"].as_str().unwrap())
+            .unwrap()
+            .workspace,
+        id
+    );
+
+    // Deleting stays the desktop's.
+    assert_eq!(
+        r.err("workspace.delete", json!({"id": other["id"]})).await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    assert!(r
+        .ok("workspace.list", json!({}))
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["id"] == other["id"]));
 }
 
 #[tokio::test]

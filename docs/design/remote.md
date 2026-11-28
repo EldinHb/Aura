@@ -196,6 +196,9 @@ snake_case field names unless noted.
 | `provider.models` | `{provider}` | `ModelInfo[]` |
 | `orchestrator.projects` | `{}` | `Project[]` — `{path, repo, groups, sessions, last_used}` |
 | `workspace.list` | `{}` | `Workspace[]` |
+| `workspace.create` | `{name}` | `Workspace` — `name` 1–40 characters, unique ignoring case |
+| `workspace.rename` | `{id, name}` | `Workspace` |
+| `session.set_workspace` | `{id, workspace}` | `Session[]` — the session and its workers, moved; a worker alone is refused (it stays with its orchestrator) |
 | `session.list` | `{}` | `Session[]` — includes `status` (`idle`/`running`/`waiting_approval`/`waiting_input`/`error`/`exited`), `pending_count`, `attention` (`done`/`failed`/`waiting`/null) |
 | `session.get` | `{id}` | `Session` |
 | `session.history` | `{id, after_seq?: number = 0, limit?: number = 5000}` | `StoredEvent[]` — `{seq, ts, event}`; page with the last `seq` |
@@ -251,7 +254,7 @@ but not typed into); for an open session,
 ## 9. Not allowed remotely (examples)
 
 `daemon.shutdown`, `daemon.window_hello`, `settings.*`, `fs.*`, `pty.*`,
-`mods.*`, `git.*`, `session.delete`, `session.delete_many`, `session.set`,
+`mods.*`, `git.*`, `session.delete`, `session.delete_many`, `workspace.delete`, `workspace.touch`, `session.set`,
 `session.set_system_prompt`, `prompts.*`, `specialists.*`, `schedules.*`,
 `autonomy.set`, `remote.configure` and the other `remote.*` management
 methods, the update methods, and session-tool methods (`orchestrator.*`

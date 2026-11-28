@@ -36,6 +36,11 @@ pub const REMOTE_ALLOWED_METHODS: &[&str] = &[
     "provider.models",
     "orchestrator.projects",
     "workspace.list",
+    // Making and naming workspaces, and moving a session (with its workers)
+    // into one. Deleting a workspace is the desktop's alone.
+    "workspace.create",
+    "workspace.rename",
+    "session.set_workspace",
     "session.list",
     "session.get",
     "session.history",
