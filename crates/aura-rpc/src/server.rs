@@ -335,9 +335,11 @@ async fn remote_ws_handler(
         .on_upgrade(move |socket| handle_socket(socket, state, Caller::Remote(conn)))
 }
 
-/// `session.create` as a remote device may call it: a known project, an
-/// agent, and a few options. No terminals, commands, resumed sessions,
-/// orchestrators or worktree paths of its choosing.
+/// `session.create` as a remote device may call it: what the desktop's
+/// new-session dialog offers, an agent session in a known project, an
+/// orchestrator or a feature owner (with no folder of its own if it likes).
+/// No terminals, commands, resumed or forked sessions, workers of another
+/// session, or worktree paths of its choosing.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RemoteCreateSession {
@@ -359,6 +361,23 @@ struct RemoteCreateSession {
     initial_prompt: Option<String>,
     #[serde(default)]
     worktree: Option<RemoteWorktree>,
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    sandbox_mode: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
+    /// Only `structured`: a terminal-mode session is a terminal.
+    #[serde(default)]
+    mode: Option<SessionMode>,
+    #[serde(default)]
+    orchestrator: bool,
+    #[serde(default)]
+    feature_owner: bool,
+    #[serde(default)]
+    feature_goal: Option<String>,
+    #[serde(default)]
+    autonomy: Option<Autonomy>,
 }
 
 #[derive(Deserialize)]
@@ -437,20 +456,33 @@ async fn remote_dispatch(
         }
         "session.create" => {
             let o: RemoteCreateSession = params(&req.params)?;
-            if o.provider == ProviderKind::Terminal {
+            if o.provider == ProviderKind::Terminal || o.mode == Some(SessionMode::Terminal) {
                 return Err(forbidden(
                     "remote devices cannot start terminal sessions: pick claude, codex or acp"
                         .into(),
                 ));
             }
+            // An orchestrator (a feature owner is one) may have no folder:
+            // the daemon makes one of its own for it, as for the desktop.
+            let orchestrates = o.orchestrator || o.feature_owner;
+            let folderless = orchestrates && o.cwd.is_empty();
+            if folderless && o.worktree.is_some() {
+                return Err(forbidden(
+                    "a worktree needs a folder in a known project".into(),
+                ));
+            }
             let m = state.manager.clone();
             let cwd = o.cwd.clone();
-            let real = tokio::task::spawn_blocking(move || {
-                m.projects()
-                    .map(|projects| in_known_project(&cwd, &projects))
-            })
-            .await
-            .map_err(|e| anyhow!(e))??;
+            let real = if folderless {
+                Some(std::path::PathBuf::new())
+            } else {
+                tokio::task::spawn_blocking(move || {
+                    m.projects()
+                        .map(|projects| in_known_project(&cwd, &projects))
+                })
+                .await
+                .map_err(|e| anyhow!(e))??
+            };
             // The worktree's folder is named after the branch.
             if let Some(w) = &o.worktree {
                 let b = w.branch.trim();
@@ -483,6 +515,14 @@ async fn remote_dispatch(
                     base: w.base,
                     path: None,
                 }),
+                group: o.group,
+                sandbox_mode: o.sandbox_mode,
+                system_prompt: o.system_prompt,
+                mode: Some(SessionMode::Structured),
+                orchestrator: orchestrates,
+                feature_owner: o.feature_owner,
+                feature_goal: o.feature_goal,
+                autonomy: o.autonomy,
                 ..Default::default()
             };
             ok(state.manager.create_session(opts).await?)

@@ -216,20 +216,29 @@ snake_case field names unless noted.
 | `feature.answer` | `{id, question, option?, text?}` | `Feature` — answer a feature owner's question (`id` is the owner session) |
 
 ### `session.create` for remote clients
-Only these params are accepted (unknown ones: -32602):
+What the desktop's new-session dialog offers. Only these params are accepted
+(unknown ones: -32602):
 ```ts
 { provider: "claude" | "codex" | "acp", agent?: string, cwd: string,
-  title?: string, workspace?: string, model?: string, effort?: string,
-  permission_mode?: string, initial_prompt?: string,
-  worktree?: { branch: string, base?: string } }
+  title?: string, group?: string, workspace?: string, model?: string,
+  effort?: string, permission_mode?: string, sandbox_mode?: string,
+  system_prompt?: string, mode?: "structured", initial_prompt?: string,
+  worktree?: { branch: string, base?: string },
+  orchestrator?: boolean, feature_owner?: boolean, feature_goal?: string,
+  autonomy?: { level: "autonomous" | "blocking_decisions" | "checkpoints",
+               checkpoints: ("after_design" | "before_implementation" | "before_delivery")[] } }
 ```
 `cwd` must be an existing folder that, with symlinks resolved, is the `path`
 of a project from `orchestrator.projects` (also resolved) or lies inside one;
 otherwise -32003. The session runs in the resolved folder, so its `cwd` may
-differ from what was sent. `worktree.branch` may not contain `..`
-or start with `/`, `\` or `-` (-32003). Terminal sessions, custom commands,
-resuming native sessions, orchestrators and custom worktree paths are not
-available remotely.
+differ from what was sent. An orchestrator (`orchestrator`, or
+`feature_owner`, which makes one) may instead send an empty `cwd`: the daemon
+makes it a folder of its own (`folderless`), as the desktop does; a worktree
+then is refused (-32003). `worktree.branch` may not contain `..` or start
+with `/`, `\` or `-` (-32003). `mode: "terminal"` and the terminal provider
+are refused (-32003). Custom commands, resuming or forking native sessions,
+making a session another one's worker (`orchestrator_id`) and custom worktree
+paths are not available remotely (-32602).
 
 ### Notifications
 After authentication the connection receives, unasked:

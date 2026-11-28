@@ -942,6 +942,125 @@ async fn workspaces_are_made_renamed_and_filled_remotely_but_not_deleted() {
 }
 
 #[tokio::test]
+async fn session_create_offers_what_the_desktop_offers_and_still_refuses_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(project.path())
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    d.local
+        .call("session.create", json!({"provider": "claude", "cwd": root}))
+        .await
+        .unwrap();
+    let (port, fp) = enable(&d).await;
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+
+    // An agent session with the dialog's options.
+    let s = r
+        .ok(
+            "session.create",
+            json!({"provider": "claude", "cwd": root, "title": "Phone", "group": "web",
+                   "model": "m", "effort": "high", "permission_mode": "plan", "sandbox_mode": "read-only",
+                   "system_prompt": "Be brief.", "mode": "structured", "initial_prompt": "Hi"}),
+        )
+        .await;
+    assert_eq!(s["group"], json!("web"));
+    assert_eq!(s["sandbox_mode"], json!("read-only"));
+    assert_eq!(s["system_prompt"], json!("Be brief."));
+    assert_eq!(s["orchestrator"], json!(false));
+
+    // An orchestrator in a project, and one with no folder of its own.
+    let o = r
+        .ok(
+            "session.create",
+            json!({"provider": "claude", "cwd": root, "orchestrator": true}),
+        )
+        .await;
+    assert_eq!(o["orchestrator"], json!(true));
+    let folderless = r
+        .ok(
+            "session.create",
+            json!({"provider": "claude", "cwd": "", "orchestrator": true}),
+        )
+        .await;
+    assert_eq!(folderless["folderless"], json!(true), "{folderless}");
+
+    // A feature owner, with its goal and own autonomy.
+    let f = r
+        .ok(
+            "session.create",
+            json!({"provider": "claude", "cwd": "", "feature_owner": true, "feature_goal": "Ship it",
+                   "autonomy": {"level": "checkpoints", "checkpoints": ["before_delivery"]}}),
+        )
+        .await;
+    assert_eq!(f["feature_owner"], json!(true));
+    assert_eq!(
+        f["orchestrator"],
+        json!(true),
+        "a feature owner orchestrates"
+    );
+    let feature = r.ok("feature.get", json!({"id": f["id"]})).await;
+    assert_eq!(feature["goal"], json!("Ship it"));
+
+    // Still refused.
+    for (what, params) in [
+        (
+            "terminal mode",
+            json!({"provider": "claude", "cwd": root, "mode": "terminal"}),
+        ),
+        (
+            "a folder outside the projects",
+            json!({"provider": "claude", "cwd": outside.path().to_string_lossy()}),
+        ),
+        (
+            "no folder for a plain session",
+            json!({"provider": "claude", "cwd": ""}),
+        ),
+        (
+            "a worktree with no folder",
+            json!({"provider": "claude", "cwd": "", "orchestrator": true, "worktree": {"branch": "b"}}),
+        ),
+    ] {
+        assert_eq!(
+            r.err("session.create", params).await,
+            aura_rpc::ERR_FORBIDDEN,
+            "{what}"
+        );
+    }
+    for (what, params) in [
+        (
+            "a custom command",
+            json!({"provider": "claude", "cwd": root, "command": ["sh"]}),
+        ),
+        (
+            "a resumed session",
+            json!({"provider": "claude", "cwd": root, "resume_native_id": "x"}),
+        ),
+        (
+            "a fork",
+            json!({"provider": "claude", "cwd": root, "fork": true}),
+        ),
+        (
+            "a worker of another session",
+            json!({"provider": "claude", "cwd": root, "orchestrator_id": o["id"]}),
+        ),
+        (
+            "a custom worktree path",
+            json!({"provider": "claude", "cwd": root, "worktree": {"branch": "b", "path": "/tmp/x"}}),
+        ),
+    ] {
+        assert_eq!(
+            r.err("session.create", params).await,
+            aura_rpc::ERR_PARAMS,
+            "{what}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn session_create_resolves_symlinks_before_checking_the_project() {
     let dir = tempfile::tempdir().unwrap();
     let d = daemon(dir.path()).await;
