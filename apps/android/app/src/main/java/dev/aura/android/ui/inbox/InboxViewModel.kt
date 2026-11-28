@@ -35,12 +35,12 @@ data class WaitingQuestion(val serverId: String, val serverName: String, val fea
     val key: String get() = "$serverId:${feature.ownerId}:${question.id}"
 }
 
-/** What waits on the user across every connected server. */
-data class Inbox(val questions: List<WaitingQuestion>, val sessions: List<WaitingSession>) {
+/** What waits on the user across every connected server; [loaded] once every server's sessions were loaded. */
+data class Inbox(val questions: List<WaitingQuestion>, val sessions: List<WaitingSession>, val loaded: Boolean = true) {
     val size: Int get() = questions.size + sessions.size
 }
 
-internal data class ServerSnapshot(val sessions: List<Session>, val features: List<Feature>)
+internal data class ServerSnapshot(val sessions: List<Session>, val features: List<Feature>, val loaded: Boolean = true)
 
 /** Collects what waits on the user from [servers] and their [snapshots]. */
 internal fun inboxOf(servers: List<SavedServer>, snapshots: Map<String, ServerSnapshot>): Inbox {
@@ -54,7 +54,7 @@ internal fun inboxOf(servers: List<SavedServer>, snapshots: Map<String, ServerSn
             .filter { !it.archived && it.state == SessionState.Waiting }
             .map { WaitingSession(server.id, server.name, it) }
     }.sortedByDescending { it.session.lastActivity }
-    return Inbox(questions, sessions)
+    return Inbox(questions, sessions, loaded = servers.all { snapshots[it.id]?.loaded == true })
 }
 
 /** Sessions and feature owners' questions waiting on the user, across every connected server. */
@@ -69,7 +69,7 @@ fun AppContainer.inbox(): Flow<Inbox> =
     }, ::inboxOf)
 
 private fun ServerConnection.snapshot(id: String) =
-    combine(sessions, features) { s, f -> id to ServerSnapshot(s.orEmpty(), f.orEmpty()) }
+    combine(sessions, features) { s, f -> id to ServerSnapshot(s.orEmpty(), f.orEmpty(), loaded = s != null) }
 
 class InboxViewModel(private val container: AppContainer) : ViewModel() {
     val inbox: StateFlow<Inbox?> = container.inbox()

@@ -91,6 +91,8 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.markdown.m3)
     implementation(libs.markdown.code)
+    implementation(libs.glance.appwidget)
+    implementation(libs.glance.material3)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)

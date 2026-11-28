@@ -211,9 +211,19 @@ snake_case field names unless noted.
 | `session.respond_input` | `{id, response: {request_id, answers: {[questionId]: string[]}, declined?: bool}}` | `true` |
 | `session.mark_seen` | `{id}` | `Session` (clears `attention`) |
 | `session.create` | see below | `Session` |
+| `session.git_status` | `{id}` | `FileStatus[]` — the session's own folder (its worktree when it has one); `[]` when it is no repository |
+| `session.git_diff_stat` | `{id, base?}` | `DiffStat[]` — `{path, added, deleted}` against HEAD (or `base`) |
+| `session.git_diff` | `{id, path?, staged?, base?}` | unified diff text, untracked files included; `""` when no repository |
 | `feature.list` | `{}` | `Feature[]` — a feature owner's questions to the user are in `questions` |
 | `feature.get` | `{id}` | `Feature` |
 | `feature.answer` | `{id, question, option?, text?}` | `Feature` — answer a feature owner's question (`id` is the owner session) |
+
+### Git, read-only, for remote clients
+The session's changes, read in its own folder only: the device names a
+session, never a folder. `path` must be relative and stay inside it (no `..`,
+not absolute) and `base` a plain ref (letters, digits, `/ . _ - ~ ^`, not
+starting with `-`, no `..`); otherwise -32003. Unknown params (a `cwd`) are
+-32602. The desktop's `git.*` methods, and every git write, stay refused.
 
 ### `session.create` for remote clients
 What the desktop's new-session dialog offers. Only these params are accepted

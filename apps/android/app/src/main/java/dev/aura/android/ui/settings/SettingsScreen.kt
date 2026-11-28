@@ -4,6 +4,7 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,6 +39,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.AuraApplication
 import dev.aura.android.R
+import dev.aura.android.data.NoticeSettings
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,6 +49,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     val container = (context.applicationContext as AuraApplication).container
     val background by container.backgroundEnabled.collectAsStateWithLifecycle()
     val granted by container.notificationsGranted.collectAsStateWithLifecycle()
+    val notices by container.prefs.noticeSettings.collectAsStateWithLifecycle(NoticeSettings())
     val scope = rememberCoroutineScope()
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         container.refreshNotificationPermission()
@@ -93,6 +96,18 @@ fun SettingsScreen(onBack: () -> Unit) {
                     },
                 )
             }
+            ListItem(headlineContent = {
+                Text(stringResource(R.string.setting_notify_header), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            })
+            fun set(next: NoticeSettings) {
+                scope.launch { container.prefs.setNoticeSettings(next) }
+            }
+            NoticeToggle(R.string.channel_decisions, R.string.setting_notify_decisions_desc, notices.decisions) { set(notices.copy(decisions = it)) }
+            NoticeToggle(R.string.channel_messages, R.string.setting_notify_messages_desc, notices.messages) { set(notices.copy(messages = it)) }
+            NoticeToggle(R.string.channel_approvals, R.string.setting_notify_approvals_desc, notices.approvals) { set(notices.copy(approvals = it)) }
+            NoticeToggle(R.string.setting_notify_scheduled, R.string.setting_notify_scheduled_desc, notices.scheduled, enabled = notices.messages) {
+                set(notices.copy(scheduled = it))
+            }
             ListItem(
                 modifier = Modifier.clickable(role = Role.Button) { context.startActivity(container.notificationSettingsIntent()) },
                 leadingContent = { Icon(Icons.Outlined.NotificationsActive, contentDescription = null) },
@@ -100,4 +115,14 @@ fun SettingsScreen(onBack: () -> Unit) {
             )
         }
     }
+}
+
+@Composable
+private fun NoticeToggle(@StringRes title: Int, @StringRes description: Int, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    ListItem(
+        modifier = Modifier.toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
+        headlineContent = { Text(stringResource(title)) },
+        supportingContent = { Text(stringResource(description)) },
+        trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
+    )
 }

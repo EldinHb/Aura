@@ -51,6 +51,7 @@ private class DemoData {
     private val workspaces = mutableListOf(ws("w1", "Product", 0), ws("w2", "Infra", 1))
     private val approvals = mutableListOf(approval("p1", "m2", "Run openssl s_client", "openssl s_client -connect 10.0.2.2:7443"))
     private var secondQuestion = false
+    private val attachmentData = HashMap<String, JsonObject>()
     private val sessions = mutableListOf(
         session("f1", "Ship the Android app", status = "running", featureOwner = true, created = "2026-11-28T08:00:00Z"),
         JsonObject(session("m1", "Session list like the desktop", status = "running", parent = "f1", specialist = "Frontend engineer") + ("model" to str("opus")) + ("effort" to str("high"))),
@@ -189,7 +190,31 @@ private class DemoData {
             JsonArray(history[id].orEmpty().mapIndexed { i, e -> obj("seq" to JsonPrimitive(i + 1), "ts" to str("2026-11-28T09:00:00Z"), "event" to e) }
                 .drop(after.toInt()).take(limit))
         }
-        "session.mark_seen", "session.send", "session.interrupt", "session.respond_input" -> JsonPrimitive(true)
+        "session.send" -> synchronized(this) {
+            // What the daemon does: the message in the transcript, its images kept as attachments.
+            val id = params["id"]!!.jsonPrimitive.content
+            val input = params["input"] as JsonObject
+            val images = (input["images"] as? JsonArray).orEmpty().map { it as JsonObject }
+            val attachments = images.mapIndexed { i, img ->
+                val key = "att-${'$'}{attachmentData.size + 1}"
+                attachmentData[key] = img
+                obj("id" to str(key), "name" to (img["name"] ?: JsonNull), "thumbnail" to (img["thumbnail"] ?: JsonNull),
+                    "width" to (img["width"] ?: JsonNull), "height" to (img["height"] ?: JsonNull),
+                    "original_width" to (img["original_width"] ?: JsonNull), "original_height" to (img["original_height"] ?: JsonNull))
+            }
+            val itemId = "sent-${'$'}{System.nanoTime()}"
+            val e = event("item_completed", id, "item" to item(itemId, id, "user_message", input["text"]?.jsonPrimitive?.content.orEmpty(), "completed", obj("attachments" to JsonArray(attachments))))
+            history.getOrPut(id) { mutableListOf() } += e
+            aurad?.notify("event", e)
+            JsonPrimitive(true)
+        }
+        "session.attachment" -> synchronized(this) {
+            val img = attachmentData[params["attachment"]!!.jsonPrimitive.content] ?: return@synchronized FakeAurad.error(-32000, "no such attachment")
+            obj("data" to img["data"]!!, "media_type" to img["media_type"]!!)
+        }
+        "session.git_diff" -> str(DEMO_DIFF)
+        "session.git_status", "session.git_diff_stat" -> JsonArray(emptyList())
+        "session.mark_seen", "session.interrupt", "session.respond_input" -> JsonPrimitive(true)
         else -> FakeAurad.error(-32601, "unknown method $method")
     }
 
@@ -227,15 +252,19 @@ private class DemoData {
             }
         }
         val id = "live$n"
-        val text = "Update $n: the session list now groups by workspace and status, and workers are tabs in their session."
+        // Long and Markdown-heavy, in small pieces: a fence and a table open and close mid-stream.
+        val part = "### Update $n\n\nThe session list now groups by **workspace** and status, and workers are tabs in their session.\n\n" +
+            "```kotlin\nfun update(n: Int) {\n    println(\"update ${'$'}n\")\n}\n```\n\n| Screen | State |\n|---|---|\n| Sessions | done |\n| Team | done |\n\n- one\n- two\n- three"
+        // As long as a real agent's answer: the same blocks again and again.
+        val text = (1..20).joinToString("\n\n") { part.replace("### Update $n", if (it == 1) "### Update $n" else "#### Part $it") }
         fun send(e: JsonObject) {
             synchronized(this) { if (e["type"]!!.jsonPrimitive.content != "item_delta") history.getValue("f1") += e }
             aurad.notify("event", e)
         }
         send(event("item_started", "f1", "item" to item(id, "f1", "agent_message", "", "in_progress")))
-        text.chunked(24).forEach {
+        text.chunked(12).forEach {
             send(event("item_delta", "f1", "item_id" to str(id), "delta" to obj("kind" to str("text"), "text" to str(it))))
-            Thread.sleep(80)
+            Thread.sleep(20)
         }
         send(event("item_completed", "f1", "item" to item(id, "f1", "agent_message", text, "completed")))
     }
@@ -319,3 +348,32 @@ fun greet(name: String) = "Hello, ${'$'}name"
 ---
 
 See [the design doc](https://example.com/design)."""
+
+private const val DEMO_DIFF = """diff --git a/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt b/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt
+index 1111111..2222222 100644
+--- a/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt
++++ b/apps/android/app/src/main/java/dev/aura/android/ui/session/FollowLatest.kt
+@@ -40,9 +40,11 @@ class FollowLatest internal constructor(
+     /** Called with the transcript's size on every change. */
+     @Composable
+-    fun Track(count: Int, newestKey: Any?, newestLength: Int) {
++    fun Track(count: Int) {
+         this.count = count
+-        LaunchedEffect(count, newestKey, newestLength) {
+-            if (pinned && !list.isScrollInProgress) list.scrollToItem(0)
++        LaunchedEffect(count) { if (pinned) seen = count }
++    }
++
++    internal suspend fun follow() {
++        snapshotFlow { pinned && !list.isScrollInProgress && list.canScrollForward }
+         }
+     }
+diff --git a/README.md b/README.md
+new file mode 100644
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,3 @@
++# Aura for Android
++
++Streaming replies no longer make the transcript jump.
+"""

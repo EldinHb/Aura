@@ -141,6 +141,32 @@
     <string name="session_actions">Session actions</string>
     <string name="message_placeholder">Message the agent</string>
     <string name="send">Send</string>
+    <string name="attach_images">Attach images</string>
+    <string name="changes">Changes</string>
+    <string name="refresh">Refresh</string>
+    <string name="ask_for_changes">Ask for changes</string>
+    <string name="ask_about_file">Ask for changes to %1$s</string>
+    <string name="changes_failed">Could not load the changes</string>
+    <string name="changes_none_title">No changes</string>
+    <string name="changes_none_body">The session\'s folder has nothing changed since its last commit, or is no git repository.</string>
+    <string name="change_new">New</string>
+    <string name="change_deleted">Deleted</string>
+    <string name="change_renamed">From %1$s</string>
+    <string name="change_binary">Binary file</string>
+    <string name="change_counts">+%1$d −%2$d</string>
+    <string name="line_added">Added, line %1$d: %2$s</string>
+    <string name="line_removed">Removed, line %1$d: %2$s</string>
+    <string name="share_to_aura">Share to Aura</string>
+    <plurals name="share_title"><item quantity="one">Send %d image to…</item><item quantity="other">Send %d images to…</item></plurals>
+    <string name="share_empty">No connected server has a session to send to.</string>
+    <string name="image">Image</string>
+    <string name="close">Close</string>
+    <string name="remove_image">Remove %1$s</string>
+    <string name="image_failed">Could not add the image: %1$s</string>
+    <plurals name="images_too_many"><item quantity="one">A message takes at most %d image.</item><item quantity="other">A message takes at most %d images.</item></plurals>
+    <string name="images_too_large">This image would make the message too large to send.</string>
+    <string name="image_loading_failed">Could not load the image.</string>
+    <string name="open_image">Open %1$s</string>
     <string name="transcript_empty">Nothing here yet.</string>
     <string name="terminal_session_title">Terminal session</string>
     <string name="terminal_session_body">This session runs in a terminal. Open it in Aura on your computer.</string>
@@ -208,7 +234,7 @@
     <string name="channel_decisions">Decisions</string>
     <string name="channel_decisions_desc">A feature owner asks you to decide something.</string>
     <string name="channel_messages">Messages</string>
-    <string name="channel_messages_desc">A main chat\'s agent finished and replied.</string>
+    <string name="channel_messages_desc">A main chat finished what you asked it.</string>
     <string name="channel_approvals">Needs approval</string>
     <string name="channel_approvals_desc">An agent waits for your approval or answer.</string>
     <string name="channel_connection">Connection</string>
@@ -227,6 +253,15 @@
         <item quantity="other">Connected to %d servers</item>
     </plurals>
 
+    <!-- Widget and tile -->
+    <string name="widget_label">Waiting on you</string>
+    <string name="widget_description">What waits on you across your Aura servers.</string>
+    <string name="widget_nothing">Nothing waits on you</string>
+    <plurals name="widget_count"><item quantity="one">%d needs you</item><item quantity="other">%d need you</item></plurals>
+    <plurals name="widget_more"><item quantity="one">and %d more</item><item quantity="other">and %d more</item></plurals>
+    <string name="tile_label">Aura inbox</string>
+    <string name="tile_nothing">Nothing waits</string>
+
     <!-- Settings -->
     <string name="settings">Settings</string>
     <string name="setting_background">Stay connected in background</string>
@@ -234,6 +269,12 @@
     <string name="setting_notifications_off">Notifications are off for Aura.</string>
     <string name="setting_allow_notifications">Allow notifications</string>
     <string name="setting_notification_channels">Notification categories</string>
+    <string name="setting_notify_header">Notify me about</string>
+    <string name="setting_notify_decisions_desc">A feature owner asks you to decide something.</string>
+    <string name="setting_notify_messages_desc">A main chat finished what you asked it. Not its turns on worker reports and other messages from Aura.</string>
+    <string name="setting_notify_approvals_desc">An agent waits for your approval or an answer.</string>
+    <string name="setting_notify_scheduled">Scheduled tasks</string>
+    <string name="setting_notify_scheduled_desc">A scheduled task\'s run finished.</string>
 
     <!-- Workspaces -->
     <string name="new_workspace">New workspace</string>

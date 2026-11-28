@@ -17,7 +17,12 @@ import kotlinx.serialization.builtins.serializer
 class AppPrefs(private val store: DataStore<Preferences>) {
     private val background = booleanPreferencesKey("background")
     private val askedNotifications = booleanPreferencesKey("asked_notifications")
-    private val baselined = stringSetPreferencesKey("notices_baselined")
+    // v2: Message keys became per user turn; taking what is there as known once keeps the update quiet.
+    private val baselined = stringSetPreferencesKey("notices_baselined_v2")
+    private val notifyDecisions = booleanPreferencesKey("notify_decisions")
+    private val notifyMessages = booleanPreferencesKey("notify_messages")
+    private val notifyApprovals = booleanPreferencesKey("notify_approvals")
+    private val notifyScheduled = booleanPreferencesKey("notify_scheduled")
     private fun seenKey(serverId: String) = stringPreferencesKey("notices_seen:$serverId")
     private val keys = ListSerializer(String.serializer())
 
@@ -26,6 +31,25 @@ class AppPrefs(private val store: DataStore<Preferences>) {
 
     suspend fun setBackground(on: Boolean) {
         store.edit { it[background] = on }
+    }
+
+    /** Which notifications the user wants. */
+    val noticeSettings: Flow<NoticeSettings> = store.data.map {
+        NoticeSettings(
+            decisions = it[notifyDecisions] ?: true,
+            messages = it[notifyMessages] ?: true,
+            approvals = it[notifyApprovals] ?: true,
+            scheduled = it[notifyScheduled] ?: false,
+        )
+    }
+
+    suspend fun setNoticeSettings(s: NoticeSettings) {
+        store.edit {
+            it[notifyDecisions] = s.decisions
+            it[notifyMessages] = s.messages
+            it[notifyApprovals] = s.approvals
+            it[notifyScheduled] = s.scheduled
+        }
     }
 
     val notificationsAsked: Flow<Boolean> = store.data.map { it[askedNotifications] == true }
@@ -55,3 +79,14 @@ class AppPrefs(private val store: DataStore<Preferences>) {
         }
     }
 }
+
+/**
+ * Which notifications the user wants: feature owners' decisions, main chats'
+ * replies, approvals and agents' questions, and replies of scheduled tasks' runs.
+ */
+data class NoticeSettings(
+    val decisions: Boolean = true,
+    val messages: Boolean = true,
+    val approvals: Boolean = true,
+    val scheduled: Boolean = false,
+)

@@ -5,6 +5,10 @@ your computer, shows your sessions and their transcripts, and lets you answer
 what waits on you: send messages, approve or decline, answer agents' and
 feature owners' questions, interrupt or stop an agent, and start new
 sessions. The "Waiting on you" inbox gathers all of it across your servers.
+A home-screen widget ("Waiting on you") and a Quick Settings tile ("Aura
+inbox") show how many things wait on you and open the inbox; the widget also
+lists the first few. Both follow the background connection, so they stay
+current while the app is closed when "Stay connected in background" is on.
 
 Kotlin, Jetpack Compose and Material 3 (Material You: dynamic color on
 Android 12+, light and dark following the system). Android 8.0 (API 26) and

@@ -1,6 +1,7 @@
 package dev.aura.android.ui.session
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,7 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Handyman
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -25,17 +27,24 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import dev.aura.android.R
+import dev.aura.android.images.MessageImage
+import dev.aura.android.images.decodeImage
+import dev.aura.android.images.messageImages
 import dev.aura.android.transcript.Row as TranscriptRow
 import dev.aura.android.transcript.stepDetail
 import dev.aura.android.transcript.stepLabel
@@ -54,28 +63,60 @@ fun TranscriptRowView(
     row: TranscriptRow,
     modifier: Modifier = Modifier,
     featureCard: @Composable (TranscriptRow.Feature, Modifier) -> Unit = { _, _ -> },
+    onOpenImage: (MessageImage) -> Unit = {},
 ) {
     when (row) {
         is TranscriptRow.Aura -> AuraRow(row, modifier)
         is TranscriptRow.Feature -> featureCard(row, modifier)
-        is TranscriptRow.User -> UserMessage(row.item.text, modifier)
-        is TranscriptRow.Agent -> MarkdownText(row.item.text, modifier.fillMaxWidth().padding(horizontal = Spacing.m))
+        is TranscriptRow.User -> UserMessage(row.item.text, remember(row.item.data) { messageImages(row.item.data) }, onOpenImage, modifier)
+        is TranscriptRow.Agent -> MarkdownText(
+            row.item.text,
+            modifier.fillMaxWidth().padding(horizontal = Spacing.m),
+            streaming = row.item.status == "in_progress",
+        )
         is TranscriptRow.Problem -> ProblemRow(row.item.text.ifBlank { row.item.stepLabel() }, modifier)
         is TranscriptRow.Work -> WorkRow(row, modifier)
     }
 }
 
 @Composable
-private fun UserMessage(text: String, modifier: Modifier) {
+private fun UserMessage(text: String, images: List<MessageImage>, onOpenImage: (MessageImage) -> Unit, modifier: Modifier) {
     Box(modifier.fillMaxWidth().padding(horizontal = Spacing.m), contentAlignment = Alignment.CenterEnd) {
-        Box(Modifier.fillMaxWidth(USER_MESSAGE_WIDTH), contentAlignment = Alignment.CenterEnd) {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                shape = MaterialTheme.shapes.large,
-            ) {
-                MarkdownText(text, Modifier.padding(horizontal = Spacing.m, vertical = Spacing.s))
+        Column(Modifier.fillMaxWidth(USER_MESSAGE_WIDTH), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+            if (images.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    images.forEach { MessageThumb(it, onOpen = { onOpenImage(it) }) }
+                }
             }
+            if (text.isNotBlank()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = MaterialTheme.shapes.large,
+                ) {
+                    MarkdownText(text, Modifier.padding(horizontal = Spacing.m, vertical = Spacing.s))
+                }
+            }
+        }
+    }
+}
+
+/** A sent image's thumbnail; opens it whole when the daemon kept it. */
+@Composable
+private fun MessageThumb(image: MessageImage, onOpen: () -> Unit) {
+    val bitmap = remember(image.thumbnail) { image.thumbnail?.let(::decodeImage)?.asImageBitmap() }
+    val label = stringResource(R.string.open_image, image.name ?: stringResource(R.string.image))
+    Surface(
+        onClick = onOpen,
+        enabled = image.thumbnail != null || image.attachment != null,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.size(Spacing.thumb).semantics { contentDescription = label },
+    ) {
+        if (bitmap != null) {
+            Image(bitmap, contentDescription = null, contentScale = ContentScale.Crop)
+        } else {
+            Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Image, contentDescription = null) }
         }
     }
 }

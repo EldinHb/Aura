@@ -44,6 +44,13 @@
                     android:host="pair"
                     android:scheme="aura" />
             </intent-filter>
+            <!-- Share to Aura: images from another app, into a session the user picks. -->
+            <intent-filter android:label="@string/share_to_aura">
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
 
         <!-- Keeps the connections to the user's own servers open in the background. -->
@@ -64,6 +71,29 @@
         <receiver
             android:name=".notify.NotificationActions"
             android:exported="false" />
+
+        <receiver
+            android:name=".widget.AuraWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/aura_widget_info" />
+        </receiver>
+
+        <service
+            android:name=".widget.WaitingTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_notification"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <!-- The QR scanner turns with the phone, as the rest of the app does. -->
         <activity

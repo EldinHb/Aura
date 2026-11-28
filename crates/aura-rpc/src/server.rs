@@ -388,6 +388,32 @@ struct RemoteWorktree {
     base: Option<String>,
 }
 
+/// The read-only git methods a remote device has, for one session's folder.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteGitParams {
+    id: String,
+    /// One file, relative to the session's folder (passed after `--`).
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    staged: bool,
+    /// A ref to diff against instead of HEAD (`main`, `origin/main`, `HEAD~3`).
+    #[serde(default)]
+    base: Option<String>,
+}
+
+/// Whether `r` is a plain ref name, which git cannot take for an option or a
+/// range: letters, digits and `/ . _ - ~ ^`, not starting with `-`.
+fn is_plain_ref(r: &str) -> bool {
+    !r.is_empty()
+        && !r.starts_with('-')
+        && !r.contains("..")
+        && r.len() <= 200
+        && r.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-~^".contains(c))
+}
+
 /// `cwd` with every symlink resolved, when that lies in one of `projects`'
 /// folders (resolved the same way) or is one; None otherwise, and for a
 /// folder that does not exist. Touches the file system: call it off the
@@ -453,6 +479,58 @@ async fn remote_dispatch(
                 ));
             }
             dispatch(state, attached, req, None, window).await
+        }
+        "session.git_status" | "session.git_diff" | "session.git_diff_stat" => {
+            let p: RemoteGitParams = params(&req.params)?;
+            if let Some(base) = &p.base {
+                if !is_plain_ref(base) {
+                    return Err(forbidden(format!(
+                        "`{base}` is not a ref a remote device may diff against"
+                    )));
+                }
+            }
+            if let Some(path) = &p.path {
+                let outside = std::path::Path::new(path).is_absolute()
+                    || std::path::Path::new(path)
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir));
+                if outside {
+                    return Err(forbidden(format!(
+                        "`{path}` is not a file in the session's folder"
+                    )));
+                }
+            }
+            let session = state.manager.get_session(&p.id)?;
+            // The session's own folder: its worktree when it has one. Nothing else.
+            let cwd = session.worktree.map(|w| w.path).unwrap_or(session.cwd);
+            let method = req.method.clone();
+            let out = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+                // A folderless orchestrator has no changes of its own.
+                if cwd.is_empty() || aura_git::ops::repo_root(&cwd).is_err() {
+                    return Ok(if method == "session.git_diff" {
+                        json!("")
+                    } else {
+                        json!([])
+                    });
+                }
+                Ok(match method.as_str() {
+                    "session.git_status" => serde_json::to_value(aura_git::ops::status(&cwd)?)?,
+                    "session.git_diff_stat" => {
+                        serde_json::to_value(aura_git::ops::diff_stat(&cwd, p.base.as_deref())?)?
+                    }
+                    _ => json!(aura_git::ops::diff(
+                        &cwd,
+                        &aura_git::ops::DiffOpts {
+                            path: p.path,
+                            staged: p.staged,
+                            base: p.base
+                        },
+                    )?),
+                })
+            })
+            .await
+            .map_err(|e| anyhow!(e))??;
+            ok(out)
         }
         "session.create" => {
             let o: RemoteCreateSession = params(&req.params)?;

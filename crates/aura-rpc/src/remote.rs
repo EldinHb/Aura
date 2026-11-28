@@ -41,6 +41,11 @@ pub const REMOTE_ALLOWED_METHODS: &[&str] = &[
     "workspace.create",
     "workspace.rename",
     "session.set_workspace",
+    // What a session changed, read-only, in its own folder (its worktree
+    // when it has one): never another folder, never a write.
+    "session.git_status",
+    "session.git_diff",
+    "session.git_diff_stat",
     "session.list",
     "session.get",
     "session.history",

@@ -14,6 +14,7 @@ zxingEmbedded = "4.3.0"
 zxingCore = "3.5.4"
 junit = "4.13.2"
 markdown = "0.46.0"
+glance = "1.2.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -40,6 +41,8 @@ zxing-embedded = { module = "com.journeyapps:zxing-android-embedded", version.re
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxingCore" }
 junit = { module = "junit:junit", version.ref = "junit" }
 markdown-m3 = { module = "com.mikepenz:multiplatform-markdown-renderer-m3", version.ref = "markdown" }
+glance-appwidget = { module = "androidx.glance:glance-appwidget", version.ref = "glance" }
+glance-material3 = { module = "androidx.glance:glance-material3", version.ref = "glance" }
 markdown-code = { module = "com.mikepenz:multiplatform-markdown-renderer-code", version.ref = "markdown" }
 
 [plugins]

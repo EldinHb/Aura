@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -31,6 +30,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.Difference
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
@@ -81,6 +81,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.AuraApplication
 import dev.aura.android.R
+import dev.aura.android.images.MessageImage
 import dev.aura.android.net.ConnectionState
 import dev.aura.android.notify.OpenSession
 import dev.aura.android.protocol.Feature
@@ -110,12 +111,9 @@ import dev.aura.android.ui.components.icon
 import dev.aura.android.ui.components.label
 import dev.aura.android.ui.theme.Spacing
 
-/** The most lines the composer grows to before it scrolls. */
-private const val COMPOSER_MAX_LINES = 6
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
+fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit, onChanges: (sessionId: String, title: String) -> Unit = { _, _ -> }) {
     val treeVm = appViewModel(key = "tree:$serverId:$sessionId") { SessionTreeViewModel(it, serverId, sessionId) }
     val tree by treeVm.tree.collectAsStateWithLifecycle()
     // The leader's chat or one of its workers'; opening a worker (from the inbox) selects it.
@@ -152,10 +150,11 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     val running = session?.status == "running" || transcript?.turnRunning == true
     var actions by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
+    var viewing by remember { mutableStateOf<MessageImage?>(null) }
     var moving by remember { mutableStateOf(false) }
     var newWorkspace by remember { mutableStateOf(false) }
     val workspaces by vm.workspaces.collectAsStateWithLifecycle()
-    val list = remember(shownId) { LazyListState() }
+    val list = remember(shownId) { latestListState() }
     val follow = rememberFollowLatest(list)
 
     Scaffold(
@@ -188,6 +187,11 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                         }
                     },
                     actions = {
+                        if (!showTeam && session?.isStructured != false) {
+                            IconButton(onClick = { onChanges(shownId, session?.title.orEmpty()) }) {
+                                Icon(Icons.Outlined.Difference, contentDescription = stringResource(R.string.changes))
+                            }
+                        }
                         if (running) {
                             IconButton(onClick = vm::interrupt, enabled = online) {
                                 Icon(Icons.Outlined.StopCircle, contentDescription = stringResource(R.string.interrupt))
@@ -204,7 +208,22 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
         },
         bottomBar = {
             if (session?.isStructured != false && !showTeam) {
-                key(shownId) { Composer(enabled = online && !sending, sending = sending, onSend = vm::send) }
+                key(shownId) {
+                    val drafts by vm.drafts.collectAsStateWithLifecycle()
+                    val preparing by vm.preparing.collectAsStateWithLifecycle()
+                    val prefill by vm.prefill.collectAsStateWithLifecycle()
+                    Composer(
+                        enabled = online && !sending,
+                        sending = sending,
+                        drafts = drafts,
+                        preparing = preparing,
+                        onAttach = vm::addImages,
+                        onRemove = vm::removeImage,
+                        prefill = prefill,
+                        onPrefillTaken = vm::takePrefill,
+                        onSend = vm::send,
+                    )
+                }
             }
         },
         floatingActionButton = {
@@ -239,26 +258,45 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
             t == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             else -> {
                 val rows = remember(t) { rows(t.visibleItems) }
-                val newest = rows.lastOrNull()
-                follow.Track(
-                    count = rows.size + t.approvals.size + t.inputs.size,
-                    newestKey = newest?.key,
-                    newestLength = (newest as? TranscriptRow.Agent)?.item?.text?.length ?: 0,
-                )
-                // Laid out from the bottom: it opens at the latest messages, and older ones are above.
+                follow.Track(count = rows.size + t.approvals.size + t.inputs.size)
+                // Top to bottom, the latest last; the list state opens at the end (see FollowLatest).
                 LazyColumn(
                     state = list,
-                    reverseLayout = true,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(top = padding.calculateTopPadding() + Spacing.s, bottom = padding.calculateBottomPadding() + Spacing.m),
-                    verticalArrangement = Arrangement.spacedBy(Spacing.m, Alignment.Bottom),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.m),
                 ) {
-                    if (s?.state == SessionState.Failed && s.lastError != null && t.lastError == null) {
-                        item(key = "session-error") {
-                            Text(s.lastError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
+                    if (rows.isEmpty()) {
+                        item(key = "empty") {
+                            Text(
+                                stringResource(R.string.transcript_empty),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = Spacing.m),
+                            )
                         }
                     }
-                    items(t.inputs.asReversed(), key = { "input:" + it.id }) { request ->
+                    // Not animated: a reply grows every frame while it streams, and a fade or
+                    // an animated move would lag behind it (a new reply filling the screen
+                    // would fade the whole view out and in).
+                    items(rows, key = { it.key }, contentType = { it::class }) { row ->
+                        TranscriptRowView(row, onOpenImage = { viewing = it }, featureCard = { card, modifier ->
+                            FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier)
+                        })
+                    }
+                    t.lastError?.let { error ->
+                        item(key = "turn-error") {
+                            Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
+                        }
+                    }
+                    if (running) {
+                        item(key = "working") {
+                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Spacing.m))
+                        }
+                    }
+                    items(t.approvals, key = { "approval:" + it.id }) { approval ->
+                        ApprovalCard(approval, enabled = online, onRespond = { vm.respond(approval, it) }, modifier = Modifier.animateItem())
+                    }
+                    items(t.inputs, key = { "input:" + it.id }) { request ->
                         QuestionsCard(
                             request,
                             enabled = online,
@@ -267,33 +305,9 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                             modifier = Modifier.animateItem(),
                         )
                     }
-                    items(t.approvals.asReversed(), key = { "approval:" + it.id }) { approval ->
-                        ApprovalCard(approval, enabled = online, onRespond = { vm.respond(approval, it) }, modifier = Modifier.animateItem())
-                    }
-                    if (running) {
-                        item(key = "working") {
-                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Spacing.m))
-                        }
-                    }
-                    t.lastError?.let { error ->
-                        item(key = "turn-error") {
-                            Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
-                        }
-                    }
-                    // No placement animation: as the latest entry streams in, it pushes the
-                    // rest up every frame, and an animated move would lag behind and overlap it.
-                    items(rows.asReversed(), key = { it.key }) { row ->
-                        TranscriptRowView(row, Modifier.animateItem(placementSpec = null)) { card, modifier ->
-                            FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier)
-                        }
-                    }
-                    if (rows.isEmpty()) {
-                        item(key = "empty") {
-                            Text(
-                                stringResource(R.string.transcript_empty),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = Spacing.m),
-                            )
+                    if (s?.state == SessionState.Failed && s.lastError != null && t.lastError == null) {
+                        item(key = "session-error") {
+                            Text(s.lastError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
                         }
                     }
                 }
@@ -326,6 +340,7 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
             onDismiss = { newWorkspace = false },
         )
     }
+    viewing?.let { image -> ImageViewer(image, load = vm::loadAttachment, onDismiss = { viewing = null }) }
     if (confirmStop) {
         AlertDialog(
             onDismissRequest = { confirmStop = false },
@@ -430,38 +445,3 @@ private fun JumpToLatest(unread: Int, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun Composer(enabled: Boolean, sending: Boolean, onSend: (String, () -> Unit) -> Unit) {
-    var text by rememberSaveable { mutableStateOf("") }
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-        Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(Spacing.s),
-            modifier = Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                .padding(horizontal = Spacing.m, vertical = Spacing.s),
-        ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                placeholder = { Text(stringResource(R.string.message_placeholder)) },
-                keyboardOptions = ProseKeyboard,
-                maxLines = COMPOSER_MAX_LINES,
-                shape = MaterialTheme.shapes.extraLarge,
-                modifier = Modifier.weight(1f),
-            )
-            FilledIconButton(
-                onClick = { onSend(text) { text = "" } },
-                enabled = enabled && text.isNotBlank(),
-                modifier = Modifier.padding(bottom = Spacing.xs),
-            ) {
-                if (sending) {
-                    CircularProgressIndicator(Modifier.padding(Spacing.s))
-                } else {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.send))
-                }
-            }
-        }
-    }
-}

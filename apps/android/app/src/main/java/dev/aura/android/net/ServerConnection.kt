@@ -4,11 +4,14 @@ import dev.aura.android.data.SavedServer
 import dev.aura.android.protocol.AuthResult
 import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.Feature
+import dev.aura.android.protocol.Item
 import dev.aura.android.protocol.Pending
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.StoredEvent
-import dev.aura.android.transcript.fetchHistory
 import dev.aura.android.protocol.Workspace
+import dev.aura.android.transcript.AuraMessage
+import dev.aura.android.transcript.fetchHistory
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelChildren
@@ -30,7 +33,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import okhttp3.OkHttpClient
-import kotlin.coroutines.cancellation.CancellationException
 
 /** An event as the server sent it: parsed, and the JSON it came as. */
 data class LiveEvent(val event: Event, val raw: JsonObject)
@@ -93,6 +95,15 @@ class ServerConnection(
 
     /** The latest agent message of each session, as seen live, for notification previews. */
     val lastReplies: StateFlow<Map<String, String>> = _lastReplies
+
+    private val _prompts = MutableStateFlow<Map<String, Prompts>>(emptyMap())
+
+    /**
+     * Per session, who sent its latest message, the user or Aura, as seen live
+     * or read from its history. A session not in the map is not known yet
+     * ([loadPrompts]).
+     */
+    val prompts: StateFlow<Map<String, Prompts>> = _prompts
 
     private val _events = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 4096)
 
@@ -162,6 +173,20 @@ class ServerConnection(
             (Event.parse(stored.event) as? Event.ItemCompleted)?.item?.takeIf { it.kind == "agent_message" && it.text.isNotBlank() }?.text
         }
         _lastReplies.update { if (id in it) it else it + (id to reply.orEmpty()) }
+    }
+
+    /** Reads who sent session [id]'s messages from its history, when not known yet. */
+    suspend fun loadPrompts(id: String) {
+        if (id in _prompts.value) return
+        val history = fetchHistory { after, limit ->
+            call("session.history", buildJsonObject {
+                put("id", JsonPrimitive(id))
+                put("after_seq", JsonPrimitive(after))
+                put("limit", JsonPrimitive(limit))
+            }, ListSerializer(StoredEvent.serializer()))
+        }
+        val prompts = history.fold(Prompts()) { acc, stored -> acc.after((Event.parse(stored.event) as? Event.ItemCompleted)?.item) }
+        _prompts.update { if (id in it) it else it + (id to prompts) }
     }
 
     /** Reloads what waits on the user. */
@@ -289,6 +314,8 @@ class ServerConnection(
     /** Events may have been lost: reload the lists, and tell those showing a session to reload it. */
     private fun resync(online: CoroutineScope) {
         _resyncs.tryEmit(Unit)
+        // A message may have come while events were lost: read again when needed.
+        _prompts.value = emptyMap()
         online.launch { runCatching { refreshSessions() }.onFailure { if (it is CancellationException) throw it } }
         online.launch { runCatching { refreshFeatures() }.onFailure { if (it is CancellationException) throw it } }
         online.launch { runCatching { refreshWorkspaces() }.onFailure { if (it is CancellationException) throw it } }
@@ -300,13 +327,17 @@ class ServerConnection(
             is Event.SessionCreated -> sessionList.upsert(event.session)
             is Event.SessionUpdated -> sessionList.upsert(event.session)
             is Event.SessionRemoved -> {
+                _prompts.update { it - event.sessionId }
                 sessionList.remove(event.sessionId)
                 featureList.remove(event.sessionId)
             }
             is Event.FeatureUpdated -> featureList.upsert(event.feature)
             is Event.WorkspacesChanged -> _workspaces.value = event.workspaces.sortedBy { it.position }
-            is Event.ItemCompleted -> if (event.item.kind == "agent_message" && event.item.text.isNotBlank()) {
-                _lastReplies.update { it + (event.sessionId to event.item.text) }
+            is Event.ItemCompleted -> {
+                if (event.item.kind == "agent_message" && event.item.text.isNotBlank()) {
+                    _lastReplies.update { it + (event.sessionId to event.item.text) }
+                }
+                if (isPrompt(event.item)) _prompts.update { it + (event.sessionId to (it[event.sessionId] ?: Prompts()).after(event.item)) }
             }
             is Event.ApprovalRequested -> _pending.update { p ->
                 p?.copy(approvals = p.approvals.filterNot { it.id == event.approval.id } + event.approval)
@@ -335,3 +366,19 @@ class ServerConnection(
     }
 }
 
+/**
+ * Who sent a session's messages: whether the latest came from the user (not
+ * Aura: a worker report, an answer, a decision it passes on), and the turn
+ * the user's latest message started.
+ */
+data class Prompts(val latestFromUser: Boolean = false, val userTurn: String? = null) {
+    /** These after [item], when it is a message to the agent. */
+    fun after(item: Item?): Prompts = when {
+        item == null || !isPrompt(item) -> this
+        AuraMessage.of(item) != null -> copy(latestFromUser = false)
+        else -> Prompts(latestFromUser = true, userTurn = item.turnId ?: item.id)
+    }
+}
+
+/** A message to the agent itself (a subagent's prompt has a parent). */
+private fun isPrompt(item: Item) = item.kind == "user_message" && item.parentId == null

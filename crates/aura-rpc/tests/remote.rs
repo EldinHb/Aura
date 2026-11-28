@@ -1061,6 +1061,112 @@ async fn session_create_offers_what_the_desktop_offers_and_still_refuses_the_res
 }
 
 #[tokio::test]
+async fn a_sessions_changes_are_readable_in_its_own_folder_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first"]);
+    std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(repo.path().join("new.txt"), "hello\n").unwrap();
+    let s = d
+        .local
+        .call(
+            "session.create",
+            json!({"provider": "claude", "cwd": repo.path().to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let (port, fp) = enable(&d).await;
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+    let id = s["id"].clone();
+
+    let status = r.ok("session.git_status", json!({"id": id})).await;
+    let paths: Vec<&str> = status
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert!(
+        paths.contains(&"a.txt") && paths.contains(&"new.txt"),
+        "{status}"
+    );
+    let stat = r.ok("session.git_diff_stat", json!({"id": id})).await;
+    assert!(
+        stat.as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"] == "a.txt" && f["added"] == 1),
+        "{stat}"
+    );
+    let diff = r.ok("session.git_diff", json!({"id": id})).await;
+    let diff = diff.as_str().unwrap();
+    assert!(diff.contains("+two") && diff.contains("+hello"), "{diff}");
+    let one = r
+        .ok("session.git_diff", json!({"id": id, "path": "a.txt"}))
+        .await;
+    assert!(!one.as_str().unwrap().contains("hello"));
+
+    // Never another folder, an option, or a write.
+    for (what, params) in [
+        (
+            "a path outside the folder",
+            json!({"id": id, "path": "../etc/passwd"}),
+        ),
+        ("an absolute path", json!({"id": id, "path": "/etc/passwd"})),
+        (
+            "an option for a base",
+            json!({"id": id, "base": "--output=/tmp/x"}),
+        ),
+        (
+            "a range for a base",
+            json!({"id": id, "base": "main..HEAD"}),
+        ),
+    ] {
+        assert_eq!(
+            r.err("session.git_diff", params).await,
+            aura_rpc::ERR_FORBIDDEN,
+            "{what}"
+        );
+    }
+    assert_eq!(
+        r.err("session.git_diff", json!({"id": id, "cwd": "/"}))
+            .await,
+        aura_rpc::ERR_PARAMS,
+        "no folder of the device's choosing"
+    );
+    for method in ["git.status", "git.diff", "git.commit", "git.push"] {
+        assert_eq!(
+            r.err(method, json!({"cwd": repo.path().to_string_lossy()}))
+                .await,
+            aura_rpc::ERR_FORBIDDEN,
+            "{method}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn session_create_resolves_symlinks_before_checking_the_project() {
     let dir = tempfile::tempdir().unwrap();
     let d = daemon(dir.path()).await;

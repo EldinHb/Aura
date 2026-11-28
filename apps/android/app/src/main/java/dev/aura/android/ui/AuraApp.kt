@@ -1,6 +1,7 @@
 package dev.aura.android.ui
 
 import android.Manifest
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,8 +30,10 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,6 +50,7 @@ import androidx.navigation.toRoute
 import dev.aura.android.AppLink
 import dev.aura.android.AuraApplication
 import dev.aura.android.R
+import dev.aura.android.ui.changes.ChangesScreen
 import dev.aura.android.ui.inbox.InboxScreen
 import dev.aura.android.ui.inbox.inbox
 import dev.aura.android.ui.newsession.NewSessionScreen
@@ -55,8 +59,10 @@ import dev.aura.android.ui.servers.ServersScreen
 import dev.aura.android.ui.session.SessionScreen
 import dev.aura.android.ui.sessions.SessionsScreen
 import dev.aura.android.ui.settings.SettingsScreen
+import dev.aura.android.ui.share.ShareScreen
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
@@ -67,6 +73,8 @@ import kotlinx.serialization.Serializable
 @Serializable data class SessionRoute(val serverId: String, val sessionId: String)
 @Serializable data class NewSessionRoute(val serverId: String)
 @Serializable data object SettingsRoute
+@Serializable data object ShareRoute
+@Serializable data class ChangesRoute(val serverId: String, val sessionId: String, val title: String)
 
 private fun NavDestination?.isTopLevel() = this != null && (hasRoute(ServersRoute::class) || hasRoute(InboxRoute::class))
 
@@ -91,11 +99,17 @@ fun AuraApp(appLinks: Flow<AppLink>) {
         container.refreshNotificationPermission()
     }
 
+    var pendingShare by remember { mutableStateOf<List<Uri>>(emptyList()) }
     LaunchedEffect(appLinks) {
         appLinks.collect { link ->
             when (link) {
                 is AppLink.Pair -> nav.navigate(AddServerRoute(link.link)) { launchSingleTop = true }
                 is AppLink.Session -> nav.navigate(SessionRoute(link.serverId, link.sessionId)) { launchSingleTop = true }
+                AppLink.Inbox -> nav.switchTo(InboxRoute)
+                is AppLink.Share -> {
+                    pendingShare = link.images
+                    nav.navigate(ShareRoute) { launchSingleTop = true }
+                }
             }
         }
     }
@@ -144,6 +158,21 @@ fun AuraApp(appLinks: Flow<AppLink>) {
                     onSettings = { nav.navigate(SettingsRoute) },
                 )
             }
+            composable<ChangesRoute> { back ->
+                val route = back.toRoute<ChangesRoute>()
+                ChangesScreen(route.serverId, route.sessionId, route.title, onBack = { nav.popBackStack() })
+            }
+            composable<ShareRoute> {
+                ShareScreen(
+                    count = pendingShare.size,
+                    onBack = { nav.popBackStack() },
+                    onPick = { serverId, sessionId ->
+                        container.sharedImages.update { it + ("$serverId/$sessionId" to pendingShare) }
+                        pendingShare = emptyList()
+                        nav.navigate(SessionRoute(serverId, sessionId)) { popUpTo<ShareRoute> { inclusive = true } }
+                    },
+                )
+            }
             composable<SettingsRoute> {
                 SettingsScreen(onBack = { nav.popBackStack() })
             }
@@ -182,7 +211,12 @@ fun AuraApp(appLinks: Flow<AppLink>) {
             }
             composable<SessionRoute> { back ->
                 val route = back.toRoute<SessionRoute>()
-                SessionScreen(route.serverId, route.sessionId, onBack = { nav.popBackStack() })
+                SessionScreen(
+                    route.serverId,
+                    route.sessionId,
+                    onBack = { nav.popBackStack() },
+                    onChanges = { id, title -> nav.navigate(ChangesRoute(route.serverId, id, title)) },
+                )
             }
             composable<NewSessionRoute> { back ->
                 val route = back.toRoute<NewSessionRoute>()

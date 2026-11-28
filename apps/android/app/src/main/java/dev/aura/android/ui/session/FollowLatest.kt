@@ -1,5 +1,6 @@
 package dev.aura.android.ui.session
 
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -13,19 +14,33 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
+/** A list state that opens at the end of its items: the latest of a transcript, with no jump to get there. */
+fun latestListState(): LazyListState = LazyListState(END_INDEX, END_OFFSET)
+
+/** Past the end, which the list clamps to its last item's bottom. */
+private const val END_INDEX = 1_000_000
+private const val END_OFFSET = 1_000_000
+
 /**
- * Keeps a bottom-up transcript ([LazyListState] of a `reverseLayout` list,
- * item 0 the latest) at its latest entry while the user is there, and counts
- * what came while they read further up.
+ * Keeps a transcript (top to bottom, the latest last) at its end while the
+ * user is there, and counts what came while they read further up.
+ *
+ * A top-down list keeps what is on screen where it is when items below it
+ * grow, so reading further up while a reply streams in, nothing moves. At the
+ * end, it follows the list's own layout: whenever a reply or a new entry
+ * leaves the bottom out of view, the end is asked for again, applied in the
+ * next layout without animation, so the bottom stays anchored. It never moves
+ * the list while the user scrolls, and stops following when they leave the end.
  */
 @Stable
 class FollowLatest internal constructor(private val list: LazyListState, private val scope: CoroutineScope) {
-    /** The latest entry is in view. */
-    val atLatest: Boolean by derivedStateOf { list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset < NEAR_PX }
+    /** The end of the transcript is in view. */
+    val atLatest: Boolean by derivedStateOf { atEnd(list.layoutInfo) }
 
-    /** Whether new entries scroll into view: the user was at the latest when they last stopped scrolling. */
+    /** Whether the end is followed: the user was at it when they last stopped scrolling. */
     internal var pinned by mutableStateOf(true)
 
     private var seen by mutableIntStateOf(-1)
@@ -38,20 +53,23 @@ class FollowLatest internal constructor(private val list: LazyListState, private
     fun jump() {
         pinned = true
         seen = count
-        scope.launch { list.animateScrollToItem(0) }
+        scope.launch { list.scrollToItem(lastIndex(), END_OFFSET) }
     }
 
-    /** Called with the transcript's size and latest entry on every change. */
+    private fun lastIndex() = (list.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+
+    /** Called with the transcript's number of entries on every change. */
     @Composable
-    fun Track(count: Int, newestKey: Any?, newestLength: Int) {
+    fun Track(count: Int) {
         this.count = count
-        LaunchedEffect(count, newestKey, newestLength) {
-            // Never pulled away from under the user's finger.
-            if (pinned && !list.isScrollInProgress) {
-                seen = count
-                if (list.firstVisibleItemIndex != 0 || list.firstVisibleItemScrollOffset != 0) list.scrollToItem(0)
-            }
-        }
+        LaunchedEffect(count) { if (pinned) seen = count }
+    }
+
+    internal suspend fun follow() {
+        // Strictly at the end, not just near it: the last line is never left under the composer.
+        snapshotFlow { pinned && !list.isScrollInProgress && list.canScrollForward }
+            .distinctUntilChanged()
+            .collect { behind -> if (behind) list.requestScrollToItem(lastIndex(), END_OFFSET) }
     }
 
     internal fun settled() {
@@ -59,9 +77,15 @@ class FollowLatest internal constructor(private val list: LazyListState, private
         if (pinned) seen = count
     }
 
-    private companion object {
+    internal companion object {
         /** Within this much of the bottom counts as at the latest. */
         const val NEAR_PX = 48
+
+        /** Whether [info] shows the end of the list (or the list is empty). */
+        fun atEnd(info: LazyListLayoutInfo): Boolean {
+            val last = info.visibleItemsInfo.lastOrNull() ?: return true
+            return last.index == info.totalItemsCount - 1 && last.offset + last.size <= info.viewportEndOffset + NEAR_PX
+        }
     }
 }
 
@@ -71,7 +95,8 @@ fun rememberFollowLatest(list: LazyListState): FollowLatest {
     val follow = remember(list) { FollowLatest(list, scope) }
     LaunchedEffect(follow) {
         // Whether to follow is the user's: decided each time their scrolling ends.
-        snapshotFlow { list.isScrollInProgress }.collect { scrolling -> if (!scrolling) follow.settled() }
+        launch { snapshotFlow { list.isScrollInProgress }.collect { scrolling -> if (!scrolling) follow.settled() } }
+        follow.follow()
     }
     return follow
 }
