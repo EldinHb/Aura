@@ -211,9 +211,9 @@ snake_case field names unless noted.
 | `session.respond_input` | `{id, response: {request_id, answers: {[questionId]: string[]}, declined?: bool}}` | `true` |
 | `session.mark_seen` | `{id}` | `Session` (clears `attention`) |
 | `session.create` | see below | `Session` |
-| `session.git_status` | `{id}` | `FileStatus[]` — the session's own folder (its worktree when it has one); `[]` when it is no repository |
-| `session.git_diff_stat` | `{id, base?}` | `DiffStat[]` — `{path, added, deleted}` against HEAD (or `base`) |
-| `session.git_diff` | `{id, path?, staged?, base?}` | unified diff text, untracked files included; `""` when no repository |
+| `session.git_status` | `{id}` | `SafeStatus` — `{files: FileStatus[], truncated}` for the session's own folder (its worktree when it has one); `{files: [], truncated: false}` when it is no repository |
+| `session.git_diff_stat` | `{id, base?}` | `SafeDiffStat` — `{files: DiffStat[], truncated}`, each `{path, added, deleted}` against HEAD (or `base`) |
+| `session.git_diff` | `{id, path?, staged?, base?}` | unified diff text, untracked files included; `""` when no repository. When cut, it ends with a line `# aura: truncated: …` |
 | `feature.list` | `{}` | `Feature[]` — a feature owner's questions to the user are in `questions` |
 | `feature.get` | `{id}` | `Feature` |
 | `feature.answer` | `{id, question, option?, text?}` | `Feature` — answer a feature owner's question (`id` is the owner session) |
@@ -224,6 +224,37 @@ session, never a folder. `path` must be relative and stay inside it (no `..`,
 not absolute) and `base` a plain ref (letters, digits, `/ . _ - ~ ^`, not
 starting with `-`, no `..`); otherwise -32003. Unknown params (a `cwd`) are
 -32602. The desktop's `git.*` methods, and every git write, stay refused.
+
+These do **not** run `git status` or `git diff`: those read working-tree
+files through the repository's own config (`core.fsmonitor`, clean/process
+filters, external diff drivers, textconv, hooks), which would run commands
+the repository — any agent in it — chose. `aura_git::safe` asks git only
+for metadata from the index and object store (`rev-parse`, `ls-files
+--stage`, `ls-files --others`, `ls-tree`, `cat-file --batch`), with
+`core.fsmonitor`, hooks, external diff, `core.sshCommand` and transports
+overridden, no system config, no optional locks, no lazy fetch and literal
+pathspecs. It reads the working-tree side itself and computes the diff
+in-process. Tests run it against a repository configured to touch a marker
+file from every one of those settings and assert the marker never appears.
+
+- **Scope**: only the session's folder. In `repo/sub`, `repo/outside.txt` is
+  never listed or read. Paths in results are relative to the session's
+  folder (`a.txt`, not `sub/a.txt`), in diff headers too. A `path` starting
+  with `:` (pathspec magic such as `:(top)x`) is refused with -32003.
+- **Symlinks**: never followed. A tracked symlink shows as its link text, as
+  git stores it; untracked symlinks and special files are left out; a file
+  under a folder that is a symlink is not read (it shows as deleted).
+- **Limits**: 300 files; 512 KB of diff per file, 4 MB in total; files and
+  blobs over 8 MB are named, not diffed (`# aura: not shown: N bytes is too
+  large`); 15 s per call, a git process still running then is killed. What
+  is cut sets `truncated` (status, stat) or adds a `# aura: truncated` line
+  (diff). At most 2 of these calls at a time per connection (8 for all remote
+  connections): more get -32000 with `data.code: "busy"`; retry after one
+  finishes.
+- **What it costs**: no clean filters or end-of-line conversion are applied,
+  so a file only git's filter would call unchanged (LFS, CRLF normalisation)
+  shows as changed; renames are not detected (a delete plus an add);
+  submodules are left out.
 
 ### `session.create` for remote clients
 What the desktop's new-session dialog offers. Only these params are accepted

@@ -1102,7 +1102,8 @@ async fn a_sessions_changes_are_readable_in_its_own_folder_only() {
     let id = s["id"].clone();
 
     let status = r.ok("session.git_status", json!({"id": id})).await;
-    let paths: Vec<&str> = status
+    assert_eq!(status["truncated"], json!(false), "{status}");
+    let paths: Vec<&str> = status["files"]
         .as_array()
         .unwrap()
         .iter()
@@ -1114,7 +1115,8 @@ async fn a_sessions_changes_are_readable_in_its_own_folder_only() {
     );
     let stat = r.ok("session.git_diff_stat", json!({"id": id})).await;
     assert!(
-        stat.as_array()
+        stat["files"]
+            .as_array()
             .unwrap()
             .iter()
             .any(|f| f["path"] == "a.txt" && f["added"] == 1),
@@ -1135,6 +1137,7 @@ async fn a_sessions_changes_are_readable_in_its_own_folder_only() {
             json!({"id": id, "path": "../etc/passwd"}),
         ),
         ("an absolute path", json!({"id": id, "path": "/etc/passwd"})),
+        ("pathspec magic", json!({"id": id, "path": ":(top)a.txt"})),
         (
             "an option for a base",
             json!({"id": id, "base": "--output=/tmp/x"}),
@@ -1261,4 +1264,98 @@ async fn slow_or_idle_connections_are_dropped_and_capped() {
     tokio::time::sleep(Duration::from_millis(700)).await;
     let (mut again, _, _) = pair(&d, port, &fp).await;
     assert_eq!(again.ok("daemon.ping", json!({})).await, json!("pong"));
+}
+
+#[tokio::test]
+async fn a_remote_diff_runs_nothing_the_repository_configures_and_stays_in_the_session_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = daemon(dir.path()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = std::fs::canonicalize(tmp.path()).unwrap().join("repo");
+    let markers = std::fs::canonicalize(tmp.path()).unwrap().join("markers");
+    std::fs::create_dir_all(repo.join("sub")).unwrap();
+    std::fs::create_dir_all(&markers).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("sub/a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join("outside.txt"), "root\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first"]);
+    let m = markers.display();
+    git(&[
+        "config",
+        "core.fsmonitor",
+        &format!("touch {m}/fsmonitor; false"),
+    ]);
+    git(&[
+        "config",
+        "filter.evil.clean",
+        &format!("touch {m}/clean; cat"),
+    ]);
+    git(&[
+        "config",
+        "filter.evil.process",
+        &format!("touch {m}/process"),
+    ]);
+    git(&["config", "diff.external", &format!("touch {m}/external")]);
+    git(&[
+        "config",
+        "diff.evil.textconv",
+        &format!("touch {m}/textconv; cat"),
+    ]);
+    std::fs::write(repo.join(".gitattributes"), "* filter=evil diff=evil\n").unwrap();
+    std::fs::write(repo.join("sub/a.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(repo.join("outside.txt"), "root changed\n").unwrap();
+
+    let s = d
+        .local
+        .call(
+            "session.create",
+            json!({"provider": "claude", "cwd": repo.join("sub").to_string_lossy()}),
+        )
+        .await
+        .unwrap();
+    let (port, fp) = enable(&d).await;
+    let (mut r, _, _) = pair(&d, port, &fp).await;
+    let id = s["id"].clone();
+    let status = r.ok("session.git_status", json!({"id": id})).await;
+    let stat = r.ok("session.git_diff_stat", json!({"id": id})).await;
+    let diff = r.ok("session.git_diff", json!({"id": id})).await;
+    let diff = diff.as_str().unwrap();
+    assert!(
+        diff.contains("diff --git a/a.txt b/a.txt") && diff.contains("+two"),
+        "{diff}"
+    );
+    for text in [status.to_string(), stat.to_string(), diff.to_string()] {
+        assert!(
+            !text.contains("outside") && !text.contains("root"),
+            "{text}"
+        );
+    }
+    assert_eq!(
+        r.err(
+            "session.git_diff",
+            json!({"id": id, "path": "../outside.txt"})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    assert_eq!(
+        r.err(
+            "session.git_diff",
+            json!({"id": id, "path": ":(top)outside.txt"})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    let ran: Vec<_> = std::fs::read_dir(&markers).unwrap().collect();
+    assert!(ran.is_empty(), "the repository's commands ran: {ran:?}");
 }
