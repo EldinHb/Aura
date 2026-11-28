@@ -27,6 +27,7 @@ data class Session(
     val status: String = "idle",
     val mode: String = "structured",
     val model: String? = null,
+    val effort: String? = null,
     @SerialName("last_activity") val lastActivity: String = "",
     val archived: Boolean = false,
     val pinned: Boolean = false,
@@ -270,4 +271,46 @@ data class Feature(
     val status: String = "",
     val questions: List<UserQuestion> = emptyList(),
     @SerialName("updated_at") val updatedAt: String = "",
+    val team: List<TeamMember> = emptyList(),
+    val decisions: List<Decision> = emptyList(),
+    val checkpoints: List<CheckpointRecord> = emptyList(),
+    val report: DeliveryReport? = null,
+)
+
+/** A specialist the feature owner hired: its worker session, name and role. */
+@Serializable
+data class TeamMember(
+    @SerialName("worker_id") val workerId: String,
+    val name: String = "",
+    val role: String = "",
+)
+
+/** A decision in the feature's log, by the owner or the user. */
+@Serializable
+data class Decision(
+    val id: String,
+    val decision: String,
+    val rationale: String = "",
+    @SerialName("decided_by") val decidedBy: String = "owner",
+    val at: String = "",
+)
+
+/** A checkpoint the feature reached, and whether the user approved it (null while open). */
+@Serializable
+data class CheckpointRecord(
+    val checkpoint: String,
+    val summary: String = "",
+    val at: String = "",
+    val approved: Boolean? = null,
+)
+
+/** What the feature owner delivered. */
+@Serializable
+data class DeliveryReport(
+    val what: String = "",
+    val why: String = "",
+    @SerialName("how_to_test") val howToTest: String = "",
+    @SerialName("where_to_test") val whereToTest: String = "",
+    val notes: String = "",
+    @SerialName("delivered_at") val deliveredAt: String = "",
 )

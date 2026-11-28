@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.Terminal
@@ -58,6 +59,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -67,6 +69,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -82,11 +85,13 @@ import dev.aura.android.notify.OpenSession
 import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.SessionState
+import dev.aura.android.protocol.TeamStatus
 import dev.aura.android.protocol.UserQuestion
 import dev.aura.android.protocol.folderName
 import dev.aura.android.protocol.isStructured
 import dev.aura.android.protocol.projectPath
 import dev.aura.android.protocol.state
+import dev.aura.android.protocol.teamStatus
 import dev.aura.android.transcript.Row as TranscriptRow
 import dev.aura.android.transcript.rows
 import dev.aura.android.ui.appViewModel
@@ -100,6 +105,7 @@ import dev.aura.android.ui.components.SheetAction
 import dev.aura.android.ui.components.SnackbarMessages
 import dev.aura.android.ui.components.color
 import dev.aura.android.ui.components.describe
+import dev.aura.android.ui.components.icon
 import dev.aura.android.ui.components.label
 import dev.aura.android.ui.theme.Spacing
 
@@ -113,8 +119,16 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     val tree by treeVm.tree.collectAsStateWithLifecycle()
     // The leader's chat or one of its workers'; opening a worker (from the inbox) selects it.
     var selectedId by rememberSaveable(sessionId) { mutableStateOf(sessionId) }
-    val shownId = selectedId.takeIf { id -> tree.isEmpty() || tree.any { it.id == id } } ?: tree.first().id
     val leader = tree.firstOrNull()
+    // A leader (an orchestrator, a feature owner, or one with workers) has a Team tab.
+    val hasTeam = leader != null && (tree.size > 1 || leader.orchestrator || leader.featureOwner)
+    val showTeam = hasTeam && selectedId == TEAM_TAB
+    val shownId = if (showTeam) leader!!.id else selectedId.takeIf { id -> tree.isEmpty() || tree.any { it.id == id } } ?: tree.first().id
+    val teamFeature by treeVm.feature.collectAsStateWithLifecycle()
+    val replies by treeVm.replies.collectAsStateWithLifecycle()
+    LaunchedEffect(showTeam, tree.size) {
+        if (showTeam) treeVm.loadReplies(tree.drop(1).map { it.id })
+    }
 
     val vm = appViewModel(key = "session:$serverId:$shownId") { SessionViewModel(it, serverId, shownId) }
     // While this session is on screen, its news is not notified (and what was is taken away).
@@ -184,16 +198,16 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                     },
                     scrollBehavior = scrollBehavior,
                 )
-                if (tree.size > 1) WorkerTabs(tree, shownId, onSelect = { selectedId = it })
+                if (hasTeam) WorkerTabs(tree, if (showTeam) TEAM_TAB else shownId, onSelect = { selectedId = it })
             }
         },
         bottomBar = {
-            if (session?.isStructured != false) {
+            if (session?.isStructured != false && !showTeam) {
                 key(shownId) { Composer(enabled = online && !sending, sending = sending, onSend = vm::send) }
             }
         },
         floatingActionButton = {
-            AnimatedVisibility(visible = transcript != null && !follow.atLatest, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
+            AnimatedVisibility(visible = !showTeam && transcript != null && !follow.atLatest, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()) {
                 JumpToLatest(follow.unread, onClick = follow::jump)
             }
         },
@@ -202,6 +216,13 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
         val t = transcript
         val s = session
         when {
+            showTeam -> TeamView(
+                workers = tree.drop(1),
+                feature = teamFeature,
+                replies = replies,
+                onOpen = { selectedId = it },
+                contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding() + Spacing.m),
+            )
             s != null && !s.isStructured -> EmptyState(
                 icon = Icons.Outlined.Terminal,
                 title = stringResource(R.string.terminal_session_title),
@@ -348,30 +369,51 @@ private fun FeatureCardRow(
     }
 }
 
-/** The leader's chat and a tab per worker or team member, each with its state. */
+/** The leader's chat, its team, and a tab per worker or team member with its state as an icon and in words. */
 @Composable
 private fun WorkerTabs(tree: List<Session>, selectedId: String, onSelect: (String) -> Unit) {
-    PrimaryScrollableTabRow(selectedTabIndex = tree.indexOfFirst { it.id == selectedId }.coerceAtLeast(0), edgePadding = Spacing.m) {
-        tree.forEachIndexed { i, s ->
-            val stateLabel = stringResource(s.state.label)
+    val ids = listOf(tree.first().id, TEAM_TAB) + tree.drop(1).map { it.id }
+    PrimaryScrollableTabRow(selectedTabIndex = ids.indexOf(selectedId).coerceAtLeast(0), edgePadding = Spacing.m) {
+        Tab(selected = selectedId == tree.first().id, onClick = { onSelect(tree.first().id) }, text = { Text(stringResource(R.string.tab_chat)) })
+        Tab(
+            selected = selectedId == TEAM_TAB,
+            onClick = { onSelect(TEAM_TAB) },
+            icon = { Icon(Icons.Outlined.Groups, contentDescription = null) },
+            text = { Text(stringResource(R.string.tab_team)) },
+        )
+        for (s in tree.drop(1)) {
+            val status = s.teamStatus
+            val stateLabel = stringResource(status.label)
             Tab(
                 selected = s.id == selectedId,
                 onClick = { onSelect(s.id) },
                 modifier = Modifier.semantics { stateDescription = stateLabel },
+                icon = { Icon(status.icon, contentDescription = null, tint = status.tint()) },
                 text = {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
-                        Box(Modifier.size(Spacing.statusDot).clip(CircleShape).background(s.state.color()))
-                        Text(
-                            if (i == 0) stringResource(R.string.tab_chat) else s.specialistName ?: s.title.ifBlank { stringResource(R.string.untitled_session) },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    Text(
+                        s.specialistName ?: s.title.ifBlank { stringResource(R.string.untitled_session) },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 },
             )
         }
     }
 }
+
+/** The status's own color for an icon on the surface (3:1 is enough for an icon beside its words). */
+@Composable
+private fun TeamStatus.tint(): Color = MaterialTheme.colorScheme.let { c ->
+    when (this) {
+        TeamStatus.WaitingOnYou -> c.tertiary
+        TeamStatus.Working -> c.primary
+        TeamStatus.Failed -> c.error
+        TeamStatus.Done, TeamStatus.Idle -> c.onSurfaceVariant
+    }
+}
+
+/** The Team tab's id among the sessions' ids. */
+private const val TEAM_TAB = "team"
 
 @Composable
 private fun JumpToLatest(unread: Int, onClick: () -> Unit) {

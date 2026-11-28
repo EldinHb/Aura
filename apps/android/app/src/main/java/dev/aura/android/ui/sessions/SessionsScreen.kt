@@ -60,7 +60,9 @@ import dev.aura.android.net.ConnectionState
 import dev.aura.android.net.Fingerprint
 import dev.aura.android.protocol.LeaderRow
 import dev.aura.android.protocol.Session
+import dev.aura.android.protocol.TeamStatus
 import dev.aura.android.protocol.state
+import dev.aura.android.protocol.teamCounts
 import dev.aura.android.ui.appViewModel
 import dev.aura.android.ui.components.EmptyState
 import dev.aura.android.ui.components.NewWorkspaceDialog
@@ -224,10 +226,7 @@ fun LeaderRowItem(row: LeaderRow, context: String, onClick: () -> Unit, modifier
             val parts = listOfNotNull(
                 context.takeIf { it.isNotBlank() },
                 who,
-                row.workers.size.takeIf { it > 0 }?.let { n ->
-                    val workers = pluralStringResource(if (session.featureOwner) R.plurals.team_count else R.plurals.worker_count, n, n)
-                    if (row.workersWaiting > 0) stringResource(R.string.workers_need_you, workers, row.workersWaiting) else workers
-                },
+                teamSummary(row.workers),
             )
             Text(parts.joinToString(" · "), maxLines = 2, overflow = TextOverflow.Ellipsis)
         },
@@ -242,6 +241,22 @@ fun LeaderRowItem(row: LeaderRow, context: String, onClick: () -> Unit, modifier
         },
     )
 }
+
+/** "3 working · 1 needs you · 2 idle": how the leader's workers are doing; null without workers. */
+@Composable
+fun teamSummary(workers: List<Session>): String? = teamCounts(workers).takeIf { it.isNotEmpty() }?.map { (status, n) ->
+    pluralStringResource(
+        when (status) {
+            TeamStatus.Working -> R.plurals.count_working
+            TeamStatus.WaitingOnYou -> R.plurals.count_waiting
+            TeamStatus.Failed -> R.plurals.count_failed
+            TeamStatus.Idle -> R.plurals.count_idle
+            TeamStatus.Done -> R.plurals.count_done
+        },
+        n,
+        n,
+    )
+}?.joinToString(" · ")
 
 /** Why the server cannot be reached, filling the screen, with what the user can do. */
 @Composable

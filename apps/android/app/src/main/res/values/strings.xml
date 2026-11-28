@@ -93,7 +93,6 @@
     <string name="feature_owner">Feature owner</string>
     <string name="orchestrator">Orchestrator</string>
     <string name="workspace_summary_needs_you">%1$s · needs you: %2$d</string>
-    <string name="workers_need_you">%1$s (needs you: %2$d)</string>
     <string name="scheduled_empty_title">No scheduled runs</string>
     <string name="scheduled_empty_body">Sessions that scheduled tasks start show up here, a section per task.</string>
     <plurals name="session_count">
@@ -104,14 +103,34 @@
         <item quantity="one">%d run</item>
         <item quantity="other">%d runs</item>
     </plurals>
-    <plurals name="worker_count">
-        <item quantity="one">%d worker</item>
-        <item quantity="other">%d workers</item>
-    </plurals>
-    <plurals name="team_count">
-        <item quantity="one">%d team member</item>
-        <item quantity="other">%d team members</item>
-    </plurals>
+
+    <!-- Team -->
+    <string name="tab_team">Team</string>
+    <string name="team_waiting">Waiting on you</string>
+    <string name="team_working">Working</string>
+    <string name="team_failed">Failed</string>
+    <string name="team_done">Done</string>
+    <string name="team_idle">Idle</string>
+    <string name="team_empty">No workers yet. They show up here as the leader starts them.</string>
+    <string name="team_members">Members</string>
+    <string name="feature_status_planning">Planning</string>
+    <string name="feature_status_in_progress">In progress</string>
+    <string name="feature_status_waiting">Waiting on you</string>
+    <string name="feature_status_delivered">Delivered</string>
+    <string name="feature_open_questions">Open questions</string>
+    <string name="feature_checkpoints">Checkpoints</string>
+    <string name="feature_decisions">Decision log</string>
+    <string name="feature_report">Delivery report</string>
+    <string name="checkpoint_approved">approved</string>
+    <string name="checkpoint_changes">changes asked</string>
+    <string name="checkpoint_open">waiting for your review</string>
+    <string name="decided_by_user">You</string>
+    <string name="decided_by_owner">Owner</string>
+    <plurals name="count_working"><item quantity="one">%d working</item><item quantity="other">%d working</item></plurals>
+    <plurals name="count_waiting"><item quantity="one">%d needs you</item><item quantity="other">%d need you</item></plurals>
+    <plurals name="count_failed"><item quantity="one">%d failed</item><item quantity="other">%d failed</item></plurals>
+    <plurals name="count_idle"><item quantity="one">%d idle</item><item quantity="other">%d idle</item></plurals>
+    <plurals name="count_done"><item quantity="one">%d done</item><item quantity="other">%d done</item></plurals>
 
     <!-- Session -->
     <string name="interrupt">Interrupt</string>

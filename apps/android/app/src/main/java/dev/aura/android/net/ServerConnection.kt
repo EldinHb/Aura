@@ -6,6 +6,8 @@ import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Pending
 import dev.aura.android.protocol.Session
+import dev.aura.android.protocol.StoredEvent
+import dev.aura.android.transcript.fetchHistory
 import dev.aura.android.protocol.Workspace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -144,6 +146,22 @@ class ServerConnection(
     /** Reloads the workspaces. */
     suspend fun refreshWorkspaces() {
         _workspaces.value = call("workspace.list", JsonObject(emptyMap()), ListSerializer(Workspace.serializer())).sortedBy { it.position }
+    }
+
+    /** Reads session [id]'s latest agent message from its history, when none was seen live. */
+    suspend fun loadLastReply(id: String) {
+        if (id in _lastReplies.value) return
+        val history = fetchHistory { after, limit ->
+            call("session.history", buildJsonObject {
+                put("id", JsonPrimitive(id))
+                put("after_seq", JsonPrimitive(after))
+                put("limit", JsonPrimitive(limit))
+            }, ListSerializer(StoredEvent.serializer()))
+        }
+        val reply = history.asReversed().firstNotNullOfOrNull { stored ->
+            (Event.parse(stored.event) as? Event.ItemCompleted)?.item?.takeIf { it.kind == "agent_message" && it.text.isNotBlank() }?.text
+        }
+        _lastReplies.update { if (id in it) it else it + (id to reply.orEmpty()) }
     }
 
     /** Reloads what waits on the user. */
