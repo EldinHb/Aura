@@ -59,7 +59,11 @@ fun TranscriptRowView(
         is TranscriptRow.Aura -> AuraRow(row, modifier)
         is TranscriptRow.Feature -> featureCard(row, modifier)
         is TranscriptRow.User -> UserMessage(row.item.text, modifier)
-        is TranscriptRow.Agent -> MarkdownText(row.item.text, modifier.fillMaxWidth().padding(horizontal = Spacing.m))
+        is TranscriptRow.Agent -> MarkdownText(
+            row.item.text,
+            modifier.fillMaxWidth().padding(horizontal = Spacing.m),
+            streaming = row.item.status == "in_progress",
+        )
         is TranscriptRow.Problem -> ProblemRow(row.item.text.ifBlank { row.item.stepLabel() }, modifier)
         is TranscriptRow.Work -> WorkRow(row, modifier)
     }

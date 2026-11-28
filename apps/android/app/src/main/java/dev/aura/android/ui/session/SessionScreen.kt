@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -155,7 +154,7 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     var moving by remember { mutableStateOf(false) }
     var newWorkspace by remember { mutableStateOf(false) }
     val workspaces by vm.workspaces.collectAsStateWithLifecycle()
-    val list = remember(shownId) { LazyListState() }
+    val list = remember(shownId) { latestListState() }
     val follow = rememberFollowLatest(list)
 
     Scaffold(
@@ -239,26 +238,45 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
             t == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             else -> {
                 val rows = remember(t) { rows(t.visibleItems) }
-                val newest = rows.lastOrNull()
-                follow.Track(
-                    count = rows.size + t.approvals.size + t.inputs.size,
-                    newestKey = newest?.key,
-                    newestLength = (newest as? TranscriptRow.Agent)?.item?.text?.length ?: 0,
-                )
-                // Laid out from the bottom: it opens at the latest messages, and older ones are above.
+                follow.Track(count = rows.size + t.approvals.size + t.inputs.size)
+                // Top to bottom, the latest last; the list state opens at the end (see FollowLatest).
                 LazyColumn(
                     state = list,
-                    reverseLayout = true,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(top = padding.calculateTopPadding() + Spacing.s, bottom = padding.calculateBottomPadding() + Spacing.m),
-                    verticalArrangement = Arrangement.spacedBy(Spacing.m, Alignment.Bottom),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.m),
                 ) {
-                    if (s?.state == SessionState.Failed && s.lastError != null && t.lastError == null) {
-                        item(key = "session-error") {
-                            Text(s.lastError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
+                    if (rows.isEmpty()) {
+                        item(key = "empty") {
+                            Text(
+                                stringResource(R.string.transcript_empty),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = Spacing.m),
+                            )
                         }
                     }
-                    items(t.inputs.asReversed(), key = { "input:" + it.id }) { request ->
+                    // Not animated: a reply grows every frame while it streams, and a fade or
+                    // an animated move would lag behind it (a new reply filling the screen
+                    // would fade the whole view out and in).
+                    items(rows, key = { it.key }, contentType = { it::class }) { row ->
+                        TranscriptRowView(row) { card, modifier ->
+                            FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier)
+                        }
+                    }
+                    t.lastError?.let { error ->
+                        item(key = "turn-error") {
+                            Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
+                        }
+                    }
+                    if (running) {
+                        item(key = "working") {
+                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Spacing.m))
+                        }
+                    }
+                    items(t.approvals, key = { "approval:" + it.id }) { approval ->
+                        ApprovalCard(approval, enabled = online, onRespond = { vm.respond(approval, it) }, modifier = Modifier.animateItem())
+                    }
+                    items(t.inputs, key = { "input:" + it.id }) { request ->
                         QuestionsCard(
                             request,
                             enabled = online,
@@ -267,33 +285,9 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                             modifier = Modifier.animateItem(),
                         )
                     }
-                    items(t.approvals.asReversed(), key = { "approval:" + it.id }) { approval ->
-                        ApprovalCard(approval, enabled = online, onRespond = { vm.respond(approval, it) }, modifier = Modifier.animateItem())
-                    }
-                    if (running) {
-                        item(key = "working") {
-                            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = Spacing.m))
-                        }
-                    }
-                    t.lastError?.let { error ->
-                        item(key = "turn-error") {
-                            Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
-                        }
-                    }
-                    // No placement animation: as the latest entry streams in, it pushes the
-                    // rest up every frame, and an animated move would lag behind and overlap it.
-                    items(rows.asReversed(), key = { it.key }) { row ->
-                        TranscriptRowView(row, Modifier.animateItem(placementSpec = null)) { card, modifier ->
-                            FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier)
-                        }
-                    }
-                    if (rows.isEmpty()) {
-                        item(key = "empty") {
-                            Text(
-                                stringResource(R.string.transcript_empty),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = Spacing.m),
-                            )
+                    if (s?.state == SessionState.Failed && s.lastError != null && t.lastError == null) {
+                        item(key = "session-error") {
+                            Text(s.lastError, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
                         }
                     }
                 }

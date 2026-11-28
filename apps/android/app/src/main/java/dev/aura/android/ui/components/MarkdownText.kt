@@ -11,7 +11,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
@@ -24,8 +30,11 @@ import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.elements.MarkdownCheckBox
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
+import com.mikepenz.markdown.model.rememberMarkdownState
 import dev.aura.android.ui.theme.Spacing
 import dev.aura.android.ui.theme.codeSmall
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
 
 /**
  * [markdown] rendered as the desktop renders it (GitHub flavour: headings,
@@ -35,7 +44,12 @@ import dev.aura.android.ui.theme.codeSmall
  * only on the web or in mail; the text can be selected and copied.
  */
 @Composable
-fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
+fun MarkdownText(markdown: String, modifier: Modifier = Modifier, streaming: Boolean = false) {
+    // While text streams in, it is parsed at most every STREAM_FRAME_MS, with an open
+    // code fence closed, and the last result stays on screen while the next one parses:
+    // the message only ever grows, instead of collapsing and re-expanding on every delta.
+    val shown = if (streaming) throttled(markdown, STREAM_FRAME_MS) else markdown
+    val state = rememberMarkdownState(if (streaming) closeOpenFence(shown) else shown, retainState = true)
     val outer = LocalUriHandler.current
     val safe = remember(outer) {
         object : UriHandler {
@@ -49,7 +63,7 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
     CompositionLocalProvider(LocalUriHandler provides safe) {
         SelectionContainer(modifier) {
             Markdown(
-                content = markdown,
+                markdownState = state,
                 colors = markdownColor(text = text),
                 // Headings at title sizes, as the desktop sizes them in a chat; body at the app's body size.
                 typography = markdownTypography(
@@ -98,3 +112,42 @@ fun CodeBlock(code: String, modifier: Modifier = Modifier, style: TextStyle = Ma
 
 /** Only web and mail links open; an agent's text decides nothing else on the phone. */
 private fun String.isSafeLink() = listOf("https://", "http://", "mailto:").any { startsWith(it, ignoreCase = true) }
+
+/** How often a streaming message is re-rendered, at most. */
+private const val STREAM_FRAME_MS = 100L
+
+/**
+ * [value], updated at most every [periodMs] while it keeps changing: each
+ * update shows the latest value, so text arriving faster than that still shows
+ * as it comes (a debounce would show nothing until it stopped).
+ */
+@Composable
+private fun throttled(value: String, periodMs: Long): String {
+    val latest by rememberUpdatedState(value)
+    var shown by remember { mutableStateOf(value) }
+    LaunchedEffect(periodMs) {
+        snapshotFlow { latest }.conflate().collect {
+            shown = it
+            delay(periodMs)
+        }
+    }
+    return shown
+}
+
+/**
+ * [markdown] with a code fence that is still open closed, so a half-streamed
+ * code block renders as code now rather than turning into one later.
+ */
+internal fun closeOpenFence(markdown: String): String {
+    var open: String? = null
+    for (line in markdown.lineSequence()) {
+        val t = line.trimStart()
+        val fence = Regex("^(`{3,}|~{3,})").find(t)?.value ?: continue
+        open = when {
+            open == null -> fence
+            fence.first() == open.first() && fence.length >= open.length && t.trimEnd() == fence -> null
+            else -> open
+        }
+    }
+    return if (open == null) markdown else markdown.trimEnd('\n') + "\n" + open
+}

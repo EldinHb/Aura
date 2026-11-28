@@ -227,15 +227,19 @@ private class DemoData {
             }
         }
         val id = "live$n"
-        val text = "Update $n: the session list now groups by workspace and status, and workers are tabs in their session."
+        // Long and Markdown-heavy, in small pieces: a fence and a table open and close mid-stream.
+        val part = "### Update $n\n\nThe session list now groups by **workspace** and status, and workers are tabs in their session.\n\n" +
+            "```kotlin\nfun update(n: Int) {\n    println(\"update ${'$'}n\")\n}\n```\n\n| Screen | State |\n|---|---|\n| Sessions | done |\n| Team | done |\n\n- one\n- two\n- three"
+        // As long as a real agent's answer: the same blocks again and again.
+        val text = (1..20).joinToString("\n\n") { part.replace("### Update $n", if (it == 1) "### Update $n" else "#### Part $it") }
         fun send(e: JsonObject) {
             synchronized(this) { if (e["type"]!!.jsonPrimitive.content != "item_delta") history.getValue("f1") += e }
             aurad.notify("event", e)
         }
         send(event("item_started", "f1", "item" to item(id, "f1", "agent_message", "", "in_progress")))
-        text.chunked(24).forEach {
+        text.chunked(12).forEach {
             send(event("item_delta", "f1", "item_id" to str(id), "delta" to obj("kind" to str("text"), "text" to str(it))))
-            Thread.sleep(80)
+            Thread.sleep(20)
         }
         send(event("item_completed", "f1", "item" to item(id, "f1", "agent_message", text, "completed")))
     }
