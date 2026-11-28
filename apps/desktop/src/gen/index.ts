@@ -71,6 +71,8 @@ export * from './RemoteStatus';
 export * from './RunAs';
 export * from './RunResult';
 export * from './RunTrigger';
+export * from './SafeDiffStat';
+export * from './SafeStatus';
 export * from './Schedule';
 export * from './ScheduleSource';
 export * from './ScheduledRun';

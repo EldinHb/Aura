@@ -227,7 +227,15 @@ struct RemoteConn {
     deadline: tokio::time::Instant,
     /// Held until it authenticates.
     slot: parking_lot::Mutex<Option<crate::remote::UnauthSlot>>,
+    /// Its `session.git_*` reads running now (see [`REMOTE_GIT_READS_PER_CONNECTION`]).
+    git_reads: Arc<tokio::sync::Semaphore>,
 }
+
+/// `session.git_*` reads one remote connection may run at once; more are
+/// refused until one finishes.
+const REMOTE_GIT_READS_PER_CONNECTION: usize = 2;
+/// The same, for all remote connections together.
+static REMOTE_GIT_READS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 
 impl RemoteConn {
     fn device(&self) -> Option<String> {
@@ -328,6 +336,7 @@ async fn remote_ws_handler(
         device: parking_lot::Mutex::new(None),
         deadline: peer.deadline,
         slot: parking_lot::Mutex::new(peer.slot.lock().take()),
+        git_reads: Arc::new(tokio::sync::Semaphore::new(REMOTE_GIT_READS_PER_CONNECTION)),
     });
     // Images go as base64 in the message: 16 MB holds a few.
     ws.max_message_size(crate::remote::MAX_MESSAGE)
@@ -439,6 +448,7 @@ fn in_known_project(cwd: &str, projects: &[Project]) -> Option<std::path::PathBu
 /// user's [`dispatch`].
 async fn remote_dispatch(
     state: &AppState,
+    conn: &RemoteConn,
     attached: &Arc<parking_lot::Mutex<HashSet<String>>>,
     req: Request,
     window: &std::sync::atomic::AtomicBool,
@@ -480,6 +490,9 @@ async fn remote_dispatch(
             }
             dispatch(state, attached, req, None, window).await
         }
+        // Read through aura_git::safe, never plain `git status`/`git diff`:
+        // those run whatever the repository's config says (fsmonitor,
+        // filters, diff drivers, hooks), and the repository is the agent's.
         "session.git_status" | "session.git_diff" | "session.git_diff_stat" => {
             let p: RemoteGitParams = params(&req.params)?;
             if let Some(base) = &p.base {
@@ -490,46 +503,66 @@ async fn remote_dispatch(
                 }
             }
             if let Some(path) = &p.path {
-                let outside = std::path::Path::new(path).is_absolute()
-                    || std::path::Path::new(path)
-                        .components()
-                        .any(|c| matches!(c, std::path::Component::ParentDir));
-                if outside {
+                if aura_git::safe::check_path(path).is_err() {
                     return Err(forbidden(format!(
-                        "`{path}` is not a file in the session's folder"
+                        "`{path}` is not a plain path inside the session's folder (no `..`, no absolute path, no `:` pathspec magic)"
                     )));
                 }
             }
+            let busy = || {
+                DispatchError {
+                code: ERR_INTERNAL,
+                message: format!(
+                    "at most {REMOTE_GIT_READS_PER_CONNECTION} change reads at a time: try again when one has finished"
+                ),
+                data: Some(json!({"code": "busy"})),
+            }
+            };
+            let _mine = conn
+                .git_reads
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| busy())?;
+            let _all = REMOTE_GIT_READS.try_acquire().map_err(|_| busy())?;
             let session = state.manager.get_session(&p.id)?;
             // The session's own folder: its worktree when it has one. Nothing else.
             let cwd = session.worktree.map(|w| w.path).unwrap_or(session.cwd);
             let method = req.method.clone();
-            let out = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-                // A folderless orchestrator has no changes of its own.
-                if cwd.is_empty() || aura_git::ops::repo_root(&cwd).is_err() {
-                    return Ok(if method == "session.git_diff" {
-                        json!("")
-                    } else {
-                        json!([])
-                    });
-                }
-                Ok(match method.as_str() {
-                    "session.git_status" => serde_json::to_value(aura_git::ops::status(&cwd)?)?,
-                    "session.git_diff_stat" => {
-                        serde_json::to_value(aura_git::ops::diff_stat(&cwd, p.base.as_deref())?)?
+            let out =
+                tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+                    let limits = aura_git::safe::Limits::default();
+                    let dir = std::path::Path::new(&cwd);
+                    // A folderless orchestrator has no changes of its own.
+                    if cwd.is_empty() {
+                        return Ok(match method.as_str() {
+                            "session.git_diff" => json!(""),
+                            "session.git_status" => json!(aura_git::safe::SafeStatus::default()),
+                            _ => json!(aura_git::safe::SafeDiffStat::default()),
+                        });
                     }
-                    _ => json!(aura_git::ops::diff(
-                        &cwd,
-                        &aura_git::ops::DiffOpts {
-                            path: p.path,
-                            staged: p.staged,
-                            base: p.base
-                        },
-                    )?),
+                    Ok(match method.as_str() {
+                        "session.git_status" => {
+                            serde_json::to_value(aura_git::safe::status(dir, &limits)?)?
+                        }
+                        "session.git_diff_stat" => serde_json::to_value(
+                            aura_git::safe::diff_stat(dir, p.base.as_deref(), &limits)?,
+                        )?,
+                        _ => json!(
+                            aura_git::safe::diff(
+                                dir,
+                                &aura_git::ops::DiffOpts {
+                                    path: p.path,
+                                    staged: p.staged,
+                                    base: p.base
+                                },
+                                &limits,
+                            )?
+                            .text
+                        ),
+                    })
                 })
-            })
-            .await
-            .map_err(|e| anyhow!(e))??;
+                .await
+                .map_err(|e| anyhow!(e))??;
             ok(out)
         }
         "session.create" => {
@@ -946,8 +979,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, caller: Caller) {
                     let id = req.id.clone();
                     let result = match authorize(&caller, &req.method, &req.params) {
                         Ok(()) => match &caller {
-                            Caller::Remote(_) => {
-                                remote_dispatch(&state, &attached, req, &window).await
+                            Caller::Remote(conn) => {
+                                remote_dispatch(&state, conn, &attached, req, &window).await
                             }
                             Caller::Session { id, .. } => {
                                 dispatch(&state, &attached, req, Some(id.clone()), &window).await

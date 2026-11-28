@@ -9,6 +9,7 @@ use std::process::Command;
 
 pub mod cleanup;
 pub mod ops;
+pub mod safe;
 
 const WORKTREES_DIR: &str = ".aura-worktrees";
 
