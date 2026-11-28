@@ -14,6 +14,12 @@ sealed interface Row {
     data class Agent(val item: Item) : Row { override val key get() = item.id }
     data class Problem(val item: Item) : Row { override val key get() = item.id }
 
+    /** A message Aura sent the agent in the user's place, shown collapsed, not as the user's. */
+    data class Aura(val item: Item, val message: AuraMessage) : Row { override val key get() = item.id }
+
+    /** A card from the feature record, at the point the owner put it in its chat. */
+    data class Feature(val item: Item, val card: FeatureCardRef) : Row { override val key get() = item.id }
+
     /** Steps the agent took between messages (tools, commands, edits, thinking), shown collapsed. */
     data class Work(val items: List<Item>) : Row {
         override val key get() = "work:" + items.first().id
@@ -30,11 +36,17 @@ fun rows(items: List<Item>): List<Row> {
         work.clear()
     }
     for (item in items) {
-        when (item.kind) {
-            "user_message" -> { flush(); out += Row.User(item) }
-            "agent_message" -> { flush(); out += Row.Agent(item) }
-            "error" -> { flush(); out += Row.Problem(item) }
-            else -> work += item
+        val aura = AuraMessage.of(item)
+        val card = FeatureCardRef.of(item)
+        when {
+            aura != null -> { flush(); out += Row.Aura(item, aura) }
+            card != null -> { flush(); out += Row.Feature(item, card) }
+            else -> when (item.kind) {
+                "user_message" -> { flush(); out += Row.User(item) }
+                "agent_message" -> { flush(); out += Row.Agent(item) }
+                "error" -> { flush(); out += Row.Problem(item) }
+                else -> work += item
+            }
         }
     }
     flush()

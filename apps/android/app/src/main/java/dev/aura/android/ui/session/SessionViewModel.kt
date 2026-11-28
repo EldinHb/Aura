@@ -8,6 +8,8 @@ import dev.aura.android.net.ConnectionState
 import dev.aura.android.net.ProtocolJson
 import dev.aura.android.net.ServerConnection
 import dev.aura.android.protocol.Approval
+import dev.aura.android.protocol.Feature
+import dev.aura.android.protocol.UserQuestion
 import dev.aura.android.protocol.ApprovalDecision
 import dev.aura.android.protocol.Input
 import dev.aura.android.protocol.Pending
@@ -61,6 +63,35 @@ class SessionViewModel(
 
     /** The transcript; null until the history is loaded. */
     val transcript: StateFlow<Transcript?> = _transcript
+
+    /** The feature this session owns, when it is a feature owner: its questions are cards in the chat. */
+    val feature: StateFlow<Feature?> = connectionFlow
+        .flatMapLatest { it?.features ?: flowOf(null) }
+        .map { list -> list?.firstOrNull { it.ownerId == sessionId } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private val _answering = MutableStateFlow<Set<String>>(emptySet())
+
+    /** The feature questions whose answer is on its way. */
+    val answering: StateFlow<Set<String>> = _answering
+
+    /** Answers the feature owner's [question] here, as the inbox does. */
+    fun answerFeature(question: UserQuestion, option: String?, text: String) {
+        val c = connection() ?: return
+        if (question.id in _answering.value) return
+        _answering.update { it + question.id }
+        viewModelScope.launch {
+            try {
+                c.answerFeatureQuestion(sessionId, question.id, option, text.trim())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _messages.trySend(UiMessage.Res(R.string.action_failed, listOf(e.message ?: "")))
+            } finally {
+                _answering.update { it - question.id }
+            }
+        }
+    }
 
     private val _busy = MutableStateFlow(false)
 

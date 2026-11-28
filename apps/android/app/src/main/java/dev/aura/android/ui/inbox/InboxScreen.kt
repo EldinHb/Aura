@@ -17,6 +17,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,6 +31,7 @@ import dev.aura.android.R
 import dev.aura.android.protocol.folderName
 import dev.aura.android.protocol.projectPath
 import dev.aura.android.ui.appViewModel
+import dev.aura.android.ui.components.DecisionCard
 import dev.aura.android.ui.components.EmptyState
 import dev.aura.android.ui.components.SnackbarMessages
 import dev.aura.android.ui.sessions.SessionRow
@@ -62,11 +64,12 @@ fun InboxScreen(onOpen: (serverId: String, sessionId: String) -> Unit) {
                 if (current.questions.isNotEmpty()) {
                     item(key = "questions-header") { SectionHeader(stringResource(R.string.inbox_questions)) }
                     items(current.questions, key = { it.key }) { q ->
-                        FeatureQuestionCard(
-                            q,
+                        DecisionCard(
+                            q.question,
                             answering = q.key in answering,
                             onAnswer = { option, text -> vm.answer(q, option, text) },
-                            onOpenOwner = { onOpen(q.serverId, q.feature.ownerId) },
+                            overline = "${q.serverName} · ${q.feature.goal.ifBlank { stringResource(R.string.feature) }}",
+                            actions = { TextButton(onClick = { onOpen(q.serverId, q.feature.ownerId) }) { Text(stringResource(R.string.open_feature_owner)) } },
                             modifier = Modifier.animateItem().padding(bottom = Spacing.s),
                         )
                     }

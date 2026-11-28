@@ -49,6 +49,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.R
 import dev.aura.android.protocol.folderName
 import dev.aura.android.ui.appViewModel
+import dev.aura.android.ui.components.ProseKeyboard
 import dev.aura.android.ui.components.SnackbarMessages
 import dev.aura.android.ui.theme.Spacing
 
@@ -105,6 +106,7 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
                     value = prompt,
                     onValueChange = { prompt = it },
                     label = { Text(stringResource(R.string.first_prompt)) },
+                    keyboardOptions = ProseKeyboard,
                     minLines = 4,
                     modifier = Modifier.fillMaxWidth(),
                 )

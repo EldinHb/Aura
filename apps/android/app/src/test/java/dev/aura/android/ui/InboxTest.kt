@@ -4,12 +4,11 @@ import dev.aura.android.data.SavedServer
 import dev.aura.android.net.ProtocolJson
 import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.Feature
+import dev.aura.android.protocol.QuestionAnswer
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.UserQuestion
 import dev.aura.android.ui.inbox.ServerSnapshot
 import dev.aura.android.ui.inbox.inboxOf
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -23,7 +22,7 @@ class InboxTest {
         id = id,
         question = "Q$id",
         askedAt = at,
-        answer = if (answered) buildJsonObject { put("text", JsonPrimitive("ok")) } else null,
+        answer = if (answered) QuestionAnswer(text = "ok") else null,
         withdrawn = withdrawn,
     )
 

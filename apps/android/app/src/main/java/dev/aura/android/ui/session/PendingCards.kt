@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.PanTool
@@ -33,12 +34,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import dev.aura.android.R
 import dev.aura.android.protocol.Approval
 import dev.aura.android.protocol.Question
 import dev.aura.android.protocol.UserInputRequest
 import dev.aura.android.ui.components.CodeBlock
+import dev.aura.android.ui.components.ProseKeyboard
 import dev.aura.android.ui.theme.Spacing
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -172,6 +175,8 @@ private fun QuestionView(
                 onValueChange = onText,
                 label = { Text(stringResource(if (question.options.isEmpty()) R.string.your_answer else R.string.other_answer)) },
                 visualTransformation = if (question.secret) PasswordVisualTransformation() else VisualTransformation.None,
+                // A secret is not corrected, capitalized or learned by the keyboard.
+                keyboardOptions = if (question.secret) KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false) else ProseKeyboard,
                 modifier = Modifier.fillMaxWidth(),
             )
         }

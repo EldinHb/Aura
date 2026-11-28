@@ -31,6 +31,7 @@ class DemoAurad {
         val minutes = System.getenv("AURA_DEMO_MINUTES")?.toLongOrNull() ?: 30
         val demo = DemoData()
         FakeAurad(port = 7443) { method, params -> demo.answer(method, params) }.use { aurad ->
+            demo.attach(aurad)
             aurad.accept(200)
             val link = "aura://pair?host=10.0.2.2&port=7443&fp=${aurad.fingerprint}&code=DEMO2345&name=" +
                 URLEncoder.encode("Demo Mac", "UTF-8").replace("+", "%20")
@@ -39,7 +40,7 @@ class DemoAurad {
             val end = System.currentTimeMillis() + minutes * 60_000
             var n = 0
             while (System.currentTimeMillis() < end) {
-                Thread.sleep(4_000)
+                Thread.sleep(15_000)
                 demo.stream(aurad, ++n)
             }
         }
@@ -66,6 +67,8 @@ private class DemoData {
         session("r3", "Weekly report", task = "t2", taskName = "Weekly report", created = "2026-11-24T07:00:00Z"),
     )
     private val history = HashMap<String, MutableList<JsonObject>>()
+    private var answer: JsonElement = JsonNull
+    private var aurad: FakeAurad? = null
 
     init {
         for (s in sessions) {
@@ -73,7 +76,28 @@ private class DemoData {
             val count = if (id == "f1") 30 else 3
             history[id] = (1..count).flatMap { i -> exchange(id, i) }.toMutableList()
         }
+        history.getValue("f1") += listOf(
+            event("item_completed", "f1", "item" to item("f1-report", "f1", "user_message", AURA_REPORT, "completed")),
+            event("item_completed", "f1", "item" to item("f1-ask", "f1", "agent_message", "Before I hire a release engineer, one decision for you.", "completed")),
+            event("item_completed", "f1", "item" to item("f1-card", "f1", "system", "Decision for you: which SDK?", "completed", obj("feature_card" to obj("kind" to str("decision"), "id" to str("q1"))))),
+            event("item_completed", "f1", "item" to item("f1-team", "f1", "user_message", AURA_TEAM, "completed")),
+        )
     }
+
+    private fun feature() = obj(
+        "owner_id" to str("f1"), "goal" to str("Ship the Android app"), "status" to str("waiting_on_user"),
+        "updated_at" to str("2026-11-28T09:00:00Z"),
+        "questions" to JsonArray(listOf(obj(
+            "id" to str("q1"), "question" to str("Target SDK 37 now, or stay on 36 until the BOM catches up?"),
+            "context" to str("Compose BOM 2026.11.01 needs **android-37.1**; 37.0 is installed."),
+            "options" to JsonArray(listOf(
+                obj("label" to str("SDK 37"), "description" to str("Newest platform, BOM 2026.09.00")),
+                obj("label" to str("Stay on 36"), "description" to JsonNull),
+            )),
+            "recommended" to str("SDK 37"), "kind" to str("decision"), "asked_at" to str("2026-11-28T09:30:00Z"),
+            "answer" to answer, "withdrawn" to JsonPrimitive(false),
+        ))),
+    )
 
     fun answer(method: String, params: JsonObject): JsonElement = when (method) {
         "remote.pair" -> obj(
@@ -83,7 +107,11 @@ private class DemoData {
         "remote.auth" -> obj("serverId" to str("demo-server"), "serverName" to str("Demo Mac"), "version" to str("0.6.0"))
         "session.list" -> synchronized(this) { JsonArray(sessions.toList()) }
         "workspace.list" -> JsonArray(workspaces)
-        "feature.list" -> JsonArray(emptyList())
+        "feature.list" -> synchronized(this) { JsonArray(listOf(feature())) }
+        "feature.answer" -> synchronized(this) {
+            answer = obj("option" to (params["option"] ?: JsonNull), "text" to (params["text"] ?: str("")), "at" to str("2026-11-28T10:00:00Z"), "delivered" to JsonPrimitive(true))
+            feature().also { f -> aurad?.notify("event", event("feature_updated", "f1", "feature" to f)) }
+        }
         "session.pending" -> obj(
             "approvals" to JsonArray(listOf(obj(
                 "id" to str("p1"), "session_id" to str("m2"), "kind" to str("command"), "title" to str("Run openssl s_client"),
@@ -110,8 +138,13 @@ private class DemoData {
         else -> FakeAurad.error(-32601, "unknown method $method")
     }
 
+    fun attach(aurad: FakeAurad) {
+        this.aurad = aurad
+    }
+
     /** A new agent message in the feature owner's chat, streamed. */
     fun stream(aurad: FakeAurad, n: Int) {
+        this.aurad = aurad
         val id = "live$n"
         val text = "Update $n: the session list now groups by workspace and status, and workers are tabs in their session."
         fun send(e: JsonObject) {
@@ -176,3 +209,8 @@ private class DemoData {
 
     private fun str(s: String) = JsonPrimitive(s)
 }
+
+private const val AURA_REPORT = "[Aura] Worker report. This message comes from Aura, not the user.\n\n" +
+    "**Frontend engineer** finished: the session list groups by workspace and status, and workers are tabs."
+private const val AURA_TEAM = "[Aura] Question from a teammate. This message comes from Aura, not the user.\n\n" +
+    "Security reviewer asks: may I run `openssl s_client` against the demo server?"

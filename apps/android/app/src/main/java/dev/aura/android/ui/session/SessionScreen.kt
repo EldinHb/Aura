@@ -73,6 +73,11 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.R
+import dev.aura.android.ui.components.ProseKeyboard
+import dev.aura.android.ui.components.MarkdownText
+import dev.aura.android.ui.components.DecisionCard
+import dev.aura.android.protocol.UserQuestion
+import dev.aura.android.protocol.Feature
 import dev.aura.android.net.ConnectionState
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.SessionState
@@ -109,6 +114,8 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     val transcript by vm.transcript.collectAsStateWithLifecycle()
     val connection by vm.connectionState.collectAsStateWithLifecycle()
     val sending by vm.sending.collectAsStateWithLifecycle()
+    val feature by vm.feature.collectAsStateWithLifecycle()
+    val answering by vm.answering.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     SnackbarMessages(vm.messages, snackbar)
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -236,7 +243,11 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                     }
                     // No placement animation: as the latest entry streams in, it pushes the
                     // rest up every frame, and an animated move would lag behind and overlap it.
-                    items(rows.asReversed(), key = { it.key }) { row -> TranscriptRowView(row, Modifier.animateItem(placementSpec = null)) }
+                    items(rows.asReversed(), key = { it.key }) { row ->
+                        TranscriptRowView(row, Modifier.animateItem(placementSpec = null)) { card, modifier ->
+                            FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier)
+                        }
+                    }
                     if (rows.isEmpty()) {
                         item(key = "empty") {
                             Text(
@@ -266,6 +277,39 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
             confirmButton = { TextButton(onClick = { confirmStop = false; vm.stop() }) { Text(stringResource(R.string.stop)) } },
             dismissButton = { TextButton(onClick = { confirmStop = false }) { Text(stringResource(R.string.cancel)) } },
         )
+    }
+}
+
+/**
+ * A card from the owner's feature record, as the desktop shows it: a decision
+ * is answerable here and shows its answer once given; other cards show their
+ * text, their detail being on the computer.
+ */
+@Composable
+private fun FeatureCardRow(
+    row: TranscriptRow.Feature,
+    feature: Feature?,
+    answering: Set<String>,
+    online: Boolean,
+    onAnswer: (UserQuestion, String?, String) -> Unit,
+    modifier: Modifier,
+) {
+    val question = feature?.questions?.firstOrNull { it.id == row.card.id }.takeIf { row.card.kind == "decision" }
+    if (question != null) {
+        DecisionCard(
+            question,
+            answering = question.id in answering || !online,
+            onAnswer = { option, text -> onAnswer(question, option, text) },
+            modifier = modifier,
+        )
+    } else if (row.item.text.isNotBlank()) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = MaterialTheme.shapes.medium,
+            modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.m),
+        ) {
+            MarkdownText(row.item.text, Modifier.padding(Spacing.m))
+        }
     }
 }
 
@@ -319,6 +363,7 @@ private fun Composer(enabled: Boolean, sending: Boolean, onSend: (String, () -> 
                 value = text,
                 onValueChange = { text = it },
                 placeholder = { Text(stringResource(R.string.message_placeholder)) },
+                keyboardOptions = ProseKeyboard,
                 maxLines = COMPOSER_MAX_LINES,
                 shape = MaterialTheme.shapes.extraLarge,
                 modifier = Modifier.weight(1f),

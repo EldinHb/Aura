@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -49,8 +50,14 @@ private const val DETAIL_LIMIT = 4_000
 private const val USER_MESSAGE_WIDTH = 0.85f
 
 @Composable
-fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
+fun TranscriptRowView(
+    row: TranscriptRow,
+    modifier: Modifier = Modifier,
+    featureCard: @Composable (TranscriptRow.Feature, Modifier) -> Unit = { _, _ -> },
+) {
     when (row) {
+        is TranscriptRow.Aura -> AuraRow(row, modifier)
+        is TranscriptRow.Feature -> featureCard(row, modifier)
         is TranscriptRow.User -> UserMessage(row.item.text, modifier)
         is TranscriptRow.Agent -> MarkdownText(row.item.text, modifier.fillMaxWidth().padding(horizontal = Spacing.m))
         is TranscriptRow.Problem -> ProblemRow(row.item.text.ifBlank { row.item.stepLabel() }, modifier)
@@ -85,6 +92,43 @@ private fun ProblemRow(text: String, modifier: Modifier) {
         Row(Modifier.padding(Spacing.m), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
             Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
             Text(text, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+/** A message Aura sent in the user's place: its title, opening to its text. */
+@Composable
+private fun AuraRow(row: TranscriptRow.Aura, modifier: Modifier) {
+    var open by rememberSaveable(row.key) { mutableStateOf(false) }
+    val expanded = stringResource(R.string.expanded)
+    val collapsed = stringResource(R.string.collapsed)
+    val body = row.message.body
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.m),
+    ) {
+        Column(Modifier.animateContentSize()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.s),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = body.isNotEmpty(), role = Role.Button) { open = !open }
+                    .semantics { if (body.isNotEmpty()) stateDescription = if (open) expanded else collapsed }
+                    .padding(horizontal = Spacing.m, vertical = Spacing.s),
+            ) {
+                Icon(Icons.Outlined.AutoAwesome, contentDescription = null)
+                Column(Modifier.weight(1f)) {
+                    Text(row.message.title, style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(stringResource(R.string.from_aura), style = MaterialTheme.typography.bodySmall)
+                }
+                if (body.isNotEmpty()) Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null)
+            }
+            if (open && body.isNotEmpty()) {
+                MarkdownText(body, Modifier.padding(start = Spacing.m, end = Spacing.m, bottom = Spacing.m))
+            }
         }
     }
 }
