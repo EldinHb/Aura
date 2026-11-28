@@ -206,7 +206,7 @@ declare namespace Aura {
    * Normalized event stream. Every event carries `session_id` so clients can
    * route without inspecting the payload.
    */
-  export type Event = { "type": "session_created", session: Session, } | { "type": "session_updated", session: Session, } | { "type": "session_removed", session_id: string, } | { "type": "turn_started", session_id: string, turn: Turn, } | { "type": "turn_completed", session_id: string, turn: Turn, } | { "type": "item_started", session_id: string, item: Item, } | { "type": "item_delta", session_id: string, item_id: string, delta: ItemDelta, } | { "type": "item_completed", session_id: string, item: Item, } | { "type": "approval_requested", session_id: string, approval: Approval, } | { "type": "approval_resolved", session_id: string, approval_id: string, decision: ApprovalDecision, } | { "type": "user_input_requested", session_id: string, request: UserInputRequest, } | { "type": "user_input_resolved", session_id: string, request_id: string, response: UserInputResponse, } | { "type": "notice", session_id: string, level: NoticeLevel, message: string, } | { "type": "provider_info", session_id: string, info: Record<string, unknown>, } | { "type": "native_id", session_id: string, native_id: string, } | { "type": "usage", session_id: string, usage: Usage, } | { "type": "process_exited", session_id: string, exit_code: number | null, message: string | null, } | { "type": "setting_changed", session_id: string, setting: Setting, } | { "type": "notices_cleared", session_id: string, } | { "type": "feature_updated", session_id: string, feature: Feature, } | { "type": "specialist_suggestions_updated", suggestions: Array<SpecialistSuggestion>, } | { "type": "workspaces_changed", workspaces: Array<Workspace>, };
+  export type Event = { "type": "session_created", session: Session, } | { "type": "session_updated", session: Session, } | { "type": "session_removed", session_id: string, } | { "type": "turn_started", session_id: string, turn: Turn, } | { "type": "turn_completed", session_id: string, turn: Turn, } | { "type": "item_started", session_id: string, item: Item, } | { "type": "item_delta", session_id: string, item_id: string, delta: ItemDelta, } | { "type": "item_completed", session_id: string, item: Item, } | { "type": "approval_requested", session_id: string, approval: Approval, } | { "type": "approval_resolved", session_id: string, approval_id: string, decision: ApprovalDecision, } | { "type": "user_input_requested", session_id: string, request: UserInputRequest, } | { "type": "user_input_resolved", session_id: string, request_id: string, response: UserInputResponse, } | { "type": "notice", session_id: string, level: NoticeLevel, message: string, } | { "type": "provider_info", session_id: string, info: Record<string, unknown>, } | { "type": "native_id", session_id: string, native_id: string, } | { "type": "usage", session_id: string, usage: Usage, } | { "type": "process_exited", session_id: string, exit_code: number | null, message: string | null, } | { "type": "setting_changed", session_id: string, setting: Setting, } | { "type": "notices_cleared", session_id: string, } | { "type": "feature_updated", session_id: string, feature: Feature, } | { "type": "specialist_suggestions_updated", suggestions: Array<SpecialistSuggestion>, } | { "type": "workspaces_changed", workspaces: Array<Workspace>, } | { "type": "usage_report", report: UsageReport, } | { "type": "templates_changed", templates: Array<SessionTemplate>, };
 
   export type Feature = { 
   /**
@@ -515,6 +515,44 @@ declare namespace Aura {
 
   export type SessionStatus = "idle" | "running" | "waiting_approval" | "waiting_input" | "error" | "exited";
 
+  export type SessionTemplate = { id: string, created_at: string, updated_at: string, name: string, kind: TemplateKind, provider: ProviderKind, 
+  /**
+   * The ACP agent, for `acp`.
+   */
+  agent: string | null, 
+  /**
+   * The folder. None: the dialog's (the selected session's, the default
+   * one); for an orchestrator or feature owner, no folder of its own.
+   */
+  cwd: string | null, 
+  /**
+   * Start in a new git worktree, on a branch named after `branch_pattern`.
+   */
+  worktree: boolean, 
+  /**
+   * The branch name, with `{slug}` (the title, or the template's name, in
+   * lower case with hyphens), `{date}` (YYYYMMDD) and `{time}` (HHMM)
+   * filled in by the client. Default `aura/{slug}-{date}`.
+   */
+  branch_pattern: string | null, 
+  /**
+   * The workspace id. None: the one the user is in.
+   */
+  workspace: string | null, group: string | null, mode: SessionMode | null, 
+  /**
+   * Command (argv) of a terminal session.
+   */
+  command: Array<string> | null, model: string | null, effort: string | null, permission_mode: string | null, sandbox_mode: string | null, 
+  /**
+   * A feature owner's own autonomy. None follows the setting for all.
+   */
+  autonomy: Autonomy | null, system_prompt: string | null, 
+  /**
+   * The first message (a feature owner's goal), which the user can still
+   * change before starting.
+   */
+  prompt: string | null, };
+
   export type Setting = { "kind": "model", "value": string } | { "kind": "effort", "value": string } | { "kind": "permission_mode", "value": string } | { "kind": "sandbox_mode", "value": string };
 
   /**
@@ -585,17 +623,68 @@ declare namespace Aura {
    */
   meeting: string | null, };
 
+  export type TemplateKind = "agent" | "orchestrator" | "feature_owner";
+
   export type Turn = { id: string, session_id: string, status: TurnStatus, started_at: string, ended_at: string | null, usage: Usage | null, error: string | null, };
 
   export type TurnStatus = "running" | "completed" | "interrupted" | "failed";
 
-  export type Usage = { input_tokens: number, output_tokens: number, cached_input_tokens: number, total_cost_usd: number | null, context_window: number | null, context_used: number | null, 
+  export type Usage = { input_tokens: number, output_tokens: number, 
+  /**
+   * Cached input: cache reads plus, where the agent reports them
+   * (Claude), cache writes.
+   */
+  cached_input_tokens: number, 
+  /**
+   * The part of `cached_input_tokens` that was written to the cache. Zero
+   * when the agent does not report it, and in usage stored before Aura
+   * kept it.
+   */
+  cache_write_tokens: number, total_cost_usd: number | null, context_window: number | null, context_used: number | null, 
   /**
    * The token counts are the conversation's running totals as the agent
    * reports them, so a later report can be measured against them. Usage
    * stored before Aura kept totals, and a turn's own usage, lack it.
    */
   running_totals: boolean, };
+
+  /**
+   * A usage summary for a period, made from the records alone (no model
+   * writes it): totals, the biggest sessions and features, what changed
+   * against the period before.
+   */
+  export type UsageReport = { id: string, title: string, from: string, to: string, generatedAt: string, totals: UsageTotals, 
+  /**
+   * The period of the same length right before.
+   */
+  previous: UsageTotals, 
+  /**
+   * The summary as Markdown, ready to copy.
+   */
+  markdown: string, };
+
+  export type UsageTotals = { turns: number, inputTokens: number, outputTokens: number, 
+  /**
+   * Cache reads and writes.
+   */
+  cachedInputTokens: number, 
+  /**
+   * The part of `cached_input_tokens` written to the cache.
+   */
+  cacheWriteTokens: number, 
+  /**
+   * Reported plus estimated cost of the turns that have one.
+   */
+  costUsd: number, 
+  /**
+   * The part of `cost_usd` that is an estimate from Aura's price table.
+   */
+  estimatedCostUsd: number, 
+  /**
+   * Turns with neither a reported cost nor a known price: their tokens
+   * count, their cost does not.
+   */
+  unpricedTurns: number, };
 
   export type UserInputRequest = { id: string, session_id: string, turn_id: string | null, item_id: string | null, questions: Array<Question>, created_at: string, };
 
