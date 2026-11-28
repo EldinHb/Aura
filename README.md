@@ -92,6 +92,15 @@ keyboard, while the agents keep working in the background.
   ```` ``` ````, `>`, `[text](url)`), pasted markdown and tables arrive formatted, and
   what is sent is markdown, with text as typed. Switch it to a plain markdown textbox
   with the chip under it or `⌘K` → Composer.
+- **Usage and cost.** Every reply shows what its turn spent (tokens, cache, context and
+  cost); per-session and global dashboards break it down by day, session, feature,
+  project, model and agent, and Aura can write a summary of any period, or one every
+  day. `⌘K` → Usage and cost.
+- **Session templates.** Save the new-session dialog's options as a template and start
+  the next session from it, on the desktop or the phone.
+- **Other computers, one window.** Pair the desktop with Aura on another machine (a home
+  server, another Mac) and switch between them in the sidebar. See
+  [Remote access](#remote-access).
 - **Keyboard only.** Command palette, a leader key with a which-key menu, vim-style
   navigation and hint mode for everything else. Every binding can be changed.
 
@@ -715,8 +724,9 @@ See [`PLAN.md`](PLAN.md) for the full architecture and
 
 Aura can let your phone (the Aura Android app, and later other clients) see and
 drive your sessions over the network: list them, read transcripts live, send
-messages, answer approvals and questions, interrupt or stop, and start a new
-session in a project you already use. It is **off by default**.
+messages (with images), answer approvals and questions, interrupt or stop, start a
+new session in a project you already use (from a template, if you like), read what a
+session changed, and see usage and cost. It is **off by default**.
 
 ```bash
 aura remote on                    # listen on 0.0.0.0:7443 (TLS)
@@ -736,8 +746,10 @@ it pairs, so nobody in between can listen in. Pairing uses a one-time code; afte
 that the device has its own token, which you can revoke at any time. Failed
 attempts are rate limited. Remote devices get only what a phone needs: they cannot
 change settings, browse files, manage mods, delete sessions, use terminals or
-change remote access itself. Everything lives in `~/.aura/remote/` (readable only
-by you), and changes apply without restarting the daemon.
+change remote access itself. What a session changed is read without running
+anything the repository configures (hooks, filters, diff drivers), and only in that
+session's folder. Everything lives in `~/.aura/remote/` (readable only by you), and
+changes apply without restarting the daemon.
 
 **SSH tunnel.** Instead of opening the port to your network you can bind it to
 this machine only and tunnel to it: `aura remote on --bind 127.0.0.1`, then on
@@ -749,6 +761,17 @@ the other machine `ssh -L 7443:127.0.0.1:7443 you@your-mac` and connect to
 phone and open it (Android asks to allow installing from that source), then tap
 **Add server** and scan the code from `aura remote pair` or Settings → Remote access.
 To build it yourself, see [`apps/android/README.md`](apps/android/README.md).
+Besides sessions, the app shows a session's changes, sends photos and screenshots
+(also through Android's Share to Aura), shows usage and cost, starts sessions from
+templates, and has a home-screen widget and a Quick Settings tile for what waits on
+you. Notifications can be tuned per kind in its Settings.
+
+**Another desktop.** The desktop app can pair with Aura on another computer the same
+way: the computer switcher at the top of the sidebar → **Add remote computer…**, paste
+the `aura://pair` link or type the code. Its certificate is pinned and its token kept
+in the system keychain. The window shows one computer at a time; the inbox and the
+badge count every connected computer, and what a remote does not allow is hidden or
+says so.
 
 The protocol, the threat model and the exact methods remote clients may call are in
 [`docs/design/remote.md`](docs/design/remote.md).
