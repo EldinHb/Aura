@@ -61,7 +61,11 @@ export type Dialog =
   /** `featureOwner` starts on a feature owner. */
   | { kind: "new-session"; provider?: string; cwd?: string; featureOwner?: boolean }
   | { kind: "import" }
-  | { kind: "settings"; tab?: "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" }
+  | { kind: "settings"; tab?: "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "templates" | "usage" }
+  /** The usage and cost dashboard (features/usage). */
+  | { kind: "usage" }
+  /** One session's usage, with its workers. */
+  | { kind: "session-usage"; sessionId: string }
   | { kind: "search" }
   | { kind: "inbox" }
   | { kind: "diff"; sessionId: string; path?: string }
@@ -630,6 +634,8 @@ export const useStore = create<AppState>((set, get) => ({
       st.setWorkspaces(ev.workspaces);
       return;
     }
+    // Belong to no session either; features/templates and features/usage follow them.
+    if (ev.type === "templates_changed" || ev.type === "usage_report") return;
     const sid = ev.session_id;
     const t = st.transcripts[sid] ?? emptyTranscript();
     set({ transcripts: { ...st.transcripts, [sid]: applyToTranscript(t, ev) } });

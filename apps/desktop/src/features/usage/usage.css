@@ -1,0 +1,71 @@
+/* Usage and cost: dashboards (UsageDialog, SessionUsageDialog) and the line under each reply. */
+.usage-modal .modal-body { padding: 0; display: flex; }
+.usage-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.usage-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.usage-range { display: inline-flex; align-items: center; gap: 6px; }
+.modal .usage-range input[type="date"], .modal input.usage-time {
+  width: auto; background: transparent; border: 1px solid var(--md-outline); border-radius: var(--shape-sm); padding: 4px 8px; color: inherit; color-scheme: dark;
+}
+:root[data-theme="light"] .modal .usage-range input[type="date"], :root[data-theme="light"] .modal input.usage-time { color-scheme: light; }
+.usage-error { color: var(--err); font-size: 12px; margin: 0; }
+.usage-empty { padding: 16px 4px; font-size: 12px; line-height: 1.5; }
+
+.usage-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.usage-card { background: var(--md-surface-container-low); border: 1px solid var(--md-outline-variant); border-radius: var(--shape-md); padding: 10px 12px; min-width: 0; }
+.usage-card-label { font-size: var(--fs-label-m); color: var(--fg-muted); }
+.usage-card-value { font-size: var(--fs-headline-s); font-weight: 600; font-variant-numeric: tabular-nums; margin: 2px 0; color: var(--fg); }
+.usage-card-foot { display: flex; gap: 8px; align-items: baseline; font-size: 11px; min-height: 16px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.usage-delta { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
+.usage-delta.up::before { content: "▲ "; font-size: 9px; }
+.usage-delta.down::before { content: "▼ "; font-size: 9px; }
+.usage-delta.good { color: var(--ok); }
+.usage-delta.bad { color: var(--warn); }
+.usage-delta.neutral { color: var(--fg-muted); }
+
+.usage-section { border: 1px solid var(--md-outline-variant); border-radius: var(--shape-md); padding: 10px 12px; min-width: 0; }
+.usage-section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.usage-section-head h4 { margin: 0; font-size: var(--fs-title-s); font-weight: 600; }
+.usage-by { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.modal .usage-by select { width: auto; }
+.usage-columns { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 12px; align-items: start; }
+@media (max-width: 900px) { .usage-columns { grid-template-columns: 1fr; } }
+
+.usage-chart { width: 100%; height: auto; display: block; overflow: visible; }
+.usage-chart .grid { stroke: var(--border); stroke-width: 1; }
+.usage-chart .axis { fill: var(--fg-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+.usage-chart .bar .hit { fill: transparent; }
+.usage-chart .bar.active .hit { fill: var(--hover-layer); }
+.usage-chart .line { fill: none; stroke: var(--md-primary); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.usage-chart .point { fill: var(--md-primary); }
+.usage-chart .ceiling { stroke: var(--warn); stroke-dasharray: 4 4; stroke-width: 1; }
+.usage-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--fg-muted); margin-top: 4px; }
+.usage-legend i, .usage-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.usage-share { display: flex; height: 10px; border-radius: var(--shape-full); overflow: hidden; gap: 1px; margin: 4px 0 8px; }
+.usage-share > span { min-width: 2px; }
+
+.usage-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.usage-table th { text-align: left; font-weight: 500; color: var(--fg-dim); font-size: 11px; padding: 6px 6px 4px; border-bottom: 1px solid var(--border); }
+.usage-table td { padding: 5px 6px; border-bottom: 1px solid var(--md-divider, var(--border)); font-variant-numeric: tabular-nums; }
+.usage-table .num { text-align: right; white-space: nowrap; }
+.usage-table td.label { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-table tr.clickable { cursor: pointer; }
+.usage-table tr.clickable:hover, .usage-table tr.clickable:focus-visible { background: var(--bg-hover); outline: none; }
+.usage-table .share { width: 120px; white-space: nowrap; }
+.usage-share-bar { display: inline-block; width: 70px; height: 5px; background: var(--md-secondary-container); border-radius: var(--shape-full); overflow: hidden; margin-right: 6px; vertical-align: middle; }
+.usage-share-bar > span { display: block; height: 100%; background: var(--md-primary); }
+.usage-summary .radio-row { flex-wrap: wrap; margin-bottom: 8px; }
+.usage-report { font-size: 12px; max-height: 420px; overflow: auto; user-select: text; }
+
+/* Under each reply */
+.turn-usage { display: inline-flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.turn-usage-line { background: none; border: 0; padding: 0; font: inherit; font-size: 11px; color: var(--fg-dim); cursor: pointer; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.turn-usage-line:hover, .turn-usage-line:focus-visible { color: var(--fg-muted); text-decoration: underline dotted; }
+.turn-usage-detail { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 11px; color: var(--fg-muted); padding: 4px 0 2px; }
+.turn-usage-detail b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Templates (new-session dialog, Settings → Templates) */
+.template-row { flex-wrap: wrap; }
+.template-save { display: inline-flex; gap: 6px; align-items: center; }
+.modal .template-save input { width: 220px; }
+.template-prompt { font-size: 11px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-usage-row { display: flex; padding: 0 0 6px; }

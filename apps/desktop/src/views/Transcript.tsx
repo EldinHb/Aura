@@ -12,13 +12,16 @@ import { StepsButton, openSteps } from "./transcript/Steps";
 import { replySteps, transcriptTree, type StepGroup } from "./transcript/replySteps";
 import { auraMessage } from "../lib/auraMessage";
 import { orchestratorMessages, sentTexts } from "../lib/orchestration";
-import { durationMs, fmtDuration, fmtTokens, fmtUsd, isCardKind, lastBoundaryIndex } from "./transcript/format";
+import { durationMs, fmtDuration, isCardKind, lastBoundaryIndex } from "./transcript/format";
+import { TurnUsageLine, useSessionTurnUsage } from "../features/usage/TurnUsageLine";
 
 let commandsRegistered: (() => void) | null = null;
 let mounted = 0;
 
 type Row =
   | { kind: "turn"; turn: Turn; key: string }
+  /** What a finished turn spent, under its last reply. */
+  | { kind: "turn-usage"; turn: Turn; key: string }
   | { kind: "item"; item: Item; key: string; nested: boolean; stale: boolean }
   | { kind: "steps"; group: StepGroup; key: string; stale: boolean }
   | { kind: "approval"; id: string; key: string }
@@ -34,11 +37,6 @@ function TurnDivider({ turn }: { turn: Turn }) {
       <span className={clsx("dot", running ? "info pulse" : turn.status === "completed" ? "ok" : turn.status === "failed" ? "err" : "warn")} />
       <span>{running ? "working…" : turn.status}</span>
       {dur && <span className="dim">{dur}</span>}
-      {turn.usage && (
-        <span className="dim">
-          {fmtTokens(turn.usage.input_tokens)}↑ {fmtTokens(turn.usage.output_tokens)}↓ {fmtUsd(turn.usage.total_cost_usd)}
-        </span>
-      )}
       {turn.error && <span className="err-text">{turn.error}</span>}
     </div>
   );
@@ -46,6 +44,8 @@ function TurnDivider({ turn }: { turn: Turn }) {
 
 export function Transcript({ sessionId }: { sessionId: string }) {
   const t = useStore((s) => s.transcripts[sessionId]);
+  // What each turn spent, with its cost, for the line under its reply.
+  useSessionTurnUsage(sessionId);
   const session = useStore((s) => s.sessions[sessionId]);
   const providers = useStore((s) => s.providers);
   const cursorItemId = useStore((s) => s.cursorItemId);
@@ -119,8 +119,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     };
     // Items above the latest clear or compaction are no longer in the agent's context.
     const boundary = lastBoundaryIndex(top);
+    // Under a finished turn's last reply, what it spent.
+    const pushUsage = (turnId: string | null | undefined) => {
+      const turn = turnId ? turnsById.get(turnId) : undefined;
+      if (turn && turn.status !== "running") out.push({ kind: "turn-usage", turn, key: `turn-usage:${turn.id}` });
+    };
     for (const [i, it] of top.entries()) {
       if (it.turn_id !== lastTurn) {
+        pushUsage(lastTurn);
         lastTurn = it.turn_id;
         const turn = it.turn_id ? turnsById.get(it.turn_id) : undefined;
         // A turn on a message from Aura shows in its group's row, unless it went wrong.
@@ -144,6 +150,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       pushItem(it, false, i < boundary);
       for (const child of byParent.get(it.id) ?? []) pushItem(child, true, i < boundary);
     }
+    pushUsage(lastTurn);
     for (const id of looseApprovals) out.push({ kind: "approval", id, key: `approval:${id}` });
     for (const id of looseInputs) out.push({ kind: "input", id, key: `input:${id}` });
     const running = t.turns.find((x) => x.status === "running");
@@ -268,6 +275,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           switch (r.kind) {
             case "turn":
               return <TurnDivider key={r.key} turn={r.turn} />;
+            case "turn-usage":
+              return <div key={r.key} className="turn-usage-row"><TurnUsageLine sessionId={sessionId} turn={r.turn} /></div>;
             case "item":
               return (
                 <ItemRow

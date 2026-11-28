@@ -12,7 +12,7 @@ import type { Session } from "../../src/gen";
 const OUT = process.env.SHOTS ?? "test-results/pr-status";
 const now = Date.parse("2026-11-27T10:00:00Z");
 const at = (secAgo: number) => new Date(now - secAgo * 1000).toISOString();
-const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false };
+const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false };
 const mods = new URL("../../../../mods/", import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, mods), "utf8");
 

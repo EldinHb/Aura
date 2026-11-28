@@ -13,7 +13,7 @@ import type { Feature, Item, MeetingTurn, Session, Specialist, SpecialistSuggest
 const OUT = process.env.SHOTS ?? "test-results/feature-owner";
 const now = Date.now();
 const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
-const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false };
+const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false };
 
 function session(id: string, over: Partial<Session>): Session {
   return { id, title: id, provider: "claude", agent: null, native_id: null, cwd: "/Users/sam/code/acme-web", worktree: null, group: null, workspace: "default", status: "idle", mode: "structured", model: null, effort: null, permission_mode: null, sandbox_mode: null, command: null, created_at: at(240), last_activity: at(10), archived: false, pinned: false, last_error: null, pending_count: 0, exit_code: null, system_prompt: null, orchestrator: false, orchestrator_id: null, feature_owner: false, specialist_id: null, specialist_name: null, folderless: false, attention: null, scheduled_task_id: null, scheduled_task_name: null, usage, ...over };
