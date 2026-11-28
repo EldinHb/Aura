@@ -1,5 +1,9 @@
 package dev.aura.android.ui
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -26,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,6 +44,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import dev.aura.android.AppLink
 import dev.aura.android.AuraApplication
 import dev.aura.android.R
 import dev.aura.android.ui.inbox.InboxScreen
@@ -48,7 +54,10 @@ import dev.aura.android.ui.pairing.AddServerScreen
 import dev.aura.android.ui.servers.ServersScreen
 import dev.aura.android.ui.session.SessionScreen
 import dev.aura.android.ui.sessions.SessionsScreen
+import dev.aura.android.ui.settings.SettingsScreen
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
 @Serializable data object ServersRoute
@@ -57,16 +66,18 @@ import kotlinx.serialization.Serializable
 @Serializable data class SessionsRoute(val serverId: String)
 @Serializable data class SessionRoute(val serverId: String, val sessionId: String)
 @Serializable data class NewSessionRoute(val serverId: String)
+@Serializable data object SettingsRoute
 
 private fun NavDestination?.isTopLevel() = this != null && (hasRoute(ServersRoute::class) || hasRoute(InboxRoute::class))
 
 /**
  * The app: servers and the inbox as top-level destinations in the navigation
- * bar (a rail on wide screens), and the screens under them. [pairingLinks]
- * brings `aura://pair` links the app was opened with.
+ * bar (a rail on wide screens), and the screens under them. [appLinks]
+ * brings what the app was opened with: `aura://pair` links, and sessions
+ * from notifications.
  */
 @Composable
-fun AuraApp(pairingLinks: Flow<String>) {
+fun AuraApp(appLinks: Flow<AppLink>) {
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val destination = entry?.destination
@@ -75,8 +86,18 @@ fun AuraApp(pairingLinks: Flow<String>) {
     val inbox by inboxFlow.collectAsStateWithLifecycle(null)
     val waiting = inbox?.size ?: 0
 
-    LaunchedEffect(pairingLinks) {
-        pairingLinks.collect { nav.navigate(AddServerRoute(it)) { launchSingleTop = true } }
+    val scope = rememberCoroutineScope()
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        container.refreshNotificationPermission()
+    }
+
+    LaunchedEffect(appLinks) {
+        appLinks.collect { link ->
+            when (link) {
+                is AppLink.Pair -> nav.navigate(AddServerRoute(link.link)) { launchSingleTop = true }
+                is AppLink.Session -> nav.navigate(SessionRoute(link.serverId, link.sessionId)) { launchSingleTop = true }
+            }
+        }
     }
 
     val layout = if (destination.isTopLevel()) {
@@ -120,7 +141,11 @@ fun AuraApp(pairingLinks: Flow<String>) {
                 ServersScreen(
                     onOpen = { nav.navigate(SessionsRoute(it)) },
                     onAdd = { nav.navigate(AddServerRoute()) },
+                    onSettings = { nav.navigate(SettingsRoute) },
                 )
+            }
+            composable<SettingsRoute> {
+                SettingsScreen(onBack = { nav.popBackStack() })
             }
             composable<InboxRoute> {
                 InboxScreen(onOpen = { server, session -> nav.navigate(SessionRoute(server, session)) })
@@ -130,6 +155,15 @@ fun AuraApp(pairingLinks: Flow<String>) {
                     link = back.toRoute<AddServerRoute>().link,
                     onBack = { nav.popBackStack() },
                     onPaired = { serverId ->
+                        // Asked once, now that there is something to notify about; never at launch.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !container.notificationsGranted.value) {
+                            scope.launch {
+                                if (!container.prefs.notificationsAsked.first()) {
+                                    container.prefs.setNotificationsAsked()
+                                    askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                            }
+                        }
                         nav.navigate(SessionsRoute(serverId)) {
                             popUpTo<AddServerRoute> { inclusive = true }
                         }

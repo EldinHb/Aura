@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material.icons.outlined.SpaceDashboard
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
@@ -47,6 +48,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.R
+import dev.aura.android.protocol.Workspace
 import dev.aura.android.protocol.folderName
 import dev.aura.android.ui.appViewModel
 import dev.aura.android.ui.components.ProseKeyboard
@@ -66,6 +68,7 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
     var project by rememberSaveable { mutableStateOf("") }
     var agentIndex by rememberSaveable { mutableIntStateOf(0) }
     var prompt by rememberSaveable { mutableStateOf("") }
+    var workspace by rememberSaveable { mutableStateOf<String?>(null) }
 
     Scaffold(
         topBar = {
@@ -102,6 +105,7 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
                 } else {
                     AgentField(o.agents, agentIndex.coerceIn(o.agents.indices), onChange = { agentIndex = it })
                 }
+                if (o.workspaces.isNotEmpty()) WorkspaceField(o.workspaces, workspace, onChange = { workspace = it })
                 OutlinedTextField(
                     value = prompt,
                     onValueChange = { prompt = it },
@@ -112,7 +116,7 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
                 )
                 if (creating) LinearProgressIndicator(Modifier.fillMaxWidth())
                 Button(
-                    onClick = { vm.create(project, o.agents[agentIndex.coerceIn(o.agents.indices)], prompt) },
+                    onClick = { vm.create(project, o.agents[agentIndex.coerceIn(o.agents.indices)], prompt, workspace) },
                     enabled = !creating && project.isNotBlank() && o.agents.isNotEmpty() && prompt.isNotBlank(),
                     modifier = Modifier.align(Alignment.End),
                 ) {
@@ -176,6 +180,40 @@ private fun AgentField(agents: List<AgentChoice>, selected: Int, onChange: (Int)
                 DropdownMenuItem(
                     text = { Text(agent.name) },
                     onClick = { onChange(i); expanded = false },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                )
+            }
+        }
+    }
+}
+
+/** The workspace to start in; none chosen leaves it to the server (the one last active there). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorkspaceField(workspaces: List<Workspace>, selected: String?, onChange: (String?) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val default = stringResource(R.string.workspace_default)
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
+        OutlinedTextField(
+            value = workspaces.firstOrNull { it.id == selected }?.name ?: default,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(stringResource(R.string.workspace)) },
+            leadingIcon = { Icon(Icons.Outlined.SpaceDashboard, contentDescription = null) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text(default) },
+                onClick = { onChange(null); expanded = false },
+                contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+            )
+            for (w in workspaces) {
+                DropdownMenuItem(
+                    text = { Text(w.name) },
+                    onClick = { onChange(w.id); expanded = false },
                     contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
                 )
             }

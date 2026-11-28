@@ -17,6 +17,7 @@ import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -66,6 +67,7 @@ import dev.aura.android.ui.theme.Spacing
 fun ServersScreen(
     onOpen: (serverId: String) -> Unit,
     onAdd: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     val vm = appViewModel { ServersViewModel(it) }
     val servers by vm.servers.collectAsStateWithLifecycle()
@@ -77,7 +79,15 @@ fun ServersScreen(
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            LargeTopAppBar(title = { Text(stringResource(R.string.servers_title)) }, scrollBehavior = scrollBehavior)
+            LargeTopAppBar(
+                title = { Text(stringResource(R.string.servers_title)) },
+                actions = {
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Outlined.Settings, contentDescription = stringResource(R.string.settings))
+                    }
+                },
+                scrollBehavior = scrollBehavior,
+            )
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(

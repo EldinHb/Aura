@@ -5,9 +5,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.CloudOff
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GppBad
 import androidx.compose.material.icons.outlined.Inbox
@@ -46,27 +44,31 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.R
-import dev.aura.android.ui.components.color
-import dev.aura.android.ui.components.icon
-import dev.aura.android.protocol.LeaderRow
-import androidx.compose.ui.res.pluralStringResource
 import dev.aura.android.net.ConnectionState
 import dev.aura.android.net.Fingerprint
+import dev.aura.android.protocol.LeaderRow
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.state
 import dev.aura.android.ui.appViewModel
 import dev.aura.android.ui.components.EmptyState
+import dev.aura.android.ui.components.NewWorkspaceDialog
 import dev.aura.android.ui.components.SessionStateIcon
 import dev.aura.android.ui.components.SnackbarMessages
+import dev.aura.android.ui.components.color
 import dev.aura.android.ui.components.describe
+import dev.aura.android.ui.components.icon
 import dev.aura.android.ui.components.label
 import dev.aura.android.ui.theme.Spacing
 import dev.aura.android.ui.theme.codeSmall
@@ -86,6 +88,7 @@ fun SessionsScreen(
     val list by vm.list.collectAsStateWithLifecycle()
     val folded by vm.folded.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableStateOf(SessionsTab.Sessions) }
+    var newWorkspace by rememberSaveable { mutableStateOf(false) }
     val refreshing by vm.refreshing.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     SnackbarMessages(vm.messages, snackbar)
@@ -105,6 +108,13 @@ fun SessionsScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
+                    }
+                },
+                actions = {
+                    if (online) {
+                        IconButton(onClick = { newWorkspace = true }) {
+                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = stringResource(R.string.new_workspace))
+                        }
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -149,6 +159,10 @@ fun SessionsScreen(
                 }
             }
         }
+    }
+
+    if (newWorkspace) {
+        NewWorkspaceDialog(onCreate = { vm.createWorkspace(it); newWorkspace = false }, onDismiss = { newWorkspace = false })
     }
 }
 

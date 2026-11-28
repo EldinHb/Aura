@@ -43,6 +43,21 @@ class SessionsViewModel(private val container: AppContainer, val serverId: Strin
     val folded: StateFlow<Set<String>> = container.folded.of(serverId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
+    /** Makes a workspace; its sessions then go there by "Move to workspace". */
+    fun createWorkspace(name: String) {
+        val c = container.connection(serverId) ?: return
+        viewModelScope.launch {
+            try {
+                val made = c.createWorkspace(name)
+                _messages.trySend(UiMessage.Res(R.string.workspace_created, listOf(made.name)))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _messages.trySend(UiMessage.Res(R.string.action_failed, listOf(e.message ?: "")))
+            }
+        }
+    }
+
     fun toggle(group: String) {
         viewModelScope.launch { container.folded.toggle(serverId, group) }
     }

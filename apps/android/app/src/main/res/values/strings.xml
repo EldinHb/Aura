@@ -151,6 +151,49 @@
     <string name="no_agents">The server has no agent available.</string>
     <string name="create_failed">Could not start the session: %1$s</string>
 
+    <!-- Notifications -->
+    <string name="channel_decisions">Decisions</string>
+    <string name="channel_decisions_desc">A feature owner asks you to decide something.</string>
+    <string name="channel_messages">Messages</string>
+    <string name="channel_messages_desc">A main chat\'s agent finished and replied.</string>
+    <string name="channel_approvals">Needs approval</string>
+    <string name="channel_approvals_desc">An agent waits for your approval or answer.</string>
+    <string name="channel_connection">Connection</string>
+    <string name="channel_connection_desc">Shows while Aura stays connected in the background.</string>
+    <string name="notice_decision">Decision for you: %1$s</string>
+    <string name="notice_approval">Needs approval: %1$s</string>
+    <string name="notice_question">Asks: %1$s</string>
+    <string name="notice_finished">Finished.</string>
+    <string name="notice_failed">Stopped with an error.</string>
+    <string name="reply">Reply</string>
+    <string name="reply_hint">Message the agent</string>
+    <string name="service_starting">Connecting to your servers…</string>
+    <string name="service_reconnecting">Reconnecting to your servers…</string>
+    <plurals name="service_connected">
+        <item quantity="one">Connected to %d server</item>
+        <item quantity="other">Connected to %d servers</item>
+    </plurals>
+
+    <!-- Settings -->
+    <string name="settings">Settings</string>
+    <string name="setting_background">Stay connected in background</string>
+    <string name="setting_background_desc">Keeps your servers connected after you leave the app, so decisions, replies and approvals reach you as notifications. Shows a quiet ongoing notification while it runs.</string>
+    <string name="setting_notifications_off">Notifications are off for Aura.</string>
+    <string name="setting_allow_notifications">Allow notifications</string>
+    <string name="setting_notification_channels">Notification categories</string>
+
+    <!-- Workspaces -->
+    <string name="new_workspace">New workspace</string>
+    <string name="workspace_name">Workspace name</string>
+    <string name="create">Create</string>
+    <string name="move_to_workspace">Move to workspace</string>
+    <string name="move">Move</string>
+    <string name="workspace">Workspace</string>
+    <string name="workspace_default">The last one used on the server</string>
+    <string name="moved_to_workspace">Moved to %1$s</string>
+    <string name="workspace_created">Created %1$s</string>
+    <string name="move_takes_workers">Its workers move with it.</string>
+
     <!-- Inbox -->
     <string name="inbox_label">Inbox</string>
     <string name="inbox_title">Waiting on you</string>

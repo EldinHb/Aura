@@ -10,6 +10,7 @@ import dev.aura.android.net.ServerConnection
 import dev.aura.android.protocol.Approval
 import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.UserQuestion
+import dev.aura.android.protocol.Workspace
 import dev.aura.android.protocol.ApprovalDecision
 import dev.aura.android.protocol.Input
 import dev.aura.android.protocol.Pending
@@ -69,6 +70,27 @@ class SessionViewModel(
         .flatMapLatest { it?.features ?: flowOf(null) }
         .map { list -> list?.firstOrNull { it.ownerId == sessionId } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** The server's workspaces, for "Move to workspace"; empty against a daemon without them. */
+    val workspaces: StateFlow<List<Workspace>> = connectionFlow
+        .flatMapLatest { it?.workspaces ?: flowOf(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Moves [leaderId] and its workers to [workspace], or to a new workspace named [newName]. */
+    fun moveToWorkspace(leaderId: String, workspace: String?, newName: String? = null) {
+        val c = connection() ?: return
+        viewModelScope.launch {
+            try {
+                val target = workspace?.let { id -> workspaces.value.first { it.id == id } } ?: c.createWorkspace(newName!!)
+                c.moveToWorkspace(leaderId, target.id)
+                _messages.trySend(UiMessage.Res(R.string.moved_to_workspace, listOf(target.name)))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _messages.trySend(UiMessage.Res(R.string.action_failed, listOf(e.message ?: "")))
+            }
+        }
+    }
 
     private val _answering = MutableStateFlow<Set<String>>(emptySet())
 

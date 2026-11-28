@@ -4,6 +4,7 @@ import dev.aura.android.data.SavedServer
 import dev.aura.android.protocol.AuthResult
 import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.Feature
+import dev.aura.android.protocol.Pending
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.Workspace
 import kotlinx.coroutines.CoroutineScope
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -80,6 +82,16 @@ class ServerConnection(
     /** The server's workspaces, in the user's order; empty against a daemon without them. */
     val workspaces: StateFlow<List<Workspace>> = _workspaces
 
+    private val _pending = MutableStateFlow<Pending?>(null)
+
+    /** Approvals and questions waiting on the user, in every session; null until first loaded. */
+    val pending: StateFlow<Pending?> = _pending
+
+    private val _lastReplies = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** The latest agent message of each session, as seen live, for notification previews. */
+    val lastReplies: StateFlow<Map<String, String>> = _lastReplies
+
     private val _events = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 4096)
 
     /** The server's events, live, each with the JSON it came as. */
@@ -132,6 +144,27 @@ class ServerConnection(
     /** Reloads the workspaces. */
     suspend fun refreshWorkspaces() {
         _workspaces.value = call("workspace.list", JsonObject(emptyMap()), ListSerializer(Workspace.serializer())).sortedBy { it.position }
+    }
+
+    /** Reloads what waits on the user. */
+    suspend fun refreshPending() {
+        _pending.value = call("session.pending", JsonObject(emptyMap()), Pending.serializer())
+    }
+
+    /** Makes a workspace named [name]. */
+    suspend fun createWorkspace(name: String): Workspace {
+        val made = call("workspace.create", buildJsonObject { put("name", JsonPrimitive(name.trim())) }, Workspace.serializer())
+        _workspaces.update { list -> (list.filterNot { it.id == made.id } + made).sortedBy { it.position } }
+        return made
+    }
+
+    /** Moves session [id], with its workers, into [workspace]. */
+    suspend fun moveToWorkspace(id: String, workspace: String) {
+        val moved = call("session.set_workspace", buildJsonObject {
+            put("id", JsonPrimitive(id))
+            put("workspace", JsonPrimitive(workspace))
+        }, ListSerializer(Session.serializer()))
+        moved.forEach(sessionList::upsert)
     }
 
     /** Reloads the features. */
@@ -241,6 +274,7 @@ class ServerConnection(
         online.launch { runCatching { refreshSessions() }.onFailure { if (it is CancellationException) throw it } }
         online.launch { runCatching { refreshFeatures() }.onFailure { if (it is CancellationException) throw it } }
         online.launch { runCatching { refreshWorkspaces() }.onFailure { if (it is CancellationException) throw it } }
+        online.launch { runCatching { refreshPending() }.onFailure { if (it is CancellationException) throw it } }
     }
 
     private fun onEvent(live: LiveEvent, online: CoroutineScope) {
@@ -253,6 +287,17 @@ class ServerConnection(
             }
             is Event.FeatureUpdated -> featureList.upsert(event.feature)
             is Event.WorkspacesChanged -> _workspaces.value = event.workspaces.sortedBy { it.position }
+            is Event.ItemCompleted -> if (event.item.kind == "agent_message" && event.item.text.isNotBlank()) {
+                _lastReplies.update { it + (event.sessionId to event.item.text) }
+            }
+            is Event.ApprovalRequested -> _pending.update { p ->
+                p?.copy(approvals = p.approvals.filterNot { it.id == event.approval.id } + event.approval)
+            }
+            is Event.ApprovalResolved -> _pending.update { p -> p?.copy(approvals = p.approvals.filterNot { it.id == event.approvalId }) }
+            is Event.InputRequested -> _pending.update { p ->
+                p?.copy(inputs = p.inputs.filterNot { it.id == event.request.id } + event.request)
+            }
+            is Event.InputResolved -> _pending.update { p -> p?.copy(inputs = p.inputs.filterNot { it.id == event.requestId }) }
             else -> {}
         }
         if (!_events.tryEmit(live)) resync(online)

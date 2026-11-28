@@ -11,10 +11,15 @@ import dev.aura.android.ui.theme.AuraTheme
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 
+/** What the app was opened with: a pairing link, or a session from a notification. */
+sealed interface AppLink {
+    data class Pair(val link: String) : AppLink
+    data class Session(val serverId: String, val sessionId: String) : AppLink
+}
+
 class MainActivity : ComponentActivity() {
-    /** `aura://pair` links the app is opened with, for the UI to take. */
-    private val pairingLinks = Channel<String>(Channel.BUFFERED)
-    private val links = pairingLinks.receiveAsFlow()
+    private val appLinks = Channel<AppLink>(Channel.BUFFERED)
+    private val links = appLinks.receiveAsFlow()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -33,7 +38,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun takeLink(intent: Intent?) {
-        val data = intent?.data ?: return
-        if (data.scheme == PairingLink.SCHEME && data.host == PairingLink.HOST) pairingLinks.trySend(data.toString())
+        intent ?: return
+        if (intent.action == ACTION_OPEN_SESSION) {
+            val server = intent.getStringExtra(EXTRA_SERVER) ?: return
+            val session = intent.getStringExtra(EXTRA_SESSION) ?: return
+            appLinks.trySend(AppLink.Session(server, session))
+            return
+        }
+        val data = intent.data ?: return
+        if (data.scheme == PairingLink.SCHEME && data.host == PairingLink.HOST) appLinks.trySend(AppLink.Pair(data.toString()))
+    }
+
+    companion object {
+        const val ACTION_OPEN_SESSION = "dev.aura.android.action.OPEN_SESSION"
+        const val EXTRA_SERVER = "server"
+        const val EXTRA_SESSION = "session"
     }
 }

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.Terminal
@@ -67,20 +68,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.aura.android.AuraApplication
 import dev.aura.android.R
-import dev.aura.android.ui.components.ProseKeyboard
-import dev.aura.android.ui.components.MarkdownText
-import dev.aura.android.ui.components.DecisionCard
-import dev.aura.android.protocol.UserQuestion
-import dev.aura.android.protocol.Feature
 import dev.aura.android.net.ConnectionState
+import dev.aura.android.notify.OpenSession
+import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.SessionState
+import dev.aura.android.protocol.UserQuestion
 import dev.aura.android.protocol.folderName
 import dev.aura.android.protocol.isStructured
 import dev.aura.android.protocol.projectPath
@@ -88,7 +90,12 @@ import dev.aura.android.protocol.state
 import dev.aura.android.transcript.Row as TranscriptRow
 import dev.aura.android.transcript.rows
 import dev.aura.android.ui.appViewModel
+import dev.aura.android.ui.components.DecisionCard
 import dev.aura.android.ui.components.EmptyState
+import dev.aura.android.ui.components.MarkdownText
+import dev.aura.android.ui.components.MoveToWorkspaceDialog
+import dev.aura.android.ui.components.NewWorkspaceDialog
+import dev.aura.android.ui.components.ProseKeyboard
 import dev.aura.android.ui.components.SheetAction
 import dev.aura.android.ui.components.SnackbarMessages
 import dev.aura.android.ui.components.color
@@ -110,6 +117,13 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     val leader = tree.firstOrNull()
 
     val vm = appViewModel(key = "session:$serverId:$shownId") { SessionViewModel(it, serverId, shownId) }
+    // While this session is on screen, its news is not notified (and what was is taken away).
+    val openSessions = (LocalContext.current.applicationContext as AuraApplication).container.openSession
+    LifecycleResumeEffect(serverId, shownId) {
+        val open = OpenSession(serverId, shownId)
+        openSessions.value = open
+        onPauseOrDispose { openSessions.compareAndSet(open, null) }
+    }
     val session by vm.session.collectAsStateWithLifecycle()
     val transcript by vm.transcript.collectAsStateWithLifecycle()
     val connection by vm.connectionState.collectAsStateWithLifecycle()
@@ -123,6 +137,9 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     val running = session?.status == "running" || transcript?.turnRunning == true
     var actions by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
+    var moving by remember { mutableStateOf(false) }
+    var newWorkspace by remember { mutableStateOf(false) }
+    val workspaces by vm.workspaces.collectAsStateWithLifecycle()
     val list = remember(shownId) { LazyListState() }
     val follow = rememberFollowLatest(list)
 
@@ -266,8 +283,26 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
         ModalBottomSheet(onDismissRequest = { actions = false }) {
             SheetAction(Icons.Outlined.StopCircle, stringResource(R.string.interrupt)) { actions = false; vm.interrupt() }
             SheetAction(Icons.Outlined.Cancel, stringResource(R.string.stop_session)) { actions = false; confirmStop = true }
+            if (workspaces.isNotEmpty() && leader != null) {
+                SheetAction(Icons.Outlined.DriveFileMove, stringResource(R.string.move_to_workspace)) { actions = false; moving = true }
+            }
             Box(Modifier.navigationBarsPadding())
         }
+    }
+    if (moving && leader != null) {
+        MoveToWorkspaceDialog(
+            workspaces = workspaces,
+            current = leader.workspace,
+            onMove = { moving = false; vm.moveToWorkspace(leader.id, it) },
+            onNew = { moving = false; newWorkspace = true },
+            onDismiss = { moving = false },
+        )
+    }
+    if (newWorkspace && leader != null) {
+        NewWorkspaceDialog(
+            onCreate = { newWorkspace = false; vm.moveToWorkspace(leader.id, null, it) },
+            onDismiss = { newWorkspace = false },
+        )
     }
     if (confirmStop) {
         AlertDialog(

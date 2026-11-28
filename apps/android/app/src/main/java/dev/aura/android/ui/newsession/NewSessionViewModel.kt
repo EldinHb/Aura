@@ -9,6 +9,7 @@ import dev.aura.android.protocol.CreateSessionOpts
 import dev.aura.android.protocol.Project
 import dev.aura.android.protocol.ProviderInfo
 import dev.aura.android.protocol.Session
+import dev.aura.android.protocol.Workspace
 import dev.aura.android.ui.components.UiMessage
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -24,7 +25,7 @@ import kotlin.coroutines.cancellation.CancellationException
 /** An agent a session can run: a provider, and for ACP one of its agents. */
 data class AgentChoice(val provider: String, val agent: String?, val name: String)
 
-data class NewSessionOptions(val projects: List<Project>, val agents: List<AgentChoice>)
+data class NewSessionOptions(val projects: List<Project>, val agents: List<AgentChoice>, val workspaces: List<Workspace> = emptyList())
 
 /** The agents that can run a structured session, from the server's providers. */
 fun agentChoices(providers: List<ProviderInfo>): List<AgentChoice> = providers
@@ -69,6 +70,7 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
                     NewSessionOptions(
                         projects = projects.await().sortedByDescending { it.lastUsed },
                         agents = agentChoices(providers.await()),
+                        workspaces = c.workspaces.value,
                     )
                 }
             } catch (e: CancellationException) {
@@ -80,7 +82,7 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
         }
     }
 
-    fun create(project: String, agent: AgentChoice, prompt: String) {
+    fun create(project: String, agent: AgentChoice, prompt: String, workspace: String?) {
         val c = container.connection(serverId) ?: return
         if (_creating.value) return
         _creating.value = true
@@ -91,6 +93,7 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
                     agent = agent.agent,
                     cwd = project.trim(),
                     initialPrompt = prompt.trim().ifEmpty { null },
+                    workspace = workspace,
                 )
                 val session = c.call("session.create", ProtocolJson.encodeToJsonElement(CreateSessionOpts.serializer(), opts), Session.serializer())
                 _created.send(session.id)

@@ -172,6 +172,8 @@ data class CreateSessionOpts(
     val agent: String? = null,
     val cwd: String,
     @SerialName("initial_prompt") val initialPrompt: String? = null,
+    /** The workspace to start it in; null leaves it to the server (the one last active). */
+    val workspace: String? = null,
 )
 
 /** `remote.pair`'s answer. */

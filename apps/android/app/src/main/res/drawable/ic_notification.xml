@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Aura's mark for the status bar: one color, on transparency. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="66"
+    android:viewportHeight="66">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M33,9a24,24 0,1 1,0 48a24,24 0,1 1,0 -48zM33,14a19,19 0,1 0,0 38a19,19 0,1 0,0 -38z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M33,23a10,10 0,1 1,0 20a10,10 0,1 1,0 -20z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M52,10a5,5 0,1 1,0 10a5,5 0,1 1,0 -10z" />
+</vector>
