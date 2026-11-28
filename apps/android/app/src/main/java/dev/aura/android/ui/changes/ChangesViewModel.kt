@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import dev.aura.android.AppContainer
 import dev.aura.android.diff.DiffFile
 import dev.aura.android.diff.parseUnifiedDiff
+import dev.aura.android.net.fromOlderServer
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,13 +16,15 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import kotlin.coroutines.cancellation.CancellationException
 
 /** What the Changes screen shows: loading, the files, or why it could not load. */
 sealed interface ChangesState {
     data object Loading : ChangesState
     data class Loaded(val files: List<DiffFile>) : ChangesState
     data class Failed(val message: String) : ChangesState
+
+    /** The server's Aura is older than 0.6.4, which let remote clients read a session's changes. */
+    data object OlderServer : ChangesState
 }
 
 /** A session's changes, read from the server (`session.git_diff`, its own folder only). */
@@ -42,7 +46,7 @@ class ChangesViewModel(private val container: AppContainer, private val serverId
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                ChangesState.Failed(e.message ?: e.javaClass.simpleName)
+                if (e.fromOlderServer) ChangesState.OlderServer else ChangesState.Failed(e.message ?: e.javaClass.simpleName)
             }
         }
     }

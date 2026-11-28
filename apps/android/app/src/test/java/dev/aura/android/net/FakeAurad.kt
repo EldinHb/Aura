@@ -24,9 +24,10 @@ import java.util.concurrent.CopyOnWriteArrayList
 class FakeAurad(
     /** The port to listen on; 0 picks a free one. */
     port: Int = 0,
+    /** Its TLS certificate; a new one by default. */
+    val certificate: HeldCertificate = HeldCertificate.Builder().commonName("aurad").build(),
     private val handle: (method: String, params: JsonObject) -> JsonElement,
 ) : Closeable {
-    val certificate: HeldCertificate = HeldCertificate.Builder().commonName("aurad").build()
     val fingerprint: String = Fingerprint.of(certificate.certificate)
     val requests = CopyOnWriteArrayList<String>()
     val sockets = CopyOnWriteArrayList<WebSocket>()

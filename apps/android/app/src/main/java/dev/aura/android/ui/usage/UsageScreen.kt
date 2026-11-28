@@ -50,6 +50,7 @@ fun UsageScreen(serverId: String, onBack: () -> Unit, onOpenSession: (sessionId:
     val period by vm.period.collectAsStateWithLifecycle()
     val dashboard by vm.dashboard.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
+    val olderServer by vm.olderServer.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     SnackbarMessages(vm.messages, snackbar)
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -91,6 +92,11 @@ fun UsageScreen(serverId: String, onBack: () -> Unit, onOpenSession: (sessionId:
                 if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
                 val d = dashboard
                 if (d == null) {
+                    if (olderServer) {
+                        // Not EmptyState: this column scrolls already.
+                        Text(stringResource(R.string.older_server_title), style = MaterialTheme.typography.titleMedium)
+                        Text(stringResource(R.string.older_server_body), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     if (!loading) return@Column
                     Box(Modifier.fillMaxWidth().padding(Spacing.xl), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     return@Column

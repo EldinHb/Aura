@@ -146,6 +146,8 @@
     <string name="refresh">Refresh</string>
     <string name="ask_for_changes">Ask for changes</string>
     <string name="ask_about_file">Ask for changes to %1$s</string>
+    <string name="older_server_title">Update Aura on your computer</string>
+    <string name="older_server_body">This needs Aura 0.6.4 or later on the computer; it runs an older version.</string>
     <string name="changes_failed">Could not load the changes</string>
     <string name="changes_none_title">No changes</string>
     <string name="changes_none_body">The session\'s folder has nothing changed since its last commit, or is no git repository.</string>

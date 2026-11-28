@@ -39,7 +39,19 @@ object RemoteErrors {
 
     /** The method or a parameter is not allowed for remote clients. */
     const val FORBIDDEN = -32003
+
+    /** JSON-RPC: no such method. */
+    const val METHOD_NOT_FOUND = -32601
 }
+
+/**
+ * Whether the server refused a method because it is older than this app: a
+ * daemon from before the method existed, or before remote clients were
+ * allowed it, answers so. For the methods every server version takes no
+ * other way, so only ask it of a call to a method newer than the protocol.
+ */
+val Throwable.fromOlderServer: Boolean
+    get() = this is RpcException && (code == RemoteErrors.FORBIDDEN || code == RemoteErrors.METHOD_NOT_FOUND)
 
 /** The connection closed, or was never open, before the answer came. */
 class NotConnectedException(message: String = "Not connected") : Exception(message)

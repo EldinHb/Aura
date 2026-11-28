@@ -3,8 +3,10 @@ package dev.aura.android.ui.usage
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.aura.android.AppContainer
+import dev.aura.android.net.fromOlderServer
 import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.SessionUsage
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,7 +18,6 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * One session's usage (`usage.session`), turn by turn, kept fresh: loaded
@@ -39,6 +40,11 @@ class SessionUsageViewModel(
 
     /** Why the last load failed, if it did. */
     val failed: StateFlow<String?> = _failed
+
+    private val _olderServer = MutableStateFlow(false)
+
+    /** Whether the server's Aura is too old to tell usage (before 0.6.4). */
+    val olderServer: StateFlow<Boolean> = _olderServer
 
     private var job: Job? = null
 
@@ -86,6 +92,7 @@ class SessionUsageViewModel(
                 throw e
             } catch (e: Throwable) {
                 _failed.value = e.message ?: e.javaClass.simpleName
+                _olderServer.value = e.fromOlderServer
             }
         }
     }

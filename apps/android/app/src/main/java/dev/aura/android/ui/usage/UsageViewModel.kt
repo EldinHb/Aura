@@ -5,8 +5,14 @@ import androidx.lifecycle.viewModelScope
 import dev.aura.android.AppContainer
 import dev.aura.android.R
 import dev.aura.android.net.ServerConnection
+import dev.aura.android.net.fromOlderServer
 import dev.aura.android.protocol.UsageSummary
 import dev.aura.android.ui.components.UiMessage
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -17,11 +23,6 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.time.ZonedDateTime
-import kotlin.coroutines.cancellation.CancellationException
 
 /** The periods the usage screen offers: today, and the last 7 or 30 days, today included. */
 enum class UsagePeriod(val days: Long) { Today(1), Week(7), Month(30) }
@@ -74,6 +75,11 @@ class UsageViewModel(private val container: AppContainer, private val serverId: 
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading
 
+    private val _olderServer = MutableStateFlow(false)
+
+    /** Whether the server's Aura is too old to tell usage (before 0.6.4). */
+    val olderServer: StateFlow<Boolean> = _olderServer
+
     private val _messages = Channel<UiMessage>(Channel.BUFFERED)
     val messages = _messages.receiveAsFlow()
 
@@ -108,7 +114,8 @@ class UsageViewModel(private val container: AppContainer, private val serverId: 
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                _messages.trySend(UiMessage.Res(R.string.load_failed, listOf(e.message ?: "")))
+                _olderServer.value = e.fromOlderServer
+                if (!e.fromOlderServer) _messages.trySend(UiMessage.Res(R.string.load_failed, listOf(e.message ?: "")))
             } finally {
                 _loading.value = false
             }

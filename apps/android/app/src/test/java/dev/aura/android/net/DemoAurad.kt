@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import okhttp3.tls.HeldCertificate
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
@@ -21,7 +22,7 @@ import java.net.URLEncoder
  *     AURA_DEMO_SERVER=1 ./gradlew testDebugUnitTest --tests '*DemoAurad*' --rerun
  *
  * It listens on 127.0.0.1:7443 (the emulator's 10.0.2.2) for
- * AURA_DEMO_MINUTES (default 30) and writes the pairing link to
+ * AURA_DEMO_MINUTES (default 30; AURA_DEMO_DAEMON=0.6.3 answers like a 0.6.3 daemon) and writes the pairing link to
  * build/demo-pairing-link.txt; any pairing code works.
  */
 class DemoAurad {
@@ -30,7 +31,16 @@ class DemoAurad {
         assumeTrue(System.getenv("AURA_DEMO_SERVER") == "1")
         val minutes = System.getenv("AURA_DEMO_MINUTES")?.toLongOrNull() ?: 30
         val demo = DemoData()
-        FakeAurad(port = 7443) { method, params -> demo.answer(method, params) }.use { aurad ->
+        // The same certificate each run, so a paired app stays paired when the demo restarts.
+        val pem = File("build/demo-certificate.pem")
+        val certificate = if (pem.exists()) {
+            HeldCertificate.decode(pem.readText())
+        } else {
+            HeldCertificate.Builder().commonName("aurad").build().also {
+                pem.writeText(it.certificatePem() + it.privateKeyPkcs8Pem())
+            }
+        }
+        FakeAurad(port = 7443, certificate = certificate) { method, params -> demo.answer(method, params) }.use { aurad ->
             demo.attach(aurad)
             aurad.accept(200)
             val link = "aura://pair?host=10.0.2.2&port=7443&fp=${aurad.fingerprint}&code=DEMO2345&name=" +
@@ -132,7 +142,15 @@ private class DemoData {
         return sessions[i]
     }
 
-    fun answer(method: String, params: JsonObject): JsonElement = when (method) {
+    fun answer(method: String, params: JsonObject): JsonElement =
+        // AURA_DEMO_DAEMON=0.6.3: a daemon from before these were allowed remotely refuses them.
+        if (System.getenv("AURA_DEMO_DAEMON") == "0.6.3" && NEW_IN_064.any { method.startsWith(it) }) {
+            FakeAurad.error(-32003, "method not allowed remotely: $method")
+        } else {
+            answer064(method, params)
+        }
+
+    private fun answer064(method: String, params: JsonObject): JsonElement = when (method) {
         "remote.pair" -> obj(
             "deviceId" to str("demo-device"), "token" to str("demo"), "serverId" to str("demo-server"),
             "serverName" to str("Demo Mac"), "version" to str("0.6.0"),
@@ -377,3 +395,6 @@ new file mode 100644
 +
 +Streaming replies no longer make the transcript jump.
 """
+
+/** What a 0.6.3 daemon refuses remotely (-32003): its remote allowlist gained these in 0.6.4. */
+private val NEW_IN_064 = listOf("session.git_", "usage.", "template.")

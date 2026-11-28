@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -49,8 +50,8 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -111,6 +112,12 @@ fun ChangesScreen(serverId: String, sessionId: String, title: String, onBack: ()
                 s.message,
                 Modifier.padding(padding),
             ) { TextButton(onClick = vm::load) { Text(stringResource(R.string.retry_now)) } }
+            ChangesState.OlderServer -> EmptyState(
+                Icons.Outlined.Update,
+                stringResource(R.string.older_server_title),
+                stringResource(R.string.older_server_body),
+                Modifier.padding(padding),
+            )
             is ChangesState.Loaded -> if (s.files.isEmpty()) {
                 EmptyState(Icons.Outlined.Difference, stringResource(R.string.changes_none_title), stringResource(R.string.changes_none_body), Modifier.padding(padding))
             } else {

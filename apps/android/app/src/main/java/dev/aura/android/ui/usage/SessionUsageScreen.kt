@@ -12,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -29,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.R
 import dev.aura.android.ui.appViewModel
+import dev.aura.android.ui.components.EmptyState
 import dev.aura.android.ui.theme.Spacing
 
 /**
@@ -41,6 +43,7 @@ fun SessionUsageScreen(serverId: String, sessionId: String, onBack: () -> Unit, 
     val vm = appViewModel(key = "session-usage:$serverId:$sessionId") { SessionUsageViewModel(it, serverId, sessionId, includeWorkers = true) }
     val usage by vm.usage.collectAsStateWithLifecycle()
     val failed by vm.failed.collectAsStateWithLifecycle()
+    val olderServer by vm.olderServer.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -63,6 +66,10 @@ fun SessionUsageScreen(serverId: String, sessionId: String, onBack: () -> Unit, 
         },
     ) { padding ->
         val u = usage
+        if (u == null && olderServer) {
+            EmptyState(Icons.Outlined.Update, stringResource(R.string.older_server_title), stringResource(R.string.older_server_body), Modifier.padding(padding))
+            return@Scaffold
+        }
         if (u == null) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 val error = failed
