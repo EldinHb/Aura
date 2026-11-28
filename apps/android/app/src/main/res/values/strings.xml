@@ -163,6 +163,8 @@
     <string name="close">Close</string>
     <string name="remove_image">Remove %1$s</string>
     <string name="image_failed">Could not add the image: %1$s</string>
+    <plurals name="images_too_many"><item quantity="one">A message takes at most %d image.</item><item quantity="other">A message takes at most %d images.</item></plurals>
+    <string name="images_too_large">This image would make the message too large to send.</string>
     <string name="image_loading_failed">Could not load the image.</string>
     <string name="open_image">Open %1$s</string>
     <string name="transcript_empty">Nothing here yet.</string>

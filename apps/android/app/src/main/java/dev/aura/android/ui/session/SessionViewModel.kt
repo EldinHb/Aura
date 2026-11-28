@@ -8,6 +8,9 @@ import dev.aura.android.AppContainer
 import dev.aura.android.R
 import dev.aura.android.images.DraftImage
 import dev.aura.android.images.ImageLimits
+import dev.aura.android.images.MAX_IMAGES
+import dev.aura.android.images.MAX_MESSAGE_IMAGE_BYTES
+import dev.aura.android.images.byteCount
 import dev.aura.android.images.decodeImage
 import dev.aura.android.net.ConnectionState
 import dev.aura.android.net.ProtocolJson
@@ -44,6 +47,8 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonElement
@@ -233,16 +238,27 @@ class SessionViewModel(
         container.composerPrefill.update { it - "$serverId/$sessionId" }
     }
 
-    /** Reads [uris] and shrinks them to what this session's agent takes, off the main thread. */
+    /**
+     * Reads [uris] and shrinks them to what this session's agent takes, off the
+     * main thread and one at a time; at most [MAX_IMAGES] and
+     * [MAX_MESSAGE_IMAGE_BYTES] go with a message.
+     */
     fun addImages(uris: List<Uri>) {
         val limits = ImageLimits.forProvider(session.value?.provider)
-        for (uri in uris) {
-            if (_drafts.value.any { it.id == uri.toString() }) continue
+        val fresh = uris.distinct().filter { uri -> _drafts.value.none { it.id == uri.toString() } }
+        val room = MAX_IMAGES - _drafts.value.size - _preparing.value
+        if (fresh.size > room) _messages.trySend(UiMessage.Plural(R.plurals.images_too_many, MAX_IMAGES))
+        for (uri in fresh.take(room.coerceAtLeast(0))) {
             _preparing.update { it + 1 }
             viewModelScope.launch {
                 try {
-                    val draft = withContext(Dispatchers.IO) { container.images.encode(uri, limits) }
-                    _drafts.update { it + draft }
+                    val draft = encoding.withLock { withContext(Dispatchers.IO) { container.images.encode(uri, limits) } }
+                    val size = draft.input.byteCount
+                    if (_drafts.value.sumOf { it.input.byteCount } + size > MAX_MESSAGE_IMAGE_BYTES) {
+                        _messages.trySend(UiMessage.Res(R.string.images_too_large))
+                    } else {
+                        _drafts.update { it + draft }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -253,6 +269,9 @@ class SessionViewModel(
             }
         }
     }
+
+    /** One image is read and encoded at a time. */
+    private val encoding = Mutex()
 
     fun removeImage(id: String) {
         _drafts.update { list -> list.filterNot { it.id == id } }

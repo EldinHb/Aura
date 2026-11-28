@@ -46,6 +46,44 @@ fun fitDimensions(width: Int, height: Int, maxEdge: Int): Pair<Int, Int> {
     return max(1, (width * scale).roundToInt()) to max(1, (height * scale).roundToInt())
 }
 
+/** What [this] adds to a message: its base64 and its thumbnail's. */
+val ImageInput.byteCount: Int get() = data.length + (thumbnail?.length ?: 0)
+
+/** At most this many images go with one message. */
+const val MAX_IMAGES = 10
+
+/**
+ * At most this much base64 (images and their thumbnails) goes with one
+ * message: the remote listener takes messages up to 16 MB, JSON included.
+ */
+const val MAX_MESSAGE_IMAGE_BYTES = 15_000_000
+
+/** An image file larger than this is not read. */
+const val MAX_SOURCE_BYTES = 50 * 1024 * 1024
+
+/** The most pixels an image is decoded to (4096 × 4096, 64 MB as ARGB). */
+const val MAX_DECODED_PIXELS = 4096L * 4096L
+
+/**
+ * The power of two to decode a [width] × [height] image at: the largest that
+ * still leaves its longest side at least [maxEdge] (the size it is shrunk to
+ * after), and then larger until it decodes to at most [maxPixels]. Going by
+ * the longest side, a very long thin image is sampled down too.
+ */
+fun sampleSize(width: Int, height: Int, maxEdge: Int, maxPixels: Long = MAX_DECODED_PIXELS): Int {
+    val longest = max(width, height)
+    var sample = 1
+    while (sample < MAX_SAMPLE && longest / (sample * 2) >= maxEdge) sample *= 2
+    while (sample < MAX_SAMPLE && decodedPixels(width, height, sample) > maxPixels) sample *= 2
+    return sample
+}
+
+/** How many pixels a [width] × [height] image decodes to at [sample]. */
+fun decodedPixels(width: Int, height: Int, sample: Int): Long =
+    ((width + sample - 1) / sample).toLong() * ((height + sample - 1) / sample).toLong()
+
+private const val MAX_SAMPLE = 1 shl 30
+
 /** An image a sent message shows: its thumbnail and, to see it whole, the attachment the daemon kept. */
 data class MessageImage(
     val key: String,

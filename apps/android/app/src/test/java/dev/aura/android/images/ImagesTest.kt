@@ -47,4 +47,41 @@ class ImagesTest {
         assertEquals(listOf("data:image/png;base64,AA"), messageImages(data).map { it.thumbnail })
         assertTrue(messageImages(ProtocolJson.parseToJsonElement("{}").jsonObject).isEmpty())
     }
+
+    @Test
+    fun `a very long thin image is sampled by its longest side`() {
+        val sample = sampleSize(100_000_000, 1, 2000)
+        assertEquals(32_768, sample)
+        assertTrue(decodedPixels(100_000_000, 1, sample) <= 2 * 2000)
+        assertEquals(32_768, sampleSize(1, 100_000_000, 2000))
+    }
+
+    @Test
+    fun `the sample keeps the longest side at least the target`() {
+        assertEquals(1, sampleSize(1000, 800, 2000))
+        assertEquals(1, sampleSize(3999, 3000, 2000))
+        assertEquals(2, sampleSize(4000, 3000, 2000))
+        assertEquals(4, sampleSize(12_000, 9_000, 2000))
+        // At least 2000 left on the longest side, under 4000.
+        for (w in listOf(2000, 2001, 5000, 8191, 8192, 50_000)) {
+            val longest = (w + sampleSize(w, 10, 2000) - 1) / sampleSize(w, 10, 2000)
+            assertTrue("$w → $longest", longest in 2000 until 4000)
+        }
+    }
+
+    @Test
+    fun `the decoded pixels stay within the budget`() {
+        // Square and huge: the longest side alone would leave a 2048-4096 square; a smaller budget still holds.
+        val sample = sampleSize(65_536, 65_536, 2000, maxPixels = 1_000_000)
+        assertTrue(decodedPixels(65_536, 65_536, sample) <= 1_000_000)
+        for ((w, h) in listOf(46_000 to 46_000, 100_000 to 30_000, Int.MAX_VALUE to Int.MAX_VALUE)) {
+            assertTrue("$w x $h", decodedPixels(w, h, sampleSize(w, h, 2048)) <= MAX_DECODED_PIXELS)
+        }
+    }
+
+    @Test
+    fun `an image's size in a message counts its thumbnail`() {
+        assertEquals(7, ImageInput(data = "abcd", mediaType = "image/png", thumbnail = "xyz").byteCount)
+        assertEquals(4, ImageInput(data = "abcd", mediaType = "image/png").byteCount)
+    }
 }

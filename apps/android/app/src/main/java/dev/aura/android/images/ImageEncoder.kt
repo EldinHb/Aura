@@ -25,16 +25,18 @@ data class DraftImage(val id: String, val input: ImageInput, val preview: Bitmap
  */
 class ImageEncoder(private val resolver: ContentResolver) {
     fun encode(uri: Uri, limits: ImageLimits): DraftImage {
+        // Read once, so the size checked is the image decoded (a provider may answer differently each time).
+        val source = read(uri)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        BitmapFactory.decodeByteArray(source, 0, source.size, bounds)
         val type = bounds.outMimeType ?: resolver.getType(uri) ?: "image/jpeg"
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "This file is not an image Aura can read." }
         val (w, h) = fitDimensions(bounds.outWidth, bounds.outHeight, limits.maxEdge)
-        // Decoded at the smallest power of two that still covers the target, then scaled exactly.
-        var sample = 1
-        while (bounds.outWidth / (sample * 2) >= w && bounds.outHeight / (sample * 2) >= h) sample *= 2
-        val decoded = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
+        // Decoded at a power of two that still covers the target within the pixel budget, then scaled exactly.
+        val sample = sampleSize(bounds.outWidth, bounds.outHeight, limits.maxEdge)
+        val decoded = BitmapFactory.decodeByteArray(source, 0, source.size, BitmapFactory.Options().apply { inSampleSize = sample })
             ?: error("This file is not an image Aura can read.")
+        check(decoded.width.toLong() * decoded.height <= MAX_DECODED_PIXELS) { "This image is too large." }
         var width = w
         var height = h
         var out: Pair<ByteArray, String>? = null
@@ -64,6 +66,22 @@ class ImageEncoder(private val resolver: ContentResolver) {
             ),
             preview = thumb,
         )
+    }
+
+    /** The file at [uri], refused when larger than [MAX_SOURCE_BYTES]. */
+    private fun read(uri: Uri): ByteArray {
+        val input = resolver.openInputStream(uri) ?: error("This file cannot be read.")
+        val out = ByteArrayOutputStream()
+        input.use {
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val n = it.read(buffer)
+                if (n < 0) break
+                check(out.size() + n <= MAX_SOURCE_BYTES) { "This file is too large." }
+                out.write(buffer, 0, n)
+            }
+        }
+        return out.toByteArray()
     }
 
     private fun formatsFor(type: String): List<Triple<Bitmap.CompressFormat, String, Int>> = if (type == "image/jpeg") {

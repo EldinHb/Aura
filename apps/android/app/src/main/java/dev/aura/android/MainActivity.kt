@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.IntentCompat
 import dev.aura.android.pairing.PairingLink
+import dev.aura.android.images.MAX_IMAGES
 import dev.aura.android.ui.AuraApp
 import dev.aura.android.ui.theme.AuraTheme
 import kotlinx.coroutines.channels.Channel
@@ -46,7 +47,8 @@ class MainActivity : ComponentActivity() {
         if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
             val images = IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
                 ?: listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
-            if (images.isNotEmpty()) appLinks.trySend(AppLink.Share(images))
+            // More than a message takes are not kept around; the composer says so for the rest.
+            if (images.isNotEmpty()) appLinks.trySend(AppLink.Share(images.take(MAX_IMAGES + 1)))
             return
         }
         if (intent.action == ACTION_OPEN_INBOX) {
