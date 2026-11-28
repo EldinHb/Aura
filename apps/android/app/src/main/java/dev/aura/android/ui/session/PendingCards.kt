@@ -16,7 +16,6 @@ import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -26,20 +25,24 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import dev.aura.android.R
 import dev.aura.android.protocol.Approval
 import dev.aura.android.protocol.Question
 import dev.aura.android.protocol.UserInputRequest
+import dev.aura.android.ui.components.AttentionCard
 import dev.aura.android.ui.components.CodeBlock
 import dev.aura.android.ui.components.ProseKeyboard
 import dev.aura.android.ui.theme.Spacing
@@ -50,21 +53,7 @@ import kotlinx.serialization.json.contentOrNull
 
 @Composable
 private fun PendingCard(icon: ImageVector, title: String, modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        ),
-        modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.m),
-    ) {
-        Column(Modifier.padding(Spacing.m), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
-                Icon(icon, contentDescription = null)
-                Text(title, style = MaterialTheme.typography.titleMedium)
-            }
-            content()
-        }
-    }
+    AttentionCard(open = true, icon = icon, title = title, modifier = modifier, content = content)
 }
 
 /** An approval the agent waits for, with the options it offers. */
@@ -134,9 +123,14 @@ fun QuestionsCard(
             q.id to (selected[q.id].orEmpty().toList() + listOfNotNull(typed[q.id]?.trim()?.takeIf { it.isNotEmpty() }))
         }
         val complete = answers.values.all { it.isNotEmpty() }
+        // Answer is never shown disabled (a faded button is hard to read); pressed too early, it says what is missing.
+        var missing by remember(request.id) { mutableStateOf(false) }
+        if (missing && !complete) {
+            Text(stringResource(R.string.answer_every_question), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        }
         Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
             TextButton(onClick = onDismiss, enabled = enabled) { Text(stringResource(R.string.dismiss)) }
-            Button(onClick = { onAnswer(answers) }, enabled = enabled && complete) { Text(stringResource(R.string.answer)) }
+            Button(onClick = { if (complete) onAnswer(answers) else missing = true }, enabled = enabled) { Text(stringResource(R.string.answer)) }
         }
     }
 }
@@ -165,7 +159,9 @@ private fun QuestionView(
                 if (question.multiSelect) Checkbox(checked = checked, onCheckedChange = null) else RadioButton(selected = checked, onClick = null)
                 Column(Modifier.padding(start = Spacing.s)) {
                     Text(option.label, style = MaterialTheme.typography.bodyLarge)
-                    option.description?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    option.description?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }

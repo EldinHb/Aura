@@ -205,10 +205,13 @@
     <string name="decision_for_you">Decision for you</string>
     <string name="decision_irreversible">Needs your yes</string>
     <string name="decision_checkpoint">Checkpoint review</string>
-    <string name="you_answered">You answered: %1$s</string>
+    <string name="you_answered_label">You answered</string>
+    <string name="answer_missing">Choose an option or write an answer.</string>
+    <string name="answer_missing_text">Write an answer first.</string>
+    <string name="answer_every_question">Answer every question first.</string>
     <string name="decision_withdrawn">Withdrawn without an answer when the feature was delivered.</string>
     <string name="from_aura">from Aura</string>
-    <string name="recommended_option">%1$s (recommended)</string>
+    <string name="recommended">Recommended</string>
     <string name="add_a_note">Add a note (optional)</string>
     <string name="open_feature_owner">Open</string>
 </resources>

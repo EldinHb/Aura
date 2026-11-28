@@ -12,8 +12,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -61,84 +59,88 @@ fun DecisionCard(
     val q = question
     var option by rememberSaveable(q.id) { mutableStateOf<String?>(null) }
     var text by rememberSaveable(q.id) { mutableStateOf("") }
-    Card(
-        colors = if (q.open) {
-            CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-            )
+    // Answer is never shown disabled (a faded button is hard to read); pressed too early, it says what is missing.
+    var missing by rememberSaveable(q.id) { mutableStateOf(false) }
+    val colors = MaterialTheme.colorScheme
+    AttentionCard(
+        open = q.open,
+        icon = if (q.open) Icons.Outlined.Flag else Icons.Outlined.CheckCircle,
+        title = stringResource(if (q.kind == "checkpoint") R.string.decision_checkpoint else R.string.decision_for_you),
+        modifier = modifier,
+        // Cannot be undone: said in an error-container label, not by tinting the card.
+        label = if (q.kind == "irreversible") {
+            { Tag(stringResource(R.string.decision_irreversible), colors.errorContainer, colors.onErrorContainer) }
         } else {
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+            null
         },
-        modifier = modifier.fillMaxWidth().padding(horizontal = Spacing.m),
     ) {
-        Column(Modifier.padding(Spacing.m), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
-                Icon(if (q.open) Icons.Outlined.Flag else Icons.Outlined.CheckCircle, contentDescription = null)
-                Column {
-                    overline?.let { Text(it, style = MaterialTheme.typography.labelMedium, maxLines = 2, overflow = TextOverflow.Ellipsis) }
-                    Text(
-                        stringResource(
-                            when {
-                                q.kind == "checkpoint" -> R.string.decision_checkpoint
-                                q.kind == "irreversible" -> R.string.decision_irreversible
-                                else -> R.string.decision_for_you
-                            },
-                        ),
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-            }
-            Text(q.question, style = MaterialTheme.typography.titleMedium)
-            q.context.takeIf { it.isNotBlank() }?.let { MarkdownText(it) }
-            val answer = q.answer
-            when {
-                q.open -> {
-                    Column(Modifier.selectableGroup()) {
-                        for (o in q.options) {
-                            val selected = option == o.label
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .selectable(selected = selected, role = Role.RadioButton, enabled = !answering) {
-                                        option = if (selected) null else o.label
+        overline?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        Text(q.question, style = MaterialTheme.typography.titleMedium)
+        q.context.takeIf { it.isNotBlank() }?.let { MarkdownText(it) }
+        val answer = q.answer
+        when {
+            q.open -> {
+                Column(Modifier.selectableGroup()) {
+                    for (o in q.options) {
+                        val selected = option == o.label
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .selectable(selected = selected, role = Role.RadioButton, enabled = !answering) {
+                                    option = if (selected) null else o.label
+                                    missing = false
+                                }
+                                .padding(vertical = Spacing.xs),
+                        ) {
+                            RadioButton(selected = selected, onClick = null)
+                            Column(Modifier.padding(start = Spacing.s)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                                    Text(o.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f, fill = false))
+                                    if (o.label == q.recommended) {
+                                        Tag(stringResource(R.string.recommended), colors.secondaryContainer, colors.onSecondaryContainer)
                                     }
-                                    .padding(vertical = Spacing.xs),
-                            ) {
-                                RadioButton(selected = selected, onClick = null)
-                                Column(Modifier.padding(start = Spacing.s)) {
-                                    Text(
-                                        if (o.label == q.recommended) stringResource(R.string.recommended_option, o.label) else o.label,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                    )
-                                    o.description?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                                }
+                                o.description?.takeIf { it.isNotBlank() }?.let {
+                                    Text(it, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                                 }
                             }
                         }
                     }
-                    OutlinedTextField(
-                        value = text,
-                        onValueChange = { text = it },
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it; missing = false },
+                    enabled = !answering,
+                    label = { Text(stringResource(if (q.options.isEmpty()) R.string.your_answer else R.string.add_a_note)) },
+                    isError = missing,
+                    supportingText = if (missing) {
+                        { Text(stringResource(if (q.options.isEmpty()) R.string.answer_missing_text else R.string.answer_missing)) }
+                    } else {
+                        null
+                    },
+                    keyboardOptions = ProseKeyboard,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (answering) LinearProgressIndicator(Modifier.fillMaxWidth())
+                Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                    actions()
+                    Button(
+                        onClick = { if (option != null || text.isNotBlank()) onAnswer(option, text) else missing = true },
                         enabled = !answering,
-                        label = { Text(stringResource(if (q.options.isEmpty()) R.string.your_answer else R.string.add_a_note)) },
-                        keyboardOptions = ProseKeyboard,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (answering) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
-                        actions()
-                        Button(onClick = { onAnswer(option, text) }, enabled = !answering && (option != null || text.isNotBlank())) {
-                            Text(stringResource(R.string.answer))
-                        }
+                    ) {
+                        Text(stringResource(R.string.answer))
                     }
                 }
-                answer != null -> Text(
-                    stringResource(R.string.you_answered, listOfNotNull(answer.option, answer.text.takeIf { it.isNotBlank() }).joinToString(" · ")),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                else -> Text(stringResource(R.string.decision_withdrawn), style = MaterialTheme.typography.bodyMedium)
             }
+            answer != null -> Column {
+                Text(stringResource(R.string.you_answered_label), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                Text(
+                    listOfNotNull(answer.option, answer.text.takeIf { it.isNotBlank() }).joinToString(" · "),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            else -> Text(stringResource(R.string.decision_withdrawn), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
         }
     }
 }

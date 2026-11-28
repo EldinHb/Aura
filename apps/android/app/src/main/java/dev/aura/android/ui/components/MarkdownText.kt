@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -37,15 +38,18 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
     val blocks = remember(markdown) { Markdown.parse(markdown) }
     val type = MaterialTheme.typography
     val colors = MaterialTheme.colorScheme
-    val codeBackground = colors.surfaceContainerHighest
-    val link = colors.primary
+    // Inline code sits on its own surface, so it gets that surface's text color;
+    // links take the text color around them, underlined, so they read on any
+    // container the text is on (a tinted bubble, a card), not only on surface.
+    val code = SpanStyle(fontFamily = FontFamily.Monospace, color = colors.onSurface, background = colors.surfaceContainerHighest)
+    val link = LocalContentColor.current
     SelectionContainer(modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
             for (block in blocks) {
                 when (block) {
-                    is MdBlock.Paragraph -> Text(inline(block.text, codeBackground, link), style = type.bodyLarge)
+                    is MdBlock.Paragraph -> Text(inline(block.text, code, link), style = type.bodyLarge)
                     is MdBlock.Heading -> Text(
-                        inline(block.text, codeBackground, link),
+                        inline(block.text, code, link),
                         style = when (block.level) {
                             1 -> type.titleLarge
                             2 -> type.titleMedium
@@ -54,7 +58,7 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                     )
                     is MdBlock.ListItem -> Row(Modifier.padding(start = Spacing.m * block.depth)) {
                         Text(block.marker, style = type.bodyLarge, modifier = Modifier.padding(end = Spacing.s))
-                        Text(inline(block.text, codeBackground, link), style = type.bodyLarge)
+                        Text(inline(block.text, code, link), style = type.bodyLarge)
                     }
                     is MdBlock.Quote -> Surface(
                         color = colors.surfaceContainerHigh,
@@ -62,7 +66,7 @@ fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            inline(block.text, codeBackground, link),
+                            inline(block.text, code, colors.onSurfaceVariant),
                             style = type.bodyLarge.copy(fontStyle = FontStyle.Italic),
                             color = colors.onSurfaceVariant,
                             modifier = Modifier.padding(Spacing.s),
@@ -93,14 +97,14 @@ fun CodeBlock(code: String, modifier: Modifier = Modifier, style: TextStyle = Ma
     }
 }
 
-private fun inline(text: String, codeBackground: Color, link: Color): AnnotatedString = buildAnnotatedString {
+private fun inline(text: String, code: SpanStyle, link: Color): AnnotatedString = buildAnnotatedString {
     fun append(spans: List<MdSpan>) {
         for (span in spans) {
             when (span) {
                 is MdSpan.Plain -> append(span.text)
                 is MdSpan.Bold -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(span.spans) }
                 is MdSpan.Italic -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(span.spans) }
-                is MdSpan.Code -> withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)) { append(span.text) }
+                is MdSpan.Code -> withStyle(code) { append(span.text) }
                 // Only web and mail links open; an agent's text decides nothing else on the phone.
                 is MdSpan.Link -> if (!span.url.isSafeLink()) append(span.text) else withLink(
                     LinkAnnotation.Url(
