@@ -29,8 +29,8 @@ android {
         applicationId = "dev.aura.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 604
-        versionName = "0.6.4"
+        versionCode = 605
+        versionName = "0.6.5"
     }
 
     signingConfigs {
