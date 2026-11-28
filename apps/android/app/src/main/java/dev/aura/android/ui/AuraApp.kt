@@ -105,6 +105,7 @@ fun AuraApp(appLinks: Flow<AppLink>) {
             when (link) {
                 is AppLink.Pair -> nav.navigate(AddServerRoute(link.link)) { launchSingleTop = true }
                 is AppLink.Session -> nav.navigate(SessionRoute(link.serverId, link.sessionId)) { launchSingleTop = true }
+                AppLink.Inbox -> nav.switchTo(InboxRoute)
                 is AppLink.Share -> {
                     pendingShare = link.images
                     nav.navigate(ShareRoute) { launchSingleTop = true }

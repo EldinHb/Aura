@@ -251,6 +251,15 @@
         <item quantity="other">Connected to %d servers</item>
     </plurals>
 
+    <!-- Widget and tile -->
+    <string name="widget_label">Waiting on you</string>
+    <string name="widget_description">What waits on you across your Aura servers.</string>
+    <string name="widget_nothing">Nothing waits on you</string>
+    <plurals name="widget_count"><item quantity="one">%d needs you</item><item quantity="other">%d need you</item></plurals>
+    <plurals name="widget_more"><item quantity="one">and %d more</item><item quantity="other">and %d more</item></plurals>
+    <string name="tile_label">Aura inbox</string>
+    <string name="tile_nothing">Nothing waits</string>
+
     <!-- Settings -->
     <string name="settings">Settings</string>
     <string name="setting_background">Stay connected in background</string>

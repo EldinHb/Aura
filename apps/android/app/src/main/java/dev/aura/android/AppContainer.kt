@@ -10,6 +10,7 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.glance.appwidget.updateAll
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -22,13 +23,21 @@ import dev.aura.android.net.ServerConnection
 import dev.aura.android.notify.Notifier
 import dev.aura.android.notify.OpenSession
 import dev.aura.android.service.ConnectionService
+import dev.aura.android.ui.inbox.inbox
+import dev.aura.android.widget.AuraWidget
+import dev.aura.android.widget.WaitingSnapshot
+import dev.aura.android.widget.WaitingStore
+import dev.aura.android.widget.WaitingTileService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -43,6 +52,7 @@ private val Context.dataStore by preferencesDataStore(name = "aura")
  * running after it leaves, so news is notified. A network that comes back
  * retries them at once.
  */
+@OptIn(FlowPreview::class)
 class AppContainer(private val context: Context) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val http = OkHttpClient()
@@ -58,6 +68,9 @@ class AppContainer(private val context: Context) {
 
     /** Text waiting to go into a session's composer ("Ask for changes"), by "server/session". */
     val composerPrefill = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** What waits on the user, saved for the widget and the Quick Settings tile. */
+    val waiting = WaitingStore(context.dataStore)
 
     /** Reads and shrinks images to send. */
     val images = dev.aura.android.images.ImageEncoder(context.contentResolver)
@@ -89,6 +102,16 @@ class AppContainer(private val context: Context) {
                 } else {
                     ConnectionService.stop(context)
                     if (!foreground) _connections.value.values.forEach { it.stop() }
+                }
+            }
+        }
+        // The widget and the tile follow the inbox, here and through the background connection;
+        // until every server has loaded they keep what they last showed.
+        scope.launch {
+            inbox().filter { it.loaded }.debounce(WIDGET_DEBOUNCE_MS).collect { inbox ->
+                if (waiting.save(WaitingSnapshot.of(inbox))) {
+                    runCatching { AuraWidget().updateAll(context) }
+                    WaitingTileService.refresh(context)
                 }
             }
         }
@@ -174,6 +197,9 @@ class AppContainer(private val context: Context) {
             .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 }
+
+/** How long the inbox stays still before the widget is redrawn: a burst of events is one redraw. */
+private const val WIDGET_DEBOUNCE_MS = 1_000L
 
 /** Whether a connection to [other] is the same as one to this: everything but the display name. */
 private fun SavedServer.sameEndpoint(other: SavedServer) = copy(name = other.name) == other

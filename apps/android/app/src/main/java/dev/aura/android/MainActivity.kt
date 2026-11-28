@@ -18,6 +18,7 @@ sealed interface AppLink {
     data class Pair(val link: String) : AppLink
     data class Session(val serverId: String, val sessionId: String) : AppLink
     data class Share(val images: List<Uri>) : AppLink
+    data object Inbox : AppLink
 }
 
 class MainActivity : ComponentActivity() {
@@ -48,6 +49,10 @@ class MainActivity : ComponentActivity() {
             if (images.isNotEmpty()) appLinks.trySend(AppLink.Share(images))
             return
         }
+        if (intent.action == ACTION_OPEN_INBOX) {
+            appLinks.trySend(AppLink.Inbox)
+            return
+        }
         if (intent.action == ACTION_OPEN_SESSION) {
             val server = intent.getStringExtra(EXTRA_SERVER) ?: return
             val session = intent.getStringExtra(EXTRA_SESSION) ?: return
@@ -60,6 +65,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_OPEN_SESSION = "dev.aura.android.action.OPEN_SESSION"
+        const val ACTION_OPEN_INBOX = "dev.aura.android.action.OPEN_INBOX"
         const val EXTRA_SERVER = "server"
         const val EXTRA_SESSION = "session"
     }
