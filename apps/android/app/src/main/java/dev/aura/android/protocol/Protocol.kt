@@ -1,5 +1,6 @@
 package dev.aura.android.protocol
 
+import dev.aura.android.images.ImageInput
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
@@ -133,7 +134,7 @@ data class Pending(
 @Serializable
 data class Input(
     val text: String,
-    val images: List<JsonElement> = emptyList(),
+    val images: List<ImageInput> = emptyList(),
     val steer: Boolean = false,
 )
 

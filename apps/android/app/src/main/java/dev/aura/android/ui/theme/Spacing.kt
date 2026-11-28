@@ -13,6 +13,9 @@ object Spacing {
     /** Widest a column of text or form fields grows on large screens. */
     val contentMaxWidth = 720.dp
 
+    /** An image's thumbnail in the composer and in a message. */
+    val thumb = 72.dp
+
     /** A status dot beside a label. */
     val statusDot = 8.dp
 

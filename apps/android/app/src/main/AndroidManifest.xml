@@ -44,6 +44,13 @@
                     android:host="pair"
                     android:scheme="aura" />
             </intent-filter>
+            <!-- Share to Aura: images from another app, into a session the user picks. -->
+            <intent-filter android:label="@string/share_to_aura">
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
 
         <!-- Keeps the connections to the user's own servers open in the background. -->

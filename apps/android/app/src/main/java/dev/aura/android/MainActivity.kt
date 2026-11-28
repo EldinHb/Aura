@@ -1,10 +1,12 @@
 package dev.aura.android
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.IntentCompat
 import dev.aura.android.pairing.PairingLink
 import dev.aura.android.ui.AuraApp
 import dev.aura.android.ui.theme.AuraTheme
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 sealed interface AppLink {
     data class Pair(val link: String) : AppLink
     data class Session(val serverId: String, val sessionId: String) : AppLink
+    data class Share(val images: List<Uri>) : AppLink
 }
 
 class MainActivity : ComponentActivity() {
@@ -39,6 +42,12 @@ class MainActivity : ComponentActivity() {
 
     private fun takeLink(intent: Intent?) {
         intent ?: return
+        if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            val images = IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                ?: listOfNotNull(IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
+            if (images.isNotEmpty()) appLinks.trySend(AppLink.Share(images))
+            return
+        }
         if (intent.action == ACTION_OPEN_SESSION) {
             val server = intent.getStringExtra(EXTRA_SERVER) ?: return
             val session = intent.getStringExtra(EXTRA_SESSION) ?: return

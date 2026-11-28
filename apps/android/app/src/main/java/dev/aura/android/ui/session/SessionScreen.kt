@@ -80,6 +80,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.aura.android.AuraApplication
 import dev.aura.android.R
+import dev.aura.android.images.MessageImage
 import dev.aura.android.net.ConnectionState
 import dev.aura.android.notify.OpenSession
 import dev.aura.android.protocol.Feature
@@ -108,9 +109,6 @@ import dev.aura.android.ui.components.describe
 import dev.aura.android.ui.components.icon
 import dev.aura.android.ui.components.label
 import dev.aura.android.ui.theme.Spacing
-
-/** The most lines the composer grows to before it scrolls. */
-private const val COMPOSER_MAX_LINES = 6
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -151,6 +149,7 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
     val running = session?.status == "running" || transcript?.turnRunning == true
     var actions by remember { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
+    var viewing by remember { mutableStateOf<MessageImage?>(null) }
     var moving by remember { mutableStateOf(false) }
     var newWorkspace by remember { mutableStateOf(false) }
     val workspaces by vm.workspaces.collectAsStateWithLifecycle()
@@ -203,7 +202,19 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
         },
         bottomBar = {
             if (session?.isStructured != false && !showTeam) {
-                key(shownId) { Composer(enabled = online && !sending, sending = sending, onSend = vm::send) }
+                key(shownId) {
+                    val drafts by vm.drafts.collectAsStateWithLifecycle()
+                    val preparing by vm.preparing.collectAsStateWithLifecycle()
+                    Composer(
+                        enabled = online && !sending,
+                        sending = sending,
+                        drafts = drafts,
+                        preparing = preparing,
+                        onAttach = vm::addImages,
+                        onRemove = vm::removeImage,
+                        onSend = vm::send,
+                    )
+                }
             }
         },
         floatingActionButton = {
@@ -259,9 +270,9 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                     // an animated move would lag behind it (a new reply filling the screen
                     // would fade the whole view out and in).
                     items(rows, key = { it.key }, contentType = { it::class }) { row ->
-                        TranscriptRowView(row) { card, modifier ->
+                        TranscriptRowView(row, onOpenImage = { viewing = it }, featureCard = { card, modifier ->
                             FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier)
-                        }
+                        })
                     }
                     t.lastError?.let { error ->
                         item(key = "turn-error") {
@@ -320,6 +331,7 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
             onDismiss = { newWorkspace = false },
         )
     }
+    viewing?.let { image -> ImageViewer(image, load = vm::loadAttachment, onDismiss = { viewing = null }) }
     if (confirmStop) {
         AlertDialog(
             onDismissRequest = { confirmStop = false },
@@ -424,38 +436,3 @@ private fun JumpToLatest(unread: Int, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun Composer(enabled: Boolean, sending: Boolean, onSend: (String, () -> Unit) -> Unit) {
-    var text by rememberSaveable { mutableStateOf("") }
-    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
-        Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(Spacing.s),
-            modifier = Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                .padding(horizontal = Spacing.m, vertical = Spacing.s),
-        ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                placeholder = { Text(stringResource(R.string.message_placeholder)) },
-                keyboardOptions = ProseKeyboard,
-                maxLines = COMPOSER_MAX_LINES,
-                shape = MaterialTheme.shapes.extraLarge,
-                modifier = Modifier.weight(1f),
-            )
-            FilledIconButton(
-                onClick = { onSend(text) { text = "" } },
-                enabled = enabled && text.isNotBlank(),
-                modifier = Modifier.padding(bottom = Spacing.xs),
-            ) {
-                if (sending) {
-                    CircularProgressIndicator(Modifier.padding(Spacing.s))
-                } else {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = stringResource(R.string.send))
-                }
-            }
-        }
-    }
-}

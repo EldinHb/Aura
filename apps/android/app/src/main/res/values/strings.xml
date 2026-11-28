@@ -141,6 +141,16 @@
     <string name="session_actions">Session actions</string>
     <string name="message_placeholder">Message the agent</string>
     <string name="send">Send</string>
+    <string name="attach_images">Attach images</string>
+    <string name="share_to_aura">Share to Aura</string>
+    <plurals name="share_title"><item quantity="one">Send %d image to…</item><item quantity="other">Send %d images to…</item></plurals>
+    <string name="share_empty">No connected server has a session to send to.</string>
+    <string name="image">Image</string>
+    <string name="close">Close</string>
+    <string name="remove_image">Remove %1$s</string>
+    <string name="image_failed">Could not add the image: %1$s</string>
+    <string name="image_loading_failed">Could not load the image.</string>
+    <string name="open_image">Open %1$s</string>
     <string name="transcript_empty">Nothing here yet.</string>
     <string name="terminal_session_title">Terminal session</string>
     <string name="terminal_session_body">This session runs in a terminal. Open it in Aura on your computer.</string>

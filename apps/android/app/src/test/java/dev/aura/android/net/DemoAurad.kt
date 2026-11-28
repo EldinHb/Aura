@@ -51,6 +51,7 @@ private class DemoData {
     private val workspaces = mutableListOf(ws("w1", "Product", 0), ws("w2", "Infra", 1))
     private val approvals = mutableListOf(approval("p1", "m2", "Run openssl s_client", "openssl s_client -connect 10.0.2.2:7443"))
     private var secondQuestion = false
+    private val attachmentData = HashMap<String, JsonObject>()
     private val sessions = mutableListOf(
         session("f1", "Ship the Android app", status = "running", featureOwner = true, created = "2026-11-28T08:00:00Z"),
         JsonObject(session("m1", "Session list like the desktop", status = "running", parent = "f1", specialist = "Frontend engineer") + ("model" to str("opus")) + ("effort" to str("high"))),
@@ -189,7 +190,29 @@ private class DemoData {
             JsonArray(history[id].orEmpty().mapIndexed { i, e -> obj("seq" to JsonPrimitive(i + 1), "ts" to str("2026-11-28T09:00:00Z"), "event" to e) }
                 .drop(after.toInt()).take(limit))
         }
-        "session.mark_seen", "session.send", "session.interrupt", "session.respond_input" -> JsonPrimitive(true)
+        "session.send" -> synchronized(this) {
+            // What the daemon does: the message in the transcript, its images kept as attachments.
+            val id = params["id"]!!.jsonPrimitive.content
+            val input = params["input"] as JsonObject
+            val images = (input["images"] as? JsonArray).orEmpty().map { it as JsonObject }
+            val attachments = images.mapIndexed { i, img ->
+                val key = "att-${'$'}{attachmentData.size + 1}"
+                attachmentData[key] = img
+                obj("id" to str(key), "name" to (img["name"] ?: JsonNull), "thumbnail" to (img["thumbnail"] ?: JsonNull),
+                    "width" to (img["width"] ?: JsonNull), "height" to (img["height"] ?: JsonNull),
+                    "original_width" to (img["original_width"] ?: JsonNull), "original_height" to (img["original_height"] ?: JsonNull))
+            }
+            val itemId = "sent-${'$'}{System.nanoTime()}"
+            val e = event("item_completed", id, "item" to item(itemId, id, "user_message", input["text"]?.jsonPrimitive?.content.orEmpty(), "completed", obj("attachments" to JsonArray(attachments))))
+            history.getOrPut(id) { mutableListOf() } += e
+            aurad?.notify("event", e)
+            JsonPrimitive(true)
+        }
+        "session.attachment" -> synchronized(this) {
+            val img = attachmentData[params["attachment"]!!.jsonPrimitive.content] ?: return@synchronized FakeAurad.error(-32000, "no such attachment")
+            obj("data" to img["data"]!!, "media_type" to img["media_type"]!!)
+        }
+        "session.mark_seen", "session.interrupt", "session.respond_input" -> JsonPrimitive(true)
         else -> FakeAurad.error(-32601, "unknown method $method")
     }
 

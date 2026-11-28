@@ -1,27 +1,34 @@
 package dev.aura.android.ui.session
 
+import android.graphics.Bitmap
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.aura.android.AppContainer
 import dev.aura.android.R
+import dev.aura.android.images.DraftImage
+import dev.aura.android.images.ImageLimits
+import dev.aura.android.images.decodeImage
 import dev.aura.android.net.ConnectionState
 import dev.aura.android.net.ProtocolJson
 import dev.aura.android.net.ServerConnection
 import dev.aura.android.protocol.Approval
-import dev.aura.android.protocol.Feature
-import dev.aura.android.protocol.UserQuestion
-import dev.aura.android.protocol.Workspace
 import dev.aura.android.protocol.ApprovalDecision
+import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Input
 import dev.aura.android.protocol.Pending
 import dev.aura.android.protocol.Session
 import dev.aura.android.protocol.StoredEvent
 import dev.aura.android.protocol.UserInputRequest
 import dev.aura.android.protocol.UserInputResponse
+import dev.aura.android.protocol.UserQuestion
+import dev.aura.android.protocol.Workspace
 import dev.aura.android.transcript.Transcript
 import dev.aura.android.transcript.fetchHistory
 import dev.aura.android.transcript.reconcile
 import dev.aura.android.ui.components.UiMessage
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -29,6 +36,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -36,12 +44,12 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlin.coroutines.cancellation.CancellationException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionViewModel(
@@ -115,6 +123,16 @@ class SessionViewModel(
         }
     }
 
+    private val _drafts = MutableStateFlow<List<DraftImage>>(emptyList())
+
+    /** Images picked for the next message, ready to send. */
+    val drafts: StateFlow<List<DraftImage>> = _drafts
+
+    private val _preparing = MutableStateFlow(0)
+
+    /** Images still being read and shrunk. */
+    val preparing: StateFlow<Int> = _preparing
+
     private val _busy = MutableStateFlow(false)
 
     /** A message is being sent. */
@@ -127,6 +145,14 @@ class SessionViewModel(
     private var buffered: MutableList<JsonObject>? = null
 
     init {
+        // Images shared into this session from another app go into its composer.
+        container.sharedImages.value["$serverId/$sessionId"]?.let { shared ->
+            container.sharedImages.update { it - "$serverId/$sessionId" }
+            viewModelScope.launch {
+                session.first { it != null }
+                addImages(shared)
+            }
+        }
         viewModelScope.launch {
             connectionFlow.flatMapLatest { it?.events ?: flowOf() }.collect { live ->
                 if (live.event.sessionId != sessionId) return@collect
@@ -186,13 +212,53 @@ class SessionViewModel(
 
     /** Sends [text] to the agent; [onSent] runs once the server took it. */
     fun send(text: String, onSent: () -> Unit) {
-        if (text.isBlank() || _busy.value) return
+        val images = _drafts.value
+        if ((text.isBlank() && images.isEmpty()) || _busy.value || _preparing.value > 0) return
         _busy.value = true
         call(R.string.send_failed, "session.send", buildJsonObject {
             put("id", JsonPrimitive(sessionId))
-            put("input", ProtocolJson.encodeToJsonElement(Input.serializer(), Input(text = text.trim())))
-        }, onDone = { _busy.value = false }, onSuccess = onSent)
+            put("input", ProtocolJson.encodeToJsonElement(Input.serializer(), Input(text = text.trim(), images = images.map { it.input })))
+        }, onDone = { _busy.value = false }, onSuccess = {
+            _drafts.update { it - images.toSet() }
+            onSent()
+        })
     }
+
+    /** Reads [uris] and shrinks them to what this session's agent takes, off the main thread. */
+    fun addImages(uris: List<Uri>) {
+        val limits = ImageLimits.forProvider(session.value?.provider)
+        for (uri in uris) {
+            if (_drafts.value.any { it.id == uri.toString() }) continue
+            _preparing.update { it + 1 }
+            viewModelScope.launch {
+                try {
+                    val draft = withContext(Dispatchers.IO) { container.images.encode(uri, limits) }
+                    _drafts.update { it + draft }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    _messages.trySend(UiMessage.Res(R.string.image_failed, listOf(e.message ?: "")))
+                } finally {
+                    _preparing.update { it - 1 }
+                }
+            }
+        }
+    }
+
+    fun removeImage(id: String) {
+        _drafts.update { list -> list.filterNot { it.id == id } }
+    }
+
+    /** A sent image the daemon kept, whole; null when it cannot be loaded. */
+    suspend fun loadAttachment(attachment: String): Bitmap? = runCatching {
+        val c = connection() ?: return null
+        val result = c.call("session.attachment", buildJsonObject {
+            put("id", JsonPrimitive(sessionId))
+            put("attachment", JsonPrimitive(attachment))
+        })
+        val data = ((result as? JsonObject)?.get("data") as? JsonPrimitive)?.content ?: return null
+        withContext(Dispatchers.Default) { decodeImage(data) }
+    }.getOrNull()
 
     fun interrupt() = call(R.string.action_failed, "session.interrupt", idParams())
 

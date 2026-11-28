@@ -53,6 +53,12 @@ class AppContainer(private val context: Context) {
     /** The session open on screen; its news is not notified. */
     val openSession = MutableStateFlow<OpenSession?>(null)
 
+    /** Images shared to Aura from another app, waiting for the session they were shared into: by "server/session". */
+    val sharedImages = MutableStateFlow<Map<String, List<android.net.Uri>>>(emptyMap())
+
+    /** Reads and shrinks images to send. */
+    val images = dev.aura.android.images.ImageEncoder(context.contentResolver)
+
     val notifier = Notifier(context, prefs, scope, openSession)
 
     private val _connections = MutableStateFlow<Map<String, ServerConnection>>(emptyMap())
