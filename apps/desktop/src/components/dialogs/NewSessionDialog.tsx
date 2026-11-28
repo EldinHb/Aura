@@ -253,11 +253,13 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   type BrowserRow = { path: string; label: string; git: boolean; recent?: boolean };
   const browserRows = useMemo<BrowserRow[]>(() => {
     if (remote) {
-      // The remote's projects matching what is typed; a folder inside one is typed out.
-      const q = dir.trim().toLowerCase();
+      // The remote's projects matching what is typed (all of them while a project is picked as it
+      // is); a folder inside one is typed out.
+      const typed = dir.trim().replace(/\/+$/, "");
+      const q = projects.some((p) => p.path === typed) ? "" : typed.toLowerCase();
       return projects
-        .filter((p) => !q || p.path.toLowerCase().includes(q.replace(/\/+$/, "")))
-        .filter((p) => p.path !== dir.replace(/\/+$/, ""))
+        .filter((p) => !q || p.path.toLowerCase().includes(q))
+        .filter((p) => p.path !== typed)
         .map((p) => ({ path: p.path, label: p.path, git: p.repo }))
         .slice(0, MAX_DIR_ROWS);
     }

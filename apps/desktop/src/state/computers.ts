@@ -23,6 +23,7 @@ import { RemoteRpcClient } from "../lib/remoteClient";
 import { needsPairing, remotesApi, type RemoteComputer } from "../lib/remoteComputers";
 import { LOCAL, selectLocalClient, setPersistLocal, useStore, type AppState } from "./store";
 import { syncWithDaemon, type Sync, type SyncOptions } from "./daemonSync";
+import { isMac } from "../lib/platform";
 
 export { LOCAL };
 
@@ -40,7 +41,7 @@ export const useComputers = create<ComputersState>(() => ({ remotes: [], loaded:
 
 /** "This Mac", or "This computer" elsewhere. */
 export function localName(): string {
-  return typeof navigator !== "undefined" && /Mac/i.test(navigator.platform ?? "") ? "This Mac" : "This computer";
+  return isMac ? "This Mac" : "This computer";
 }
 
 /** A computer's name as the switcher shows it. */
