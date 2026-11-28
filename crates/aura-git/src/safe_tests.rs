@@ -1,6 +1,9 @@
 //! The restricted reader against a hostile repository: every setting that
 //! makes plain `git status`/`git diff` run a command is set, and must not
 //! run here.
+//!
+//! The hostile repository's commands are `sh` scripts that `touch` markers,
+//! so the tests built on it run on Unix only.
 
 use super::*;
 use std::path::Path;
@@ -26,6 +29,7 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
+#[cfg(unix)]
 struct Hostile {
     _tmp: tempfile::TempDir,
     repo: PathBuf,
@@ -33,6 +37,7 @@ struct Hostile {
     markers: PathBuf,
 }
 
+#[cfg(unix)]
 impl Hostile {
     fn markers(&self) -> Vec<String> {
         std::fs::read_dir(&self.markers)
@@ -42,6 +47,7 @@ impl Hostile {
     }
 }
 
+#[cfg(unix)]
 /// A repository whose config runs a command (touching a marker file) for
 /// fsmonitor, clean/smudge/process filters, external diff, a diff driver's
 /// command and textconv, and every hook. `sub/` is a session's folder.
@@ -133,6 +139,7 @@ fn names(files: &[FileStatus]) -> Vec<String> {
         .collect()
 }
 
+#[cfg(unix)]
 #[test]
 fn nothing_the_repository_configures_runs() {
     for format in ["sha1", "sha256"] {
@@ -215,6 +222,7 @@ fn nothing_the_repository_configures_runs() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn only_the_folder_is_read() {
     let h = hostile("sha1");
@@ -365,6 +373,7 @@ fn the_index_stat_cache_is_trusted_only_when_it_matches() {
     assert_eq!(names(&st.files), vec![" M b.txt".to_string()]);
 }
 
+#[cfg(unix)]
 #[test]
 fn limits_cut_and_say_so() {
     let h = hostile("sha1");
@@ -430,6 +439,7 @@ fn limits_cut_and_say_so() {
     assert!(h.markers().is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_git_past_its_deadline_or_cap_is_stopped() {
     let h = hostile("sha1");

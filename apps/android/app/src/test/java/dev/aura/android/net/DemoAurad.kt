@@ -213,7 +213,7 @@ private class DemoData {
             obj("data" to img["data"]!!, "media_type" to img["media_type"]!!)
         }
         "session.git_diff" -> str(DEMO_DIFF)
-        "session.git_status", "session.git_diff_stat" -> JsonArray(emptyList())
+        "session.git_status", "session.git_diff_stat" -> obj("files" to JsonArray(emptyList()), "truncated" to JsonPrimitive(false))
         "session.mark_seen", "session.interrupt", "session.respond_input" -> JsonPrimitive(true)
         else -> FakeAurad.error(-32601, "unknown method $method")
     }
