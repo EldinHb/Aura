@@ -93,6 +93,27 @@ or an SSH tunnel to the listener.
   `aura remote revoke <deviceId>`. The app then tells you the device is no
   longer paired.
 
+### Notifications
+
+The app notifies you when a feature owner asks you to decide something, when
+a main chat (a top-level session, not a worker) finishes and replies, and
+when an agent waits for an approval or an answer. Tap one to open the
+session; reply to a message, or allow or decline an approval, from the
+notification itself.
+
+For notifications while the app is closed, **Settings → Stay connected in
+background** keeps the connections open in a foreground service, with a
+quiet "Connected to N servers" notification. It is on once you allow
+notifications (Aura asks after your first pairing), and starts again after
+a reboot. Nothing goes through a cloud service: the phone talks only to
+your own computer.
+
+### Workspaces
+
+Make a workspace from the Sessions screen (the folder button), move a
+session there from its actions (its workers move with it), or pick one
+when starting a session. Deleting a workspace is done on the computer.
+
 ### Try it without a server
 
 A demo server with sample workspaces, workers, scheduled runs and a

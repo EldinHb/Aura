@@ -48,7 +48,9 @@ class DemoAurad {
 }
 
 private class DemoData {
-    private val workspaces = listOf(ws("w1", "Product", 0), ws("w2", "Infra", 1))
+    private val workspaces = mutableListOf(ws("w1", "Product", 0), ws("w2", "Infra", 1))
+    private val approvals = mutableListOf(approval("p1", "m2", "Run openssl s_client", "openssl s_client -connect 10.0.2.2:7443"))
+    private var secondQuestion = false
     private val sessions = mutableListOf(
         session("f1", "Ship the Android app", status = "running", featureOwner = true, created = "2026-11-28T08:00:00Z"),
         session("m1", "Session list like the desktop", status = "running", parent = "f1", specialist = "Frontend engineer"),
@@ -87,7 +89,7 @@ private class DemoData {
     private fun feature() = obj(
         "owner_id" to str("f1"), "goal" to str("Ship the Android app"), "status" to str("waiting_on_user"),
         "updated_at" to str("2026-11-28T09:00:00Z"),
-        "questions" to JsonArray(listOf(obj(
+        "questions" to JsonArray(listOfNotNull(obj(
             "id" to str("q1"), "question" to str("Target SDK 37 now, or stay on 36 until the BOM catches up?"),
             "context" to str("Compose BOM 2026.11.01 needs **android-37.1**; 37.0 is installed."),
             "options" to JsonArray(listOf(
@@ -96,8 +98,27 @@ private class DemoData {
             )),
             "recommended" to str("SDK 37"), "kind" to str("decision"), "asked_at" to str("2026-11-28T09:30:00Z"),
             "answer" to answer, "withdrawn" to JsonPrimitive(false),
-        ))),
+        ), if (secondQuestion) obj(
+            "id" to str("q2"), "question" to str("Ship 0.6.2 to the beta channel tonight?"),
+            "context" to str("Notifications and workspaces are in; the emulator checks pass."),
+            "options" to JsonArray(listOf(obj("label" to str("Ship tonight")), obj("label" to str("Wait for Monday")))),
+            "recommended" to str("Ship tonight"), "kind" to str("irreversible"), "asked_at" to str("2026-11-28T10:30:00Z"),
+            "answer" to JsonNull, "withdrawn" to JsonPrimitive(false),
+        ) else null)),
     )
+
+    private fun approval(id: String, session: String, title: String, command: String) = obj(
+        "id" to str(id), "session_id" to str(session), "kind" to str("command"), "title" to str(title),
+        "payload" to obj("command" to str(command)),
+        "options" to JsonArray(listOf(str("accept"), str("accept_for_session"), str("decline"))),
+    )
+
+    private fun replaceSession(id: String, change: (JsonObject) -> JsonObject): JsonObject {
+        val i = sessions.indexOfFirst { it["id"]!!.jsonPrimitive.content == id }
+        sessions[i] = change(sessions[i])
+        aurad?.notify("event", obj("type" to str("session_updated"), "session" to sessions[i]))
+        return sessions[i]
+    }
 
     fun answer(method: String, params: JsonObject): JsonElement = when (method) {
         "remote.pair" -> obj(
@@ -106,21 +127,44 @@ private class DemoData {
         )
         "remote.auth" -> obj("serverId" to str("demo-server"), "serverName" to str("Demo Mac"), "version" to str("0.6.0"))
         "session.list" -> synchronized(this) { JsonArray(sessions.toList()) }
-        "workspace.list" -> JsonArray(workspaces)
+        "workspace.list" -> synchronized(this) { JsonArray(workspaces.toList()) }
+        "provider.list" -> JsonArray(listOf(obj(
+            "kind" to str("claude"), "display_name" to str("Claude Code"), "available" to JsonPrimitive(true),
+            "capabilities" to obj("structured" to JsonPrimitive(true)), "agents" to JsonArray(emptyList()),
+        )))
+        "orchestrator.projects" -> JsonArray(listOf(
+            obj("path" to str("/Users/me/Projects/aura"), "repo" to JsonPrimitive(true), "sessions" to JsonPrimitive(9), "last_used" to str("2026-11-28")),
+            obj("path" to str("/Users/me/Projects/infra"), "repo" to JsonPrimitive(true), "sessions" to JsonPrimitive(2), "last_used" to str("2026-11-27")),
+        ))
+        "workspace.create" -> synchronized(this) {
+            val made = ws("w${workspaces.size + 1}", params["name"]!!.jsonPrimitive.content, workspaces.size)
+            workspaces += made
+            aurad?.notify("event", obj("type" to str("workspaces_changed"), "workspaces" to JsonArray(workspaces.toList())))
+            made
+        }
+        "session.set_workspace" -> synchronized(this) {
+            val id = params["id"]!!.jsonPrimitive.content
+            val target = params["workspace"]!!
+            val tree = sessions.filter { s -> s["id"]!!.jsonPrimitive.content == id || (s["orchestrator_id"] as? JsonPrimitive)?.content == id }
+                .map { it["id"]!!.jsonPrimitive.content }
+            JsonArray(tree.map { sid -> replaceSession(sid) { JsonObject(it + ("workspace" to target)) } })
+        }
+        "session.respond_approval" -> synchronized(this) {
+            val approvalId = params["approval_id"]!!.jsonPrimitive.content
+            approvals.removeAll { it["id"]!!.jsonPrimitive.content == approvalId }
+            aurad?.notify("event", event("approval_resolved", params["id"]!!.jsonPrimitive.content, "approval_id" to str(approvalId), "decision" to params["decision"]!!))
+            JsonPrimitive(true)
+        }
         "feature.list" -> synchronized(this) { JsonArray(listOf(feature())) }
         "feature.answer" -> synchronized(this) {
             answer = obj("option" to (params["option"] ?: JsonNull), "text" to (params["text"] ?: str("")), "at" to str("2026-11-28T10:00:00Z"), "delivered" to JsonPrimitive(true))
             feature().also { f -> aurad?.notify("event", event("feature_updated", "f1", "feature" to f)) }
         }
         "session.pending" -> obj(
-            "approvals" to JsonArray(listOf(obj(
-                "id" to str("p1"), "session_id" to str("m2"), "kind" to str("command"), "title" to str("Run openssl s_client"),
-                "payload" to obj("command" to str("openssl s_client -connect 10.0.2.2:7443")),
-                "options" to JsonArray(listOf(str("accept"), str("accept_for_session"), str("decline"))),
-            ))),
+            "approvals" to synchronized(this) { JsonArray(approvals.toList()) },
             "inputs" to JsonArray(listOf(obj(
                 "id" to str("i1"), "session_id" to str("s1"),
-                "questions" to JsonArray(listOf(obj(
+                "questions" to JsonArray(listOfNotNull(obj(
                     "id" to str("q"), "question" to str("Keep the retry, or fix the race?"),
                     "options" to JsonArray(listOf(obj("label" to str("Fix the race")), obj("label" to str("Keep the retry")))),
                     "multi_select" to JsonPrimitive(false), "allow_free_text" to JsonPrimitive(true), "secret" to JsonPrimitive(false),
@@ -134,7 +178,7 @@ private class DemoData {
             JsonArray(history[id].orEmpty().mapIndexed { i, e -> obj("seq" to JsonPrimitive(i + 1), "ts" to str("2026-11-28T09:00:00Z"), "event" to e) }
                 .drop(after.toInt()).take(limit))
         }
-        "session.mark_seen", "session.send", "session.interrupt", "session.respond_approval", "session.respond_input" -> JsonPrimitive(true)
+        "session.mark_seen", "session.send", "session.interrupt", "session.respond_input" -> JsonPrimitive(true)
         else -> FakeAurad.error(-32601, "unknown method $method")
     }
 
@@ -142,9 +186,35 @@ private class DemoData {
         this.aurad = aurad
     }
 
-    /** A new agent message in the feature owner's chat, streamed. */
+    /**
+     * What happens on the server, every 15 s: an approval on a main chat
+     * (tick 2), a new decision for the user (3), a main chat finishing with a
+     * reply (4); a message streams into the feature owner's chat otherwise.
+     */
     fun stream(aurad: FakeAurad, n: Int) {
         this.aurad = aurad
+        when (n) {
+            2 -> synchronized(this) {
+                val a = approval("p2", "s2", "Run the database migration", "./gradlew flywayMigrate")
+                approvals += a
+                aurad.notify("event", event("approval_requested", "s2", "approval" to a))
+                replaceSession("s2") { JsonObject(it + ("status" to str("waiting_approval")) + ("pending_count" to JsonPrimitive(1))) }
+                return
+            }
+            3 -> synchronized(this) {
+                secondQuestion = true
+                aurad.notify("event", event("feature_updated", "f1", "feature" to feature()))
+                return
+            }
+            4 -> synchronized(this) {
+                val reply = "The store is split into three slices; the tests pass and the bundle is 14 KB smaller."
+                aurad.notify("event", event("item_completed", "s2", "item" to item("s2-done", "s2", "agent_message", reply, "completed")))
+                replaceSession("s2") {
+                    JsonObject(it + ("status" to str("idle")) + ("attention" to str("done")) + ("last_activity" to str("2026-11-28T10:40:00Z")))
+                }
+                return
+            }
+        }
         val id = "live$n"
         val text = "Update $n: the session list now groups by workspace and status, and workers are tabs in their session."
         fun send(e: JsonObject) {

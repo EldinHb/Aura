@@ -76,7 +76,8 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                _options.value = NewSessionOptions(emptyList(), emptyList())
+                // The workspaces are known from the connection whatever failed here.
+                _options.value = NewSessionOptions(emptyList(), emptyList(), c.workspaces.value)
                 _messages.trySend(UiMessage.Res(R.string.load_failed, listOf(e.message ?: "")))
             }
         }
