@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import QRCode from "qrcode";
 import { Modal } from "../Modal";
-import { useStore } from "../../state/store";
+import { useStore, selectLocalClient } from "../../state/store";
 import { downloadManually } from "../../features/updates/updates";
 import { exactTime, timeAgo } from "../../lib/time";
 import type { PairingInfo, RemoteDevice, RemoteConfigure, RemoteStatus } from "../../gen";
@@ -25,7 +25,7 @@ function useCopy() {
 
 /** Settings → Remote access: let remote clients (the Android app) reach this daemon, pair devices and revoke them. */
 export function RemoteTab() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const toast = useStore((s) => s.toast);
   const copy = useCopy();
   const [status, setStatus] = useState<RemoteStatus | null>(null);
@@ -210,7 +210,7 @@ export function RemoteTab() {
 
 /** A pairing code for a new device: QR code, the code itself, the link, and when it expires. */
 function PairDialog({ onClose }: { onClose: () => void }) {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const copy = useCopy();
   const [info, setInfo] = useState<PairingInfo | null>(null);
   const [error, setError] = useState<string | null>(null);

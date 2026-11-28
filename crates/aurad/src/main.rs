@@ -7,6 +7,8 @@ use aura_rpc::server::{ExtCall, ExtError, ExtHandler, RpcServer};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -332,6 +334,9 @@ fn init_logging(data_dir: &std::path::Path, foreground: bool) -> Result<()> {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)
+            .finish()
+            // WebSocket frames carry device tokens and pair codes: never logged.
+            .with(aura_rpc::quiet_wire_logs())
             .init();
     } else {
         let file = std::fs::OpenOptions::new()
@@ -342,6 +347,8 @@ fn init_logging(data_dir: &std::path::Path, foreground: bool) -> Result<()> {
             .with_env_filter(filter)
             .with_ansi(false)
             .with_writer(std::sync::Mutex::new(file))
+            .finish()
+            .with(aura_rpc::quiet_wire_logs())
             .init();
     }
     Ok(())

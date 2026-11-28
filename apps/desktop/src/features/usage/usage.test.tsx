@@ -7,7 +7,8 @@ import { cacheHitRate, change, compactLine, period, previous, turnLine, tzOffset
 import { TurnUsageLine } from "./TurnUsageLine";
 import { UsageDialog } from "./UsageDialog";
 import { SessionUsageDialog } from "./SessionUsageDialog";
-import { useTurnUsage, useUsageReports } from "./state";
+import { usage, useTurnUsage, useUsageReports } from "./state";
+import { LOCAL } from "../../state/computers";
 
 const totals = (over: Partial<UsageTotals> = {}): UsageTotals => ({
   turns: 1, inputTokens: 1000, outputTokens: 200, cachedInputTokens: 0, cacheWriteTokens: 0, costUsd: 0, estimatedCostUsd: 0, unpricedTurns: 0, ...over,
@@ -23,7 +24,7 @@ beforeEach(() => {
   call.mockReset();
   useTurnUsage.setState({ bySession: {} });
   useUsageReports.setState({ latest: null, unread: false });
-  useStore.setState({ client: { call, onEvent: () => () => {} } as unknown as RpcClient, sessions: {}, dialog: { kind: "usage" } });
+  useStore.setState({ client: { call, onEvent: () => () => {} } as unknown as RpcClient, computer: LOCAL, localClient: null, sessions: {}, dialog: { kind: "usage" } });
 });
 afterEach(cleanup);
 
@@ -160,5 +161,36 @@ describe("a session's dashboard", () => {
     expect(screen.getByRole("img", { name: "Context used after each turn" }).querySelectorAll("circle").length).toBe(2);
     fireEvent.click(screen.getByRole("button", { name: "Backend" }));
     expect(useStore.getState().dialog).toEqual({ kind: "session-usage", sessionId: "w1" });
+  });
+});
+
+describe("on a remote computer", () => {
+  const localCall = vi.fn();
+  beforeEach(() => {
+    localCall.mockReset();
+    localCall.mockResolvedValue({ enabled: true, time: "18:00" });
+    call.mockImplementation(async (method: string, p: Record<string, unknown>) => {
+      if (method === "usage.summary") return summary(p.groupBy as UsageSummary["groupBy"], [], {});
+      return [];
+    });
+    useStore.setState({ computer: "remote-1", localClient: { call: localCall, onEvent: () => () => {} } as unknown as RpcClient });
+  });
+
+  it("reads its history from it and keeps the daily summary this computer's", async () => {
+    await usage.session("s9");
+    expect(call).toHaveBeenCalledWith("usage.session", { id: "s9", includeWorkers: false });
+    await usage.daily();
+    expect(localCall).toHaveBeenCalledWith("usage.daily", {});
+    expect(call).not.toHaveBeenCalledWith("usage.daily", expect.anything());
+  });
+
+  it("shows its dashboard without this computer's daily summary", async () => {
+    useUsageReports.setState({ latest: { id: "r", title: "Yesterday", from: "", to: "", generatedAt: "", totals: totals(), previous: totals(), markdown: "" }, unread: true });
+    render(<UsageDialog />);
+    await waitFor(() => expect(call).toHaveBeenCalledWith("usage.summary", expect.objectContaining({ groupBy: "day" })));
+    expect(screen.getByText(/Usage and cost · Remote computer/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Latest daily" })).toBeNull();
+    expect(screen.queryByText("Settings → Usage")).toBeNull();
+    expect(localCall).not.toHaveBeenCalledWith("usage.summary", expect.anything());
   });
 });

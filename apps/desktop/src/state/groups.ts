@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Group, Session } from "../gen";
-import { activeWorkspaceId, useStore } from "./store";
+import { activeWorkspaceId, LOCAL, useStore } from "./store";
 
 /**
  * Names of the remembered groups plus any group a session is in, sorted; the
@@ -17,9 +17,13 @@ export function groupNames(groups: Group[], sessions: Record<string, Session>, w
   return [...names].sort((a, b) => Number(here.has(b)) - Number(here.has(a)) || a.localeCompare(b));
 }
 
-/** The daemon's group registry, fetched on mount. `reload` fetches it again. */
+/**
+ * The daemon's group registry, fetched on mount. `reload` fetches it again.
+ * A remote computer does not share its registry with a paired device: there
+ * the names come from its sessions.
+ */
 export function useGroups(): { groups: Group[]; names: string[]; reload: () => Promise<void> } {
-  const client = useStore((s) => s.client);
+  const client = useStore((s) => (s.computer === LOCAL ? s.client : null));
   const sessions = useStore((s) => s.sessions);
   const workspace = useStore((s) => activeWorkspaceId(s));
   const toast = useStore((s) => s.toast);

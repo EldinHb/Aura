@@ -10,6 +10,7 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub mod log_file;
+mod remotes;
 mod update;
 pub mod update_helper;
 
@@ -411,6 +412,8 @@ fn init_logging() {
     };
     tracing_subscriber::registry()
         .with(filter)
+        // WebSocket frames carry device tokens (remote computers): never logged.
+        .with(aura_rpc::quiet_wire_logs())
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .with(file)
         .init();
@@ -587,10 +590,18 @@ pub fn run() {
             webview_log,
             update::update_check,
             update::update_download,
-            update::update_install
+            update::update_install,
+            remotes::remotes_list,
+            remotes::remote_device_name,
+            remotes::remote_pair,
+            remotes::remote_rename,
+            remotes::remote_remove,
+            remotes::remote_bridge,
+            remotes::remote_retry
         ])
         .setup(|app| {
             update::manage(app);
+            remotes::manage(app);
             // Tray. Built here rather than via the `trayIcon` config block: Tauri
             // creates one tray per source and keeps them in a list, so declaring it
             // in both places put two identical icons in the menu bar.

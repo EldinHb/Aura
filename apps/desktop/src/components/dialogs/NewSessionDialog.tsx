@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "../Modal";
-import { useStore } from "../../state/store";
-import type { Autonomy, DirEntry, ModelInfo, SessionMode } from "../../gen";
+import { LOCAL, useStore } from "../../state/store";
+import type { Autonomy, DirEntry, ModelInfo, Project, SessionMode } from "../../gen";
 import { setFocus } from "../../commands/core";
 import { basename } from "../../lib/platform";
 import { physicalKey } from "../../lib/keymap";
@@ -14,6 +14,8 @@ import { AutonomyPicker } from "../AutonomyPicker";
 import { describeAutonomy } from "../../lib/features";
 import { DEFAULT_BRANCH_PATTERN, expandBranch, formOf, templateOf, templates as templateApi, useTemplates, type SessionForm } from "../../features/templates/state";
 import type { SessionTemplate } from "../../gen";
+import { NOT_ON_REMOTE } from "../../lib/remoteCapabilities";
+import { useComputers, computerName } from "../../state/computers";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
 /** Rows the directory browser renders; the arrow keys stay within them. */
@@ -62,8 +64,15 @@ function parentDir(p: string): string {
 }
 
 export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetOwner }: { preset?: string; cwd?: string; featureOwner?: boolean }) {
-  const client = useStore((s) => s.client);
-  const providers = useStore((s) => s.providers);
+  // The computer the dialog was opened on: the session is made there or not at all.
+  const [origin] = useState(() => useStore.getState().computer);
+  // Its client while it is shown; none once another computer is.
+  const client = useStore((s) => (s.computer === origin ? s.client : null));
+  // On a remote computer: no terminals, no file browsing; folders come from its known projects.
+  const remote = origin !== LOCAL;
+  const computerLabel = useComputers((s) => (remote || s.remotes.length > 0 ? computerName(origin, s.remotes) : null));
+  const allProviders = useStore((s) => s.providers);
+  const providers = useMemo(() => (remote ? allProviders.filter((p) => p.kind !== "terminal") : allProviders), [remote, allProviders]);
   const settings = useStore((s) => s.settings);
   const selected = useStore((s) => (s.selectedId ? s.sessions[s.selectedId] : null));
   const closeDialog = useStore((s) => s.closeDialog);
@@ -89,7 +98,9 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   // ACP agents only report their models and modes once a session exists, and
   // have no terminal mode Aura could switch to.
   const isAcp = provider === "acp";
-  const [dir, setDir] = useState(presetCwd ?? (selected && folderOf(selected)) ?? settings.defaultCwd ?? "");
+  const [dir, setDir] = useState(presetCwd ?? (selected && folderOf(selected)) ?? (remote ? "" : settings.defaultCwd) ?? "");
+  // A remote computer's known projects (`orchestrator.projects`): where its sessions may work.
+  const [projects, setProjects] = useState<Project[]>([]);
   const [home, setHome] = useState<string>("");
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [dirIndex, setDirIndex] = useState(0);
@@ -141,17 +152,33 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   const { names: groups } = useGroups();
 
   useEffect(() => {
-    if (owns) client?.autonomy().then(setGlobalAutonomy, () => {});
-  }, [client, owns]);
+    if (owns && !remote) client?.autonomy().then(setGlobalAutonomy, () => {});
+  }, [client, owns, remote]);
 
   useEffect(() => {
-    client?.home().then((h) => {
-      if (h) {
-        setHome(h);
-        setDir((d) => d || h);
-      }
-    });
-  }, [client]);
+    if (!remote) return;
+    client?.projects().then(
+      (ps) => {
+        setProjects(ps);
+        // Start in its most recently used project.
+        setDir((d) => d || ps[0]?.path || "");
+      },
+      () => setProjects([]),
+    );
+  }, [client, remote]);
+
+  useEffect(() => {
+    if (remote) return;
+    client
+      ?.home()
+      .then((h) => {
+        if (h) {
+          setHome(h);
+          setDir((d) => d || h);
+        }
+      })
+      .catch(() => {});
+  }, [client, remote]);
 
   useEffect(() => {
     // A template's options for this provider, or the provider's defaults.
@@ -175,7 +202,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   const partial = useMemo(() => (expandedDir.endsWith("/") ? "" : basename(expandedDir)), [expandedDir]);
 
   useEffect(() => {
-    if (!client) return;
+    if (!client || remote) return;
     if (!expandedDir) {
       setEntries([]);
       return;
@@ -192,10 +219,17 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     return () => {
       cancelled = true;
     };
-  }, [client, listBase, partial, expandedDir]);
+  }, [client, remote, listBase, partial, expandedDir]);
 
   useEffect(() => {
     if (!client || !expandedDir) return;
+    if (remote) {
+      // The project the folder is in, if it is a repository.
+      const clean = expandedDir.replace(/\/+$/, "");
+      const p = projects.find((x) => clean === x.path || clean.startsWith(`${x.path}/`));
+      setRepoRoot(p?.repo ? p.path : null);
+      return;
+    }
     let cancelled = false;
     client
       .gitRepoRoot(expandedDir)
@@ -204,10 +238,10 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     return () => {
       cancelled = true;
     };
-  }, [client, expandedDir]);
+  }, [client, expandedDir, remote, projects]);
 
   useEffect(() => {
-    if (!client || groupTouched) return;
+    if (!client || groupTouched || remote) return;
     if (!expandedDir || noFolder) {
       setGroup("");
       setGroupFromRepo(false);
@@ -229,15 +263,27 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     return () => {
       cancelled = true;
     };
-  }, [client, expandedDir, groupTouched, noFolder]);
+  }, [client, remote, expandedDir, groupTouched, noFolder]);
 
-  const recentDirs = useMemo(() => loadRecentDirs(), []);
+  // Recent folders are this computer's.
+  const recentDirs = useMemo(() => (remote ? [] : loadRecentDirs()), [remote]);
   const showRecent = !partial && recentDirs.length > 0 && (dir === "" || dir === home || dir === home + "/");
   type BrowserRow = { path: string; label: string; git: boolean; recent?: boolean };
   const browserRows = useMemo<BrowserRow[]>(() => {
+    if (remote) {
+      // The remote's projects matching what is typed (all of them while a project is picked as it
+      // is); a folder inside one is typed out.
+      const typed = dir.trim().replace(/\/+$/, "");
+      const q = projects.some((p) => p.path === typed) ? "" : typed.toLowerCase();
+      return projects
+        .filter((p) => !q || p.path.toLowerCase().includes(q))
+        .filter((p) => p.path !== typed)
+        .map((p) => ({ path: p.path, label: p.path, git: p.repo }))
+        .slice(0, MAX_DIR_ROWS);
+    }
     const rows: BrowserRow[] = showRecent ? recentDirs.map((p) => ({ path: p, label: home ? p.replace(home, "~") : p, git: false, recent: true })) : [];
     return rows.concat(entries.map((e) => ({ path: e.path, label: e.name, git: e.is_git_repo }))).slice(0, MAX_DIR_ROWS);
-  }, [showRecent, recentDirs, entries, home]);
+  }, [remote, projects, dir, showRecent, recentDirs, entries, home]);
 
   useEffect(() => {
     dirBrowser.current?.querySelector<HTMLElement>(".list-item.active")?.scrollIntoView({ block: "nearest" });
@@ -248,7 +294,8 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   }, [title, worktree]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const descend = (path: string) => {
-    setDir(path.replace(/\/+$/, "") + "/");
+    // A remote's project is picked as it is: there is no browsing into it.
+    setDir(remote ? path : path.replace(/\/+$/, "") + "/");
     setDirIndex(0);
   };
 
@@ -259,7 +306,13 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   );
 
   const submit = useCallback(async () => {
-    if (!client || busy) return;
+    if (busy) return;
+    if (useStore.getState().computer !== origin) {
+      toast(`Nothing was created: this dialog was for ${computerName(origin)}, and another computer is shown now.`, "error");
+      closeDialog();
+      return;
+    }
+    if (!client) return;
     // An empty directory gives an orchestrator none: the daemon makes it one of its own.
     const cwd = noFolder ? "" : expandedDir.replace(/\/+$/, "") || home || "/";
     setBusy(true);
@@ -288,9 +341,9 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         autonomy: owns ? autonomy : null,
         workspace: workspace?.id ?? null,
       });
-      if (cwd) pushRecentDir(cwd);
-      // Each key of a field's `data` becomes that mod's data on the new session.
-      for (const [key, c] of Object.entries(contributions)) {
+      if (cwd && !remote) pushRecentDir(cwd);
+      // Each key of a field's `data` becomes that mod's data on the new session (mods are this computer's).
+      for (const [key, c] of remote ? [] : Object.entries(contributions)) {
         if (noFolder || !c.data || typeof c.data !== "object") continue;
         const modId = key.slice(0, key.indexOf(":"));
         for (const [k, value] of Object.entries(c.data as Record<string, unknown>)) {
@@ -306,7 +359,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, effort, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast, workspace]);
+  }, [client, origin, remote, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, effort, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast, workspace]);
 
   // What the dialog holds, as a template sees it.
   const form = (): SessionForm => ({
@@ -318,6 +371,11 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   /** Fill the dialog from a template; the user can still change anything before creating. */
   const applyTemplate = (t: SessionTemplate) => {
     const f = formOf(t, form());
+    if (remote && f.mode === "terminal") {
+      // A remote computer makes no terminal sessions; the template's other options still apply.
+      toast(`${t.name}: terminal sessions: ${NOT_ON_REMOTE.toLowerCase()}; using structured`, "warn");
+      f.mode = "structured";
+    }
     setTemplate(t);
     const sameProvider = f.choiceKey === choiceKey && available.some((c) => c.key === f.choiceKey);
     if (!available.some((c) => c.key === f.choiceKey)) toast(`${t.name}: ${f.choiceKey} is not available here; keeping ${choice.label}`, "warn");
@@ -372,7 +430,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     } else if (e.key === "ArrowRight" && browserRows[dirIndex] && caretAtEnd(e.currentTarget)) {
       e.preventDefault();
       descend(browserRows[dirIndex].path);
-    } else if (e.key === "Backspace" && !partial && expandedDir && expandedDir !== "/") {
+    } else if (e.key === "Backspace" && !remote && !partial && expandedDir && expandedDir !== "/") {
       e.preventDefault();
       setDir(parentDir(expandedDir) === "/" ? "/" : parentDir(expandedDir) + "/");
     }
@@ -384,6 +442,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         <>
           <span>New session</span>
           {workspace && <span className="dim" style={{ fontWeight: 400 }} title={workspace.name}>in {workspace.name}</span>}
+          {computerLabel && <span className="chip new-session-computer" title="The computer the session runs on">on {computerLabel}</span>}
           <span className="dim" style={{ marginLeft: "auto", fontWeight: 400 }}>
             <kbd>⌘↩</kbd> create
           </span>
@@ -424,7 +483,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         </>
       }
     >
-      {templateList.length > 0 && (
+      {client && templateList.length > 0 && (
         <div className="field">
           <label>Template</label>
           <div className="radio-row template-row" role="radiogroup" aria-label="Template">
@@ -476,6 +535,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
             <label>
               <input type="checkbox" checked={!!autonomy} onChange={(e) => setAutonomy(e.target.checked ? (globalAutonomy ?? { level: "blocking_decisions", checkpoints: ["after_design", "before_implementation", "before_delivery"] }) : null)} style={{ marginRight: 6 }} />
               Own autonomy for this feature {!autonomy && globalAutonomy && <span className="dim">· otherwise {describeAutonomy(globalAutonomy)}, from Settings → Orchestrators</span>}
+              {!autonomy && remote && <span className="dim">· otherwise the remote computer's setting</span>}
             </label>
             {autonomy && <AutonomyPicker name="new-feature-autonomy" value={autonomy} onChange={setAutonomy} />}
           </div>
@@ -496,7 +556,8 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
           Directory {repoRoot && <span className="chip">⎇ git repo</span>}
           {orchestrates && <button type="button" className="btn small folder-toggle" data-command="new-session.folder" onClick={() => setOrchestratorFolder(false)}>No folder</button>}
         </label>
-        <input ref={dirInput} type="text" value={dir} onChange={(e) => setDir(e.target.value)} onKeyDown={onDirKey} placeholder="~/projects/…" spellCheck={false} autoComplete="off" />
+        <input ref={dirInput} type="text" value={dir} onChange={(e) => setDir(e.target.value)} onKeyDown={onDirKey} placeholder={remote ? "A folder in one of its projects" : "~/projects/…"} spellCheck={false} autoComplete="off" />
+        {remote && <span className="dim" style={{ fontSize: 11 }}>On a remote computer, sessions work in its known projects (or a folder inside one). Browsing its files: {NOT_ON_REMOTE.toLowerCase()}.</span>}
         {browserRows.length > 0 && (
           <div className="dir-browser" ref={dirBrowser}>
             {browserRows.map((row, i) => (
@@ -506,7 +567,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
               </button>
             ))}
             <div className="dim" style={{ padding: "4px 10px", fontSize: 11 }}>
-              <kbd>↑↓</kbd> pick <kbd>↩</kbd>/<kbd>⇥</kbd>/<kbd>→</kbd> descend <kbd>⌫</kbd> up
+              {remote ? <><kbd>↑↓</kbd> pick <kbd>↩</kbd> use</> : <><kbd>↑↓</kbd> pick <kbd>↩</kbd>/<kbd>⇥</kbd>/<kbd>→</kbd> descend <kbd>⌫</kbd> up</>}
             </div>
           </div>
         )}
@@ -537,7 +598,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         </div>
       </div>
 
-      {!noFolder && <NewSessionModFields cwd={expandedDir.replace(/\/+$/, "") || null} onChange={onContribution} />}
+      {!noFolder && !remote && <NewSessionModFields cwd={expandedDir.replace(/\/+$/, "") || null} onChange={onContribution} />}
 
       {isAcp ? (
         <div className="field">
@@ -545,7 +606,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         </div>
       ) : provider !== "terminal" ? (
         <>
-          {!orchestrates && (
+          {!orchestrates && !remote && (
           <div className="field">
             <label>Mode</label>
             <div className="radio-row" role="radiogroup">

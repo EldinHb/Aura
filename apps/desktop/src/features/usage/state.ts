@@ -10,22 +10,29 @@ import type {
   DailyUsageSettings, SessionUsage, UsageGroupBy, UsageReport, UsageSummary, Event,
 } from "../../gen";
 import { registerCommands } from "../../lib/commands";
-import { rpc } from "../../lib/call";
+import { rpc, shownRpc } from "../../lib/call";
 import { desktopNotify } from "../../lib/notify";
-import { useStore } from "../../state/store";
+import { selectLocalClient, useStore } from "../../state/store";
 import { fmtCost, fmtTokens, timeZone, totalTokens, tzOffsetMinutes } from "./format";
 
+/**
+ * History and summaries are read from the computer the window shows (a remote
+ * allows `usage.summary/session/report/reports`); the daily summary is this
+ * computer's setting, like the rest of Settings.
+ */
 export const usage = {
   summary: (q: { from?: Date; to?: Date; groupBy?: UsageGroupBy; splitBy?: UsageGroupBy; limit?: number }) =>
-    rpc<UsageSummary>("usage.summary", {
+    shownRpc<UsageSummary>("usage.summary", {
       from: q.from?.toISOString(), to: q.to?.toISOString(), groupBy: q.groupBy ?? "day",
       ...(q.splitBy ? { splitBy: q.splitBy } : {}), ...(q.limit ? { limit: q.limit } : {}),
       tzOffsetMinutes: tzOffsetMinutes(q.from), timeZone: timeZone(),
     }),
-  session: (id: string, includeWorkers = false) => rpc<SessionUsage>("usage.session", { id, includeWorkers }),
+  session: (id: string, includeWorkers = false) => shownRpc<SessionUsage>("usage.session", { id, includeWorkers }),
   report: (from: Date, to: Date, title: string) =>
-    rpc<UsageReport>("usage.report", { from: from.toISOString(), to: to.toISOString(), title, tzOffsetMinutes: tzOffsetMinutes(from), timeZone: timeZone() }),
-  reports: () => rpc<UsageReport[]>("usage.reports"),
+    shownRpc<UsageReport>("usage.report", { from: from.toISOString(), to: to.toISOString(), title, tzOffsetMinutes: tzOffsetMinutes(from), timeZone: timeZone() }),
+  reports: () => shownRpc<UsageReport[]>("usage.reports"),
+  /** This computer's daily summaries, whichever computer the window shows. */
+  localReports: () => rpc<UsageReport[]>("usage.reports"),
   daily: () => rpc<DailyUsageSettings>("usage.daily"),
   setDaily: (s: DailyUsageSettings) => rpc<DailyUsageSettings>("usage.set_daily", s),
 };
@@ -68,28 +75,40 @@ export function openUsage(sessionId?: string) {
   useStore.getState().openDialog(sessionId ? { kind: "session-usage", sessionId } : { kind: "usage" });
 }
 
-/** Keep the open sessions' turn usage current and announce the daily summary. Mount once per window. */
+/**
+ * Keep the shown sessions' turn usage current and announce this computer's
+ * daily summary. Mount once per window.
+ */
 export function useUsageSync() {
   const client = useStore((s) => s.client);
+  const local = useStore(selectLocalClient);
   useEffect(() => {
     if (!client) return;
+    // Another computer's sessions: what was loaded for the last one no longer refreshes.
+    useTurnUsage.setState({ bySession: {} });
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
     const off = client.onEvent((ev: Event) => {
-      if (ev.type === "turn_completed") {
-        const id = ev.session_id;
-        if (!useTurnUsage.getState().bySession[id]) return;
-        // The record is written as the turn ends; one fetch per burst of turns.
-        clearTimeout(timers.get(id));
-        timers.set(id, setTimeout(() => { timers.delete(id); void useTurnUsage.getState().load(id); }, 300));
-      } else if (ev.type === "usage_report") {
-        useUsageReports.setState({ latest: ev.report, unread: true });
-        void desktopNotify(`Usage summary: ${ev.report.title}`, reportLine(ev.report), { usageReport: ev.report.id });
-        useStore.getState().toast(`Usage summary: ${reportLine(ev.report)}`, "info", { actions: [{ label: "Open", run: () => openUsage() }] });
-      }
+      if (ev.type !== "turn_completed") return;
+      const id = ev.session_id;
+      if (!useTurnUsage.getState().bySession[id]) return;
+      // The record is written as the turn ends; one fetch per burst of turns.
+      clearTimeout(timers.get(id));
+      timers.set(id, setTimeout(() => { timers.delete(id); void useTurnUsage.getState().load(id); }, 300));
     });
-    Promise.resolve().then(() => usage.reports()).then((all) => { if (all[0]) useUsageReports.setState((s) => ({ latest: s.latest ?? all[0] })); }).catch(() => {});
     return () => { off(); timers.forEach(clearTimeout); };
   }, [client]);
+  useEffect(() => {
+    // The daily summary is written by this computer's daemon; a remote's own is not announced here.
+    if (!local) return;
+    const off = local.onEvent((ev: Event) => {
+      if (ev.type !== "usage_report") return;
+      useUsageReports.setState({ latest: ev.report, unread: true });
+      void desktopNotify(`Usage summary: ${ev.report.title}`, reportLine(ev.report), { usageReport: ev.report.id });
+      useStore.getState().toast(`Usage summary: ${reportLine(ev.report)}`, "info", { actions: [{ label: "Open", run: () => openUsage() }] });
+    });
+    Promise.resolve().then(() => usage.localReports()).then((all) => { if (all[0]) useUsageReports.setState((s) => ({ latest: s.latest ?? all[0] })); }).catch(() => {});
+    return off;
+  }, [local]);
 }
 
 export function registerUsageCommands() {

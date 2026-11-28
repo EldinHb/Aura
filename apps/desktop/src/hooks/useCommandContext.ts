@@ -1,4 +1,4 @@
-import { useStore, selectSelected, selectPendingCount } from "../state/store";
+import { useStore, selectSelected, selectPendingCount, LOCAL } from "../state/store";
 import type { CommandContext } from "../lib/commands";
 import { isMac } from "../lib/platform";
 import { folderOf } from "../lib/sessionFolder";
@@ -68,5 +68,6 @@ export function currentCommandContext(): CommandContext {
     isMac,
     hasTabs: st.tabs.length > 0,
     previewTab: !!st.tabs.find((t) => t.key === st.activeTab)?.preview,
+    remote: st.computer !== LOCAL,
   };
 }

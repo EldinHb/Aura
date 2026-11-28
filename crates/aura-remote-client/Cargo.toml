@@ -1,0 +1,32 @@
+[package]
+name = "aura-remote-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The desktop app's client for other Aura installations: certificate pinning, pairing, device tokens in the OS keychain, and a loopback bridge for the webview"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+axum = { workspace = true }
+tokio-tungstenite = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+sha2 = { workspace = true }
+# Device tokens live in the OS keychain: macOS Keychain, Windows Credential
+# Manager, the Secret Service on Linux (pure Rust, no libdbus).
+keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "crypto-rust", "tokio"] }
+
+[dev-dependencies]
+aura-core = { workspace = true }
+aura-rpc = { workspace = true }
+async-trait = { workspace = true }
+tempfile = { workspace = true }
+rcgen = { workspace = true }

@@ -8,6 +8,7 @@ import type { Attention, Item, Session } from "../gen";
 import { unreadModItems, useModInbox } from "../mods/inbox";
 import { auraMessage } from "../lib/auraMessage";
 import { selectPendingCount, useStore, type AppState } from "./store";
+import { otherComputersPending, useComputers } from "./computers";
 
 /** The sidebar marker of each kind. */
 export const ATTENTION: Record<Attention, { className: string; label: string }> = {
@@ -79,12 +80,18 @@ export function quietReportTurn(st: AppState, sessionId: string): boolean {
   return Object.values(st.sessions).some((w) => w.orchestrator_id === sessionId && !w.archived && w.status === "running");
 }
 
-/** How many rows the inbox lists: approvals and questions waiting in any session, and what mods report unread. */
-export function inboxCount(st: AppState, modItems = useModInbox.getState().items): number {
-  return selectPendingCount(st) + unreadModItems(modItems);
+/**
+ * How many rows the inbox lists: approvals and questions waiting in any
+ * session, on the computer shown and on every other connected computer, and
+ * what mods report unread.
+ */
+export function inboxCount(st: AppState, modItems = useModInbox.getState().items, elsewhere = otherComputersPending(st.computer)): number {
+  return selectPendingCount(st) + elsewhere + unreadModItems(modItems);
 }
 
 export function useInboxCount(): number {
   const modItems = useModInbox((s) => s.items);
-  return useStore((st) => inboxCount(st, modItems));
+  const computer = useStore((s) => s.computer);
+  const elsewhere = useComputers((s) => otherComputersPending(computer, s.sessions));
+  return useStore((st) => inboxCount(st, modItems, elsewhere));
 }

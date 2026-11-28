@@ -68,6 +68,8 @@ export type Dialog =
   | { kind: "session-usage"; sessionId: string }
   | { kind: "search" }
   | { kind: "inbox" }
+  /** Remote computers: the list, or pairing (`add`: a new one; `repair`: that one again). */
+  | { kind: "computers"; add?: boolean; repair?: string }
   | { kind: "diff"; sessionId: string; path?: string }
   | { kind: "rename"; sessionId: string }
   | { kind: "system-prompt"; sessionId: string }
@@ -103,8 +105,21 @@ export type ToastOptions = { actions?: ToastAction[] };
 
 export type WhichKeyState = { prefix: string[]; candidates: { key: string; label: string }[] } | null;
 
+/** The computer id of this computer (its own daemon); a remote computer's is its server id. */
+export const LOCAL = "local";
+
 export type AppState = {
+  /** The daemon the window shows: this computer's, or a remote computer's (see `computer`). */
   client: RpcClient | null;
+  /**
+   * The computer the window shows: `LOCAL`, or a remote computer's id
+   * (state/computers.ts). Sessions, transcripts, the inbox's actions and the
+   * new-session dialog work on it; the app's own settings, mods and scheduled
+   * tasks always on this computer (`localClient`).
+   */
+  computer: string;
+  /** This computer's daemon, whichever computer is shown. */
+  localClient: RpcClient | null;
   connection: ConnectionState;
   connectionError: string | null;
   daemonVersion: string | null;
@@ -160,6 +175,7 @@ export type AppState = {
   settings: UiSettings;
   // actions
   setClient: (c: RpcClient | null) => void;
+  setLocalClient: (c: RpcClient | null) => void;
   setConnection: (s: ConnectionState, err?: string | null) => void;
   setProviders: (p: ProviderInfo[]) => void;
   setSessions: (s: Session[]) => void;
@@ -391,6 +407,17 @@ const LAST_SELECTED_KEY = "aura.workspace-last-selected.v1";
 const TAB_KEY = "aura.sidebar-tab.v1";
 const GROUPS_KEY = "aura.sidebar-collapsed-groups.v1";
 
+/**
+ * Whether what the sidebar keeps across restarts (order, open orchestrators,
+ * workspace, tabs) is saved: only while this computer is shown. A remote
+ * computer's is kept in memory (state/computers.ts), so showing one never
+ * overwrites this computer's.
+ */
+let persistLocal = true;
+export function setPersistLocal(on: boolean) {
+  persistLocal = on;
+}
+
 /** A detached single-session window (`?window=session`): one tab, never saved, so it leaves the main window's tabs alone. */
 const detachedWindow = typeof location !== "undefined" && new URLSearchParams(location.search).get("window") === "session";
 /** The saved tabs come back once, when the sessions first load; until then nothing overwrites them. */
@@ -416,12 +443,14 @@ function tabsPatch(st: AppState, next: T.TabsState): Partial<AppState> {
     else Object.assign(patch, { modView: { modId: after.modId, id: after.viewId, props: after.props } });
     if (before?.key !== after?.key) patch.cursorItemId = null;
   }
-  if (!detachedWindow && !tabsRestorePending && (next.tabs !== st.tabs || next.activeTab !== st.activeTab)) T.saveTabs(next);
+  if (!detachedWindow && !tabsRestorePending && persistLocal && (next.tabs !== st.tabs || next.activeTab !== st.activeTab)) T.saveTabs(next);
   return patch;
 }
 
 export const useStore = create<AppState>((set, get) => ({
   client: null,
+  computer: LOCAL,
+  localClient: null,
   connection: "closed",
   connectionError: null,
   daemonVersion: null,
@@ -458,6 +487,7 @@ export const useStore = create<AppState>((set, get) => ({
   settings: loadSettings(),
 
   setClient: (client) => set({ client }),
+  setLocalClient: (localClient) => set({ localClient }),
   setConnection: (connection, err = null) => set({ connection, connectionError: err }),
   setProviders: (providers) => set({ providers }),
   setSessions: (list) => {
@@ -469,7 +499,7 @@ export const useStore = create<AppState>((set, get) => ({
       expandedOrchestras: saveIds(EXPANDED_KEY, get().expandedOrchestras.filter((c) => sessions[c])),
       collapsedSubOrchestras: saveIds(SUB_COLLAPSED_KEY, get().collapsedSubOrchestras.filter((c) => sessions[c])),
     });
-    if (tabsRestorePending) get().restoreTabs();
+    if (tabsRestorePending && persistLocal) get().restoreTabs();
     // Tabs of sessions deleted while Aura was away close.
     const st = get();
     const cur = tabsOf(st);
@@ -583,7 +613,7 @@ export const useStore = create<AppState>((set, get) => ({
     set(tabsPatch(st, T.dropTabs(tabsOf(st), (t) => t.kind === "mod" && t.modId === modId)));
   },
   restoreTabs: () => {
-    if (detachedWindow) return;
+    if (detachedWindow || !persistLocal) return;
     tabsRestorePending = false;
     const saved = T.loadSavedTabs();
     const st = get();
@@ -595,13 +625,18 @@ export const useStore = create<AppState>((set, get) => ({
   loadTranscript: (id) => {
     const st = get();
     const t = st.transcripts[id];
-    if (!st.client || t?.loaded || t?.loading) return;
+    const client = st.client;
+    if (!client || t?.loaded || t?.loading) return;
     st.ensureTranscript(id);
     st.markLoading(id, true);
-    st.client
+    // An answer that comes after the window moved to another computer (or daemon) is the old one's: dropped.
+    client
       .history(id)
-      .then((events) => get().loadHistory(id, events))
+      .then((events) => {
+        if (get().client === client) get().loadHistory(id, events);
+      })
       .catch((e) => {
+        if (get().client !== client) return;
         get().markLoading(id, false);
         get().toast(`history: ${e instanceof Error ? e.message : e}`, "error");
       });
@@ -768,6 +803,7 @@ function loadOrder(): string[] {
 }
 
 function saveOrder(order: string[]): string[] {
+  if (!persistLocal) return order;
   try {
     localStorage.setItem(ORDER_KEY, JSON.stringify(order));
   } catch {
@@ -823,6 +859,8 @@ export function activeWorkspaceId(st: AppState): string | null {
 function enterWorkspace(id: string) {
   const st = useStore.getState();
   if (st.activeWorkspace !== id) useStore.setState({ activeWorkspace: saveWorkspace(id), sidebarFilter: "", sidebarCursor: null });
+  // A remote computer keeps no active workspace for a paired device (`workspace.touch` is this computer's).
+  if (st.computer !== LOCAL) return;
   st.client?.touchWorkspace(id).catch((error: unknown) => console.warn(`Could not tell the daemon about workspace ${id}:`, error));
 }
 
@@ -835,6 +873,7 @@ function loadWorkspace(): string | null {
 }
 
 function saveWorkspace(id: string | null): string | null {
+  if (!persistLocal) return id;
   try {
     if (id) localStorage.setItem(WORKSPACE_KEY, id);
   } catch {
@@ -855,6 +894,7 @@ function loadLastSelected(): Record<string, string> {
 }
 
 function saveLastSelected(map: Record<string, string>): Record<string, string> {
+  if (!persistLocal) return map;
   try {
     localStorage.setItem(LAST_SELECTED_KEY, JSON.stringify(map));
   } catch {
@@ -867,6 +907,8 @@ function saveLastSelected(map: Record<string, string>): Record<string, string> {
 // The active workspace is per window, so it is not followed.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
+    // Other windows show this computer; a remote shown here keeps its own.
+    if (!persistLocal && e.key !== GROUPS_KEY && e.key !== TAB_KEY) return;
     if (e.key === EXPANDED_KEY) useStore.setState({ expandedOrchestras: loadIds(EXPANDED_KEY) });
     if (e.key === SUB_COLLAPSED_KEY) useStore.setState({ collapsedSubOrchestras: loadIds(SUB_COLLAPSED_KEY) });
     if (e.key === GROUPS_KEY) useStore.setState({ collapsedGroups: loadIds(GROUPS_KEY) });
@@ -884,6 +926,8 @@ function loadIds(key: string): string[] {
 }
 
 function saveIds(key: string, ids: string[]): string[] {
+  // Which orchestrators are open is this computer's; a section folded is the same everywhere.
+  if (!persistLocal && key !== GROUPS_KEY) return ids;
   try {
     localStorage.setItem(key, JSON.stringify(ids));
   } catch {
@@ -1299,6 +1343,16 @@ export function selectPendingCount(st: AppState): number {
   let n = 0;
   for (const s of Object.values(st.sessions)) n += s.pending_count;
   return n;
+}
+
+/** This computer's daemon. Before the link sets it (and in tests), the client when this computer is shown. */
+export function selectLocalClient(st: AppState): RpcClient | null {
+  return st.localClient ?? (st.computer === LOCAL ? st.client : null);
+}
+
+/** Whether the window shows a remote computer. */
+export function selectIsRemote(st: AppState): boolean {
+  return st.computer !== LOCAL;
 }
 
 export function selectSelected(st: AppState): Session | null {

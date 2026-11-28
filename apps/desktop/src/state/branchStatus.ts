@@ -9,7 +9,7 @@ import { create } from "zustand";
 import type { BranchStatus, Session } from "../gen";
 import type { RpcClient } from "../lib/rpc";
 import { folderOf } from "../lib/sessionFolder";
-import { useStore } from "./store";
+import { useStore, LOCAL } from "./store";
 
 export const useBranches = create<{ git: Record<string, BranchStatus | null> }>(() => ({ git: {} }));
 
@@ -42,7 +42,8 @@ export function refreshGit(client: RpcClient, cwd: string) {
  * `selected` reads it more often. An orchestrator without a folder has none.
  */
 export function useSessionBranch(session: (Pick<Session, "cwd" | "last_activity" | "status"> & { folderless?: boolean }) | null | undefined, selected = false) {
-  const client = useStore((state) => state.client);
+  // A remote computer keeps its git to itself.
+  const client = useStore((state) => (state.computer === LOCAL ? state.client : null));
   const open = useStore((state) => state.connection === "open");
   const cwd = session ? folderOf(session) ?? undefined : undefined;
   const git = useBranches((state) => (cwd ? state.git[cwd] : undefined));

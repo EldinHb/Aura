@@ -3,20 +3,23 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isTauri } from "../../lib/connection";
 import { base64ToBlob } from "../../lib/images";
 import { imageSource, resolvePath, type FileRef } from "../../lib/localPaths";
-import { useStore } from "../../state/store";
+import { LOCAL, useStore } from "../../state/store";
 
 /** Images read from disk, by path. Small: a transcript shows few at a time. */
 const images = new Map<string, Promise<Blob>>();
 const IMAGE_CACHE = 50;
 
 function loadImage(path: string): Promise<Blob> {
-  const cached = images.get(path);
+  // The same path on two computers is two files.
+  const st = useStore.getState();
+  const key = `${st.computer}\u0000${path}`;
+  const cached = images.get(key);
   if (cached) return cached;
-  const client = useStore.getState().client;
+  const client = st.client;
   if (!client) return Promise.reject(new Error("not connected"));
   const load = client.readImage(path).then((r) => base64ToBlob(r.data, r.media_type));
-  load.catch(() => images.delete(path));
-  images.set(path, load);
+  load.catch(() => images.delete(key));
+  images.set(key, load);
   if (images.size > IMAGE_CACHE) images.delete(images.keys().next().value!);
   return load;
 }
@@ -39,7 +42,9 @@ async function absolute(path: string): Promise<string> {
  */
 export function FileLink({ file, cwd, children }: { file: FileRef; cwd: string | undefined; children: ReactNode }) {
   const path = resolvePath(file.path, cwd);
-  if (!path || !isTauri()) return <span title={path ?? file.path}>{children}</span>;
+  // A path on a remote computer is not on this one's disk.
+  const remote = useStore((s) => s.computer !== LOCAL);
+  if (!path || !isTauri() || remote) return <span title={path ?? file.path}>{children}</span>;
   const title = `${path}${file.line ? `:${file.line}` : ""} · show in folder`;
   return (
     <a className="md-link md-file" href={path} title={title} data-hint

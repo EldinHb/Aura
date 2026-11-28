@@ -327,3 +327,124 @@ The remote listener is a plain TLS WebSocket, so an SSH tunnel to it works
 too: `ssh -L 7443:127.0.0.1:7443 user@desktop`, then connect to
 `wss://127.0.0.1:7443/` with the same fingerprint. Bind address `127.0.0.1`
 keeps the listener off the network entirely in that setup.
+
+## 11. Desktop client
+
+The desktop app is a remote client too: it pairs with other Aura
+installations (a home server, another Mac) the way the phone does, and shows
+one computer at a time — "This Mac" or a paired remote — while staying
+connected to all of them.
+
+### Why a loopback bridge
+
+The webview cannot pin a self-signed certificate: WebKit/WebView2 only
+accept certificates the OS trusts, and the remote's is self-signed by design.
+So TLS to a remote happens in the Tauri shell, in Rust
+(`crates/aura-remote-client`), and the webview reaches it through a bridge:
+
+- The shell listens on `127.0.0.1` at a random port (started the first time
+  the remotes are asked for). Each paired remote has its own random 256-bit
+  bridge secret, kept in memory only.
+- The webview opens `ws://127.0.0.1:<port>/ws?token=<secret>` — the same URL
+  shape, CSP rule (`connect-src ws://127.0.0.1:*`) and `RpcClient` it uses for
+  its own daemon.
+- For each such connection the shell opens `wss://<remote>/` with a rustls
+  verifier that accepts exactly the pinned fingerprint (no CA, no host name
+  check; the handshake signature is still checked against the pinned
+  certificate's key), calls `remote.auth` with the device token from the
+  keychain, and only then completes the webview's WebSocket upgrade. From
+  there it copies text frames both ways and drops binary (PTY) frames.
+
+Considered and not taken: Tauri commands and events per call
+(`invoke("remote_call")` plus an event per notification). It needs a second
+client implementation in the frontend and pushes every streamed transcript
+delta through Tauri's IPC; the bridge keeps one client and one code path for
+local and remote, and the device token never enters the webview.
+
+The bridge's secret only protects against other local processes that are
+not the user (the same threat model as the daemon's loopback token, §2).
+
+### State, backoff and failure
+
+The shell keeps each remote's state and sends the whole list to every window
+as `aura://remotes-changed` on every change:
+
+| `state.kind` | meaning |
+|---|---|
+| `idle` | nothing asked for a connection, or every one was closed |
+| `connecting` | an attempt is under way |
+| `online` | `{serverName, version}` from `remote.auth` |
+| `retrying` | `{reason, retryAt}` (epoch ms): unreachable, timed out, lost, or -32013 (waits `retryAfterSecs`) |
+| `revoked` | -32011, the token is gone from the keychain, or another `serverId` answered: **final** until paired again |
+| `cert_mismatch` | `{expected, actual}`: another certificate answered: **final** until paired again, never accepted silently |
+
+Attempts back off from 1 s doubling to 30 s with ±20 % jitter (as the
+Android app). Until `retryAt` the bridge refuses the webview's reconnects
+(HTTP 503 on the upgrade) without touching the network, so the webview
+client's own quick reconnect loop costs nothing. A final state is refused
+(403) until the user pairs again. Addresses are tried in order — the one that
+answered last first, then the rest of `host` + `alt` — and a mismatch on one
+address does not stop the others; it is reported only when none connects.
+Live connections ping the remote every 15 s and count as lost after 45 s
+without anything from it. Removing a remote or pairing it again ends its
+bridged connections at once; the webview reconnects on the new token and
+certificate.
+
+A remote that goes away never touches the local daemon's connection: they
+are separate clients, and the local one is never routed through the bridge.
+
+### Pairing and storage
+
+`remote_pair {host, port, fingerprint, code, alt, replaces?}` (from a pasted
+`aura://pair` link, or typed) connects with the given fingerprint pinned and
+calls `remote.pair` with `deviceName` = this computer's host name. A wrong
+fingerprint pairs nothing and names the one the computer showed. Pairing
+again with the same `serverId` replaces token and fingerprint and keeps the
+user's name for it; with `replaces` set and a different `serverId` (the
+remote was reinstalled), the old entry goes.
+
+- Device tokens: the OS keychain (`keyring`: macOS Keychain, Windows
+  Credential Manager, Secret Service on Linux), service
+  `nl.havick.aura.remote`, account = `serverId`. Never in a file, never in
+  the webview or localStorage.
+- Everything else (`id`=`serverId`, `label`, `serverName`, `host`, `alt`,
+  `port`, `fingerprint`, `deviceId`, `pairedAt`): `<data dir>/desktop/remotes.json`, 0600.
+- Removing a remote deletes both. The remote still lists the device until it
+  is revoked there (a device cannot revoke itself).
+
+Shell commands: `remotes_list`, `remote_device_name`, `remote_pair`,
+`remote_rename`, `remote_remove`, `remote_bridge` (→ `{port, token}`),
+`remote_retry`.
+
+### In the app
+
+- **Switcher** at the top of the sidebar (`leader h h`, `⌘K Computer: …`):
+  this computer, each remote with its state and waiting count, "Add remote
+  computer…", "Manage remote computers…". `leader h n/p` cycles, `leader h l`
+  goes back to this computer.
+- **What follows the computer shown**: the store's `client`, so the sidebar,
+  workspaces, sessions, transcripts, composer, approvals and the new-session
+  dialog. Usage history (per-turn lines, the session and global dashboards,
+  written summaries) and session templates (also in Settings → Templates,
+  which names the computer) are the shown computer's too: a remote allows
+  `usage.summary/session/report/reports` and `template.*`. Each computer's view (tabs, selection, workspace, open
+  orchestrators) is kept in memory while another is shown; only this
+  computer's is saved across restarts. Transcripts reload on return.
+- **Always this computer**: settings (all tabs but Templates, including
+  remote access itself), the daily usage summary (its setting and its
+  notification; a remote's dashboard leaves it out), mods, themes, scheduled
+  tasks, updates (`localClient`).
+- **Inbox and badge**: every connected computer's sessions are tracked in the
+  background (`session.list` + `session_*` events); the count and the Dock
+  badge add them up, and the inbox lists other computers' approvals and
+  questions labelled with the computer's name, answers them on that computer,
+  and switches to it to open one. Approvals and questions on a computer not
+  shown also raise a desktop notification.
+- **What a remote refuses** (§9) is hidden or refused with "not available on
+  remote computers": `lib/remoteCapabilities.ts` mirrors
+  `REMOTE_ALLOWED_METHODS` (a test keeps them equal), the remote client
+  refuses other methods before sending, commands that need them leave the
+  palette and menus (a key bound to one says why), the new-session dialog
+  offers no terminal and picks folders from `orchestrator.projects` instead of
+  browsing, terminal sessions show a note instead of a terminal, and git,
+  file links and local images are left out.

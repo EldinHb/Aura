@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import type { Session } from "../gen";
-import { useStore } from "../state/store";
+import { useStore, LOCAL } from "../state/store";
+import { commandWorksRemotely } from "../lib/remoteCapabilities";
 import { setFocus } from "../commands/core";
 import { runCommand } from "../lib/commands";
 import { fmtTokens, fmtUsd, relTime, truncate } from "./transcript/format";
@@ -22,6 +23,9 @@ function KV({ k, v, mono, title }: { k: string; v: React.ReactNode; mono?: boole
 }
 
 function Action({ cmd, label, keys, cls }: { cmd: string; label: string; keys?: string; cls?: string }) {
+  // On a remote computer, what it refuses is left out (lib/remoteCapabilities.ts).
+  const hidden = useStore((s) => s.computer !== LOCAL && !commandWorksRemotely(cmd));
+  if (hidden) return null;
   return (
     <button className={clsx("btn small", cls)} data-command={cmd} onClick={() => void runCommand(cmd)}>
       {label}

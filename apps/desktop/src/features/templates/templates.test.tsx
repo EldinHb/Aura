@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { ProviderInfo, SessionTemplate } from "../../gen";
 import type { RpcClient } from "../../lib/rpc";
 import { useStore } from "../../state/store";
+import { LOCAL } from "../../state/computers";
 import { NewSessionDialog } from "../../components/dialogs/NewSessionDialog";
 import { TemplatesTab } from "./TemplatesTab";
 import { expandBranch, formOf, templateOf, useTemplates, type SessionForm } from "./state";
@@ -66,6 +67,7 @@ beforeEach(() => {
       groupForDir: () => Promise.resolve(null),
       models: (p: string) => Promise.resolve(p === "codex" ? [{ id: "gpt-5", display_name: "GPT-5", is_default: true, efforts: ["low", "high"], default_effort: "low", description: null }] : []),
     } as unknown as RpcClient,
+    computer: LOCAL, localClient: null,
     providers, selectedId: null, settings: { ...useStore.getState().settings, defaultProvider: "claude" },
   });
 });
@@ -107,5 +109,19 @@ describe("Settings → Templates", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete" })); });
     expect(call).toHaveBeenCalledWith("template.delete", { id: "t1" });
+  });
+});
+
+describe("on a remote computer", () => {
+  it("are that computer's, edited there", async () => {
+    const localCall = vi.fn();
+    useStore.setState({ computer: "remote-1", localClient: { call: localCall } as unknown as RpcClient });
+    call.mockResolvedValue(true);
+    render(<TemplatesTab />);
+    expect(screen.getByText(/the computer this window shows/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete" })); });
+    expect(call).toHaveBeenCalledWith("template.delete", { id: "t1" });
+    expect(localCall).not.toHaveBeenCalled();
   });
 });

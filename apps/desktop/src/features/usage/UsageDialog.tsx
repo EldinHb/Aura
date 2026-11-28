@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import { ModalC } from "../../components/ModalC";
-import { useStore } from "../../state/store";
+import { selectIsRemote, useStore } from "../../state/store";
+import { computerName, useComputers } from "../../state/computers";
 import { Markdown } from "../../views/transcript/MarkdownView";
 import type { UsageGroup, UsageGroupBy, UsageReport, UsageSummary } from "../../gen";
 import { colorsFor, Legend, StackedBars, type Stack } from "./charts";
@@ -28,6 +29,9 @@ function isoDay(d: Date): string {
 /** The global usage dashboard: a period, its totals against the one before, a chart per day and the biggest spenders. */
 export function UsageDialog() {
   const client = useStore((s) => s.client);
+  const remote = useStore(selectIsRemote);
+  const computer = useStore((s) => s.computer);
+  const shownComputer = useComputers((s) => computerName(computer, s.remotes));
   const [periodKey, setPeriodKey] = useState<PeriodKey>("7d");
   const [custom, setCustom] = useState(() => ({ from: isoDay(new Date(Date.now() - 13 * 86_400_000)), to: isoDay(new Date()) }));
   const [metric, setMetric] = useState<Metric>("cost");
@@ -91,7 +95,7 @@ export function UsageDialog() {
   return (
     <ModalC
       title={<>
-        <span>Usage and cost</span>
+        <span>Usage and cost{remote ? ` · ${shownComputer}` : ""}</span>
         <span style={{ flex: 1 }} />
         <span className="dim" style={{ fontWeight: 400, fontSize: 11 }}>Costs with ~ are estimates from list prices</span>
       </>}
@@ -229,7 +233,10 @@ const SUMMARY_PERIODS: { key: PeriodKey; label: string }[] = [
 function SummaryPanel({ current }: { current: Period }) {
   const toast = useStore((s) => s.toast);
   const openDialog = useStore((s) => s.openDialog);
-  const latest = useUsageReports((s) => s.latest);
+  // The daily summary is this computer's; a remote computer's dashboard leaves it out.
+  const remote = useStore(selectIsRemote);
+  const local = useUsageReports((s) => s.latest);
+  const latest = remote ? null : local;
   const [report, setReport] = useState<UsageReport | null>(null);
   const [busy, setBusy] = useState(false);
   const write = async (p: Period) => {
@@ -260,7 +267,7 @@ function SummaryPanel({ current }: { current: Period }) {
       {report ? <div className="usage-report"><Markdown text={report.markdown} /></div> : (
         <p className="dim usage-empty">
           Pick a period for a summary: totals, cost, the biggest sessions and features, and what changed against the period before.
-          {" "}Aura can write one every day: <button data-hint type="button" className="linkish" onClick={() => openDialog({ kind: "settings", tab: "usage" })}>Settings → Usage</button>.
+          {!remote && <>{" "}Aura can write one every day: <button data-hint type="button" className="linkish" onClick={() => openDialog({ kind: "settings", tab: "usage" })}>Settings → Usage</button>.</>}
         </p>
       )}
     </section>

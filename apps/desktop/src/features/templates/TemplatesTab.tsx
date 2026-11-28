@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useStore } from "../../state/store";
+import { selectIsRemote, useStore } from "../../state/store";
+import { computerName, useComputers } from "../../state/computers";
 import { basename } from "../../lib/platform";
 import type { SessionTemplate } from "../../gen";
 import { describeTemplate, templates, useTemplates } from "./state";
@@ -13,6 +14,11 @@ export function TemplatesTab() {
   const error = useTemplates((s) => s.error);
   const toast = useStore((s) => s.toast);
   const openDialog = useStore((s) => s.openDialog);
+  // Templates belong to the computer the window shows: a remote's name its folders.
+  const remote = useStore(selectIsRemote);
+  const computer = useStore((s) => s.computer);
+  const shownComputer = useComputers((s) => computerName(computer, s.remotes));
+  const where = remote ? <div className="dim" style={{ fontSize: 11, marginBottom: 8 }}>The templates of <strong>{shownComputer}</strong>, the computer this window shows.</div> : null;
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
 
@@ -39,6 +45,7 @@ export function TemplatesTab() {
   if (loaded && list.length === 0) {
     return (
       <div className="empty" style={{ height: "auto", padding: 20 }}>
+        {where}
         No templates yet. Set up a new session the way you like it and pick <strong>Save as template…</strong> in the new-session dialog.{" "}
         <button data-hint type="button" className="linkish" onClick={() => openDialog({ kind: "new-session" })}>New session…</button>
       </div>
@@ -46,6 +53,7 @@ export function TemplatesTab() {
   }
   return (
     <div>
+      {where}
       <div className="dim" style={{ fontSize: 11, marginBottom: 8 }}>
         Templates fill the new-session dialog, here and on paired phones. Saving a template under a name that exists is refused; delete or rename the old one first.
       </div>

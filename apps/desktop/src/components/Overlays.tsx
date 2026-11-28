@@ -20,6 +20,7 @@ import { SlashDialog } from "./dialogs/SlashDialog";
 import { DiffDialog } from "./dialogs/DiffDialog";
 import { SearchDialog } from "./dialogs/SearchDialog";
 import { InboxDialog } from "./dialogs/InboxDialog";
+import { ComputersDialog } from "./dialogs/ComputersDialog";
 import { SettingsDialog } from "./dialogs/SettingsDialog";
 import { GitCleanupDialog } from "./dialogs/GitCleanupDialog";
 import { WorkspaceDeleteDialog, WorkspaceEditDialog, WorkspaceGatherDialog, WorkspaceMoveDialog } from "./dialogs/WorkspaceDialogs";
@@ -86,6 +87,8 @@ function CurrentDialog() {
       return <SearchDialog />;
     case "inbox":
       return <InboxDialog />;
+    case "computers":
+      return <ComputersDialog key={`${dialog.add ? "add" : ""}-${dialog.repair ?? ""}`} add={dialog.add} repair={dialog.repair} />;
     case "settings": {
       const Registered = getDialog("settings");
       if (Registered) return <Registered dialog={dialog} />;

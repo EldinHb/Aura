@@ -108,6 +108,29 @@ pub fn decode_pty_frame(frame: &[u8]) -> Option<(u8, String, &[u8])> {
     Some((kind, id, &frame[1 + SESSION_ID_LEN..]))
 }
 
+/// Log targets that write whole WebSocket frames in plain text at trace
+/// level: JSON-RPC payloads, device tokens and pair codes among them.
+const WIRE_LOG_TARGETS: &[&str] = &["tungstenite", "tokio_tungstenite"];
+
+/// Whether `target` is one of [`WIRE_LOG_TARGETS`] or a module of one.
+pub fn is_wire_log_target(target: &str) -> bool {
+    WIRE_LOG_TARGETS.iter().any(|t| {
+        target == *t
+            || target
+                .strip_prefix(t)
+                .is_some_and(|rest| rest.starts_with("::"))
+    })
+}
+
+/// A global filter layer that drops the WebSocket libraries' logs whatever
+/// `RUST_LOG` says (an `EnvFilter` directive would lose to a more specific
+/// one such as `tungstenite::protocol=trace`). The daemon and the desktop
+/// app add it to every subscriber that writes logs.
+pub fn quiet_wire_logs(
+) -> tracing_subscriber::filter::FilterFn<impl Fn(&tracing::Metadata<'_>) -> bool> {
+    tracing_subscriber::filter::filter_fn(|m| !is_wire_log_target(m.target()))
+}
+
 /// Default data directory: `~/.aura` (override with `AURA_DATA_DIR`).
 pub fn default_data_dir() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("AURA_DATA_DIR") {

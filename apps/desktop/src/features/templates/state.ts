@@ -1,13 +1,14 @@
 /**
  * Session templates live in the daemon, shared with paired phones. The app
- * mirrors the list and keeps it current through `templates_changed`. A
+ * mirrors the list of the computer the window shows (a remote's templates
+ * name its folders) and keeps it current through `templates_changed`. A
  * template fills the new-session dialog; the session is still created by
  * `session.create` with what the dialog then holds.
  */
 import { useEffect } from "react";
 import { create } from "zustand";
 import type { Autonomy, SessionMode, SessionTemplate, TemplateInput, TemplateKind } from "../../gen";
-import { rpc } from "../../lib/call";
+import { shownRpc as rpc } from "../../lib/call";
 import { useStore } from "../../state/store";
 
 type TemplateState = { templates: SessionTemplate[]; loaded: boolean; error: string | null; refresh: () => Promise<void> };
@@ -35,6 +36,8 @@ export function useTemplateSync() {
   const client = useStore((s) => s.client);
   useEffect(() => {
     if (!client) return;
+    // Another computer: its own templates, not the last one's.
+    useTemplates.setState({ templates: [], loaded: false, error: null });
     void useTemplates.getState().refresh();
     const off = client.onEvent((ev) => {
       if (ev.type === "templates_changed") useTemplates.setState({ templates: ev.templates, loaded: true, error: null });

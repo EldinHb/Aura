@@ -9,7 +9,7 @@ import { create } from "zustand";
 import type { ClearHistory, HistoryCounts, Schedule, ScheduledRun, ScheduledTask, ScheduledTaskInput } from "../../gen";
 import { registerCommands } from "../../lib/commands";
 import { setFocus } from "../../commands/core";
-import { useStore } from "../../state/store";
+import { useStore, selectLocalClient } from "../../state/store";
 import { rpc } from "../../lib/call";
 
 type ScheduleState = {
@@ -43,7 +43,7 @@ export const schedules = {
 
 /** Keep the task list current. Mount once per window. */
 export function useScheduleSync() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   useEffect(() => {
     if (!client) return;
     const refresh = () => void useSchedules.getState().refresh();
