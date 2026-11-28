@@ -14,7 +14,6 @@ import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.SpaceDashboard
 import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -65,7 +64,10 @@ private fun TabWithCount(selected: Boolean, label: String, needsYou: Int, onClic
         selected = selected,
         onClick = onClick,
         text = {
-            BadgedBox(badge = { if (needsYou > 0) Badge { Text("$needsYou") } }) { Text(label) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                Text(label)
+                if (needsYou > 0) Badge { Text("$needsYou") }
+            }
         },
     )
 }

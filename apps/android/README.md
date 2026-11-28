@@ -93,6 +93,20 @@ or an SSH tunnel to the listener.
   `aura remote revoke <deviceId>`. The app then tells you the device is no
   longer paired.
 
+### Try it without a server
+
+A demo server with sample workspaces, workers, scheduled runs and a
+streaming transcript runs from the unit tests, on `127.0.0.1:7443` (an
+emulator's `10.0.2.2`):
+
+```bash
+AURA_DEMO_SERVER=1 ./gradlew testDebugUnitTest --tests '*DemoAurad*' --rerun
+adb -s emulator-5554 shell am start -a android.intent.action.VIEW -d "'$(cat app/build/demo-pairing-link.txt)'"
+```
+
+It stops after 30 minutes (`AURA_DEMO_MINUTES` to change). Without
+`AURA_DEMO_SERVER` the test is skipped.
+
 ## How it works
 
 - `net/`: JSON-RPC 2.0 over an OkHttp WebSocket (`JsonRpcClient`,

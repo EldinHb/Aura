@@ -234,7 +234,9 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit) {
                             Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = Spacing.m))
                         }
                     }
-                    items(rows.asReversed(), key = { it.key }) { row -> TranscriptRowView(row, Modifier.animateItem()) }
+                    // No placement animation: as the latest entry streams in, it pushes the
+                    // rest up every frame, and an animated move would lag behind and overlap it.
+                    items(rows.asReversed(), key = { it.key }) { row -> TranscriptRowView(row, Modifier.animateItem(placementSpec = null)) }
                     if (rows.isEmpty()) {
                         item(key = "empty") {
                             Text(

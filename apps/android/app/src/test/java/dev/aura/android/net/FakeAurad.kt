@@ -22,6 +22,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * [handle] (a result, or an error object under the key `error`).
  */
 class FakeAurad(
+    /** The port to listen on; 0 picks a free one. */
+    port: Int = 0,
     private val handle: (method: String, params: JsonObject) -> JsonElement,
 ) : Closeable {
     val certificate: HeldCertificate = HeldCertificate.Builder().commonName("aurad").build()
@@ -32,7 +34,7 @@ class FakeAurad(
 
     init {
         server.useHttps(HandshakeCertificates.Builder().heldCertificate(certificate).build().sslSocketFactory())
-        server.start()
+        server.start(port)
     }
 
     val host: String get() = server.hostName
