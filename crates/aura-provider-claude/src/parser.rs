@@ -1156,10 +1156,11 @@ impl Parser {
             }
         } else {
             let mut usage = self.usage.clone()?;
-            if let Some((input, output, cached)) = model_totals(v) {
+            if let Some((input, output, cached, written)) = model_totals(v) {
                 usage.input_tokens = input;
                 usage.output_tokens = output;
                 usage.cached_input_tokens = cached;
+                usage.cache_write_tokens = written;
                 usage.running_totals = true;
             }
             usage.total_cost_usd = cost.or(usage.total_cost_usd);
@@ -1176,13 +1177,14 @@ impl Parser {
     /// the live one when the turn ended without a call (an interrupt).
     fn usage_from_result(&self, v: &Value, before: &Usage) -> Usage {
         let u = v.get("usage").cloned().unwrap_or(json!({}));
-        let (input, output, cached) = model_totals(v).unwrap_or_else(|| {
+        let (input, output, cached, written) = model_totals(v).unwrap_or_else(|| {
             (
                 before.input_tokens + count(&u, "input_tokens"),
                 before.output_tokens + count(&u, "output_tokens"),
                 before.cached_input_tokens
                     + count(&u, "cache_read_input_tokens")
                     + count(&u, "cache_creation_input_tokens"),
+                before.cache_write_tokens + count(&u, "cache_creation_input_tokens"),
             )
         });
         let context_used = u
@@ -1196,6 +1198,7 @@ impl Parser {
             input_tokens: input,
             output_tokens: output,
             cached_input_tokens: cached,
+            cache_write_tokens: written,
             total_cost_usd: v
                 .get("total_cost_usd")
                 .and_then(Value::as_f64)
@@ -1591,6 +1594,7 @@ fn turn_usage(after: &Usage, before: &Usage, v: &Value) -> Usage {
         output_tokens: count(&u, "output_tokens"),
         cached_input_tokens: count(&u, "cache_read_input_tokens")
             + count(&u, "cache_creation_input_tokens"),
+        cache_write_tokens: count(&u, "cache_creation_input_tokens"),
         ..turn
     }
 }
@@ -1606,18 +1610,20 @@ fn input_side(u: &Value) -> u64 {
         + count(u, "cache_creation_input_tokens")
 }
 
-/// Conversation totals (input, output, cached input) summed over every model
-/// in `modelUsage`. None when it lists no model.
-fn model_totals(v: &Value) -> Option<(u64, u64, u64)> {
+/// Conversation totals (input, output, cached input, the part of it written
+/// to the cache) summed over every model in `modelUsage`. None when it lists
+/// no model.
+fn model_totals(v: &Value) -> Option<(u64, u64, u64, u64)> {
     let mu = v.get("modelUsage").and_then(Value::as_object)?;
     if mu.is_empty() {
         return None;
     }
-    Some(mu.values().fold((0, 0, 0), |(i, o, c), m| {
+    Some(mu.values().fold((0, 0, 0, 0), |(i, o, c, w), m| {
         (
             i + count(m, "inputTokens"),
             o + count(m, "outputTokens"),
             c + count(m, "cacheReadInputTokens") + count(m, "cacheCreationInputTokens"),
+            w + count(m, "cacheCreationInputTokens"),
         )
     }))
 }

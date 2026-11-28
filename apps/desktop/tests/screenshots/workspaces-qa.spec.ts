@@ -9,7 +9,7 @@ import type { Session, Workspace } from "../../src/gen";
 const OUT = process.env.SHOTS ?? "test-results/workspaces-qa";
 const now = Date.now();
 const at = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
-const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false };
+const usage = { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, total_cost_usd: null, context_window: null, context_used: null, running_totals: false };
 const id = (n: number) => `5e55a0e0-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 function session(n: number, over: Partial<Session>): Session {

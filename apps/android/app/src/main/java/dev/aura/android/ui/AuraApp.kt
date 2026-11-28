@@ -60,6 +60,8 @@ import dev.aura.android.ui.session.SessionScreen
 import dev.aura.android.ui.sessions.SessionsScreen
 import dev.aura.android.ui.settings.SettingsScreen
 import dev.aura.android.ui.share.ShareScreen
+import dev.aura.android.ui.usage.SessionUsageScreen
+import dev.aura.android.ui.usage.UsageScreen
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
@@ -75,6 +77,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object SettingsRoute
 @Serializable data object ShareRoute
 @Serializable data class ChangesRoute(val serverId: String, val sessionId: String, val title: String)
+@Serializable data class UsageRoute(val serverId: String)
+@Serializable data class SessionUsageRoute(val serverId: String, val sessionId: String)
 
 private fun NavDestination?.isTopLevel() = this != null && (hasRoute(ServersRoute::class) || hasRoute(InboxRoute::class))
 
@@ -156,6 +160,7 @@ fun AuraApp(appLinks: Flow<AppLink>) {
                     onOpen = { nav.navigate(SessionsRoute(it)) },
                     onAdd = { nav.navigate(AddServerRoute()) },
                     onSettings = { nav.navigate(SettingsRoute) },
+                    onUsage = { nav.navigate(UsageRoute(it)) },
                 )
             }
             composable<ChangesRoute> { back ->
@@ -216,6 +221,24 @@ fun AuraApp(appLinks: Flow<AppLink>) {
                     route.sessionId,
                     onBack = { nav.popBackStack() },
                     onChanges = { id, title -> nav.navigate(ChangesRoute(route.serverId, id, title)) },
+                    onUsage = { nav.navigate(SessionUsageRoute(route.serverId, it)) },
+                )
+            }
+            composable<UsageRoute> { back ->
+                val route = back.toRoute<UsageRoute>()
+                UsageScreen(
+                    serverId = route.serverId,
+                    onBack = { nav.popBackStack() },
+                    onOpenSession = { nav.navigate(SessionUsageRoute(route.serverId, it)) },
+                )
+            }
+            composable<SessionUsageRoute> { back ->
+                val route = back.toRoute<SessionUsageRoute>()
+                SessionUsageScreen(
+                    serverId = route.serverId,
+                    sessionId = route.sessionId,
+                    onBack = { nav.popBackStack() },
+                    onOpenSession = { nav.navigate(SessionUsageRoute(route.serverId, it)) },
                 )
             }
             composable<NewSessionRoute> { back ->

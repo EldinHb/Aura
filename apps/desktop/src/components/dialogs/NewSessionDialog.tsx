@@ -12,6 +12,8 @@ import { NewSessionModFields } from "../../mods/Slots";
 import { folderOf } from "../../lib/sessionFolder";
 import { AutonomyPicker } from "../AutonomyPicker";
 import { describeAutonomy } from "../../lib/features";
+import { DEFAULT_BRANCH_PATTERN, expandBranch, formOf, templateOf, templates as templateApi, useTemplates, type SessionForm } from "../../features/templates/state";
+import type { SessionTemplate } from "../../gen";
 
 const RECENT_DIRS_KEY = "aura.recentDirs";
 /** Rows the directory browser renders; the arrow keys stay within them. */
@@ -67,8 +69,14 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   const closeDialog = useStore((s) => s.closeDialog);
   const toast = useStore((s) => s.toast);
   const select = useStore((s) => s.select);
-  // New sessions go into the workspace the sidebar shows.
-  const workspace = useStore((s) => (s.workspaces.length ? s.workspaces.find((w) => w.id === s.activeWorkspace) ?? null : null));
+  // New sessions go into the workspace the sidebar shows, unless a template names another.
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const workspace = useStore((s) => (s.workspaces.length ? s.workspaces.find((w) => w.id === (workspaceId ?? s.activeWorkspace)) ?? s.workspaces.find((w) => w.id === s.activeWorkspace) ?? null : null));
+  const templateList = useTemplates((s) => s.templates);
+  // The template picked last, and what it sets once its provider's options are known.
+  const [template, setTemplate] = useState<SessionTemplate | null>(null);
+  const pendingTemplate = useRef<SessionForm | null>(null);
+  const [savingAs, setSavingAs] = useState<string | null>(null);
 
   const available = useMemo(() => providerChoices(providers), [providers]);
   // A choice key: a provider kind, or `acp:<agent>` for an ACP agent.
@@ -94,6 +102,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   const [command, setCommand] = useState("");
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const [permission, setPermission] = useState("");
   const [sandbox, setSandbox] = useState("");
   const [repoRoot, setRepoRoot] = useState<string | null>(null);
@@ -127,6 +136,8 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   const dirBrowser = useRef<HTMLDivElement>(null);
 
   const caps = providers.find((p) => p.kind === provider)?.capabilities;
+  // The efforts of the model picked (or of the default one).
+  const efforts = (models.find((m) => m.id === model) ?? models.find((m) => m.is_default))?.efforts ?? [];
   const { names: groups } = useGroups();
 
   useEffect(() => {
@@ -143,10 +154,14 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   }, [client]);
 
   useEffect(() => {
-    setMode(provider === "terminal" ? "terminal" : "structured");
-    setModel("");
-    setPermission("");
-    setSandbox("");
+    // A template's options for this provider, or the provider's defaults.
+    const t = pendingTemplate.current;
+    pendingTemplate.current = null;
+    setMode(t ? t.mode : provider === "terminal" ? "terminal" : "structured");
+    setModel(t?.model ?? "");
+    setEffort(t?.effort ?? "");
+    setPermission(t?.permission ?? "");
+    setSandbox(t?.sandbox ?? "");
     if (client && provider !== "terminal" && provider !== "acp") client.models(provider).then(setModels).catch(() => setModels([]));
     else setModels([]);
   }, [provider, choiceKey, client]);
@@ -259,6 +274,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         mode: orchestrates ? "structured" : mode,
         command: provider === "terminal" && argv ? argv : null,
         model: model || null,
+        effort: effort || null,
         permission_mode: permission || null,
         sandbox_mode: sandbox || null,
         worktree: !noFolder && worktree && repoRoot && branch.trim() ? { branch: branch.trim(), base: null, path: null } : null,
@@ -290,7 +306,54 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     } finally {
       setBusy(false);
     }
-  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast, workspace]);
+  }, [client, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, effort, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast, workspace]);
+
+  // What the dialog holds, as a template sees it.
+  const form = (): SessionForm => ({
+    choiceKey, kind: owns ? "feature_owner" : orchestrates ? "orchestrator" : "agent", dir: noFolder ? "" : expandedDir, ownFolder: orchestrates && !noFolder,
+    title, group, mode, command, model, effort, permission, sandbox, worktree: worktree && !!repoRoot,
+    branchPattern: template?.branch_pattern ?? DEFAULT_BRANCH_PATTERN, autonomy: owns ? autonomy : null, systemPrompt,
+    prompt: owns ? goal : prompt, workspace: workspaceId,
+  });
+  /** Fill the dialog from a template; the user can still change anything before creating. */
+  const applyTemplate = (t: SessionTemplate) => {
+    const f = formOf(t, form());
+    setTemplate(t);
+    const sameProvider = f.choiceKey === choiceKey && available.some((c) => c.key === f.choiceKey);
+    if (!available.some((c) => c.key === f.choiceKey)) toast(`${t.name}: ${f.choiceKey} is not available here; keeping ${choice.label}`, "warn");
+    else if (sameProvider) {
+      setMode(f.mode); setModel(f.model); setEffort(f.effort); setPermission(f.permission); setSandbox(f.sandbox);
+    } else {
+      pendingTemplate.current = f;
+      setChoiceKey(f.choiceKey);
+    }
+    setOrchestrator(f.kind === "orchestrator");
+    setFeatureOwner(f.kind === "feature_owner");
+    setOrchestratorFolder(f.ownFolder);
+    if (t.cwd) setDir(f.dir);
+    setGroupTouched(!!t.group);
+    if (t.group) setGroup(f.group);
+    setCommand(f.command);
+    setWorktree(f.worktree);
+    setBranch(f.worktree ? expandBranch(t.branch_pattern, title, t.name) : "");
+    setAutonomy(f.autonomy);
+    setSystemPrompt(f.systemPrompt);
+    if (f.kind === "feature_owner") setGoal(f.prompt);
+    else setPrompt(f.prompt);
+    setWorkspaceId(t.workspace && useStore.getState().workspaces.some((w) => w.id === t.workspace) ? t.workspace : null);
+  };
+  const saveTemplate = async () => {
+    const name = savingAs?.trim();
+    if (!name) return;
+    try {
+      const saved = await templateApi.create(templateOf(name, form()));
+      setTemplate(saved);
+      setSavingAs(null);
+      toast(`Saved template ${saved.name}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "error");
+    }
+  };
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -340,6 +403,20 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
       }}
       footer={
         <>
+          {savingAs === null ? (
+            <button type="button" className="btn" data-command="new-session.save-template" style={{ marginRight: "auto" }} onClick={() => setSavingAs(template?.name ?? "")}
+              title="Keep these options as a template, here and on paired phones">Save as template…</button>
+          ) : (
+            <span className="template-save" style={{ marginRight: "auto" }}>
+              <input type="text" aria-label="Template name" placeholder="Template name" value={savingAs} autoFocus maxLength={60}
+                onChange={(e) => setSavingAs(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !(e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); void saveTemplate(); }
+                  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setSavingAs(null); }
+                }} />
+              <button data-hint type="button" className="btn" disabled={!savingAs.trim()} onClick={() => void saveTemplate()}>Save</button>
+            </span>
+          )}
           <button type="button" className="btn" data-command="dialog.cancel" onClick={closeDialog}>Cancel <kbd>Esc</kbd></button>
           <button type="button" className="btn primary" data-command="dialog.confirm" disabled={busy} onClick={() => void submit()}>
             {busy ? "Creating…" : "Create"} <kbd>⌘↩</kbd>
@@ -347,6 +424,19 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         </>
       }
     >
+      {templateList.length > 0 && (
+        <div className="field">
+          <label>Template</label>
+          <div className="radio-row template-row" role="radiogroup" aria-label="Template">
+            {templateList.map((t) => (
+              <button key={t.id} type="button" role="radio" aria-checked={template?.id === t.id} className={clsx("btn small", template?.id === t.id && "primary")} data-command="new-session.template" onClick={() => applyTemplate(t)}>
+                {t.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="field">
         <label>Provider {available.length > 1 && <span className="dim">(⌥1–{Math.min(9, available.length)})</span>}</label>
         <div className="radio-row" role="radiogroup">
@@ -477,6 +567,17 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
                 ))}
               </select>
             </div>
+            {caps?.effort && (efforts.length > 0 || effort) && (
+              <div className="field">
+                <label>Effort</label>
+                <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+                  <option value="">model default</option>
+                  {[...new Set([...efforts, ...(effort ? [effort] : [])])].map((x) => (
+                    <option key={x} value={x}>{x}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="field">
               <label>Permission mode</label>
               <select value={permission} onChange={(e) => setPermission(e.target.value)}>

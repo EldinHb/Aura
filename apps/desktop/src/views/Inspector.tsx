@@ -245,7 +245,11 @@ export function Inspector({ sessionId }: { sessionId: string | null }) {
           )}
           {s.mode === "structured" && (
             <div className="inspector-section">
-              <h4>Usage</h4>
+              <h4 style={{ display: "flex", alignItems: "center" }}>
+                Usage
+                <button type="button" className="btn small" style={{ marginLeft: "auto" }} data-command="usage.session" onClick={() => openDialog({ kind: "session-usage", sessionId: s.id })}
+                  title={s.orchestrator || s.feature_owner ? "Turn by turn, with its workers" : "Turn by turn"}>Details…</button>
+              </h4>
               <div className="kv">
                 <KV k="input" v={fmtTokens(s.usage.input_tokens)} />
                 <KV k="output" v={fmtTokens(s.usage.output_tokens)} />

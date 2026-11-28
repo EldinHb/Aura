@@ -27,6 +27,10 @@ sealed interface Event {
     data class Notice(override val sessionId: String, val level: String, val message: String) : Event
     data class FeatureUpdated(override val sessionId: String, val feature: Feature) : Event
     data class WorkspacesChanged(val workspaces: List<Workspace>) : Event { override val sessionId: String? get() = null }
+    data class TemplatesChanged(val templates: List<SessionTemplate>) : Event { override val sessionId: String? get() = null }
+
+    /** The daily usage summary the server wrote (when the user turned it on there). */
+    data class UsageReported(val report: UsageReport) : Event { override val sessionId: String? get() = null }
 
     /** A change to an item: text appended to it, command output appended, or data fields set. */
     sealed interface Delta {
@@ -64,6 +68,8 @@ sealed interface Event {
                 "user_input_requested" -> InputRequested(sid(), o.decode("request", UserInputRequest.serializer()))
                 "user_input_resolved" -> InputResolved(sid(), o.string("request_id")!!)
                 "workspaces_changed" -> WorkspacesChanged(o.decode("workspaces", ListSerializer(Workspace.serializer())))
+                "templates_changed" -> TemplatesChanged(o.decode("templates", ListSerializer(SessionTemplate.serializer())))
+                "usage_report" -> UsageReported(o.decode("report", UsageReport.serializer()))
                 "feature_updated" -> FeatureUpdated(sid(), o.decode("feature", Feature.serializer()))
                 "notice" -> Notice(sid(), o.string("level") ?: "info", o.string("message").orEmpty())
                 else -> null

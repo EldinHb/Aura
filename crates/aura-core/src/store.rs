@@ -1,7 +1,9 @@
 use crate::event::Event;
 use crate::schedule::{ScheduledRun, ScheduledTask};
 use crate::types::*;
+use crate::usage::UsageRecord;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -23,6 +25,7 @@ pub struct StoredEvent {
 }
 
 const SCHEDULED_TASKS: &str = "scheduled_tasks";
+const USAGE_RECORDS: &str = "usage_records";
 const SCHEDULED_RUNS: &str = "scheduled_runs";
 
 /// Persistence boundary. Implemented by `aura-store` with SQLite; an in-memory
@@ -99,6 +102,43 @@ pub trait Store: Send + Sync {
             self.delete_feature_record(&ns, id)?;
         }
         Ok(())
+    }
+    /// Keep what a turn spent (see [`crate::usage`]); a record for the same
+    /// session and turn replaces the earlier one. Kept when the session is deleted.
+    fn add_usage_record(&self, record: &UsageRecord) -> Result<()> {
+        self.save_feature_record(
+            USAGE_RECORDS,
+            &format!("{}:{}", record.session_id, record.turn_id),
+            &serde_json::to_string(record)?,
+        )
+    }
+    /// The records of turns that ended in `[from, to)`, oldest first. With
+    /// `sessions`, only those sessions'.
+    fn usage_records(
+        &self,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        sessions: Option<&[String]>,
+    ) -> Result<Vec<UsageRecord>> {
+        let mut out: Vec<UsageRecord> = self
+            .feature_records(USAGE_RECORDS)?
+            .into_iter()
+            .filter_map(|(_, json)| serde_json::from_str::<UsageRecord>(&json).ok())
+            .filter(|r| from.is_none_or(|f| r.at >= f) && to.is_none_or(|t| r.at < t))
+            .filter(|r| sessions.is_none_or(|s| s.contains(&r.session_id)))
+            .collect();
+        out.sort_by(|a, b| a.at.cmp(&b.at).then(a.turn_id.cmp(&b.turn_id)));
+        Ok(out)
+    }
+    /// Every session with usage kept, and the orchestrator that started it.
+    fn usage_parents(&self) -> Result<Vec<(String, Option<String>)>> {
+        let mut seen = std::collections::HashSet::new();
+        Ok(self
+            .usage_records(None, None, None)?
+            .into_iter()
+            .filter(|r| seen.insert(r.session_id.clone()))
+            .map(|r| (r.session_id, r.orchestrator_id))
+            .collect())
     }
     fn upsert_session(&self, session: &Session) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;

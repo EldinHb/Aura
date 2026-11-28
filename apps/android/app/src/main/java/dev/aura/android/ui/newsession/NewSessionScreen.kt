@@ -1,5 +1,15 @@
 package dev.aura.android.ui.newsession
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import dev.aura.android.protocol.SessionTemplate
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,6 +95,8 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
     val form by vm.form.collectAsStateWithLifecycle()
     val models by vm.models.collectAsStateWithLifecycle()
     val creating by vm.creating.collectAsStateWithLifecycle()
+    val templates by vm.templates.collectAsStateWithLifecycle()
+    var savingTemplate by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     SnackbarMessages(vm.messages, snackbar)
     LaunchedEffect(vm) { vm.created.collect(onCreated) }
@@ -124,6 +136,9 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
                 Modifier.widthIn(max = Spacing.contentMaxWidth).fillMaxWidth().padding(Spacing.m),
                 verticalArrangement = Arrangement.spacedBy(Spacing.m),
             ) {
+                if (templates.isNotEmpty()) {
+                    TemplatePicker(templates, form.templateName, vm::pick)
+                }
                 KindPicker(form.kind) { kind -> vm.edit { it.copy(kind = kind) } }
                 Text(
                     stringResource(
@@ -273,9 +288,62 @@ fun NewSessionScreen(serverId: String, onBack: () -> Unit, onCreated: (sessionId
 
                 if (creating) LinearProgressIndicator(Modifier.fillMaxWidth())
                 val ready = agent != null && (form.noFolder || form.project.isNotBlank()) && (!owns || form.goal.isNotBlank())
-                Button(onClick = vm::create, enabled = !creating && ready, modifier = Modifier.align(Alignment.End)) {
-                    Text(stringResource(R.string.start_session))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.s, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { savingTemplate = true }, enabled = agent != null) {
+                        Text(stringResource(R.string.save_as_template))
+                    }
+                    Button(onClick = vm::create, enabled = !creating && ready) {
+                        Text(stringResource(R.string.start_session))
+                    }
                 }
+            }
+        }
+    }
+
+    if (savingTemplate) {
+        var name by rememberSaveable { mutableStateOf(form.templateName ?: form.title) }
+        AlertDialog(
+            onDismissRequest = { savingTemplate = false },
+            title = { Text(stringResource(R.string.save_as_template)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                    Text(stringResource(R.string.save_as_template_desc), style = MaterialTheme.typography.bodyMedium)
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.name)) },
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = name.isNotBlank(), onClick = { vm.saveTemplate(name); savingTemplate = false }) {
+                    Text(stringResource(R.string.save))
+                }
+            },
+            dismissButton = { TextButton(onClick = { savingTemplate = false }) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
+}
+
+/** The server's templates as chips: one tap fills the form, which can still be changed. */
+@Composable
+private fun TemplatePicker(templates: List<SessionTemplate>, picked: String?, onPick: (SessionTemplate) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+        Text(stringResource(R.string.templates), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            for (t in templates) {
+                FilterChip(
+                    selected = t.name == picked,
+                    onClick = { onPick(t) },
+                    label = { Text(t.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    leadingIcon = { Icon(Icons.Outlined.Bookmarks, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) },
+                )
             }
         }
     }

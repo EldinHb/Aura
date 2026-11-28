@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.Difference
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.QueryStats
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
@@ -110,10 +111,19 @@ import dev.aura.android.ui.components.describe
 import dev.aura.android.ui.components.icon
 import dev.aura.android.ui.components.label
 import dev.aura.android.ui.theme.Spacing
+import dev.aura.android.ui.usage.SessionUsageViewModel
+import dev.aura.android.ui.usage.TurnUsageLine
+import dev.aura.android.ui.usage.turnEnds
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit, onChanges: (sessionId: String, title: String) -> Unit = { _, _ -> }) {
+fun SessionScreen(
+    serverId: String,
+    sessionId: String,
+    onBack: () -> Unit,
+    onChanges: (sessionId: String, title: String) -> Unit = { _, _ -> },
+    onUsage: (sessionId: String) -> Unit = {},
+) {
     val treeVm = appViewModel(key = "tree:$serverId:$sessionId") { SessionTreeViewModel(it, serverId, sessionId) }
     val tree by treeVm.tree.collectAsStateWithLifecycle()
     // The leader's chat or one of its workers'; opening a worker (from the inbox) selects it.
@@ -138,6 +148,9 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit, onCha
         onPauseOrDispose { openSessions.compareAndSet(open, null) }
     }
     val session by vm.session.collectAsStateWithLifecycle()
+    // What each turn spent, for the line under the reply that ends it.
+    val turnUsageVm = appViewModel(key = "turn-usage:$serverId:$shownId") { SessionUsageViewModel(it, serverId, shownId, includeWorkers = false) }
+    val turnUsage by turnUsageVm.usage.collectAsStateWithLifecycle()
     val transcript by vm.transcript.collectAsStateWithLifecycle()
     val connection by vm.connectionState.collectAsStateWithLifecycle()
     val sending by vm.sending.collectAsStateWithLifecycle()
@@ -258,6 +271,7 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit, onCha
             t == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             else -> {
                 val rows = remember(t) { rows(t.visibleItems) }
+                val usageByReply = remember(rows, turnUsage) { turnEnds(rows, turnUsage?.turns.orEmpty().associateBy { it.turnId }) }
                 follow.Track(count = rows.size + t.approvals.size + t.inputs.size)
                 // Top to bottom, the latest last; the list state opens at the end (see FollowLatest).
                 LazyColumn(
@@ -279,9 +293,12 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit, onCha
                     // an animated move would lag behind it (a new reply filling the screen
                     // would fade the whole view out and in).
                     items(rows, key = { it.key }, contentType = { it::class }) { row ->
-                        TranscriptRowView(row, onOpenImage = { viewing = it }, featureCard = { card, modifier ->
-                            FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier)
-                        })
+                        TranscriptRowView(
+                            row,
+                            onOpenImage = { viewing = it },
+                            featureCard = { card, modifier -> FeatureCardRow(card, feature, answering, online, vm::answerFeature, modifier) },
+                            agentFooter = { agent -> usageByReply[agent.item.id]?.let { TurnUsageLine(it) } },
+                        )
                     }
                     t.lastError?.let { error ->
                         item(key = "turn-error") {
@@ -319,6 +336,7 @@ fun SessionScreen(serverId: String, sessionId: String, onBack: () -> Unit, onCha
         ModalBottomSheet(onDismissRequest = { actions = false }) {
             SheetAction(Icons.Outlined.StopCircle, stringResource(R.string.interrupt)) { actions = false; vm.interrupt() }
             SheetAction(Icons.Outlined.Cancel, stringResource(R.string.stop_session)) { actions = false; confirmStop = true }
+            SheetAction(Icons.Outlined.QueryStats, stringResource(R.string.usage_title)) { actions = false; onUsage(leader?.id ?: shownId) }
             if (workspaces.isNotEmpty() && leader != null) {
                 SheetAction(Icons.Outlined.DriveFileMove, stringResource(R.string.move_to_workspace)) { actions = false; moving = true }
             }

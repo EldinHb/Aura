@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use aura_core::{
     Event, ItemKind, ScheduledRun, ScheduledTask, SearchHit, Session, Store, StoredEvent,
+    UsageRecord,
 };
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
@@ -119,6 +120,81 @@ const MIGRATIONS: &[&str] = &[
     FROM sessions s
     WHERE feature_records.namespace = 'mod:github:sessions' AND s.id = feature_records.id
       AND json_valid(s.json) AND json_array_length(s.json, '$.pulls') > 0;
+    "#,
+    // v6: usage history, one row per agent turn that reported usage, kept
+    // after its session is deleted (see aura_core::usage). Filled from the
+    // turns already in the history; cache writes were not kept apart before.
+    // Input is kept without cached input for every provider (Codex counts it
+    // inside), and a turn belongs to the first feature owner up its
+    // orchestrator chain (at most 16 levels, as for live turns).
+    r#"
+    CREATE TABLE IF NOT EXISTS usage_records (
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        at_ms INTEGER NOT NULL,
+        orchestrator_id TEXT,
+        json TEXT NOT NULL,
+        PRIMARY KEY (session_id, turn_id)
+    );
+    CREATE INDEX IF NOT EXISTS usage_records_at ON usage_records(at_ms);
+    CREATE INDEX IF NOT EXISTS usage_records_orchestrator ON usage_records(orchestrator_id, session_id);
+
+    WITH RECURSIVE
+    chain(start_id, id, depth) AS (
+        SELECT id, id, 0 FROM sessions WHERE json_valid(json)
+        UNION ALL
+        SELECT c.start_id, json_extract(s.json, '$.orchestrator_id'), c.depth + 1
+        FROM chain c JOIN sessions s ON s.id = c.id
+        WHERE c.depth < 16 AND json_valid(s.json)
+          AND NOT COALESCE(json_extract(s.json, '$.feature_owner'), 0)
+          AND json_extract(s.json, '$.orchestrator_id') IS NOT NULL
+    ),
+    owner(start_id, owner_id) AS (
+        SELECT c.start_id, c.id FROM chain c JOIN sessions s ON s.id = c.id
+        WHERE json_valid(s.json) AND json_extract(s.json, '$.feature_owner')
+    ),
+    t AS (
+        SELECT e.session_id AS session_id,
+               json_extract(e.json, '$.turn.id') AS turn_id,
+               COALESCE(json_extract(e.json, '$.turn.ended_at'), e.ts) AS at,
+               json_extract(e.json, '$.turn.usage') AS usage
+        FROM events e
+        WHERE e.kind = 'turn_completed' AND json_valid(e.json)
+          AND json_type(e.json, '$.turn.usage') = 'object'
+    )
+    INSERT OR IGNORE INTO usage_records (session_id, turn_id, at_ms, orchestrator_id, json)
+    SELECT t.session_id, t.turn_id,
+           CAST(ROUND((julianday(t.at) - 2440587.5) * 86400000) AS INTEGER),
+           json_extract(s.json, '$.orchestrator_id'),
+           json_object(
+             'session_id', t.session_id,
+             'turn_id', t.turn_id,
+             'at', t.at,
+             'provider', COALESCE(json_extract(s.json, '$.provider'), 'claude'),
+             'agent', json_extract(s.json, '$.agent'),
+             'model', json_extract(s.json, '$.model'),
+             'project', CASE WHEN s.json IS NULL OR json_extract(s.json, '$.folderless') THEN NULL
+                        ELSE COALESCE(json_extract(s.json, '$.worktree.repo_root'), json_extract(s.json, '$.cwd')) END,
+             'feature_id', (SELECT o.owner_id FROM owner o WHERE o.start_id = t.session_id),
+             'orchestrator_id', json_extract(s.json, '$.orchestrator_id'),
+             'session_title', COALESCE(json_extract(s.json, '$.title'), ''),
+             'input_tokens', CASE WHEN json_extract(s.json, '$.provider') = 'codex'
+                 THEN MAX(0, COALESCE(json_extract(t.usage, '$.input_tokens'), 0) - COALESCE(json_extract(t.usage, '$.cached_input_tokens'), 0))
+                 ELSE COALESCE(json_extract(t.usage, '$.input_tokens'), 0) END,
+             'output_tokens', COALESCE(json_extract(t.usage, '$.output_tokens'), 0),
+             'cached_input_tokens', COALESCE(json_extract(t.usage, '$.cached_input_tokens'), 0),
+             'cache_write_tokens', COALESCE(json_extract(t.usage, '$.cache_write_tokens'), 0),
+             'context_used', json_extract(t.usage, '$.context_used'),
+             'context_window', json_extract(t.usage, '$.context_window'),
+             'cost_usd', json_extract(t.usage, '$.total_cost_usd')
+           )
+    FROM t
+    LEFT JOIN sessions s ON s.id = t.session_id AND json_valid(s.json)
+    WHERE t.turn_id IS NOT NULL AND julianday(t.at) IS NOT NULL
+      AND (COALESCE(json_extract(t.usage, '$.input_tokens'), 0)
+           + COALESCE(json_extract(t.usage, '$.output_tokens'), 0)
+           + COALESCE(json_extract(t.usage, '$.cached_input_tokens'), 0) > 0
+           OR COALESCE(json_extract(t.usage, '$.total_cost_usd'), 0) > 0);
     "#,
 ];
 
@@ -298,6 +374,80 @@ impl Store for SqliteStore {
         )?;
         Ok(())
     }
+    fn add_usage_record(&self, record: &UsageRecord) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO usage_records (session_id, turn_id, at_ms, orchestrator_id, json) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(session_id, turn_id) DO UPDATE SET at_ms = excluded.at_ms,
+               orchestrator_id = excluded.orchestrator_id, json = excluded.json",
+            params![
+                record.session_id,
+                record.turn_id,
+                record.at.timestamp_millis(),
+                record.orchestrator_id,
+                serde_json::to_string(record)?
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn usage_records(
+        &self,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        sessions: Option<&[String]>,
+    ) -> Result<Vec<UsageRecord>> {
+        let (from, to) = (
+            from.map_or(i64::MIN, |f| f.timestamp_millis()),
+            to.map_or(i64::MAX, |t| t.timestamp_millis()),
+        );
+        let conn = self.conn.lock();
+        let read = |sql: &str, args: Vec<rusqlite::types::Value>| -> Result<Vec<UsageRecord>> {
+            let mut stmt = conn.prepare_cached(sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(args), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (session, json) = row?;
+                match serde_json::from_str::<UsageRecord>(&json) {
+                    Ok(r) => out.push(r),
+                    Err(e) => tracing::warn!("skipping unreadable usage record of {session}: {e}"),
+                }
+            }
+            Ok(out)
+        };
+        let Some(ids) = sessions else {
+            return read(
+                "SELECT session_id, json FROM usage_records WHERE at_ms >= ?1 AND at_ms < ?2 ORDER BY at_ms, turn_id",
+                vec![from.into(), to.into()],
+            );
+        };
+        // By session, through the primary key, in chunks SQLite takes.
+        let mut out = Vec::new();
+        for chunk in ids.chunks(400) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let mut args: Vec<rusqlite::types::Value> = vec![from.into(), to.into()];
+            args.extend(chunk.iter().map(|id| id.clone().into()));
+            out.extend(read(
+                &format!("SELECT session_id, json FROM usage_records WHERE at_ms >= ?1 AND at_ms < ?2 AND session_id IN ({marks})"),
+                args,
+            )?);
+        }
+        out.sort_by(|a, b| a.at.cmp(&b.at).then(a.turn_id.cmp(&b.turn_id)));
+        Ok(out)
+    }
+
+    fn usage_parents(&self) -> Result<Vec<(String, Option<String>)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached(
+            "SELECT DISTINCT session_id, orchestrator_id FROM usage_records WHERE orchestrator_id IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     fn upsert_session(&self, session: &Session) -> Result<()> {
         let json = serde_json::to_string(session)?;
         self.conn.lock().execute(
@@ -986,5 +1136,204 @@ mod tests {
         assert!(!sessions.contains_key(&plain.id));
         // The old rows stay for an older Aura.
         assert_eq!(ns("reviews").len(), 1);
+    }
+
+    fn turn_done(
+        session_id: &str,
+        id: &str,
+        ended: &str,
+        usage: Option<aura_core::Usage>,
+    ) -> Event {
+        Event::TurnCompleted {
+            session_id: session_id.into(),
+            turn: Turn {
+                id: id.into(),
+                session_id: session_id.into(),
+                status: TurnStatus::Completed,
+                started_at: ended.parse().unwrap(),
+                ended_at: Some(ended.parse().unwrap()),
+                usage,
+                error: None,
+            },
+        }
+    }
+
+    #[test]
+    fn usage_history_is_filled_from_the_turns_already_stored() {
+        use aura_core::Usage;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aura.db");
+        let mut owner = session("/src/app");
+        owner.feature_owner = true;
+        owner.orchestrator = true;
+        owner.title = "Checkout".into();
+        let mut worker = session("/src/app");
+        worker.orchestrator_id = Some(owner.id.clone());
+        worker.model = Some("gpt-5".into());
+        worker.provider = ProviderKind::Codex;
+        worker.worktree = Some(aura_core::WorktreeInfo {
+            repo_root: "/src/app".into(),
+            path: "/src/app/.aura-worktrees/x".into(),
+            branch: "x".into(),
+        });
+        let usage = Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            cached_input_tokens: 50,
+            total_cost_usd: Some(0.25),
+            context_window: Some(200_000),
+            context_used: Some(1_000),
+            ..Default::default()
+        };
+        {
+            // A database as Aura 0.6.3 left it.
+            let s = SqliteStore::open(&path).unwrap();
+            s.upsert_session(&owner).unwrap();
+            s.upsert_session(&worker).unwrap();
+            s.append_event(
+                &owner.id,
+                &turn_done(
+                    &owner.id,
+                    "t1",
+                    "2026-11-01T10:00:00.123456Z",
+                    Some(usage.clone()),
+                ),
+            )
+            .unwrap();
+            s.append_event(
+                &worker.id,
+                &turn_done(
+                    &worker.id,
+                    "t2",
+                    "2026-11-02T10:00:00Z",
+                    Some(Usage {
+                        total_cost_usd: None,
+                        ..usage.clone()
+                    }),
+                ),
+            )
+            .unwrap();
+            // Nothing spent, and no usage at all: no record.
+            s.append_event(
+                &worker.id,
+                &turn_done(
+                    &worker.id,
+                    "t3",
+                    "2026-11-02T11:00:00Z",
+                    Some(Usage::default()),
+                ),
+            )
+            .unwrap();
+            s.append_event(
+                &worker.id,
+                &turn_done(&worker.id, "t4", "2026-11-02T12:00:00Z", None),
+            )
+            .unwrap();
+            // Three levels under the feature owner, and one with no owner above it.
+            let mut sub = session("/src/app");
+            sub.orchestrator_id = Some(worker.id.clone());
+            let mut subsub = session("/src/app");
+            subsub.orchestrator_id = Some(sub.id.clone());
+            let loose = session("/src/app");
+            for x in [&sub, &subsub, &loose] {
+                s.upsert_session(x).unwrap();
+            }
+            for (x, turn, at) in [
+                (&subsub, "t5", "2026-11-03T10:00:00Z"),
+                (&loose, "t6", "2026-11-03T11:00:00Z"),
+            ] {
+                s.append_event(&x.id, &turn_done(&x.id, turn, at, Some(usage.clone())))
+                    .unwrap();
+            }
+            let conn = s.conn.lock();
+            conn.execute_batch("DROP TABLE usage_records").unwrap();
+            conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+        let s = SqliteStore::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        let all = s.usage_records(None, None, None).unwrap();
+        assert_eq!(all.len(), 4, "{all:?}");
+        let (a, b) = (&all[0], &all[1]);
+        assert_eq!(
+            all[2].feature_id.as_deref(),
+            Some(owner.id.as_str()),
+            "three levels down"
+        );
+        assert_eq!(all[3].feature_id, None);
+        // Codex counts cached input inside its input: kept without it.
+        assert_eq!((b.input_tokens, b.cached_input_tokens), (50, 50));
+        assert_eq!((a.input_tokens, a.cached_input_tokens), (100, 50));
+        assert!(s
+            .usage_parents()
+            .unwrap()
+            .contains(&(worker.id.clone(), Some(owner.id.clone()))));
+        assert_eq!(
+            (a.turn_id.as_str(), a.cost_usd, a.feature_id.as_deref()),
+            ("t1", Some(0.25), Some(owner.id.as_str()))
+        );
+        assert_eq!(
+            a.at.timestamp_millis(),
+            "2026-11-01T10:00:00.123Z"
+                .parse::<DateTime<Utc>>()
+                .unwrap()
+                .timestamp_millis()
+        );
+        assert_eq!(a.session_title, "Checkout");
+        assert_eq!(a.context_used, Some(1_000));
+        assert_eq!(b.provider, ProviderKind::Codex);
+        assert_eq!(b.model.as_deref(), Some("gpt-5"));
+        assert_eq!(b.project.as_deref(), Some("/src/app"));
+        assert_eq!(b.feature_id.as_deref(), Some(owner.id.as_str()));
+        assert_eq!(b.orchestrator_id.as_deref(), Some(owner.id.as_str()));
+        assert_eq!(b.cost_usd, None);
+        // Ranges are [from, to), and a session's records outlive it.
+        s.delete_session(&owner.id).unwrap();
+        let from = "2026-11-02T00:00:00Z".parse().unwrap();
+        let got = s.usage_records(Some(from), None, None).unwrap();
+        assert_eq!(got.len(), 3);
+        assert!(s
+            .usage_records(None, Some(from), Some(&[worker.id.clone()]))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            s.usage_records(None, None, Some(&[owner.id.clone()]))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_usage_record_for_the_same_turn_replaces_the_earlier_one() {
+        let s = SqliteStore::open_in_memory().unwrap();
+        let mut r = UsageRecord {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            at: "2026-11-01T10:00:00Z".parse().unwrap(),
+            provider: ProviderKind::Claude,
+            agent: None,
+            model: None,
+            project: None,
+            feature_id: None,
+            orchestrator_id: None,
+            session_title: String::new(),
+            input_tokens: 1,
+            output_tokens: 1,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            context_used: None,
+            context_window: None,
+            cost_usd: None,
+        };
+        s.add_usage_record(&r).unwrap();
+        r.output_tokens = 9;
+        s.add_usage_record(&r).unwrap();
+        let all = s.usage_records(None, None, None).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].output_tokens, 9);
+        // Many sessions at once go in chunks.
+        let mut ids: Vec<String> = (0..900).map(|i| format!("other-{i}")).collect();
+        ids.push("s".into());
+        assert_eq!(s.usage_records(None, None, Some(&ids)).unwrap().len(), 1);
     }
 }

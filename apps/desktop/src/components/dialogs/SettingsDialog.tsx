@@ -18,9 +18,11 @@ import { AutonomyPicker } from "../AutonomyPicker";
 import { checkForUpdates, useUpdates } from "../../features/updates/updates";
 import { cssLayersSupported, isBuiltinTheme, NO_LAYERS_NOTE, resolveTheme, useThemes } from "../../state/themes";
 import { openApprovalPrompt } from "../../mods/ApprovalDialog";
+import { UsageSettingsTab } from "../../features/usage/UsageSettingsTab";
+import { TemplatesTab } from "../../features/templates/TemplatesTab";
 
-type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "remote" | "mods";
-const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "remote", "mods"];
+type CoreTab = "general" | "keymap" | "providers" | "prompts" | "orchestrators" | "specialists" | "groups" | "templates" | "usage" | "remote" | "mods";
+const CORE_TABS: CoreTab[] = ["general", "keymap", "providers", "prompts", "orchestrators", "specialists", "groups", "templates", "usage", "remote", "mods"];
 /** A core tab, or a mod's ("<modId>:<id>"). */
 type Tab = string;
 
@@ -71,6 +73,8 @@ export function SettingsDialog({ tab: initial }: { tab?: Tab }) {
         {tab === "orchestrators" && <OrchestratorsTab />}
         {tab === "specialists" && <SpecialistsTab />}
         {tab === "groups" && <GroupsTab />}
+        {tab === "templates" && <TemplatesTab />}
+        {tab === "usage" && <UsageSettingsTab />}
         {tab === "remote" && <RemoteTab />}
         {tab === "mods" && <ModsSettings />}
         {modTabs.some((m) => m.key === tab) && <ModSettingsTab tabKey={tab} />}

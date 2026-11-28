@@ -64,16 +64,21 @@ fun TranscriptRowView(
     modifier: Modifier = Modifier,
     featureCard: @Composable (TranscriptRow.Feature, Modifier) -> Unit = { _, _ -> },
     onOpenImage: (MessageImage) -> Unit = {},
+    /** Shown under an agent reply, e.g. the usage of the turn it ends. */
+    agentFooter: @Composable (TranscriptRow.Agent) -> Unit = {},
 ) {
     when (row) {
         is TranscriptRow.Aura -> AuraRow(row, modifier)
         is TranscriptRow.Feature -> featureCard(row, modifier)
         is TranscriptRow.User -> UserMessage(row.item.text, remember(row.item.data) { messageImages(row.item.data) }, onOpenImage, modifier)
-        is TranscriptRow.Agent -> MarkdownText(
-            row.item.text,
-            modifier.fillMaxWidth().padding(horizontal = Spacing.m),
-            streaming = row.item.status == "in_progress",
-        )
+        is TranscriptRow.Agent -> Column(modifier.fillMaxWidth()) {
+            MarkdownText(
+                row.item.text,
+                Modifier.fillMaxWidth().padding(horizontal = Spacing.m),
+                streaming = row.item.status == "in_progress",
+            )
+            agentFooter(row)
+        }
         is TranscriptRow.Problem -> ProblemRow(row.item.text.ifBlank { row.item.stepLabel() }, modifier)
         is TranscriptRow.Work -> WorkRow(row, modifier)
     }

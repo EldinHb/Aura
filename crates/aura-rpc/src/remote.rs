@@ -61,6 +61,17 @@ pub const REMOTE_ALLOWED_METHODS: &[&str] = &[
     "feature.list",
     "feature.get",
     "feature.answer",
+    // Usage history, read only. Its daily-summary setting is the desktop's.
+    "usage.summary",
+    "usage.session",
+    "usage.report",
+    "usage.reports",
+    // Session templates are presets of `session.create`'s options: a session
+    // started from one still goes through the narrowed `session.create`.
+    "template.list",
+    "template.create",
+    "template.update",
+    "template.delete",
 ];
 
 pub const DEFAULT_PORT: u16 = 7443;

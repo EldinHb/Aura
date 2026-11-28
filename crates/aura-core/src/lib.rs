@@ -12,6 +12,7 @@ pub mod features;
 pub mod load_balancer;
 pub mod manager;
 pub mod meetings;
+pub mod pricing;
 pub mod process;
 pub mod prompts;
 pub mod provider;
@@ -20,9 +21,11 @@ pub mod schedules;
 pub mod specialists;
 pub mod store;
 pub mod suggestions;
+pub mod templates;
 pub mod test_support;
 pub mod themes;
 pub mod types;
+pub mod usage;
 pub mod which;
 
 pub use autonomy::{Autonomy, AutonomyLevel, Checkpoint};
@@ -41,7 +44,9 @@ pub use schedules::{ClearHistory, Editor, HistoryCounts, ScheduleService, Schedu
 pub use specialists::{Specialist, SpecialistInput, SpecialistScope};
 pub use store::*;
 pub use suggestions::{SuggestionEvidence, SuggestionSettings};
+pub use templates::{SessionTemplate, TemplateInput, TemplateKind};
 pub use types::*;
+pub use usage::{UsageGroup, UsageGroupBy, UsageQuery, UsageRecord, UsageSummary, UsageTotals};
 
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()

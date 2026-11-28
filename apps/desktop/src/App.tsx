@@ -1,6 +1,9 @@
 import { registerScheduleCommands, useScheduleSync } from "./features/schedules/state";
 import { useUpdateChecks } from "./features/updates/updates";
 import "./features/schedules/schedules.css";
+import "./features/usage/usage.css";
+import { registerUsageCommands, useUsageSync } from "./features/usage/state";
+import { useTemplateSync } from "./features/templates/state";
 import { useModLoader } from "./mods/loader";
 import { useThemeLoader } from "./state/themes";
 import { ApprovalDialog } from "./mods/ApprovalDialog";
@@ -49,6 +52,8 @@ export default function App() {
   // A sound when a session goes from working to waiting for you; the main window plays it.
   useWaitingSound(windowMode !== "session");
   useScheduleSync();
+  useUsageSync();
+  useTemplateSync();
   // Self-update: the main window checks, downloads and offers the restart.
   useUpdateChecks(windowMode !== "session");
   useMarkViewedSeen();
@@ -79,7 +84,8 @@ export default function App() {
     const offCore = registerCoreCommands();
     const offTabs = registerTabCommands();
     const offSchedules = registerScheduleCommands();
-    return () => { offCore(); offTabs(); offSchedules(); };
+    const offUsage = registerUsageCommands();
+    return () => { offCore(); offTabs(); offSchedules(); offUsage(); };
   }, []);
 
   // Connect + subscribe. The link moves the window to a new client when the

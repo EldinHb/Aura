@@ -21,6 +21,9 @@ mod orchestrator;
 mod specialists;
 mod suggest;
 mod team;
+mod templates;
+mod usage;
+pub use usage::{DAILY_USAGE_KEY, KEEP_REPORTS};
 mod workspaces;
 pub use features::{AskSpec, CheckpointOutcome, HireSpec, ReportSpec};
 pub use orchestrator::{
@@ -134,6 +137,8 @@ struct Inner {
     /// Serialises changes to the workspace registry, and the placing of
     /// sessions in workspaces (see `workspaces`). Taken before `sessions`.
     workspaces: Mutex<()>,
+    /// Held while session templates change, so names stay unique.
+    templates: Mutex<()>,
     /// Serialises read-modify-write updates of scheduled task records: the
     /// scheduler's, and a workspace's tasks moving when it is deleted.
     scheduled_tasks: Mutex<()>,
@@ -184,6 +189,7 @@ impl Manager {
             gates: Mutex::new(HashMap::new()),
             groups: Mutex::new(()),
             workspaces: Mutex::new(()),
+            templates: Mutex::new(()),
             scheduled_tasks: Mutex::new(()),
             scheduled_task_changed: Mutex::new(None),
             features: Mutex::new(()),
@@ -1889,6 +1895,10 @@ impl Manager {
             if let Err(e) = self.inner.store.append_event(&sid, &ev) {
                 tracing::warn!("persist event failed: {e}");
             }
+        }
+        // A resumed session replays turns that were kept when they ran.
+        if let (Event::TurnCompleted { turn, .. }, false) = (&ev, replaying) {
+            self.record_turn_usage(&sid, turn);
         }
         // Update in-memory runtime state.
         {

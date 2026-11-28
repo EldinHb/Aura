@@ -134,6 +134,17 @@ pub enum Event {
     WorkspacesChanged {
         workspaces: Vec<Workspace>,
     },
+    /// Aura wrote a usage summary on its own (the daily one, see
+    /// `usage.daily`). Belongs to no session; not part of the history
+    /// (see `usage.reports`).
+    UsageReport {
+        report: crate::usage::UsageReport,
+    },
+    /// A session template was created, changed or deleted: all of them, by
+    /// name. Belongs to no session; not part of the history (see `template.list`).
+    TemplatesChanged {
+        templates: Vec<crate::templates::SessionTemplate>,
+    },
 }
 
 impl Event {
@@ -158,7 +169,10 @@ impl Event {
             | Event::SettingChanged { session_id, .. }
             | Event::NoticesCleared { session_id }
             | Event::FeatureUpdated { session_id, .. } => session_id,
-            Event::SpecialistSuggestionsUpdated { .. } | Event::WorkspacesChanged { .. } => "",
+            Event::SpecialistSuggestionsUpdated { .. }
+            | Event::WorkspacesChanged { .. }
+            | Event::UsageReport { .. }
+            | Event::TemplatesChanged { .. } => "",
         }
     }
 
@@ -174,6 +188,8 @@ impl Event {
                 | Event::FeatureUpdated { .. }
                 | Event::SpecialistSuggestionsUpdated { .. }
                 | Event::WorkspacesChanged { .. }
+                | Event::UsageReport { .. }
+                | Event::TemplatesChanged { .. }
         )
     }
 }

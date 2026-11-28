@@ -480,6 +480,61 @@ async fn pair_then_auth_then_list_sessions() {
         aura_rpc::ERR_PARAMS
     );
 
+    // Usage, read only.
+    let summary = r
+        .ok(
+            "usage.summary",
+            json!({"groupBy": "model", "splitBy": "agent"}),
+        )
+        .await;
+    assert_eq!(summary["groupBy"], json!("model"));
+    r.ok(
+        "usage.session",
+        json!({"id": created_id, "includeWorkers": true}),
+    )
+    .await;
+    r.ok(
+        "usage.report",
+        json!({"from": "2026-11-01T00:00:00Z", "to": "2026-11-02T00:00:00Z", "title": "Today"}),
+    )
+    .await;
+    r.ok("usage.reports", json!({})).await;
+
+    // Templates are presets: a phone may keep one with any folder, but a
+    // session started from it goes through the remote session.create, which
+    // still refuses a folder outside the known projects.
+    let outside_path = outside.path().to_string_lossy().to_string();
+    let template = r
+        .ok(
+            "template.create",
+            json!({"name": "Elsewhere", "provider": "claude", "cwd": outside_path, "prompt": "hi"}),
+        )
+        .await;
+    let templates = r.ok("template.list", json!({})).await;
+    assert_eq!(templates[0]["name"], json!("Elsewhere"));
+    assert_eq!(
+        r.err(
+            "session.create",
+            json!({"provider": template["provider"], "cwd": template["cwd"], "initial_prompt": template["prompt"]})
+        )
+        .await,
+        aura_rpc::ERR_FORBIDDEN
+    );
+    let renamed = r
+        .ok(
+            "template.update",
+            json!({"id": template["id"], "name": "Here", "provider": "claude", "cwd": project_dir}),
+        )
+        .await;
+    assert_eq!(renamed["name"], json!("Here"));
+    r.ok(
+        "session.create",
+        json!({"provider": renamed["provider"], "cwd": renamed["cwd"]}),
+    )
+    .await;
+    r.ok("template.delete", json!({"id": template["id"]})).await;
+    assert_eq!(r.ok("template.list", json!({})).await, json!([]));
+
     // Images go by value, never as a path on the daemon's machine.
     assert_eq!(
         r.err(
@@ -511,6 +566,8 @@ async fn forbidden_methods_on_the_remote_listener() {
     let (port, fp) = enable(&d).await;
     let (mut r, _, _) = pair(&d, port, &fp).await;
     for method in [
+        "usage.set_daily",
+        "usage.daily",
         "daemon.shutdown",
         "daemon.window_hello",
         "settings.get",

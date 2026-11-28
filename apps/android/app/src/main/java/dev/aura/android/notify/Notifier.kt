@@ -19,6 +19,9 @@ import dev.aura.android.data.AppPrefs
 import dev.aura.android.data.NoticeSettings
 import dev.aura.android.data.SavedServer
 import dev.aura.android.net.ServerConnection
+import dev.aura.android.protocol.Event
+import dev.aura.android.protocol.UsageReport
+import dev.aura.android.protocol.line
 import dev.aura.android.transcript.plainText
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -69,6 +72,12 @@ class Notifier(
         val server = connection.server
         watchers.remove(server.id)?.cancel()
         watchers[server.id] = scope.launch {
+            // The server's daily usage summary, when the user turned it on there.
+            launch {
+                connection.events.collect { live ->
+                    (live.event as? Event.UsageReported)?.let { postUsageReport(server, it.report) }
+                }
+            }
             combine(
                 combine(connection.sessions.filterNotNull(), connection.features.filterNotNull(), connection.pending.filterNotNull(), ::Triple),
                 combine(connection.lastReplies, connection.prompts, ::Pair),
@@ -110,6 +119,29 @@ class Notifier(
         posted.remove(serverId)?.forEach { manager.cancel(it, NOTICE_ID) }
         manager.cancel(summaryTag(serverId), NOTICE_ID)
         scope.launch { prefs.forget(serverId) }
+    }
+
+    /** Posts [report] once: its id is the notification's tag, so the same report replaces itself. */
+    private fun postUsageReport(server: SavedServer, report: UsageReport) {
+        val body = report.totals.line()
+        val open = PendingIntent.getActivity(
+            context,
+            report.id.hashCode(),
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(context.getString(R.string.usage_summary_title))
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(plainText(report.markdown).ifBlank { body }))
+            .setSubText(server.name)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(open)
+            .build()
+        post(usageTag(report.id), notification)
     }
 
     /** Takes away the notification [key] (after acting on it from the notification). */
@@ -247,6 +279,7 @@ class Notifier(
 
         private fun groupOf(serverId: String) = "server:$serverId"
         private fun summaryTag(serverId: String) = "summary:$serverId"
+        private fun usageTag(reportId: String) = "usage:$reportId"
 
         /** Opens session [sessionId] of [serverId] in the app (the leader, on that worker's tab). */
         fun openIntent(context: Context, serverId: String, sessionId: String, key: String): PendingIntent = PendingIntent.getActivity(

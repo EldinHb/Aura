@@ -1,4 +1,6 @@
 import { SchedulesDialog } from "../features/schedules/SchedulesDialog";
+import { UsageDialog } from "../features/usage/UsageDialog";
+import { SessionUsageDialog } from "../features/usage/SessionUsageDialog";
 import { useEffect, useState } from "react";
 import { ModDialog } from "../mods/Slots";
 import { useStore } from "../state/store";
@@ -53,6 +55,10 @@ function CurrentDialog() {
       return <RenameDialog sessionId={dialog.sessionId} />;
     case "system-prompt":
       return <SystemPromptDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
+    case "usage":
+      return <UsageDialog />;
+    case "session-usage":
+      return <SessionUsageDialog key={dialog.sessionId} sessionId={dialog.sessionId} />;
     case "schedules":
       return <SchedulesDialog key={`${dialog.taskId ?? ""}-${dialog.create ? "new" : ""}`} taskId={dialog.taskId} create={dialog.create} />;
     case "git-cleanup":

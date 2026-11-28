@@ -1862,6 +1862,40 @@ async fn dispatch(
             m.delete_group(&name)?;
             ok(true)
         }
+        "usage.summary" => {
+            let q: aura_core::UsageQuery = if p.is_null() {
+                Default::default()
+            } else {
+                params(p)?
+            };
+            ok(m.usage_summary(&q)?)
+        }
+        "usage.session" => ok(m.usage_session(&params(p)?)?),
+        "usage.report" => ok(m.usage_report(&params(p)?)?),
+        "usage.reports" => ok(m.usage_reports()?),
+        "usage.daily" => ok(m.daily_usage()),
+        "usage.set_daily" => ok(m.set_daily_usage(params(p)?)?),
+        "template.list" => ok(m.list_templates()?),
+        "template.create" => ok(m.create_template(params(p)?)?),
+        "template.update" => {
+            // The template's id next to its options.
+            let mut rest = p.clone();
+            let id = rest
+                .as_object_mut()
+                .and_then(|o| o.remove("id"))
+                .and_then(|v| v.as_str().map(str::to_string))
+                .ok_or_else(|| DispatchError {
+                    code: ERR_PARAMS,
+                    message: "template.update needs the template's `id`".into(),
+                    data: None,
+                })?;
+            ok(m.update_template(&id, params(&rest)?)?)
+        }
+        "template.delete" => {
+            let IdParams { id } = params(p)?;
+            m.delete_template(&id)?;
+            ok(true)
+        }
         "workspace.list" => ok(m.list_workspaces()?),
         "workspace.create" => {
             #[derive(Deserialize)]
