@@ -1,5 +1,7 @@
 package dev.aura.android.notify
 
+import dev.aura.android.data.NoticeSettings
+import dev.aura.android.net.Prompts
 import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Forest
 import dev.aura.android.protocol.Pending
@@ -22,6 +24,10 @@ data class Notice(
     val text: String,
     val approvalId: String? = null,
     val failed: Boolean = false,
+    /** Part of a scheduled task's run. */
+    val scheduled: Boolean = false,
+    /** Whether it may be notified now, or only kept when it already is. */
+    val postable: Boolean = true,
 )
 
 /** What one server shows, as far as notifications go. */
@@ -32,13 +38,41 @@ data class ServerView(
     val pending: Pending,
     /** The latest agent message per session, as seen live. */
     val lastReplies: Map<String, String> = emptyMap(),
+    /** Per session, who sent its messages; absent when not known yet (see ServerConnection.prompts). */
+    val prompts: Map<String, Prompts> = emptyMap(),
 )
+
+private val Session.isScheduled: Boolean get() = scheduledTaskId != null || scheduledRun != null
+
+/** A main chat: not a worker or team member, even one whose orchestrator is gone. */
+private fun Session.isMainChat(forest: Forest): Boolean =
+    !archived && (orchestratorId == null || orchestratorId == id) && forest.parentOf(id) == null
+
+/** Whether the agent of [this] finished (or failed) a turn the user has not seen. */
+private val Session.finishedUnseen: Boolean get() = attention == "done" || attention == "failed"
+
+/**
+ * The main chats whose finished turn may be the user's, but who sent their
+ * messages is not known yet: read it ([ServerView.prompts]) before deciding.
+ */
+fun promptLookups(view: ServerView, settings: NoticeSettings): List<String> {
+    if (!settings.messages) return emptyList()
+    val forest = Forest(view.sessions)
+    return view.sessions
+        .filter { it.isMainChat(forest) && it.finishedUnseen && it.id !in view.prompts && (settings.scheduled || !it.isScheduled) }
+        .map { it.id }
+}
 
 /**
  * Everything on [view] that wants the user now:
  * - a feature owner's open question (a decision card);
  * - a main chat, a top-level session (not a worker or team member), whose
- *   agent finished (or failed) and that the user has not looked at since;
+ *   agent finished (or failed) a turn the user started and that the user has
+ *   not looked at since, here or on the desktop (the server's `attention`).
+ *   Once per such turn: the turns Aura starts with its own messages (worker
+ *   reports, answers, decisions fed to an orchestrator) are not the user's.
+ *   While those run after the user's turn, its notice stays active (so a
+ *   posted notification stays) but is not [Notice.postable];
  * - an approval or a question an agent waits on, in any session.
  * What stops wanting the user (answered, opened, resolved) drops out.
  */
@@ -60,16 +94,19 @@ fun activeNotices(view: ServerView): List<Notice> {
         }
     }
     for (s in view.sessions) {
-        if (s.archived || forest.parentOf(s.id) != null) continue
-        if (s.attention != "done" && s.attention != "failed") continue
+        if (!s.isMainChat(forest) || !s.finishedUnseen) continue
+        val prompts = view.prompts[s.id] ?: continue
+        val turn = prompts.userTurn ?: continue
         out += Notice(
-            key = "message:${s.id}:${s.lastActivity}",
+            key = "message:${s.id}:$turn",
             kind = NoticeKind.Message,
             serverId = view.serverId,
             sessionId = s.id,
             title = s.title,
             text = view.lastReplies[s.id] ?: s.lastError.orEmpty(),
             failed = s.attention == "failed",
+            scheduled = s.isScheduled,
+            postable = prompts.latestFromUser,
         )
     }
     for (a in view.pending.approvals) {
@@ -81,6 +118,7 @@ fun activeNotices(view: ServerView): List<Notice> {
             title = titleOf(a.sessionId),
             text = a.title,
             approvalId = a.id,
+            scheduled = byId[a.sessionId]?.isScheduled == true,
         )
     }
     for (r in view.pending.inputs) {
@@ -91,6 +129,7 @@ fun activeNotices(view: ServerView): List<Notice> {
             sessionId = r.sessionId,
             title = titleOf(r.sessionId),
             text = r.questions.joinToString("\n") { it.question },
+            scheduled = byId[r.sessionId]?.isScheduled == true,
         )
     }
     return out
@@ -114,7 +153,7 @@ data class NoticeUpdate(
  */
 fun noticeUpdate(active: List<Notice>, seen: Set<String>, posted: Set<String>, baseline: Boolean, openSessionId: String?): NoticeUpdate {
     val keys = active.map { it.key }.toSet()
-    val fresh = active.filter { it.key !in seen }
+    val fresh = active.filter { it.key !in seen && it.postable }
     val post = if (baseline) emptyList() else fresh.filter { it.sessionId != openSessionId }
     return NoticeUpdate(
         post = post,
@@ -125,3 +164,14 @@ fun noticeUpdate(active: List<Notice>, seen: Set<String>, posted: Set<String>, b
 }
 
 private const val MAX_SEEN = 2000
+
+/**
+ * Whether the user wants [notice] notified, by [settings]. "Scheduled tasks"
+ * governs the replies of scheduled runs; an approval or question in one still
+ * blocks it, so it follows "Approvals".
+ */
+fun NoticeSettings.wants(notice: Notice): Boolean = when (notice.kind) {
+    NoticeKind.Decision -> decisions
+    NoticeKind.Message -> messages && (scheduled || !notice.scheduled)
+    NoticeKind.Approval, NoticeKind.Question -> approvals
+}

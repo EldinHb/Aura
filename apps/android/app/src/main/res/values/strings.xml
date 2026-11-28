@@ -232,7 +232,7 @@
     <string name="channel_decisions">Decisions</string>
     <string name="channel_decisions_desc">A feature owner asks you to decide something.</string>
     <string name="channel_messages">Messages</string>
-    <string name="channel_messages_desc">A main chat\'s agent finished and replied.</string>
+    <string name="channel_messages_desc">A main chat finished what you asked it.</string>
     <string name="channel_approvals">Needs approval</string>
     <string name="channel_approvals_desc">An agent waits for your approval or answer.</string>
     <string name="channel_connection">Connection</string>
@@ -267,6 +267,12 @@
     <string name="setting_notifications_off">Notifications are off for Aura.</string>
     <string name="setting_allow_notifications">Allow notifications</string>
     <string name="setting_notification_channels">Notification categories</string>
+    <string name="setting_notify_header">Notify me about</string>
+    <string name="setting_notify_decisions_desc">A feature owner asks you to decide something.</string>
+    <string name="setting_notify_messages_desc">A main chat finished what you asked it. Not its turns on worker reports and other messages from Aura.</string>
+    <string name="setting_notify_approvals_desc">An agent waits for your approval or an answer.</string>
+    <string name="setting_notify_scheduled">Scheduled tasks</string>
+    <string name="setting_notify_scheduled_desc">A scheduled task\'s run finished.</string>
 
     <!-- Workspaces -->
     <string name="new_workspace">New workspace</string>

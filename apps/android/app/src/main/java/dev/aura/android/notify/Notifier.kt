@@ -16,11 +16,14 @@ import androidx.core.content.ContextCompat
 import dev.aura.android.MainActivity
 import dev.aura.android.R
 import dev.aura.android.data.AppPrefs
+import dev.aura.android.data.NoticeSettings
 import dev.aura.android.data.SavedServer
 import dev.aura.android.net.ServerConnection
 import dev.aura.android.transcript.plainText
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
@@ -48,6 +51,15 @@ class Notifier(
     private val posted = HashMap<String, MutableSet<String>>()
     private val lock = Mutex()
 
+    /** What each server last asked for: its active notice keys and the session open on screen. */
+    private val latest = HashMap<String, Pair<Set<String>, String?>>()
+
+    /** Sessions whose messages are being read, as "server/session". */
+    private val looking = HashSet<String>()
+
+    /** One history read at a time. */
+    private val historyLock = Mutex()
+
     init {
         createChannels(context)
     }
@@ -59,11 +71,36 @@ class Notifier(
         watchers[server.id] = scope.launch {
             combine(
                 combine(connection.sessions.filterNotNull(), connection.features.filterNotNull(), connection.pending.filterNotNull(), ::Triple),
-                connection.lastReplies,
+                combine(connection.lastReplies, connection.prompts, ::Pair),
                 openSession,
-            ) { (sessions, features, pending), replies, open ->
-                ServerView(server.id, sessions, features, pending, replies) to open?.takeIf { it.serverId == server.id }?.sessionId
-            }.collect { (view, openId) -> update(server, view, openId) }
+                prefs.noticeSettings,
+            ) { (sessions, features, pending), (replies, turns), open, settings ->
+                Triple(ServerView(server.id, sessions, features, pending, replies, turns), open?.takeIf { it.serverId == server.id }?.sessionId, settings)
+            }.collect { (view, openId, settings) ->
+                val lookups = promptLookups(view, settings)
+                lookUp(connection, lookups)
+                // The first sight of a server takes everything as known: wait until it is all known.
+                if (lookups.isEmpty() || prefs.isBaselined(server.id)) update(server, view, openId, settings)
+            }
+        }
+    }
+
+    /** Reads who sent the messages of each of [ids], one at a time; the notices follow when that arrives. */
+    private fun lookUp(connection: ServerConnection, ids: List<String>) {
+        for (id in ids) {
+            val key = connection.server.id + "/" + id
+            if (!looking.add(key)) continue
+            scope.launch {
+                try {
+                    historyLock.withLock { connection.loadPrompts(id) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    // Offline or refused: tried again on the next change.
+                } finally {
+                    looking.remove(key)
+                }
+            }
         }
     }
 
@@ -81,10 +118,12 @@ class Notifier(
         manager.cancel(key, NOTICE_ID)
     }
 
-    private suspend fun update(server: SavedServer, view: ServerView, openId: String?) = lock.withLock {
+    private suspend fun update(server: SavedServer, view: ServerView, openId: String?, settings: NoticeSettings) = lock.withLock {
         val shown = posted.getOrPut(server.id) { mutableSetOf() }
+        val active = activeNotices(view)
+        latest[server.id] = active.map { it.key }.toSet() to openId
         val result = noticeUpdate(
-            active = activeNotices(view),
+            active = active,
             seen = prefs.seen(server.id),
             posted = shown,
             baseline = !prefs.isBaselined(server.id),
@@ -92,12 +131,24 @@ class Notifier(
         )
         prefs.saveSeen(server.id, result.seen)
         result.cancel.forEach { manager.cancel(it, NOTICE_ID); shown.remove(it) }
-        // What is on screen needs no notification any more.
-        if (openId != null) {
-            activeNotices(view).filter { it.sessionId == openId && it.key in shown }.forEach { manager.cancel(it.key, NOTICE_ID); shown.remove(it.key) }
-        }
-        for (notice in result.post) {
-            if (post(notice.key, build(server, notice))) shown += notice.key
+        // What is on screen, or what the user turned off, needs no notification any more.
+        active.filter { it.key in shown && (it.sessionId == openId || !settings.wants(it)) }.forEach { manager.cancel(it.key, NOTICE_ID); shown.remove(it.key) }
+        for (notice in result.post.filter(settings::wants)) {
+            if (notice.kind == NoticeKind.Message) {
+                // The user may be reading it on the desktop, which marks it seen in a moment.
+                scope.launch {
+                    delay(MESSAGE_GRACE_MS)
+                    lock.withLock {
+                        val (keys, open) = latest[server.id] ?: return@withLock
+                        if (notice.key in keys && notice.sessionId != open && post(notice.key, build(server, notice))) {
+                            posted.getOrPut(server.id) { mutableSetOf() } += notice.key
+                            post(summaryTag(server.id), summary(server))
+                        }
+                    }
+                }
+            } else if (post(notice.key, build(server, notice))) {
+                shown += notice.key
+            }
         }
         if (shown.isEmpty()) manager.cancel(summaryTag(server.id), NOTICE_ID) else post(summaryTag(server.id), summary(server))
     }
@@ -183,6 +234,9 @@ class Notifier(
         const val CHANNEL_APPROVALS = "approvals"
         const val CHANNEL_CONNECTION = "connection"
         const val NOTICE_ID = 1
+
+        /** How long a main chat's reply waits before it is notified, in case the user is reading it elsewhere. */
+        private const val MESSAGE_GRACE_MS = 4_000L
 
         private val NoticeKind.channel: String
             get() = when (this) {

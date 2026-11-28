@@ -1,5 +1,6 @@
 package dev.aura.android.notify
 
+import dev.aura.android.net.Prompts
 import dev.aura.android.protocol.Approval
 import dev.aura.android.protocol.Feature
 import dev.aura.android.protocol.Pending
@@ -21,7 +22,9 @@ class NoticesTest {
         features: List<Feature> = emptyList(),
         pending: Pending = Pending(),
         replies: Map<String, String> = emptyMap(),
-    ) = ServerView("srv", sessions, features, pending, replies)
+        // Each session's latest message from the user, started the turn named after its last activity.
+        prompts: Map<String, Prompts> = sessions.associate { it.id to Prompts(latestFromUser = true, userTurn = it.lastActivity) },
+    ) = ServerView("srv", sessions, features, pending, replies, prompts)
 
     private fun question(id: String, answered: Boolean = false) =
         UserQuestion(id = id, question = "Ship it?", answer = if (answered) QuestionAnswer("Yes") else null)
