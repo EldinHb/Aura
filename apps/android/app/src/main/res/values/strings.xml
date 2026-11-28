@@ -311,7 +311,6 @@
 
     <!-- Usage -->
     <string name="usage_title">Usage</string>
-    <string name="refresh">Refresh</string>
     <string name="usage_today">Today</string>
     <string name="usage_7_days">7 days</string>
     <string name="usage_30_days">30 days</string>
