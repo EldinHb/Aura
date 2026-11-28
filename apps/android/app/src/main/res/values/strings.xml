@@ -154,8 +154,8 @@
     <string name="change_renamed">From %1$s</string>
     <string name="change_binary">Binary file</string>
     <string name="change_counts">+%1$d −%2$d</string>
-    <string name="line_added">Line %1$d added: %2$s</string>
-    <string name="line_removed">Line %1$d removed: %2$s</string>
+    <string name="line_added">Added, line %1$d: %2$s</string>
+    <string name="line_removed">Removed, line %1$d: %2$s</string>
     <string name="share_to_aura">Share to Aura</string>
     <plurals name="share_title"><item quantity="one">Send %d image to…</item><item quantity="other">Send %d images to…</item></plurals>
     <string name="share_empty">No connected server has a session to send to.</string>
