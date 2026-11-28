@@ -62,10 +62,13 @@ function parentDir(p: string): string {
 }
 
 export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetOwner }: { preset?: string; cwd?: string; featureOwner?: boolean }) {
-  const client = useStore((s) => s.client);
+  // The computer the dialog was opened on: the session is made there or not at all.
+  const [origin] = useState(() => useStore.getState().computer);
+  // Its client while it is shown; none once another computer is.
+  const client = useStore((s) => (s.computer === origin ? s.client : null));
   // On a remote computer: no terminals, no file browsing; folders come from its known projects.
-  const remote = useStore((s) => s.computer !== LOCAL);
-  const computerLabel = useComputers((s) => (remote ? computerName(useStore.getState().computer, s.remotes) : null));
+  const remote = origin !== LOCAL;
+  const computerLabel = useComputers((s) => (remote || s.remotes.length > 0 ? computerName(origin, s.remotes) : null));
   const allProviders = useStore((s) => s.providers);
   const providers = useMemo(() => (remote ? allProviders.filter((p) => p.kind !== "terminal") : allProviders), [remote, allProviders]);
   const settings = useStore((s) => s.settings);
@@ -288,7 +291,13 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
   );
 
   const submit = useCallback(async () => {
-    if (!client || busy) return;
+    if (busy) return;
+    if (useStore.getState().computer !== origin) {
+      toast(`Nothing was created: this dialog was for ${computerName(origin)}, and another computer is shown now.`, "error");
+      closeDialog();
+      return;
+    }
+    if (!client) return;
     // An empty directory gives an orchestrator none: the daemon makes it one of its own.
     const cwd = noFolder ? "" : expandedDir.replace(/\/+$/, "") || home || "/";
     setBusy(true);
@@ -334,7 +343,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
     } finally {
       setBusy(false);
     }
-  }, [client, remote, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast, workspace]);
+  }, [client, origin, remote, busy, expandedDir, home, noFolder, command, provider, choice.agent, title, group, mode, model, permission, sandbox, worktree, repoRoot, branch, prompt, systemPrompt, orchestrates, owns, goal, autonomy, contributions, withExtras, select, closeDialog, toast, workspace]);
 
   const onDirKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
@@ -365,7 +374,7 @@ export function NewSessionDialog({ preset, cwd: presetCwd, featureOwner: presetO
         <>
           <span>New session</span>
           {workspace && <span className="dim" style={{ fontWeight: 400 }} title={workspace.name}>in {workspace.name}</span>}
-          {computerLabel && <span className="chip" title="The session runs on this remote computer">on {computerLabel}</span>}
+          {computerLabel && <span className="chip new-session-computer" title="The computer the session runs on">on {computerLabel}</span>}
           <span className="dim" style={{ marginLeft: "auto", fontWeight: 400 }}>
             <kbd>⌘↩</kbd> create
           </span>

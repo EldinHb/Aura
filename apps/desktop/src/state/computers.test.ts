@@ -166,3 +166,25 @@ it("a remote coming back from needing pairing gets a fresh connection", async ()
   expect(first.closed).toBe(true);
   stop();
 });
+
+it("closes what was opened for the computer it leaves, keeps the app's own dialogs", async () => {
+  useStore.setState({ dialog: { kind: "new-session" } });
+  await switchComputer("srv");
+  expect(useStore.getState().dialog).toEqual({ kind: "none" });
+  useStore.setState({ dialog: { kind: "rename", sessionId: "x" } });
+  await switchComputer(LOCAL);
+  expect(useStore.getState().dialog).toEqual({ kind: "none" });
+  useStore.setState({ dialog: { kind: "settings", tab: "general" } });
+  await switchComputer("srv");
+  expect(useStore.getState().dialog).toEqual({ kind: "settings", tab: "general" });
+});
+
+it("the automatic switch when the shown remote is removed closes its dialogs too", async () => {
+  const stop = await startComputers();
+  await switchComputer("srv");
+  useStore.setState({ dialog: { kind: "new-session" } });
+  shell.onChange!([]);
+  await vi.waitFor(() => expect(useStore.getState().computer).toBe(LOCAL));
+  expect(useStore.getState().dialog).toEqual({ kind: "none" });
+  stop();
+});

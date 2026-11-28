@@ -21,7 +21,7 @@ import type { Approval, Event, Session, UserInputRequest } from "../gen";
 import type { RpcClient } from "../lib/rpc";
 import { RemoteRpcClient } from "../lib/remoteClient";
 import { needsPairing, remotesApi, type RemoteComputer } from "../lib/remoteComputers";
-import { LOCAL, selectLocalClient, setPersistLocal, useStore, type AppState } from "./store";
+import { LOCAL, selectLocalClient, setPersistLocal, useStore, type AppState, type Dialog } from "./store";
 import { syncWithDaemon, type Sync, type SyncOptions } from "./daemonSync";
 import { isMac } from "../lib/platform";
 
@@ -176,6 +176,14 @@ export function unfollow(client: RpcClient) {
 
 // ---- switching -------------------------------------------------------------
 
+/**
+ * Dialogs that are the app's own and refer to this computer whatever is
+ * shown; every other one (a new session, a rename, a confirmation, the
+ * inbox…) belongs to the computer it was opened on and closes on switching,
+ * so nothing filled in for one computer is sent to another.
+ */
+const APP_DIALOGS = new Set<Dialog["kind"]>(["none", "settings", "help", "computers", "schedules"]);
+
 /** What each computer's view is made of; kept per computer while another is shown. */
 const VIEW_FIELDS = [
   "sessions",
@@ -253,7 +261,8 @@ export async function switchComputer(id: string): Promise<void> {
   const view = views.get(id) ?? blankView();
   setPersistLocal(id === LOCAL);
   // Transcripts load again on demand: what the hidden computer did meanwhile is not in them.
-  useStore.setState({ ...view, transcripts: {}, computer: id, client, connection: client?.state ?? "closed", connectionError: null, paletteOpen: false, whichKey: null });
+  const dialog = APP_DIALOGS.has(st.dialog.kind) ? st.dialog : ({ kind: "none" } as const);
+  useStore.setState({ ...view, transcripts: {}, computer: id, client, connection: client?.state ?? "closed", connectionError: null, paletteOpen: false, whichKey: null, dialog });
   if (client) await follow(client);
 }
 

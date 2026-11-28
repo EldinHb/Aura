@@ -621,13 +621,18 @@ export const useStore = create<AppState>((set, get) => ({
   loadTranscript: (id) => {
     const st = get();
     const t = st.transcripts[id];
-    if (!st.client || t?.loaded || t?.loading) return;
+    const client = st.client;
+    if (!client || t?.loaded || t?.loading) return;
     st.ensureTranscript(id);
     st.markLoading(id, true);
-    st.client
+    // An answer that comes after the window moved to another computer (or daemon) is the old one's: dropped.
+    client
       .history(id)
-      .then((events) => get().loadHistory(id, events))
+      .then((events) => {
+        if (get().client === client) get().loadHistory(id, events);
+      })
       .catch((e) => {
+        if (get().client !== client) return;
         get().markLoading(id, false);
         get().toast(`history: ${e instanceof Error ? e.message : e}`, "error");
       });
