@@ -10,7 +10,10 @@ import dev.aura.android.protocol.CreateSessionOpts
 import dev.aura.android.protocol.ModelInfo
 import dev.aura.android.protocol.Project
 import dev.aura.android.protocol.ProviderInfo
+import dev.aura.android.protocol.Event
 import dev.aura.android.protocol.Session
+import dev.aura.android.protocol.SessionTemplate
+import dev.aura.android.protocol.TemplateInput
 import dev.aura.android.protocol.Workspace
 import dev.aura.android.protocol.WorktreeOpts
 import dev.aura.android.ui.components.UiMessage
@@ -76,6 +79,10 @@ data class NewSessionForm(
     /** The feature's own autonomy; null follows the server's setting for every feature owner. */
     val autonomy: Autonomy? = null,
     val workspace: String? = null,
+    /** The branch pattern of the template picked, which the branch follows until edited. */
+    val branchPattern: String? = null,
+    /** The template the form was filled from, if any. */
+    val templateName: String? = null,
 ) {
     val orchestrates: Boolean get() = kind != SessionKind.Agent
     val noFolder: Boolean get() = orchestrates && !orchestratorFolder
@@ -127,6 +134,11 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
     /** The models of each provider, once loaded. */
     val models: StateFlow<Map<String, List<ModelInfo>>> = _models
 
+    private val _templates = MutableStateFlow<List<SessionTemplate>>(emptyList())
+
+    /** The server's session templates that can start here (no terminals), by name. */
+    val templates: StateFlow<List<SessionTemplate>> = _templates
+
     private val _creating = MutableStateFlow(false)
     val creating: StateFlow<Boolean> = _creating
 
@@ -140,6 +152,54 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
 
     init {
         load()
+        loadTemplates()
+        container.connection(serverId)?.let { c ->
+            viewModelScope.launch {
+                c.events.collect { live ->
+                    (live.event as? Event.TemplatesChanged)?.let { e -> _templates.value = e.templates.filter { it.startableHere } }
+                }
+            }
+        }
+    }
+
+    private fun loadTemplates() {
+        val c = container.connection(serverId) ?: return
+        viewModelScope.launch {
+            try {
+                val list = c.call("template.list", JsonObject(emptyMap()), ListSerializer(SessionTemplate.serializer()))
+                _templates.value = list.filter { it.startableHere }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // A server from before templates: the picker stays empty.
+            }
+        }
+    }
+
+    /** Fills the form from [template]; the user can change anything before starting. */
+    fun pick(template: SessionTemplate) {
+        val agents = _options.value?.agents.orEmpty()
+        _form.update { applyTemplate(it, template, agents) }
+        agents.getOrNull(_form.value.agentIndex)?.let { loadModels(it.provider) }
+    }
+
+    /** Saves the form as a template named [name]. */
+    fun saveTemplate(name: String) {
+        val c = container.connection(serverId) ?: return
+        val agent = _options.value?.agents?.getOrNull(_form.value.agentIndex) ?: return
+        val input = templateInput(name, _form.value, agent)
+        viewModelScope.launch {
+            try {
+                val made = c.call("template.create", ProtocolJson.encodeToJsonElement(TemplateInput.serializer(), input), SessionTemplate.serializer())
+                _templates.update { list -> (list.filterNot { it.id == made.id } + made).sortedBy { it.name.lowercase() } }
+                _form.update { it.copy(templateName = made.name) }
+                _messages.trySend(UiMessage.Res(R.string.template_saved, listOf(made.name)))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _messages.trySend(UiMessage.Res(R.string.template_save_failed, listOf(e.message ?: "")))
+            }
+        }
     }
 
     fun load() {
@@ -178,7 +238,14 @@ class NewSessionViewModel(private val container: AppContainer, private val serve
             if (next.model != before.model) next = next.copy(effort = "")
             // Until the user edits the branch, it follows the title.
             if (!next.branchTouched && (next.title != before.title || (next.worktree && next.branch.isEmpty()))) {
-                next = next.copy(branch = if (next.worktree || next.title.isNotBlank()) defaultBranch(next.title) else "")
+                val pattern = next.branchPattern
+                next = next.copy(
+                    branch = when {
+                        pattern != null && next.worktree -> expandBranch(pattern, next.title, next.templateName.orEmpty())
+                        next.worktree || next.title.isNotBlank() -> defaultBranch(next.title)
+                        else -> ""
+                    },
+                )
             }
             next
         }

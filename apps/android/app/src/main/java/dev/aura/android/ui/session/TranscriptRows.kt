@@ -54,12 +54,17 @@ fun TranscriptRowView(
     row: TranscriptRow,
     modifier: Modifier = Modifier,
     featureCard: @Composable (TranscriptRow.Feature, Modifier) -> Unit = { _, _ -> },
+    /** Shown under an agent reply, e.g. the usage of the turn it ends. */
+    agentFooter: @Composable (TranscriptRow.Agent) -> Unit = {},
 ) {
     when (row) {
         is TranscriptRow.Aura -> AuraRow(row, modifier)
         is TranscriptRow.Feature -> featureCard(row, modifier)
         is TranscriptRow.User -> UserMessage(row.item.text, modifier)
-        is TranscriptRow.Agent -> MarkdownText(row.item.text, modifier.fillMaxWidth().padding(horizontal = Spacing.m))
+        is TranscriptRow.Agent -> Column(modifier.fillMaxWidth()) {
+            MarkdownText(row.item.text, Modifier.fillMaxWidth().padding(horizontal = Spacing.m))
+            agentFooter(row)
+        }
         is TranscriptRow.Problem -> ProblemRow(row.item.text.ifBlank { row.item.stepLabel() }, modifier)
         is TranscriptRow.Work -> WorkRow(row, modifier)
     }

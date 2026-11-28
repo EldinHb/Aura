@@ -267,4 +267,57 @@
     <string name="recommended">Recommended</string>
     <string name="add_a_note">Add a note (optional)</string>
     <string name="open_feature_owner">Open</string>
+
+    <!-- Usage -->
+    <string name="usage_title">Usage</string>
+    <string name="refresh">Refresh</string>
+    <string name="usage_today">Today</string>
+    <string name="usage_7_days">7 days</string>
+    <string name="usage_30_days">30 days</string>
+    <string name="usage_tokens">%1$s tokens</string>
+    <string name="usage_breakdown">%1$s in · %2$s out · %3$s cache read · %4$s cache write</string>
+    <plurals name="usage_turns">
+        <item quantity="one">%d turn</item>
+        <item quantity="other">%d turns</item>
+    </plurals>
+    <string name="usage_cache_hit">%1$s cache hits</string>
+    <string name="usage_estimated_part">%1$s estimated</string>
+    <plurals name="usage_unpriced">
+        <item quantity="one">%d turn without a known price (tokens only)</item>
+        <item quantity="other">%d turns without a known price (tokens only)</item>
+    </plurals>
+    <string name="usage_none">No usage in this period.</string>
+    <string name="usage_group_detail">%1$s tokens · %2$s</string>
+    <string name="usage_per_day">Per day</string>
+    <string name="usage_chart_cost">Cost per day</string>
+    <string name="usage_chart_tokens">Tokens per day</string>
+    <string name="usage_top_sessions">Top sessions</string>
+    <string name="usage_top_features">Top features</string>
+    <string name="usage_top_models">Models</string>
+    <string name="usage_estimates_note">Costs an agent does not report are estimates from list prices; models without a known price count in tokens only.</string>
+    <string name="usage_with_workers">With its workers</string>
+    <string name="usage_own">This session alone</string>
+    <string name="usage_context">Context over the turns</string>
+    <string name="usage_per_turn">Tokens per turn</string>
+    <string name="usage_first_turn">First turn</string>
+    <string name="usage_last_turn">Turn %1$d</string>
+    <string name="usage_by_model">By model</string>
+    <string name="usage_workers">Workers</string>
+    <string name="usage_turn_input">Input: %1$s</string>
+    <string name="usage_turn_output">Output: %1$s</string>
+    <string name="usage_turn_cache_read">Cache read: %1$s</string>
+    <string name="usage_turn_cache_write">Cache write: %1$s</string>
+    <string name="usage_turn_context_of">Context: %1$s of %2$s (%3$s)</string>
+    <string name="usage_turn_context">Context: %1$s</string>
+    <string name="usage_turn_cost">Cost: %1$s</string>
+    <string name="usage_turn_cost_estimated">Cost: %1$s (estimated)</string>
+    <string name="usage_turn_no_price">Cost: not known for this model</string>
+    <string name="usage_summary_title">Usage summary</string>
+
+    <!-- Session templates -->
+    <string name="templates">Templates</string>
+    <string name="save_as_template">Save as template</string>
+    <string name="save_as_template_desc">Saves these options on the server, for new sessions here and on the desktop.</string>
+    <string name="template_saved">Saved template %1$s</string>
+    <string name="template_save_failed">Could not save the template: %1$s</string>
 </resources>

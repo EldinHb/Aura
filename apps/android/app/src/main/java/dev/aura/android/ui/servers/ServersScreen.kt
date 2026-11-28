@@ -15,6 +15,7 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.QueryStats
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
@@ -68,6 +69,7 @@ fun ServersScreen(
     onOpen: (serverId: String) -> Unit,
     onAdd: () -> Unit,
     onSettings: () -> Unit,
+    onUsage: (serverId: String) -> Unit = {},
 ) {
     val vm = appViewModel { ServersViewModel(it) }
     val servers by vm.servers.collectAsStateWithLifecycle()
@@ -150,6 +152,7 @@ fun ServersScreen(
                 SheetAction(Icons.Outlined.LinkOff, stringResource(R.string.pair_again)) { actionsFor = null; onAdd() }
             } else {
                 SheetAction(Icons.Outlined.Refresh, stringResource(R.string.reconnect)) { actionsFor = null; vm.reconnect(ui.server.id) }
+                SheetAction(Icons.Outlined.QueryStats, stringResource(R.string.usage_title)) { actionsFor = null; onUsage(ui.server.id) }
             }
             SheetAction(Icons.Outlined.Edit, stringResource(R.string.rename)) { actionsFor = null; renaming = ui.server }
             SheetAction(Icons.Outlined.Delete, stringResource(R.string.remove)) { actionsFor = null; removing = ui.server }
