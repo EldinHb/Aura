@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { SlashCommand } from "../gen";
+import { isRemoteClient } from "../lib/remoteClient";
 import { useStore } from "../state/store";
 import { sessionTabKey } from "../state/tabs";
 import { setFocus } from "../commands/core";
@@ -196,7 +197,8 @@ export function Composer({ sessionId }: { sessionId: string }) {
         return;
       }
       // An orchestrator without a folder has no files to mention.
-      const mq = session && folderOf(session) !== null ? mentionQuery(before, before.length) : null;
+      // Nor does a remote computer share its files (`fs.search_files`).
+      const mq = session && folderOf(session) !== null && !isRemoteClient(client) ? mentionQuery(before, before.length) : null;
       if (mq && client && session) {
         setPop((p) => ({ kind: "mention", query: mq.query, idx: p.kind === "mention" ? p.idx : 0, results: p.kind === "mention" ? p.results : [] }));
         if (mentionTimer.current) clearTimeout(mentionTimer.current);

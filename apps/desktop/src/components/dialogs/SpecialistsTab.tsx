@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import type { Project, Specialist, SpecialistInput, SpecialistSuggestion, SuggestionSettings } from "../../gen";
-import { useStore } from "../../state/store";
+import { useStore, selectLocalClient } from "../../state/store";
 import { useFeatures, useRoleSuggestions } from "../../state/features";
 import { SpecialistFields, blankSpecialist, slugOf, specialistInput } from "../SpecialistFields";
 import { SuggestionBody } from "../../views/transcript/FeatureCards";
@@ -17,7 +17,7 @@ const same = (a: SpecialistInput, b: SpecialistInput) => JSON.stringify(a) === J
  * saving a global one there makes such a copy.
  */
 export function SpecialistsTab() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const toast = useStore((s) => s.toast);
   const [scope, setScope] = useState<"global" | "project">("global");
   const [projects, setProjects] = useState<Project[]>([]);
@@ -249,7 +249,7 @@ function Suggestions({ onResolved }: { onResolved: () => void }) {
       /* Keep the area usable when storage is unavailable. */
     }
   };
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const toast = useStore((s) => s.toast);
   const found = useRoleSuggestions((s) => s.suggestions);
   const features = useFeatures((s) => s.features);

@@ -14,7 +14,7 @@
  */
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
-import { useStore } from "./store";
+import { selectLocalClient, useStore } from "./store";
 import { isTauri } from "../lib/connection";
 import { THEME_APPLIED_EVENT } from "../lib/terminalTheme";
 
@@ -209,7 +209,7 @@ export async function refreshThemes() {
 }
 
 async function refresh() {
-  const c = useStore.getState().client;
+  const c = selectLocalClient(useStore.getState());
   if (!c) return;
   try {
     const r = await c.call<{ dir: string; themes: UserTheme[] }>("themes.list", {});
@@ -222,7 +222,7 @@ async function refresh() {
 
 /** Mount once at the app root: keeps the theme list current and applies the chosen theme. */
 export function useThemeLoader() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const choice = useStore((s) => s.settings.theme);
   const loaded = useThemes((s) => s.loaded);
   const themes = useThemes((s) => s.themes);

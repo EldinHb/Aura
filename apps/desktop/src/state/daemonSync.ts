@@ -7,6 +7,7 @@
 import type { Event, Session, Workspace } from "../gen";
 import type { RpcClient } from "../lib/rpc";
 import { EventGate } from "./eventGate";
+import { isRemoteClient } from "../lib/remoteClient";
 import { setFeatures, setRoleSuggestions } from "./features";
 import { selectVisibleSessions, useStore } from "./store";
 
@@ -51,7 +52,8 @@ export function syncWithDaemon(client: SyncClient, opts: SyncOptions): Sync {
       },
     );
     const active = st().activeWorkspace;
-    if (workspaces.length && active) client.touchWorkspace(active).catch((error: unknown) => console.warn("Could not tell the daemon the active workspace:", error));
+    // `workspace.touch` is for this computer's daemon; a remote refuses it.
+    if (workspaces.length && active && !isRemoteClient(client)) client.touchWorkspace(active).catch((error: unknown) => console.warn("Could not tell the daemon the active workspace:", error));
     // A daemon from before feature owners has none to list.
     client.features().then(setFeatures, () => {});
     client.roleSuggestions().then(setRoleSuggestions, () => {});

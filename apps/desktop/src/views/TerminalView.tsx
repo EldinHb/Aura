@@ -3,7 +3,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
-import { useStore } from "../state/store";
+import { LOCAL, useStore } from "../state/store";
+import { NOT_ON_REMOTE } from "../lib/remoteCapabilities";
 import { base64ToBytes } from "../lib/rpc";
 import { formatKeys } from "../lib/keymap";
 import { isMac } from "../lib/platform";
@@ -16,6 +17,23 @@ import { THEME_APPLIED_EVENT, terminalTheme } from "../lib/terminalTheme";
  * returns focus to Aura without leaving the session.
  */
 export function TerminalView({ sessionId }: { sessionId: string }) {
+  const remote = useStore((s) => s.computer !== LOCAL);
+  if (remote) return <RemoteTerminal sessionId={sessionId} />;
+  return <LocalTerminalView sessionId={sessionId} />;
+}
+
+/** A terminal session on a remote computer: listed, and stoppable, but not shown or typed into. */
+function RemoteTerminal({ sessionId }: { sessionId: string }) {
+  const session = useStore((s) => s.sessions[sessionId]);
+  return (
+    <div className="empty" role="status">
+      <h2>{session?.title ?? "Terminal session"}</h2>
+      <span>Terminals: {NOT_ON_REMOTE.toLowerCase()}. This session runs there in terminal mode; it can be stopped from here (⌘K → Stop session process).</span>
+    </div>
+  );
+}
+
+function LocalTerminalView({ sessionId }: { sessionId: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const client = useStore((s) => s.client);
   const session = useStore((s) => s.sessions[sessionId]);

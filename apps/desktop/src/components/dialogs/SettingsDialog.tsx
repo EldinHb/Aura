@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ModalC } from "../ModalC";
-import { useStore, defaultSettings, type UiSettings } from "../../state/store";
+import { useStore, defaultSettings, type UiSettings, selectLocalClient } from "../../state/store";
 import { allCommands } from "../../lib/commands";
 import { chordFromEvent, formatKeys, type Binding } from "../../lib/keymap";
 import { buildBindings } from "../../hooks/useKeyboard";
@@ -91,7 +91,7 @@ export const IDLE_STOP_DEFAULT_HOURS = 6;
  * runs of scheduled tasks stop a minute after they end, whatever this says.
  */
 function IdleAgentsField() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const toast = useStore((s) => s.toast);
   const [hours, setHours] = useState<string>("");
   useEffect(() => {
@@ -514,7 +514,7 @@ const CAPS: (keyof CapabilitySet)[] = ["structured", "models", "effort", "fork",
 
 function ProvidersTab() {
   const providers = useStore((s) => s.providers);
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const setProviders = useStore((s) => s.setProviders);
   const toast = useStore((s) => s.toast);
   const [busy, setBusy] = useState(false);
@@ -589,7 +589,7 @@ function ProvidersTab() {
 // ------------------------------------------------------------------ prompts
 
 function PromptsTab() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const providers = useStore((s) => s.providers);
   const toast = useStore((s) => s.toast);
   const [prompts, setPrompts] = useState<SystemPrompts | null>(null);
@@ -688,7 +688,7 @@ function PromptEditor({ label, initial, placeholder, autofocus, rows, onSave, ex
 const splitList = (v: string) => v.split(/[,\n]/).map((e) => e.trim()).filter(Boolean);
 
 function OrchestratorsTab() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const toast = useStore((s) => s.toast);
   const [lb, setLb] = useState<LoadBalancer | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -739,7 +739,7 @@ function OrchestratorsTab() {
 
 /** How feature owners' teams meet: written, or live meetings allowed, with their round cap and word budget. */
 function FeatureOwnerMeetings() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const toast = useStore((s) => s.toast);
   const [settings, setSettings] = useState<MeetingSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -806,7 +806,7 @@ function FeatureOwnerMeetings() {
 
 /** How much every feature owner decides on its own, unless its feature has its own setting. */
 function FeatureOwnerAutonomy() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const toast = useStore((s) => s.toast);
   const [autonomy, setAutonomy] = useState<Autonomy | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -837,7 +837,7 @@ function FeatureOwnerAutonomy() {
 // ------------------------------------------------------------------- groups
 
 function GroupsTab() {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const sessions = useStore((s) => s.sessions);
   const toast = useStore((s) => s.toast);
   const { groups, reload } = useGroups();

@@ -1076,6 +1076,30 @@ input[type=checkbox], input[type=radio] { accent-color: var(--md-primary); }
 .workspace-none { padding: 4px 10px; }
 .main-tab-workspace { flex: none; font-size: var(--fs-label-s); }
 
+/* Computers: this one and paired remote computers (state/computers.ts). */
+.computer-switcher { padding-bottom: 0; }
+.computer-switcher .computer-name { font-weight: 500; color: var(--fg-muted); }
+.computer-switcher.remote .computer-name { color: var(--md-primary); }
+.computer-switcher .computer-icon { flex: none; width: 14px; text-align: center; }
+.computer-switcher .section-chevron { margin-left: auto; }
+.computer-menu .dot { flex: none; }
+.computer-menu .computer-state { flex: none; font-size: var(--fs-label-s); }
+.titlebar-computer { -webkit-app-region: no-drag; font-size: var(--fs-label-m); font-weight: 500; color: var(--md-primary); padding: 0 8px; }
+.computers-list { display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow: auto; }
+.computer-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; }
+.computer-row > .dot { margin-top: 6px; flex: none; }
+.computer-row .computer-title { font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.computer-row .computer-sub { font-size: var(--fs-label-s); }
+.computer-row .computer-actions { flex: none; display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 50%; }
+.computer-row input { width: 100%; }
+.cert-diff { margin-top: 4px; color: var(--err); }
+.fingerprint-confirm { padding: 10px 12px; border-radius: var(--shape-sm); background: var(--md-surface-container-highest); gap: 6px; }
+.fingerprint-confirm .fingerprint { font-size: 13px; letter-spacing: 0.04em; word-break: break-all; }
+.remote-unavailable { gap: 8px; text-align: center; }
+.remote-unavailable code { font-size: 11px; }
+.remote-unavailable-actions { display: flex; gap: 8px; margin-top: 8px; }
+.inbox-computer { flex: none; color: var(--md-primary); border-color: var(--md-primary); }
+
 /* Leaders only: workers sit under their leader. A worker that waits on the user shows while the leader is collapsed. */
 .session-row .chip.workers { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; background: transparent; }
 .session-row .chip.workers:hover { background: var(--hover-layer); }

@@ -1,4 +1,5 @@
 import { modContext } from "../mods/registry";
+import { commandWorksRemotely, NOT_ON_REMOTE } from "./remoteCapabilities";
 
 /**
  * Command registry. Every user-facing action is a command: the palette lists
@@ -36,6 +37,8 @@ export type CommandContext = {
   hasTabs?: boolean;
   /** The tab shown is a preview tab. */
   previewTab?: boolean;
+  /** The window shows a remote computer: commands it cannot run are left out (see lib/remoteCapabilities.ts). */
+  remote?: boolean;
 };
 
 export type Command = {
@@ -82,13 +85,28 @@ export function onCommandsChanged(l: () => void): () => void {
 }
 
 export function listCommands(ctx: CommandContext): Command[] {
-  return allCommands().filter((c) => !c.hidden && evaluateWhen(c.when, ctx));
+  return allCommands().filter((c) => !c.hidden && evaluateWhen(c.when, ctx) && !(ctx.remote && !commandWorksRemotely(c.id)));
+}
+
+/** Whether the window shows a remote computer; set by the app (state/computers.ts). */
+let remoteShown: () => boolean = () => false;
+export function setRemoteShown(f: () => boolean) {
+  remoteShown = f;
+}
+
+/** Whether command `id` can run where the window is now: not one a remote computer refuses while one is shown. */
+export function commandAvailable(id: string): boolean {
+  return !remoteShown() || commandWorksRemotely(id);
 }
 
 export async function runCommand(id: string, arg?: unknown): Promise<boolean> {
   const c = registry.get(id);
   if (!c) {
     console.warn("unknown command", id);
+    return false;
+  }
+  if (!commandAvailable(id)) {
+    errorHandler?.(`${c.title.replace(/…$/, "")}: ${NOT_ON_REMOTE.toLowerCase()}. Switch to this computer to use it.`);
     return false;
   }
   try {

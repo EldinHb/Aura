@@ -6,7 +6,7 @@
  */
 import { create } from "zustand";
 import { useEffect } from "react";
-import { useStore } from "../state/store";
+import { useStore, selectLocalClient } from "../state/store";
 import { onOpenSessionsChange, openSessionIds } from "./openSessions";
 import { openModView } from "./views";
 import { registerCommand, runCommand } from "../lib/commands";
@@ -82,7 +82,7 @@ const loaded = new Map<string, Loaded>();
 const settingListeners = new Map<string, Set<(key: string, value: unknown) => void>>();
 
 function client(): RpcClient {
-  const c = useStore.getState().client;
+  const c = selectLocalClient(useStore.getState());
   if (!c) throw new Error("Aura is not connected to its daemon");
   return c;
 }
@@ -342,7 +342,7 @@ export async function syncMods(): Promise<void> {
 
 /** Mount once at the app root: loads mods when connected and follows changes. */
 export function useModLoader() {
-  const c = useStore((s) => s.client);
+  const c = useStore(selectLocalClient);
   useEffect(() => {
     if (!c) return;
     installHostModules();

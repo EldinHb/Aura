@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import { useStore, selectWorkspaceActivity, type WorkspaceActivity } from "../state/store";
+import { useStore, selectWorkspaceActivity, LOCAL, type WorkspaceActivity } from "../state/store";
+import { commandWorksRemotely, NOT_ON_REMOTE } from "../lib/remoteCapabilities";
 import { ATTENTION, useViewedSessionId } from "../state/attention";
 import { runCommand } from "../lib/commands";
 import { isMac } from "../lib/platform";
@@ -134,6 +135,7 @@ const ACTIONS: { command: string; label: string }[] = [
 /** The ⋯ menu: rename, delete, clean up workers, new workspace. */
 function ActionsMenu({ onClose }: { onClose: () => void }) {
   const only = useStore((s) => s.workspaces.length < 2);
+  const remote = useStore((s) => s.computer !== LOCAL);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   useEffect(() => refs.current.find((b) => b && !b.disabled)?.focus(), []);
   const onKeyDown = (e: ReactKeyboardEvent) => {
@@ -149,7 +151,8 @@ function ActionsMenu({ onClose }: { onClose: () => void }) {
   return (
     <div className="workspace-menu workspace-actions" role="menu" aria-label="Workspace actions" data-keynav data-own-escape onKeyDown={onKeyDown}>
       {ACTIONS.map((a, i) => {
-        const disabled = a.command === "workspace.delete" && only;
+        const notHere = remote && !commandWorksRemotely(a.command);
+        const disabled = (a.command === "workspace.delete" && only) || notHere;
         return (
           <button
             key={a.command}
@@ -158,7 +161,7 @@ function ActionsMenu({ onClose }: { onClose: () => void }) {
             role="menuitem"
             className="workspace-option"
             disabled={disabled}
-            title={disabled ? "Aura needs at least one workspace" : undefined}
+            title={notHere ? NOT_ON_REMOTE : disabled ? "Aura needs at least one workspace" : undefined}
             data-hint
             data-command={a.command}
             onClick={() => {

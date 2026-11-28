@@ -8,13 +8,20 @@ import { useModInbox } from "../../mods/inbox";
 import { slots, useSlot, type InboxItem } from "../../mods/registry";
 import { ModPiece } from "../../mods/Slots";
 import clsx from "clsx";
+import type { Session } from "../../gen";
+import { clientOf, computerName, pendingElsewhere, switchComputer, useComputers, useOtherComputersPending } from "../../state/computers";
 
-type SessionRow = { kind: "approval"; a: Approval } | { kind: "input"; r: UserInputRequest };
+/** `computer`: set for rows of a computer other than the one shown (state/computers.ts). */
+type SessionRow = ({ kind: "approval"; a: Approval } | { kind: "input"; r: UserInputRequest }) & { computer?: string };
 /** What a mod put in the inbox (`aura.inbox.set`). */
 type Row = SessionRow | { kind: "mod"; modId: string; item: InboxItem };
 
 function rowId(r: Row): string {
   return r.kind === "approval" ? `a:${r.a.id}` : r.kind === "input" ? `i:${r.r.id}` : `m:${r.modId}:${r.item.id}`;
+}
+/** Ids are unique per computer only. */
+function rowKey(r: Row): string {
+  return r.kind !== "mod" && r.computer ? `${r.computer}:${rowId(r)}` : rowId(r);
 }
 function rowSession(r: SessionRow): string {
   return r.kind === "approval" ? r.a.session_id : r.r.session_id;
@@ -38,6 +45,12 @@ export function InboxDialog() {
   const [fetched, setFetched] = useState<{ approvals: Approval[]; inputs: UserInputRequest[] }>({ approvals: [], inputs: [] });
   const [idx, setIdx] = useState(0);
   const [resolved, setResolved] = useState<Set<string>>(new Set());
+  // What waits on the other connected computers, labelled with their names.
+  const shown = useStore((s) => s.computer);
+  const remotes = useComputers((s) => s.remotes);
+  const elsewhereCount = useOtherComputersPending();
+  const [elsewhere, setElsewhere] = useState<Awaited<ReturnType<typeof pendingElsewhere>>>([]);
+  const otherSessions = useMemo(() => new Map(elsewhere.map((e) => [e.computer, e.sessions] as [string, Record<string, Session>])), [elsewhere]);
 
   useEffect(() => {
     client
@@ -45,6 +58,14 @@ export function InboxDialog() {
       .then(setFetched)
       .catch(() => {});
   }, [client]);
+
+  useEffect(() => {
+    let live = true;
+    void pendingElsewhere(shown).then((list) => live && setElsewhere(list));
+    return () => {
+      live = false;
+    };
+  }, [shown, elsewhereCount]);
 
   const rows: Row[] = useMemo(() => {
     const m = new Map<string, SessionRow>();
@@ -74,21 +95,34 @@ export function InboxDialog() {
     const fromMods: Row[] = modItems
       .flatMap(({ modId, items }) => items.filter((i) => i.unread).map((item): Row => ({ kind: "mod", modId, item })))
       .sort((x, y) => (x.kind === "mod" && y.kind === "mod" ? y.item.at.localeCompare(x.item.at) : 0));
-    return [...waiting, ...fromMods];
-  }, [fetched, transcripts, resolved, modItems]);
+    const others: Row[] = elsewhere
+      .flatMap((e): SessionRow[] => [
+        ...e.approvals.map((a): SessionRow => ({ kind: "approval", a, computer: e.computer })),
+        ...e.inputs.map((r): SessionRow => ({ kind: "input", r, computer: e.computer })),
+      ])
+      .filter((r) => !resolved.has(rowKey(r)))
+      .sort((x, y) => rowTime(x as SessionRow).localeCompare(rowTime(y as SessionRow)));
+    return [...waiting, ...others, ...fromMods];
+  }, [fetched, transcripts, resolved, modItems, elsewhere]);
+  // Rows say which computer they are on once more than one has any.
+  const labelled = elsewhere.some((e) => e.approvals.length + e.inputs.length > 0);
+  const sessionOf = (row: SessionRow): Session | undefined => (row.computer ? otherSessions.get(row.computer)?.[rowSession(row)] : sessions[rowSession(row)]);
 
   useEffect(() => {
     if (idx >= rows.length) setIdx(Math.max(0, rows.length - 1));
   }, [rows.length, idx]);
 
   const respond = async (row: Row, option: ApprovalOption) => {
-    if (!client || row.kind === "mod") return;
+    if (row.kind === "mod") return;
+    // On the computer the row is from.
+    const on = row.computer ? clientOf(row.computer) : client;
+    if (!on) return;
     // A question is answered on its card; from here it can only be dismissed.
     if (row.kind === "input" && option !== "decline") return;
     try {
-      if (row.kind === "input") await client.respondInput(row.r.session_id, { request_id: row.r.id, answers: {}, declined: true });
-      else await client.respondApproval(row.a.session_id, row.a.id, { option, updated_input: null, message: null });
-      setResolved((s) => new Set(s).add(rowId(row)));
+      if (row.kind === "input") await on.respondInput(row.r.session_id, { request_id: row.r.id, answers: {}, declined: true });
+      else await on.respondApproval(row.a.session_id, row.a.id, { option, updated_input: null, message: null });
+      setResolved((s) => new Set(s).add(rowKey(row)));
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), "error");
     }
@@ -97,15 +131,22 @@ export function InboxDialog() {
   const acceptAllInSession = async (row: Row) => {
     if (!client || row.kind === "mod") return;
     const sid = rowSession(row);
-    const list = rows.filter((r): r is Extract<Row, { kind: "approval" }> => r.kind === "approval" && r.a.session_id === sid && r.a.kind === "command");
+    const list = rows.filter((r): r is Extract<Row, { kind: "approval" }> => r.kind === "approval" && r.computer === row.computer && r.a.session_id === sid && r.a.kind === "command");
     for (const r of list) await respond(r, "accept");
-    toast(`Accepted ${list.length} command approval${list.length === 1 ? "" : "s"} in “${sessions[sid]?.title ?? sid}”`);
+    toast(`Accepted ${list.length} command approval${list.length === 1 ? "" : "s"} in “${sessionOf(row)?.title ?? sid}”`);
   };
 
   const jump = (row: Row) => {
     closeDialog();
     if (row.kind === "mod") renderers.find((r) => r.modId === row.modId)?.open?.(row.item);
-    else select(rowSession(row));
+    else if (row.computer) {
+      // On another computer: show it, then the session.
+      const sid = rowSession(row);
+      void switchComputer(row.computer).then(
+        () => useStore.getState().select(sid),
+        (e: unknown) => toast(e instanceof Error ? e.message : String(e), "error"),
+      );
+    } else select(rowSession(row));
     setFocus("main");
   };
 
@@ -166,17 +207,18 @@ export function InboxDialog() {
               </button>
             );
           }
-          const s = sessions[rowSession(row)];
+          const s = sessionOf(row);
           const isApproval = row.kind === "approval";
           const payload = isApproval ? (row.a.payload as { command?: string }) : null;
           return (
-            <button key={rowId(row)} type="button" data-hint className={clsx("list-item inbox-row", i === idx && "active")} onClick={() => setIdx(i)} onDoubleClick={() => jump(row)}>
+            <button key={rowKey(row)} type="button" data-hint className={clsx("list-item inbox-row", i === idx && "active")} onClick={() => setIdx(i)} onDoubleClick={() => jump(row)}>
+              {labelled && <span className="chip inbox-computer" title="The computer it waits on">{computerName(row.computer ?? shown, remotes)}</span>}
               <span className={clsx("chip", s?.provider ?? "")}>{s?.provider ?? "?"}</span>
               <span className="inbox-kind chip">{isApproval ? row.a.kind.replace("_", " ") : "question"}</span>
               <span className="grow">
                 <div className="inbox-title">{isApproval ? row.a.title : row.r.questions.map((q) => q.question).join(" · ")}</div>
                 <div className="dim mono inbox-sub">{isApproval ? payload?.command ?? row.a.description ?? "" : `${row.r.questions.length} question${row.r.questions.length === 1 ? "" : "s"}`}</div>
-                <div className="dim inbox-sub">{s?.title ?? rowSession(row)}{s && workspaceNames.size > 1 && workspaceNames.has(s.workspace) ? ` · ${workspaceNames.get(s.workspace)}` : ""}</div>
+                <div className="dim inbox-sub">{s?.title ?? rowSession(row)}{s && !row.computer && workspaceNames.size > 1 && workspaceNames.has(s.workspace) ? ` · ${workspaceNames.get(s.workspace)}` : ""}</div>
               </span>
               <span className="dim">{relTime(rowTime(row))}</span>
             </button>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { ModalC } from "../../components/ModalC";
-import { activeWorkspaceId, useStore } from "../../state/store";
+import { activeWorkspaceId, useStore, selectLocalClient } from "../../state/store";
 import { useGroups } from "../../state/groups";
 import { providerChoices } from "../../lib/acp";
 import { exactTime } from "../../lib/time";
@@ -97,7 +97,7 @@ export function SchedulesDialog({ taskId, create }: { taskId?: string; create?: 
 
 /** Edit a task (or a new one), with its actions and history. */
 function TaskEditor({ task, onSaved }: { task: ScheduledTask | null; onSaved: (t: ScheduledTask) => void }) {
-  const client = useStore((s) => s.client);
+  const client = useStore(selectLocalClient);
   const providers = useStore((s) => s.providers);
   const settings = useStore((s) => s.settings);
   const sessionsById = useStore((s) => s.sessions);

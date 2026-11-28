@@ -18,6 +18,8 @@ import { useFeature } from "../state/features";
 import { openQuestions } from "../lib/features";
 import { openWorkerThread } from "../state/workerThreads";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { ComputerSwitcher } from "./ComputerSwitcher";
+import { isTauri } from "../lib/connection";
 import { StatusRail, focusRail } from "./StatusRail";
 
 /** Every leader row of the tab shown, those of folded sections included. */
@@ -575,6 +577,7 @@ export function Sidebar() {
 
   return (
     <div className={clsx("region sidebar", focus === "sidebar" && "focused")} data-region="sidebar" tabIndex={0} onFocus={() => useStore.getState().setFocus("sidebar")}>
+      {isTauri() && <ComputerSwitcher />}
       <WorkspaceSwitcher />
       <div className="sidebar-head">
         <input

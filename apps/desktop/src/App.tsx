@@ -36,7 +36,9 @@ import { isMac } from "./lib/platform";
 import { desktopNotify } from "./lib/notify";
 import clsx from "clsx";
 import type { Event } from "./gen";
-import { syncWithDaemon } from "./state/daemonSync";
+import { LOCAL, computerName, useComputers, configureSync, follow, setBackgroundNotifier, startComputers, trackSessions, unfollow } from "./state/computers";
+import { registerComputerCommands } from "./commands/computers";
+import { RemoteUnavailable } from "./components/RemoteUnavailable";
 
 const params = new URLSearchParams(location.search);
 const windowMode = params.get("window"); // "session" for a detached single-session window
@@ -55,6 +57,8 @@ export default function App() {
   const inbox = useInboxCount();
   const connection = useStore((s) => s.connection);
   const connectionError = useStore((s) => s.connectionError);
+  const computer = useStore((s) => s.computer);
+  const shownComputer = useComputers((s) => computerName(computer, s.remotes));
   const selected = useStore(selectSelected);
   // The main area's tabs: sessions and mods' views (a pull request, say), each kept open in its own.
   const tabs = useStore((s) => s.tabs);
@@ -79,7 +83,8 @@ export default function App() {
     const offCore = registerCoreCommands();
     const offTabs = registerTabCommands();
     const offSchedules = registerScheduleCommands();
-    return () => { offCore(); offTabs(); offSchedules(); };
+    const offComputers = registerComputerCommands();
+    return () => { offCore(); offTabs(); offSchedules(); offComputers(); };
   }, []);
 
   // Connect + subscribe. The link moves the window to a new client when the
@@ -88,32 +93,41 @@ export default function App() {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     const st = useStore.getState;
+    configureSync({ initialSession, selectFirst: windowMode !== "session", onEvent: (ev) => void notifyIfNeeded(ev) });
     const link = new DaemonLink<RpcClient>({
       // Says the window secret on every (re)connection (see windowClient).
       makeClient: windowClient,
       // Subscribes and loads on the new client; it becomes the window's in
       // `commit`, once this succeeded. Events, the connection state and a
-      // refresh on every reconnect are state/daemonSync.ts's.
+      // refresh on every reconnect are state/daemonSync.ts's; while a remote
+      // computer is shown, this computer's sessions are only tracked for the
+      // inbox (state/computers.ts), and followed fully on switching back.
       attach: async (client) => {
-        const offSync = syncWithDaemon(client, { initialSession, selectFirst: windowMode !== "session", onEvent: (ev) => void notifyIfNeeded(ev) });
-        await offSync.loaded;
+        const offTrack = trackSessions(LOCAL, client);
+        if (st().computer === LOCAL) await follow(client);
         // Provider CLIs are upgraded outside Aura, so re-read them whenever the
         // window comes back rather than trusting what we saw at connect. Only
         // the provider list — a full refresh would re-apply the initial session
         // selection and yank the user off whatever they had selected.
         const onWindowFocus = () => {
-          client
-            .providers()
-            .then((ps) => st().setProviders(ps))
+          const shown = st().client;
+          shown
+            ?.providers()
+            .then((ps) => {
+              if (st().client === shown) st().setProviders(ps);
+            })
             .catch(() => {});
         };
         window.addEventListener("focus", onWindowFocus);
         return () => {
-          offSync();
+          offTrack();
+          unfollow(client);
           window.removeEventListener("focus", onWindowFocus);
         };
       },
       commit: (client) => {
+        st().setLocalClient(client);
+        if (st().computer !== LOCAL) return;
         st().setClient(client);
         st().setConnection("open");
       },
@@ -134,6 +148,24 @@ export default function App() {
       cancelled = true;
       link.close();
       unlisten?.();
+    };
+  }, []);
+
+  // Remote computers: connected in the background, shown on switching (main window only).
+  useEffect(() => {
+    if (!isTauri() || windowMode === "session") return;
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    setBackgroundNotifier((computer, session, ev) => {
+      if (!useStore.getState().settings.notifications) return;
+      const body = ev.type === "approval_requested" ? `Approval needed: ${ev.approval.title}` : "Question from the agent";
+      void desktopNotify(`${session?.title ?? "Aura"} · ${computerName(computer)}`, body);
+    });
+    void startComputers().then((s) => (cancelled ? s() : (stop = s)));
+    return () => {
+      cancelled = true;
+      stop?.();
+      setBackgroundNotifier(null);
     };
   }, []);
 
@@ -175,6 +207,7 @@ export default function App() {
         <span className="title">Aura</span>
         {selected && <span style={{ color: "var(--fg-dim)" }}>› {selected.title}</span>}
         <span className="spacer" />
+        {computer !== LOCAL && <span className="titlebar-computer" title="The computer this window shows">{shownComputer}</span>}
         <InboxButton />
         <span className="conn">
           <span className={`dot ${connection === "open" ? "ok" : connection === "connecting" ? "warn pulse" : "err"}`} />
@@ -190,7 +223,9 @@ export default function App() {
               <TabContent tab={tab} active={tab.key === activeTab} />
             </TabPane>
           ))}
-          {!shownTabs.some((t) => t.key === activeTab) && (connection !== "open" ? (
+          {!shownTabs.some((t) => t.key === activeTab) && (connection !== "open" && computer !== LOCAL ? (
+            <RemoteUnavailable id={computer} />
+          ) : connection !== "open" ? (
             <div className="empty">
               <h2>{connection === "connecting" ? "Connecting to the Aura daemon…" : "Not connected"}</h2>
               {connectionError && <code>{connectionError}</code>}

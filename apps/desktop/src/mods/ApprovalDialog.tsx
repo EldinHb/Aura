@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { isTauri } from "../lib/connection";
 import { createPortal } from "react-dom";
 import { create } from "zustand";
-import { useStore } from "../state/store";
+import { selectLocalClient, useStore } from "../state/store";
 import { refreshThemes, useThemes } from "../state/themes";
 import { modsApi, syncMods, useMods } from "./loader";
 import { describePermissions } from "./permissions";
@@ -41,9 +41,8 @@ export function ApprovalDialog() {
   useEffect(() => {
     if (!show) return;
     setIsWindow(null);
-    useStore
-      .getState()
-      .client?.call<{ window: boolean }>("daemon.window_status", {})
+    selectLocalClient(useStore.getState())
+      ?.call<{ window: boolean }>("daemon.window_status", {})
       .then((s) => setIsWindow(!!s?.window))
       .catch(() => setIsWindow(false));
   }, [show, prompt?.kind, prompt?.id]);
@@ -79,7 +78,7 @@ export function ApprovalDialog() {
         await modsApi.approve(prompt.id);
         await syncMods();
       } else {
-        await useStore.getState().client?.call("themes.approve", { id: prompt.id });
+        await selectLocalClient(useStore.getState())?.call("themes.approve", { id: prompt.id });
         await refreshThemes();
       }
       close();
