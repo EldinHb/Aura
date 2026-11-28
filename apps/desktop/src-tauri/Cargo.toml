@@ -33,6 +33,8 @@ reqwest = { workspace = true }
 rustls = { workspace = true }
 semver = "1"
 aura-rpc = { workspace = true }
+# Other Aura computers: pairing, pinning, keychain tokens, the loopback bridge.
+aura-remote-client = { workspace = true }
 aura-contain = { workspace = true }
 aura-core = { workspace = true }
 serde = { workspace = true }

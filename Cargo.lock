@@ -391,6 +391,7 @@ dependencies = [
  "anyhow",
  "aura-contain",
  "aura-core",
+ "aura-remote-client",
  "aura-rpc",
  "dirs 5.0.1",
  "libc",
